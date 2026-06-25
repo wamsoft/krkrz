@@ -9,3 +9,26 @@
 *.rc        encoding=shiftjis
 *.tjs       encoding=utf-8
 *.ks        encoding=utf-8
+
+# 改行コード: 既定は LF (リポジトリ保存は常に LF、作業ツリーも LF)
+* text=auto eol=lf
+
+# Windows 固有ファイルは作業ツリーを CRLF に (保存は LF のまま)
+*.bat       text eol=crlf
+*.cmd       text eol=crlf
+*.sln       text eol=crlf
+*.vcproj    text eol=crlf
+*.vcxproj   text eol=crlf
+*.props     text eol=crlf
+*.filters   text eol=crlf
+*.rc        text eol=crlf
+*.def       text eol=crlf
+*.manifest  text eol=crlf
+
+# バイナリは改行変換しない
+*.png       binary
+*.ico       binary
+*.ttf       binary
+*.otf       binary
+*.ogg       binary
+*.xlsx      binary
