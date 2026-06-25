@@ -71,6 +71,7 @@ TJS_EXP_FUNC_DEF(void, TVPConvertPCMToFloat, (float *output, const void *input, 
 
 
 
+/*[*/
 //---------------------------------------------------------------------------
 // tTVPWaveDecoder interface
 //---------------------------------------------------------------------------
@@ -110,6 +111,7 @@ public:
 		*/
 };
 //---------------------------------------------------------------------------
+/*]*/
 
 
 
@@ -117,9 +119,9 @@ public:
 //---------------------------------------------------------------------------
 // tTVPWaveDecoder interface management
 //---------------------------------------------------------------------------
-extern void TVPRegisterWaveDecoderCreator(tTVPWaveDecoderCreator *d);
-extern void TVPUnregisterWaveDecoderCreator(tTVPWaveDecoderCreator *d);
-extern tTVPWaveDecoder *  TVPCreateWaveDecoder(const ttstr & storagename);
+TJS_EXP_FUNC_DEF(void, TVPRegisterWaveDecoderCreator, (tTVPWaveDecoderCreator *d));
+TJS_EXP_FUNC_DEF(void, TVPUnregisterWaveDecoderCreator, (tTVPWaveDecoderCreator *d));
+TJS_EXP_FUNC_DEF(tTVPWaveDecoder *, TVPCreateWaveDecoder, (const ttstr & storagename));
 //---------------------------------------------------------------------------
 
 

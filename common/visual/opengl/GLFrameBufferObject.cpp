@@ -60,14 +60,17 @@ bool GLFrameBufferObject::create( GLuint w, GLuint h) {
 	}
 	bool result = status == GL_FRAMEBUFFER_COMPLETE;
 	if( result == false ) {
+		// 失敗時は FBO 関連を解放してから framebuffer を復帰し、PBO は作らずに返す。
 		destory();
-	} else {
-		width_ = w;
-		height_ = h;
+		glBindFramebuffer( GL_FRAMEBUFFER, fb );
+		glBindTexture( GL_TEXTURE_2D, 0 );
+		return false;
 	}
+	width_ = w;
+	height_ = h;
 	glBindFramebuffer( GL_FRAMEBUFFER, fb );
 
-	// PBO を作成
+	// PBO を作成 (成功時のみ)
 	int size = w * h * pixel_size;
 	glGenBuffers(1, &pbo_);
 	glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo_);

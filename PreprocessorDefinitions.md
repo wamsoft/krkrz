@@ -25,6 +25,20 @@ VSCode Debug Adapter Protocol サーバを内蔵してビルドします。
 2026-04-25 に廃止されました。代わりに上記 DAP 経由で VSCode から
 ブレークポイント・ステップ実行・変数 inspect が可能になります。
 
+### TVP\_USE\_LOGCORE
+LogCore (`common/utils/LogCore.cpp`) を有効にしてビルドします。
+CMake オプション `KRKRZ_USE_LOGCORE` で制御され、デスクトップ環境ではデフォルト ON、
+モバイル環境 (Android / iOS) ではデフォルト OFF です。
+
+有効時は以下の機能が利用可能:
+- ログのリングバッファ (`Debug.getLastLog()`)
+- ファイル出力 (`krkr.console.log`)
+- TJS logging handler (`Debug.addLoggingHandler()`)
+- REPL コンソール sink
+
+無効時は SDL3 のネイティブログ出力をそのまま使用し、上記機能はスタブ実装となります。
+詳細は `doc/Logging.md` を参照してください。
+
     // 以下未整理
     TJS_TEXT_OUT_CRLF
     TJS_SUPPORT_VCL

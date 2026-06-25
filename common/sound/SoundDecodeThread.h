@@ -38,6 +38,8 @@ public:
 	void PushSamplesBuffer( tTVPSoundSamplesBuffer* buf );
 	// サンプルバッファキューを空にする
 	void ClearQueue();
+	// 単に thread を起こすだけ (audio thread からの wakeup 用、syscall 1 個のみ)
+	void Wakeup() { Event.Set(); }
 };
 
 

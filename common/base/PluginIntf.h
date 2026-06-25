@@ -32,4 +32,17 @@ extern tTJSNativeClass * TVPCreateNativeClass_Plugins();
 //---------------------------------------------------------------------------
 
 
+//---------------------------------------------------------------------------
+// プラグインのロード/アンロード/ロード可否判定 (共通インタフェース)
+//   - TVPLoadPlugin   : 指定名のプラグインをロードする (失敗時例外)
+//   - TVPUnloadPlugin : 指定名のプラグインをアンロードする (見つからなければ例外)
+//   - TVPCanLoadPlugin: 指定名のプラグインがロード可能かを判定する (例外を投げない)
+// 各プラットフォーム (win32 / generic) で個別に実装される。
+//---------------------------------------------------------------------------
+extern void TVPLoadPlugin(const ttstr & name);
+extern bool TVPUnloadPlugin(const ttstr & name);
+extern bool TVPCanLoadPlugin(const ttstr & name);
+//---------------------------------------------------------------------------
+
+
 #endif

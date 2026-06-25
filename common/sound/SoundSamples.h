@@ -4,6 +4,7 @@
 
 
 #include "WaveSegmentQueue.h"
+#include "SoundAllocator.h"
 
 class tTVPSoundSamplesBuffer {
 	static const int BUFFER_DIVIDER = 2;
@@ -39,11 +40,11 @@ public:
 	}
 	~tTVPSoundSamplesBuffer() {
 		if( Buffer ) {
-			delete[] Buffer;
+			sound_free(Buffer);
 			Buffer = nullptr;
 		}
 		if( VisBuffer ) {
-			delete[] VisBuffer;
+			sound_free(VisBuffer);
 			VisBuffer = nullptr;
 		}
 		Format = nullptr;
@@ -55,12 +56,12 @@ public:
 		ByteSize = SampleSize * format->BytesPerSample * format->Channels;
 		if(ByteSize <= 0)
 			TVPThrowExceptionMessage(TJS_W("Invalid format."));
-		if( Buffer ) delete[] Buffer;
-		Buffer = new tjs_uint8[ByteSize];
-		if( VisBuffer ) delete[] VisBuffer, VisBuffer = nullptr;
+		if( Buffer ) sound_free(Buffer);
+		Buffer = (tjs_uint8*)sound_malloc(ByteSize);
+		if( VisBuffer ) sound_free(VisBuffer), VisBuffer = nullptr;
 		UseVisBuffer = visBuffer;
 		if( visBuffer ) {
-			VisBuffer = new tjs_uint8[ByteSize];
+			VisBuffer = (tjs_uint8*)sound_malloc(ByteSize);
 		}
 		InSamples = SampleSize;
 		DecodePos = -1;
@@ -102,11 +103,11 @@ public:
 
 	void ResetVisBuffer() {
 		DeallocateVisBuffer();
-		VisBuffer = new tjs_uint8[ByteSize];
+		VisBuffer = (tjs_uint8*)sound_malloc(ByteSize);
 		UseVisBuffer = true;
 	}
 	void DeallocateVisBuffer() {
-		if( VisBuffer ) delete[] VisBuffer, VisBuffer = nullptr;
+		if( VisBuffer ) sound_free(VisBuffer), VisBuffer = nullptr;
 		UseVisBuffer = false;
 	}
 	const tjs_uint8* GetVisBuffer() const { return VisBuffer; }

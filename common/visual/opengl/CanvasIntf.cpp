@@ -19,6 +19,7 @@
 #include "ShaderProgramIntf.h"
 #include "VertexBinderIntf.h"
 #include "VertexBufferIntf.h"
+#include "GLTexture.h"
 
 #include <memory>
 
@@ -149,14 +150,24 @@ void TJS_INTF_METHOD tTJSNI_Canvas::Invalidate() {
 		Matrix32Object.AsObjectClosureNoAddRef().Invalidate( 0, NULL, NULL, Matrix32Object.AsObjectNoAddRef() );
 
 	// release shader
+	// SetDefaultShader(void) は DefaultShaderObject を EmbeddedDefaultShaderObject に
+	// 戻すため、Invalidate 対象は Embedded と同一オブジェクトになる。Invalidate 後は
+	// Embedded 側の Variant 参照も明示的に Clear して、Canvas destruction を待たずに
+	// underlying shader の ref count を 0 に落とす (GL 資源は Invalidate で既に解放済み)。
 	SetDefaultShader( tTJSVariant() );
 	if( DefaultShaderObject.Type() == tvtObject )
 		DefaultShaderObject.AsObjectClosureNoAddRef().Invalidate( 0, NULL, NULL, DefaultShaderObject.AsObjectNoAddRef() );
+	DefaultShaderObject.Clear();
+	EmbeddedDefaultShaderObject.Clear();
+	DefaultShaderInstance = nullptr;
 
 	// release fill shader
 	SetDefaultFillShader( tTJSVariant() );
 	if( DefaultFillShaderObject.Type() == tvtObject )
 		DefaultFillShaderObject.AsObjectClosureNoAddRef().Invalidate( 0, NULL, NULL, DefaultFillShaderObject.AsObjectNoAddRef() );
+	DefaultFillShaderObject.Clear();
+	EmbeddedDefaultFillShaderObject.Clear();
+	DefaultFillShaderInstance = nullptr;
 }
 //----------------------------------------------------------------------
 void TJS_INTF_METHOD tTJSNI_Canvas::Destruct() {
@@ -344,14 +355,21 @@ void tTJSNI_Canvas::Capture( class tTJSNI_Bitmap* bmp, int x, int y, int w, int 
 	std::unique_ptr<char[]> buffer(new char[w*h*4]);
 	tjs_uint32 *src = (tjs_uint32*)&buffer[0];
 
-	// FBから取得
-	// XXX FBのフォーマットを参照する必要あり
-	glReadPixels( x, y, w, h, GL_RGBA, GL_UNSIGNED_BYTE, reinterpret_cast<tjs_uint8*>(src) );
+	// FBから取得。BGRA_EXT 対応 GPU では GL_BGRA_EXT で読み出して CPU swap を回避。
+	// (texture swizzle は readback には効かないので _support_bgra のみ判定)
+	const bool useBGRAReadback = GLTexture::SupportBGRAFormat();
+	const GLenum readFormat = useBGRAReadback ? GL_BGRA_EXT : GL_RGBA;
+	glReadPixels( x, y, w, h, readFormat, GL_UNSIGNED_BYTE, reinterpret_cast<tjs_uint8*>(src) );
 	CheckGLErrorAndLog("glReadPixels");
 	for( tjs_int i = 0; i < h; i++ ) {
 		// Y方向は逆順に入れ換え
 		tjs_uint32* dest = reinterpret_cast<tjs_uint32*>(b->GetScanLineForWrite(h-i-1));
-		TVPRedBlueSwapCopy(dest, src, w);
+		if( useBGRAReadback ) {
+			// すでに BGRA で読み出されているので memcpy で済む
+			memcpy(dest, src, w * sizeof(tjs_uint32));
+		} else {
+			TVPRedBlueSwapCopy(dest, src, w);
+		}
 		src += w;
 	}
 }
@@ -1323,7 +1341,9 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/drawTextureAtlas )
 	if( !texture ) return TJS_E_INVALIDPARAM;
 	tTJSNI_ShaderProgram* shader = nullptr;
 	if( numparams >= 3 ) {
-		tTJSNI_ShaderProgram* shader = (tTJSNI_ShaderProgram*)TJSGetNativeInstance( tTJSNC_ShaderProgram::ClassID, param[2] );
+		// 旧コードでは内側で tTJSNI_ShaderProgram* shader を再宣言していて
+		// 外側 shader が常に nullptr のままユーザ指定が無視されていた。
+		shader = (tTJSNI_ShaderProgram*)TJSGetNativeInstance( tTJSNC_ShaderProgram::ClassID, param[2] );
 		if( !shader ) return TJS_E_INVALIDPARAM;
 	}
 	_this->DrawTextureAtlas( rect, texture, shader );

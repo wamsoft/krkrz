@@ -9,6 +9,7 @@ common/sound
 common/msg
 common/utils
 common/visual
+common/visual/elements
 common/visual/gl
 common/visual/IA32
 common/visual/opengl
@@ -52,6 +53,7 @@ common/tjs2/tjsDebuggerSymbols.cpp
 common/tjs2/tjsDebuggerCore.cpp
 common/tjs2/tjsDictionary.cpp
 common/tjs2/tjsDisassemble.cpp
+common/tjs2/tjsObjectStats.cpp
 common/tjs2/tjsError.cpp
 common/tjs2/tjsException.cpp
 common/tjs2/tjsGlobalStringMap.cpp
@@ -80,7 +82,11 @@ common/tjs2/tjsVariantString.cpp
 common/base/BinaryStream.cpp
 common/base/CharacterSet.cpp
 common/base/EventIntf.cpp
+common/base/FileAllocator.cpp
+common/base/KrkrzAllocator.cpp
+common/base/SoundAllocator.cpp
 common/base/PluginIntf.cpp
+common/base/PooledAllocator.cpp
 common/base/ScriptMgnIntf.cpp
 common/base/StorageIntf.cpp
 common/base/SysInitIntf.cpp
@@ -92,6 +98,7 @@ common/base/StorageCache.cpp
 common/environ/TouchPoint.cpp
 common/extension/Extension.cpp
 common/msg/MsgIntf.cpp
+common/msg/ReadOptionDescUtil.cpp
 common/sound/MathAlgorithms.cpp
 common/sound/PhaseVocoderDSP.cpp
 common/sound/PhaseVocoderFilter.cpp
@@ -105,11 +112,18 @@ common/sound/OpusCodecDecoder.cpp
 common/sound/VorbisCodecDecoder.cpp
 common/utils/ClipboardIntf.cpp
 common/utils/DAPServer.cpp
-common/utils/LogCore.cpp
+common/utils/LogFormat.cpp
 common/utils/cp932_uni.cpp
 common/utils/DebugIntf.cpp
 common/utils/md5.c
 common/utils/MiscUtility.cpp
+common/utils/ProcessMemory.cpp
+common/utils/SystemAllocatorInfo.cpp
+common/utils/GlobalAllocStats.cpp
+common/utils/AllocTagScope.cpp
+common/base/MemoryStatPeriodicDump.cpp
+common/base/MemoryOverlay.cpp
+common/base/PadOverlay.cpp
 common/utils/Random.cpp
 common/utils/ThreadIntf.cpp
 common/utils/TimerThread.cpp
@@ -124,6 +138,7 @@ common/visual/BitmapInfomation.cpp
 common/visual/CharacterData.cpp
 common/visual/ComplexRect.cpp
 common/visual/DrawDevice.cpp
+common/visual/ViewportConfig.h
 common/visual/FontSystem.cpp
 common/visual/FreeType.cpp
 common/visual/FreeTypeFontRasterizer.cpp
@@ -157,26 +172,44 @@ common/base/FuncStubs.cpp
 )
 
 if (KRKRZ_REPL)
-list(APPEND KRKRZ_SRC common/utils/REPL.cpp)
+list(APPEND KRKRZ_SRC
+	common/utils/REPL.cpp
+	# REPL メインスレッド実行キュー (console / file channel 共用) と
+	# -replfile= ファイル監視チャネル (エージェント駆動)。
+	common/utils/ReplMainQueue.cpp
+	common/utils/ReplMainQueue.h
+	common/utils/ReplFileChannel.cpp
+	common/utils/ReplFileChannel.h
+	# 画面キャプチャ要求の受け渡し (overlay 込み実画面 → PNG)。
+	# Elements 非依存の純粋な REPL 機能であり、 DrawDevice の Show フック
+	# (SDLDrawDevice / SDLOGLDrawDevice / 共通の OGLDrawDevice) が
+	# KRKRZ_USE_REPL ガード下で参照するため、 KRKRZ_USE_ELEMENTS とは無関係に
+	# REPL 有効時は常にコンパイルする (ELEMENTS=OFF + REPL=ON でもリンクできる)。
+	common/visual/ScreenCapture.cpp
+	common/visual/ScreenCapture.h
+)
 endif()
 
 if (KRKRZ_USE_OPENGL)
 
 set( KRKRZ_SRC_OPENGL
 common/visual/opengl/OGLDrawDevice.cpp
+common/visual/opengl/OGLViewportBackground.h
 common/visual/opengl/CanvasIntf.cpp
 common/visual/opengl/GLTexture.cpp
 common/visual/opengl/GLFrameBufferObject.cpp
 common/visual/opengl/GLShaderUtil.cpp
 common/visual/opengl/Matrix32Intf.cpp
 common/visual/opengl/Matrix44Intf.cpp
+common/visual/opengl/MemoryOverlayGL.cpp
+common/visual/opengl/PadOverlayGL.cpp
 common/visual/opengl/OffscreenIntf.cpp
 common/visual/opengl/OpenGLError.cpp
 common/visual/opengl/ShaderProgramIntf.cpp
 common/visual/opengl/TextureIntf.cpp
 common/visual/opengl/TextureLayerTreeOwner.cpp
 common/visual/opengl/VertexBinderIntf.cpp
-common/visual/opengl/VertexBufferIntf.cpp 
+common/visual/opengl/VertexBufferIntf.cpp
 common/glad/src/gles2.c
 common/glad/src/egl.c
 )
@@ -239,7 +272,6 @@ win32/movie/TVPVideoOverlay.cpp
 common/utils/TickCount.cpp
 win32/utils/TickCountImpl.cpp
 
-common/base/FileAllocator.cpp
 generic/utils/LogImpl.cpp
 
 win32/vcproj/tvpwin32.rc
@@ -392,7 +424,6 @@ common/sound/SoundEventThread.cpp
 common/sound/QueueSoundBufferImpl.cpp
 generic/base/DrawDeviceImpl.cpp
 generic/base/EventImpl.cpp
-generic/base/NativeEventQueue.cpp
 generic/base/PluginImpl.cpp
 generic/base/ScriptMgnImpl.cpp
 generic/base/StorageImpl.cpp
@@ -404,6 +435,7 @@ generic/environ/WindowForm.cpp
 generic/environ/JoyPad.cpp
 generic/msg/MsgImpl.cpp
 generic/msg/MsgLoad.cpp
+generic/msg/ReadOptionDesc.cpp
 generic/utils/ClipboardImpl.cpp
 generic/visual/BitmapBitsAlloc.cpp
 generic/visual/LayerImpl.cpp
@@ -444,8 +476,22 @@ set(KRKRZ_SRC_SDL3
 	sdl3/utils/TickCount.cpp
 	sdl3/visual/SDLDrawDevice.cpp
 	sdl3/visual/SDLDrawDevice.h
+	sdl3/visual/MemoryOverlayRender.cpp
+	sdl3/visual/MemoryOverlayRender.h
+	sdl3/visual/PadOverlayRender.cpp
+	sdl3/visual/PadOverlayRender.h
+	sdl3/visual/PostRenderCallback.cpp
+	sdl3/visual/PostRenderCallback.h
 	sdl3/visual/SDLTextureUpdateRect.h
 )
+
+if (KRKRZ_USE_OPENGL)
+list(APPEND KRKRZ_SRC_SDL3
+	sdl3/visual/SDLOGLDrawDevice.cpp
+	sdl3/visual/SDLOGLDrawDevice.h
+	sdl3/visual/SDLOGLTextureUpdateRect.h
+)
+endif()
 
 set(KRKRZ_INC_SDL3
 	sdl3/base
@@ -458,18 +504,93 @@ set(KRKRZ_LIB_SDL3
 	SDL3::SDL3
 )
 
+# Elements (汎用ダイアログ機構)。
+# KRKRZ_USE_ELEMENTS=OFF で完全に除外可能。OFF のときは KRKRZ_HAS_ELEMENTS
+# マクロが立たないので、consumer 側 (DrawDevice / WindowIntf / ScriptMgnIntf /
+# Application 等) は #ifdef で全部抜ける。
+if (KRKRZ_USE_ELEMENTS)
+	set(KRKRZ_SRC_ELEMENTS
+		common/visual/elements/DialogEventHandler.h
+		common/visual/elements/DialogRenderer.h
+		common/visual/elements/ElementsDialogManager.cpp
+		common/visual/elements/ElementsDialogManager.h
+		common/visual/elements/ElementsUserConfig.h
+		common/visual/elements/DialogIntf.cpp
+		common/visual/elements/DialogIntf.h
+		common/visual/elements/StoragesResourceLoader.cpp
+		common/visual/elements/StoragesResourceLoader.h
+	)
+	# OpenGL ES 直接版 DrawDevice (tTVPOGLDrawDevice / tTVPSDLOGLDrawDevice) 共用の
+	# dialog overlay レンダラ。GL ヘッダを include するため OpenGL ビルド時のみ。
+	if (KRKRZ_USE_OPENGL)
+		list(APPEND KRKRZ_SRC_ELEMENTS
+			common/visual/opengl/OGLDialogRenderer.cpp
+			common/visual/opengl/OGLDialogRenderer.h
+		)
+	endif()
+	# Phase 3: SDL3 用 renderer アダプタ / Phase 7: UserConfig (SDL3 専用)
+	# Phase 6c: 独立 SDL_Window モーダルランナー (SDL3 専用、 TJS Dialog.showModal* と
+	# UserConfig から共用)。
+	list(APPEND KRKRZ_SRC_SDL3
+		${KRKRZ_SRC_ELEMENTS}
+		sdl3/visual/SDLDialogRenderer.cpp
+		sdl3/visual/SDLDialogRenderer.h
+		sdl3/visual/SDLElementsUserConfig.cpp
+		sdl3/visual/SDLElementsModalRunner.cpp
+		sdl3/visual/SDLElementsModalRunner.h
+	)
+	# エージェント駆動制御 API (REPL / -replfile から入力注入・キャプチャ・
+	# ダイアログ制御)。 dialogs()/dialogClick()/dialogTree() 等が
+	# ElementsDialogManager を直接呼ぶため Elements 依存。 よって ELEMENTS と
+	# REPL の両方が有効なときだけビルドする (ScriptMgnIntf の Agent 登録も
+	# #if defined(KRKRZ_HAS_ELEMENTS) && defined(KRKRZ_USE_REPL) で二重ガード)。
+	# 画面キャプチャ実体 (ScreenCapture.cpp) は Elements 非依存なので上の
+	# KRKRZ_REPL ブロック (KRKRZ_SRC) 側に移動済み。
+	if (KRKRZ_REPL)
+		list(APPEND KRKRZ_SRC_SDL3
+			sdl3/environ/AgentControlIntf.cpp
+			sdl3/environ/AgentControlIntf.h
+		)
+	endif()
+	list(APPEND KRKRZ_LIB_SDL3 cycfi::elements)
+	# elements_modal は elements リポ管轄 (external/elements/external/elements_modal)
+	# で add_subdirectory(external/elements) 経由でビルドされる。 CMakeLists.txt が
+	# その直後で krkrz64 にリンクする (TARGET 存在を確認できるタイミング)。
+	# このファイル (sources.cmake) は include 順の都合で elements_modal target が
+	# まだ存在しない段階で評価されるため、ここで append しても TARGET 判定で抜ける。
+
+	# ElementsDialogManager.cpp / SDLElementsUserConfig.cpp / SDLElementsModalRunner.cpp
+	# は <elements.hpp> または <elements_modal/modal.h> を include して std::variant
+	# 等を使うため C++20 必須。 DialogIntf.cpp も showModal* で SDLElementsModalRunner
+	# を呼ぶが、 自身は elements の型を露出しないので C++17 のままで OK。
+	# StoragesResourceLoader.cpp は <elements/support/font.hpp> 経由で
+	# cycfi::elements::register_font を呼ぶため同様に C++20。
+	set_source_files_properties(
+		common/visual/elements/ElementsDialogManager.cpp
+		common/visual/elements/StoragesResourceLoader.cpp
+		sdl3/visual/SDLElementsUserConfig.cpp
+		sdl3/visual/SDLElementsModalRunner.cpp
+		PROPERTIES CXX_STANDARD 20
+	)
+endif()
+
 list(APPEND KRKRZ_SRC_WIN32
 	common/sound/AudioStream.cpp
 )
-list(APPEND KRKRZ_SRC_SDL3
-	common/sound/AudioStream.cpp
-	sdl3/sound/audio.cpp
-)
-if (KRKRZ_VARIANT STREQUAL "SDL")
-	list(APPEND KRKRZ_DEFINES
-		# miniaudio dont use device io
-		MA_NO_DEVICE_IO
+# KRKRZ_AUDIO_PLATFORM_OVERRIDE が立っている場合 (例: NX/Ounce) は
+# 機種専用の iTVPAudioStream 実装を使うので、miniaudio + SDL3 audio device 経由の
+# generic 経路 (common/sound/AudioStream.cpp + sdl3/sound/audio.cpp) は除外する。
+if (NOT KRKRZ_AUDIO_PLATFORM_OVERRIDE)
+	list(APPEND KRKRZ_SRC_SDL3
+		common/sound/AudioStream.cpp
+		sdl3/sound/audio.cpp
 	)
+	if (KRKRZ_VARIANT STREQUAL "SDL")
+		list(APPEND KRKRZ_DEFINES
+			# miniaudio dont use device io
+			MA_NO_DEVICE_IO
+		)
+	endif()
 endif()
 
 
@@ -488,7 +609,6 @@ endif()
 if(WIN32)
 	list(APPEND KRKRZ_SRC_SDL3
 		sdl3/environ/stdapp.cpp
-		common/base/FileAllocator.cpp
 		generic/app/movie.cpp
 		generic/app/winres.cpp
 		win32/utils/ThreadImpl.cpp
@@ -496,7 +616,6 @@ if(WIN32)
 elseif(APPLE)
 	list(APPEND KRKRZ_SRC_SDL3
 		sdl3/environ/stdapp.cpp
-		common/base/FileAllocator.cpp
 		generic/app/movie.cpp
 		sdl3/base/resource.cpp
 		sdl3/utils/ThreadImpl.cpp
@@ -504,7 +623,6 @@ elseif(APPLE)
 elseif(ANDROID)
 	list(APPEND KRKRZ_SRC_SDL3
 		sdl3/environ/stdapp.cpp
-		common/base/FileAllocator.cpp
 		generic/app/movie.cpp
 		generic/app/andres.cpp
 		sdl3/utils/ThreadImpl.cpp
@@ -512,7 +630,6 @@ elseif(ANDROID)
 elseif(UNIX)
 	list(APPEND KRKRZ_SRC_SDL3
 		sdl3/environ/stdapp.cpp
-		common/base/FileAllocator.cpp
 		generic/app/movie.cpp
 		generic/app/objres.cpp
 		sdl3/utils/ThreadImpl.cpp

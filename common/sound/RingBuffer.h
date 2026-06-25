@@ -14,6 +14,7 @@
 #define RingBufferH
 
 #include <stddef.h>
+#include "SoundAllocator.h"
 /*
 	リングバッファ, ring buffer, circular buffer, 環状バッファ
 */
@@ -32,10 +33,12 @@ class tRisaRingBuffer
 
 public:
 	//! @brief コンストラクタ
+	//! @note T は POD であることを要求 (sound_malloc が ctor/dtor を呼ばないため)。
+	//!       現状の使用箇所は tRisaRingBuffer<float> のみで条件を満たす。
 	tRisaRingBuffer(size_t size)
 	{
 		Size = size;
-		Buffer = new T[Size];
+		Buffer = (T*)sound_malloc(Size * sizeof(T));
 		WritePos = ReadPos = 0;
 		DataSize = 0;
 	}
@@ -43,7 +46,7 @@ public:
 	//! @brief デストラクタ
 	~tRisaRingBuffer()
 	{
-		delete [] Buffer;
+		sound_free(Buffer);
 	}
 
 	//! @brief	サイズを得る

@@ -95,6 +95,9 @@ add_library( krmovie SHARED
     resource.h
     krmovie.rc
     webplayer.cpp
+    # libvorbis/libogg が要求する sound_malloc 等を malloc 直行で満たすスタブ。
+    # 本体 (krkrz exe) は common/base/SoundAllocator.cpp を使うので別リンク単位。
+    sound_alloc_stub.c
 )
 
 target_include_directories( krmovie PRIVATE 
@@ -116,4 +119,5 @@ target_compile_definitions( krmovie PRIVATE
 target_link_libraries( krmovie PUBLIC
 	baseclasses
     movieplayer
+    xaudio2
 )

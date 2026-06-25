@@ -1,0 +1,43 @@
+{
+    /* 動画系サンプル。 いずれも「出しっぱなし」系: 再生開始後メニューを閉じると
+       背景で再生し続け、 再度開いて同じ項目を選ぶと停止する。 */
+    "size": [460, 320],
+    "background": [22, 34, 34, 248],
+    "locale": "ja-JP",
+    "align": "top_left",
+    "margin": 24,
+    "input": { "arrow_focus_nav": true },
+
+    "transitions": {
+        "back": "<back>",
+        "":     "<back>",
+    },
+
+    "content": {
+        "type": "margin", "padding": 22,
+        "child": {
+            "type": "vtile",
+            "children": [
+                { "type": "hspacer", "width": 416 },
+                { "type": "align_center",
+                  "child": { "type": "label", "text": "動画", "size": 1.3 } },
+                { "type": "vspacer", "height": 16 },
+
+                { "type": "vsize", "height": 42, "child": {
+                    "type": "button", "id": "webm", "text": "WebM 再生 (Mixer) / 停止",
+                    "initial_focus": true } },
+                { "type": "vspacer", "height": 8 },
+                { "type": "vsize", "height": 42, "child": {
+                    "type": "button", "id": "mp4", "text": "MP4 再生 (Mixer) / 停止" } },
+                { "type": "vspacer", "height": 8 },
+                { "type": "vsize", "height": 42, "child": {
+                    "type": "button", "id": "vlayer", "text": "レイヤー動画 (Layer) / 停止" } },
+
+                { "type": "vspacer", "height": 14 },
+                { "type": "vsize", "height": 38, "child": {
+                    "type": "button", "id": "back", "text": "← 戻る",
+                    "close_on_click": true } },
+            ],
+        },
+    },
+}

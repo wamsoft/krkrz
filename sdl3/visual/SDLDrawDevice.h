@@ -22,6 +22,12 @@ class tTVPSDLDrawDevice : public tTVPDrawDevice
 public:
 	const tTJSVariant & GetWindowObject() const { return WindowObject; }
 
+	//! @brief Elements ダイアログレンダラ等から SDL_Renderer を借用するための getter
+	SDL_Renderer * GetSDLRenderer() const { return mRenderer; }
+
+	//! @brief Elements ダイアログレンダラ等から DestRect を借用するための accessor
+	const tTVPRect & GetDestRectExt() const { return DestRect; }
+
 	tTVPSDLDrawDevice(iTJSDispatch2 *tjs_obj); //!< コンストラクタ
 
 private:
@@ -71,6 +77,18 @@ private:
 	SDL_Texture* Texture;
 	SDLTextureUpdateRect mTextureUpdateRect;
 
+	// renderer 特性に応じた描画モード:
+	//   - mUseFlipOnShow=true  : テクスチャは bottom-up DIB を保持し、Show 時に
+	//                             SDL_RenderTextureRotated(SDL_FLIP_VERTICAL) で反転。
+	//                             GPU renderer ではこれが最速 (テクスチャ転送に memcpy ゼロ)。
+	//   - mUseFlipOnShow=false : テクスチャは top-down (表示順)。Show は SDL_RenderTexture。
+	//                             SW renderer ではこちらでないと SW_RenderCopyEx の
+	//                             中間サーフェス確保 (3 枚/frame) が走る。
+	bool mUseFlipOnShow;
+	// テクスチャ確保形式。framebuffer / GPU swapchain と一致させると SW renderer
+	// fast path (SDL_StretchSurface 直叩き) に乗り、中間 tmp2 サーフェス確保が消える。
+	SDL_PixelFormat mPreferredTextureFormat;
+
 	// 動画用テクスチャ
 	SDL_Texture *mVideoTexture;
 	SDL_FRect mVideoPosition;
@@ -83,6 +101,13 @@ private:
 
 	void UpdateVideoPosition(int w, int h);
 	bool ShowVideo();
+
+	// ビューポート余白 (背景色 + 壁紙)。壁紙テクスチャは base の ViewportWallpaperGen
+	// と mWallpaperGen を比較して遅延 (再)アップロードする。
+	SDL_Texture *mWallpaperTexture;
+	tjs_uint32 mWallpaperGen;
+	int mWallpaperW, mWallpaperH;
+	void DrawViewportBackground(SDL_Renderer *renderer, int sw, int sh);
 
 	SDL_Texture *CreateTexture(SDL_PixelFormat format, SDL_TextureAccess access, int w, int h);
 	void Render(std::function<void(SDL_Renderer *renserer)> func);

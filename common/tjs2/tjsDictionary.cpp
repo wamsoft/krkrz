@@ -15,6 +15,7 @@
 #include "tjsArray.h"
 #include "tjsBinarySerializer.h"
 #include "tjsDebug.h"
+#include "tjsObjectStats.h"
 
 #include <memory>
 
@@ -432,7 +433,12 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func.name*/forEach ) {
 		auto deleter = []( tForEachNameCallback *callback ) {
 			callback->Release();
 		};
-		std::unique_ptr<tForEachNameCallback, decltype( deleter )> callback( new tForEachNameCallback( param[1]->AsStringNoAddRef(), paramList.release(), numparams ), std::move( deleter ) );
+		// 旧実装は `new tForEachNameCallback(..., paramList.release(), ...)` の 1 行で
+		// 書かれており、paramList.release() が引数評価で先に走った後 new が bad_alloc を
+		// 投げると release 済みの raw pointer が orphan になる。new 成功確認後に release。
+		auto *rawNameCallback = new tForEachNameCallback( param[1]->AsStringNoAddRef(), paramList.get(), numparams );
+		paramList.release();  // ctor 成功 → 内部 Params に所有権移譲済
+		std::unique_ptr<tForEachNameCallback, decltype( deleter )> callback( rawNameCallback, std::move( deleter ) );
 		tTJSVariantClosure closure( callback.get() );
 		obj.EnumMembers( TJS_IGNOREPROP, &closure, nullptr );
 		return TJS_S_OK;
@@ -449,7 +455,11 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func.name*/forEach ) {
 		auto deleter = []( tForEachCallback *callback ) {
 			callback->Release();
 		};
-		std::unique_ptr<tForEachCallback, decltype( deleter )> callback( new tForEachCallback( func, functhis, paramList.release(), numparams), std::move( deleter ) );
+		// new が bad_alloc を投げると paramList.release() 済みの raw pointer が orphan
+		// になる race を回避するため、new 成功確認後に release。
+		auto *rawCallback = new tForEachCallback( func, functhis, paramList.get(), numparams);
+		paramList.release();
+		std::unique_ptr<tForEachCallback, decltype( deleter )> callback( rawCallback, std::move( deleter ) );
 		tTJSVariantClosure closure( callback.get() );
 		obj.EnumMembers( TJS_IGNOREPROP, &closure, nullptr );
 		if( result ) {
@@ -943,15 +953,18 @@ tjs_error TJS_INTF_METHOD tTJSDictionaryNI::tAssignStructCallback::FuncCall(
 tTJSDictionaryObject::tTJSDictionaryObject() : tTJSCustomObject()
 {
 	CallFinalize = false;
+	TVPRegisterTJSDictionary(this);
 }
 //---------------------------------------------------------------------------
 tTJSDictionaryObject::tTJSDictionaryObject(tjs_int hashbits) : tTJSCustomObject(hashbits)
 {
 	CallFinalize = false;
+	TVPRegisterTJSDictionary(this);
 }
 //---------------------------------------------------------------------------
 tTJSDictionaryObject::~tTJSDictionaryObject()
 {
+	TVPUnregisterTJSDictionary(this);
 }
 //---------------------------------------------------------------------------
 tjs_error TJS_INTF_METHOD

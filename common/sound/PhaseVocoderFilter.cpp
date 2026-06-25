@@ -14,6 +14,7 @@
 #include "PhaseVocoderFilter.h"
 #include "WaveIntf.h"
 #include "MsgIntf.h"
+#include "SoundAllocator.h"
 
 
 //---------------------------------------------------------------------------
@@ -173,7 +174,7 @@ tTJSNI_PhaseVocoder::tTJSNI_PhaseVocoder()
 tTJSNI_PhaseVocoder::~tTJSNI_PhaseVocoder()
 {
 	if(PhaseVocoder) delete PhaseVocoder, PhaseVocoder = NULL;
-	if(FormatConvertBuffer) delete [] FormatConvertBuffer, FormatConvertBuffer = NULL, FormatConvertBufferSize = 0;
+	if(FormatConvertBuffer) sound_free(FormatConvertBuffer), FormatConvertBuffer = NULL, FormatConvertBufferSize = 0;
 }
 //---------------------------------------------------------------------------
 tjs_error TJS_INTF_METHOD
@@ -245,7 +246,7 @@ void tTJSNI_PhaseVocoder::Clear(void)
 	InputSegments.Clear();
 	OutputSegments.Clear();
 	if(PhaseVocoder) delete PhaseVocoder, PhaseVocoder = NULL;
-	if(FormatConvertBuffer) delete [] FormatConvertBuffer, FormatConvertBuffer = NULL, FormatConvertBufferSize = 0;
+	if(FormatConvertBuffer) sound_free(FormatConvertBuffer), FormatConvertBuffer = NULL, FormatConvertBufferSize = 0;
 }
 //---------------------------------------------------------------------------
 void tTJSNI_PhaseVocoder::Update(void)
@@ -280,8 +281,8 @@ void tTJSNI_PhaseVocoder::Fill(float * dest, tjs_uint samples, tjs_uint &written
 		if(FormatConvertBufferSize < buf_size)
 		{
 			// バッファを再確保
-			if(FormatConvertBuffer) delete [] FormatConvertBuffer, FormatConvertBuffer = NULL;
-			FormatConvertBuffer = new char[buf_size];
+			if(FormatConvertBuffer) sound_free(FormatConvertBuffer), FormatConvertBuffer = NULL;
+			FormatConvertBuffer = (char*)sound_malloc(buf_size);
 			FormatConvertBufferSize = buf_size;
 		}
 		// バッファにデコードを行う

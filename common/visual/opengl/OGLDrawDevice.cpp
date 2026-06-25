@@ -30,6 +30,18 @@
 
 #include "Application.h"
 #include "OpenGLContext.h"
+#include "MemoryOverlayGL.h"
+#include "PadOverlayGL.h"
+
+#ifdef KRKRZ_HAS_ELEMENTS
+#include "elements/ElementsDialogManager.h"
+#include "OGLDialogRenderer.h"
+#include <memory>
+#endif
+#ifdef KRKRZ_USE_REPL
+#include "ScreenCapture.h"
+#include <vector>
+#endif
 
 //---------------------------------------------------------------------------
 tTVPOGLDrawDevice::tTVPOGLDrawDevice(iTJSDispatch2 *self)
@@ -198,12 +210,23 @@ void TJS_INTF_METHOD tTVPOGLDrawDevice::Show()
 
 	if (!CanvasInstance) {
 
+#ifdef __GENERIC__
+        // ビューポート余白の背景色でクリア。
+        tjs_uint32 bg = GetViewportBgColor();
+        glClearColor(((bg >> 16) & 0xff) / 255.0f, ((bg >> 8) & 0xff) / 255.0f,
+                     (bg & 0xff) / 255.0f, ((bg >> 24) & 0xff) / 255.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        // 壁紙があれば余白として描画 (ゲーム描画より前)。
+        TVPDrawGLViewportWallpaper(TextureDrawer, mWallpaperCache, *this,
+            SurfaceWidth, SurfaceHeight);
+#else
         glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+#endif
 
 		if (TextureInstance) {
-			TextureDrawer.DrawTexture(TextureInstance->GetTexture(), SurfaceWidth, SurfaceHeight, _position, 
-				TextureInstance->GetWidth(), 
+			TextureDrawer.DrawTexture(TextureInstance->GetTexture(), SurfaceWidth, SurfaceHeight, _position,
+				TextureInstance->GetWidth(),
 				TextureInstance->GetHeight());
 		}
 
@@ -223,6 +246,32 @@ void TJS_INTF_METHOD tTVPOGLDrawDevice::Show()
 		}
 		CanvasInstance->EndDrawing();
 	}
+
+	// Layer 合成完了直後・Swap 直前に Elements ダイアログをオーバーレイ
+	PresentDialogOverlay();
+
+	// memoverlay 描画 (OFF 時は即 return、SDL_Renderer 不要)。SDLOGLDrawDevice
+	// と共通の OGL 直接版 (common/visual/opengl/MemoryOverlayGL.h)。
+	TVPRenderMemoryOverlayGL();
+	TVPRenderPadOverlayGL();
+
+#ifdef KRKRZ_USE_REPL
+	// エージェント駆動: 保留中の画面キャプチャを Swap 直前に読み戻して保存。
+	// (ScreenCapture は KRKRZ_REPL=ON の SDL ビルドのみリンクされる)
+	if (TVPHasPendingScreenCapture()) {
+		tTVPScreenCaptureReq req;
+		if (TVPTakeScreenCaptureRequest(req)) {
+			int fw = SurfaceWidth, fh = SurfaceHeight;
+			if (fw > 0 && fh > 0) {
+				std::vector<unsigned char> buf((size_t)fw * fh * 4);
+				glReadPixels(0, 0, fw, fh, GL_RGBA, GL_UNSIGNED_BYTE, buf.data());
+				TVPSaveGLReadback(req, buf.data(), fw, fh);
+			} else {
+				TVPSetScreenCaptureResult(req.path, 0, 0, false);
+			}
+		}
+	}
+#endif
 
 	GLContext->Swap();
 }
@@ -352,6 +401,12 @@ void tTVPOGLDrawDevice::InitContext(void *nativeWindow)
 	InitUV();
 	TextureDrawer.Init();
 
+#ifdef KRKRZ_HAS_ELEMENTS
+	// GL context 生存中だけ存在する dialog renderer を登録 (DoneContext で解除)
+	tTVPElementsDialogManager::Instance().RegisterRenderer(
+		this, std::make_unique<tTVPOGLDialogRenderer>(this));
+#endif
+
 	// Context コンテキスト作成時コールバック
 	if( Self ) {
 		static ttstr eventname( TJS_W( "onInit" ) );
@@ -372,9 +427,23 @@ void tTVPOGLDrawDevice::DoneContext()
 		TVPPostEvent( Self, Self, eventname, 0, TVP_EPT_IMMEDIATE, 0, nullptr );
 	}
 
+#ifdef KRKRZ_HAS_ELEMENTS
+	// GL リソース付き dialog renderer を context 解放前に破棄する
+	tTVPElementsDialogManager::Instance().UnregisterRenderer(this);
+#endif
+
 	DestroyTexture();
 	DestroyCanvas();
 	TextureDrawer.Done();
+
+#ifdef __GENERIC__
+	// 動画用 GLTexture / mVideoBuffer は ClearVideo でのみ解放される。
+	// DrawDevice 破棄時に呼ばないとリークするため、GL context を解放する
+	// 直前で必ず一度呼ぶ (_video_texture の glDeleteTextures が context 必須)。
+	ClearVideo();
+	// ビューポート壁紙テクスチャも context 解放前に破棄。
+	mWallpaperCache.Release();
+#endif
 
 	if (GLContext) {
 		GLContext->Release();
@@ -575,7 +644,7 @@ tTVPOGLDrawDevice::UpdateVideoPosition(int w, int h)
     }
 }
 
-void 
+void
 tTVPOGLDrawDevice::UpdateVideo(int w, int h, std::function<void(char *dest, int pitch)> updator)
 {
     std::lock_guard<std::mutex> lock( videooverlay_mutex_ );
@@ -585,7 +654,11 @@ tTVPOGLDrawDevice::UpdateVideo(int w, int h, std::function<void(char *dest, int 
 		mVideoWidth = w;
 		mVideoHeight = h;
 	} else if (mVideoWidth != w || mVideoHeight != h) {
-		// サイズが変わった場合は再初期化
+		// サイズが変わった場合は CPU 側バッファを再初期化。
+		// ここはデコーダスレッドなので GL 操作 (delete _video_texture) は不可。
+		// 旧サイズの _video_texture / 中の PBO は ShowVideo 側でサイズ不一致を
+		// 検出して破棄・再生成する (そうしないと旧 PBO 容量を超える
+		// glMapBufferRange / updator 書き込みが起きて GL メモリ側で overrun する)。
 		delete[] mVideoBuffer;
 		mVideoBuffer = new char[w * h * 4]; // ARGB8888
 		mVideoWidth = w;
@@ -604,6 +677,15 @@ tTVPOGLDrawDevice::ShowVideo()
     if (mVideoBuffer) {
         if (mVideoBufferDirty) {
         	std::lock_guard<std::mutex> lock( videooverlay_mutex_ );
+            // UpdateVideo 側で動画解像度が変わった場合、_video_texture と
+            // 内部 PBO は旧サイズのままなので、ここで破棄して再生成する。
+            // (GL 操作なので必ず render thread = ShowVideo 側で行う)
+            if (_video_texture &&
+                ((int)_video_texture->width()  != mVideoWidth ||
+                 (int)_video_texture->height() != mVideoHeight)) {
+                delete _video_texture;
+                _video_texture = nullptr;
+            }
             if (!_video_texture) {
                 _video_texture = new GLTexture(mVideoWidth, mVideoHeight);
             }

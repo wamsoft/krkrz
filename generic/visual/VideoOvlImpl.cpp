@@ -153,6 +153,7 @@ void tTJSNI_VideoOverlay::Open(const ttstr &name)
 		path = newpath;
 	}
 
+#ifdef KRKRZ_MOVIE_STREAM
 	// 吉里吉里のストレージ層からストリームを取得（XP3アーカイブ対応）
 	iTJSBinaryStream *tjsStream = TVPCreateStream(path);
 	if (!tjsStream) {
@@ -166,28 +167,49 @@ void tTJSNI_VideoOverlay::Open(const ttstr &name)
 	if (!mPlayer) {
 		movieStream->Release();
 	}
+#else
+	// ファイルパス直接指定で開く
+	TVPGetLocalName(path);
+	mPlayer = TVPCreateMoviePlayer(path.c_str());
+#endif
 	if (mPlayer) {
 		mPlayer->SetOnVideoDecoded([this](int w, int h, iTVPMoviePlayer::DestUpdater updater) {
 			if (Mode == vomMixer) {
 				// Mixer mode, update the window directly
 				Window->UpdateVideo(w, h, updater);
 			} else if (Mode == vomLayer) {
-				if (!Bitmap[currentSurface]) {
-					Bitmap[currentSurface] = new tTVPBaseBitmap(w, h, 32);
-				} else {
-					if (Bitmap[currentSurface]->GetWidth() != w || Bitmap[currentSurface]->GetHeight() != h)
-						// Just set the size without changing the buffer
-						Bitmap[currentSurface]->SetSize(w, h);
-				}
-				tTVPBitmap *bitmap = Bitmap[currentSurface]->GetBitmap();
-				tjs_int dest_pitch = bitmap->GetPitch(); 
-				char *destp = static_cast<char*>(bitmap->GetScanLine(0));
-				updater(destp, dest_pitch);
+				// フロー制御: 直前のフレームをまだ consumer (Update) が取り込んで
+				// いない (updateSurface==true) 間は、この新フレームを破棄する。
+				//  - updater() (= YUV→RGB 変換) を呼ばないので、表示されずに上書き
+				//    されるだけの中間フレームの変換コストを丸ごと省ける。
+				//  - consumer が AssignMainImage で参照中のバッファを producer が
+				//    上書きしないので、合成/アップロード途中の差し替え (ティアリング)
+				//    も防げる。バッファは 2 枚、書き込み先 (currentSurface) は常に
+				//    consumer が保持していない方になる。
+				bool produce;
 				{
 					tTJSCriticalSectionHolder cs(surfaceLock);
-					updateSurface = true;
-					currentSurface = (currentSurface + 1) % 2; // Toggle between 0 and 1
+					produce = !updateSurface;
 				}
+				if (produce) {
+					if (!Bitmap[currentSurface]) {
+						Bitmap[currentSurface] = new tTVPBaseBitmap(w, h, 32);
+					} else {
+						if (Bitmap[currentSurface]->GetWidth() != w || Bitmap[currentSurface]->GetHeight() != h)
+							// Just set the size without changing the buffer
+							Bitmap[currentSurface]->SetSize(w, h);
+					}
+					tTVPBitmap *bitmap = Bitmap[currentSurface]->GetBitmap();
+					tjs_int dest_pitch = bitmap->GetPitch();
+					char *destp = static_cast<char*>(bitmap->GetScanLine(0));
+					updater(destp, dest_pitch);
+					{
+						tTJSCriticalSectionHolder cs(surfaceLock);
+						updateSurface = true;
+						currentSurface = (currentSurface + 1) % 2; // Toggle between 0 and 1
+					}
+				}
+				// else: 前フレーム未消費につき drop (変換せず)
 			}
 			SetStatusAsync( mPlayer->IsPlaying() ? tTVPVideoOverlayStatus::Play : tTVPVideoOverlayStatus::Stop );
 		});

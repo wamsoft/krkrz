@@ -1,0 +1,72 @@
+{
+    /* ジャンル選択。 各 button はそのジャンル画面を push する (close_on_click +
+       transition target = 画面名)。 Esc / 右クリック (空 action) でメニューを閉じる。 */
+    "size": [460, 500],
+    "background": [24, 26, 36, 248],
+    "locale": "ja-JP",
+    "align": "top_left",
+    "margin": 24,
+    "input": { "arrow_focus_nav": true },
+
+    "transitions": {
+        "graphics": "graphics",
+        "sound":    "sound",
+        "video":    "video",
+        "dialog":   "dialog",
+        "system":   "system",
+        "close":    "<exit>",
+        "":         "<exit>",
+    },
+
+    "content": {
+        "type": "margin", "padding": 22,
+        "child": {
+            "type": "vtile",
+            "children": [
+                { "type": "hspacer", "width": 416 },
+                { "type": "align_center",
+                  "child": { "type": "label", "text": "サンプルメニュー", "size": 1.5 } },
+                { "type": "align_center",
+                  "child": { "type": "label",
+                             "text": "ジャンルを選択してください", "size": 0.85 } },
+                { "type": "vspacer", "height": 18 },
+
+                { "type": "vsize", "height": 44, "child": {
+                    "type": "button", "id": "graphics", "text": "グラフィック / レイヤー",
+                    "close_on_click": true, "initial_focus": true } },
+                { "type": "vspacer", "height": 8 },
+                { "type": "vsize", "height": 44, "child": {
+                    "type": "button", "id": "sound", "text": "サウンド",
+                    "close_on_click": true } },
+                { "type": "vspacer", "height": 8 },
+                { "type": "vsize", "height": 44, "child": {
+                    "type": "button", "id": "video", "text": "動画",
+                    "close_on_click": true } },
+                { "type": "vspacer", "height": 8 },
+                { "type": "vsize", "height": 44, "child": {
+                    "type": "button", "id": "dialog", "text": "ダイアログ (Elements)",
+                    "close_on_click": true } },
+                { "type": "vspacer", "height": 8 },
+                { "type": "vsize", "height": 44, "child": {
+                    "type": "button", "id": "system", "text": "システム",
+                    "close_on_click": true } },
+
+                { "type": "vspacer", "height": 14 },
+                /* 情報パネルの開閉。 close_on_click 無し = メニューは開いたまま
+                   onAction だけ発火 → win.dispatchSample("panel") → togglePanel()。
+                   メニュー(左上)とパネル(右下)が同時に出る = 複数非モーダル共存デモ。 */
+                { "type": "vsize", "height": 40, "child": {
+                    "type": "button", "id": "panel", "text": "情報パネル 開閉 (同時表示デモ)" } },
+
+                { "type": "vspacer", "height": 14 },
+                { "type": "vsize", "height": 40, "child": {
+                    "type": "button", "id": "close", "text": "閉じる",
+                    "close_on_click": true } },
+                { "type": "vspacer", "height": 8 },
+                { "type": "align_center",
+                  "child": { "type": "label",
+                             "text": "Esc / 右クリックでも閉じる", "size": 0.8 } },
+            ],
+        },
+    },
+}

@@ -4,6 +4,7 @@
 
 // external/movie-player library から
 #include "IMoviePlayer.h"
+#include "WebpXAudio2Sink.h"
 
 class tTVPWebpMovie : public iTVPVideoOverlay
 {
@@ -107,6 +108,9 @@ public:
 
 protected:
 	ULONG		RefCount;
+	// AudioSink は Player より先に宣言 = 後に破棄。Player の decoder thread が
+	// 停止 (Player のデストラクタ内) してから sink がクリーンアップされる。
+	WebpXAudio2Sink AudioSink;
 	IMoviePlayer *Player;
 	HWND OwnerWindow;
 	BYTE *mBuffer;

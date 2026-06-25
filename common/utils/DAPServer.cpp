@@ -87,7 +87,7 @@ static void WSARelease() {}
 
 //---------------------------------------------------------------------------
 tTVPDAPServerThread::tTVPDAPServerThread(int port, NotifyCallback on_message)
-	: port_(port), on_message_(std::move(on_message))
+	: tTVPThread("DAPServerThread"), port_(port), on_message_(std::move(on_message))
 {
 	WSAEnsureInit();
 	StartThread();

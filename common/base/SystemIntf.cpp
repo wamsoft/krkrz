@@ -36,6 +36,26 @@ void* TVPGLGetProcAddress(const char * procname)
 }
 #endif
 
+#ifndef KRKRZ_VARIANT
+#define KRKRZ_VARIANT WIN
+#endif
+
+#define STR(x) #x
+#define XSTR(x) STR(x)
+
+//---------------------------------------------------------------------------
+// TVPGetBuildVariantName
+//---------------------------------------------------------------------------
+ttstr TVPGetBuildVariantName()
+{
+	#ifdef KRKRZ_VARIANT_OPTION
+	static ttstr variant = ttstr(XSTR(KRKRZ_VARIANT) XSTR(KRKRZ_VARIANT_OPTION));
+	#else
+	static ttstr variant = ttstr(XSTR(KRKRZ_VARIANT));
+	#endif
+	return variant;
+}
+
 //---------------------------------------------------------------------------
 // TVPFireOnApplicationActivateEvent
 //---------------------------------------------------------------------------
@@ -393,7 +413,7 @@ TJS_BEGIN_NATIVE_PROP_DECL(versionString)
 {
 	TJS_BEGIN_NATIVE_PROP_GETTER
 	{
-		*result = TVPGetVersionString();
+		if (result) *result = TVPGetVersionString();
 		return TJS_S_OK;
 	}
 	TJS_END_NATIVE_PROP_GETTER
@@ -406,7 +426,7 @@ TJS_BEGIN_NATIVE_PROP_DECL(versionInformation)
 {
 	TJS_BEGIN_NATIVE_PROP_GETTER
 	{
-		*result = TVPGetVersionInformation();
+		if (result) *result = TVPGetVersionInformation();
 		return TJS_S_OK;
 	}
 	TJS_END_NATIVE_PROP_GETTER
@@ -419,7 +439,7 @@ TJS_BEGIN_NATIVE_PROP_DECL(eventDisabled)
 {
 	TJS_BEGIN_NATIVE_PROP_GETTER
 	{
-		*result = TVPGetSystemEventDisabledState();
+		if (result) *result = TVPGetSystemEventDisabledState();
 		return TJS_S_OK;
 	}
 	TJS_END_NATIVE_PROP_GETTER
@@ -437,7 +457,7 @@ TJS_BEGIN_NATIVE_PROP_DECL(graphicCacheLimit)
 {
 	TJS_BEGIN_NATIVE_PROP_GETTER
 	{
-		*result = (tjs_int)TVPGetGraphicCacheLimit();
+		if (result) *result = (tjs_int)TVPGetGraphicCacheLimit();
 		return TJS_S_OK;
 	}
 	TJS_END_NATIVE_PROP_GETTER
@@ -455,7 +475,7 @@ TJS_BEGIN_NATIVE_PROP_DECL(platformName)
 {
 	TJS_BEGIN_NATIVE_PROP_GETTER
 	{
-		*result = TVPGetPlatformName();
+		if (result) *result = TVPGetPlatformName();
 		return TJS_S_OK;
 	}
 	TJS_END_NATIVE_PROP_GETTER
@@ -468,7 +488,7 @@ TJS_BEGIN_NATIVE_PROP_DECL(osName)
 {
 	TJS_BEGIN_NATIVE_PROP_GETTER
 	{
-		*result = TVPGetOSName();
+		if (result) *result = TVPGetOSName();
 		return TJS_S_OK;
 	}
 	TJS_END_NATIVE_PROP_GETTER
@@ -477,11 +497,24 @@ TJS_BEGIN_NATIVE_PROP_DECL(osName)
 }
 TJS_END_NATIVE_STATIC_PROP_DECL(osName)
 //----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_PROP_DECL(buildVariantName)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		if (result) *result = TVPGetBuildVariantName();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_DENY_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_STATIC_PROP_DECL(buildVariantName)
+//----------------------------------------------------------------------
 TJS_BEGIN_NATIVE_PROP_DECL(exitOnWindowClose)
 {
 	TJS_BEGIN_NATIVE_PROP_GETTER
 	{
-		*result = TVPTerminateOnWindowClose;
+		if (result) *result = TVPTerminateOnWindowClose;
 		return TJS_S_OK;
 	}
 	TJS_END_NATIVE_PROP_GETTER
@@ -499,7 +532,7 @@ TJS_BEGIN_NATIVE_PROP_DECL(drawThreadNum)
 {
         TJS_BEGIN_NATIVE_PROP_GETTER
           {
-            *result = TVPDrawThreadNum;
+            if (result) *result = TVPDrawThreadNum;
             return TJS_S_OK;
           }
         TJS_END_NATIVE_PROP_GETTER
@@ -516,7 +549,7 @@ TJS_BEGIN_NATIVE_PROP_DECL(processorNum)
 {
         TJS_BEGIN_NATIVE_PROP_GETTER
           {
-            *result = TVPGetProcessorNum();
+            if (result) *result = TVPGetProcessorNum();
             return TJS_S_OK;
           }
         TJS_END_NATIVE_PROP_GETTER
@@ -529,9 +562,9 @@ TJS_BEGIN_NATIVE_PROP_DECL(exeBits)
         TJS_BEGIN_NATIVE_PROP_GETTER
           {
 #ifdef TJS_64BIT_OS
-            *result = 64;
+            if (result) *result = 64;
 #else
-            *result = 32;
+            if (result) *result = 32;
 #endif
             return TJS_S_OK;
           }
@@ -544,7 +577,7 @@ TJS_BEGIN_NATIVE_PROP_DECL(osBits)
 {
         TJS_BEGIN_NATIVE_PROP_GETTER
           {
-          	*result = TVPGetOSBits();
+          	if (result) *result = TVPGetOSBits();
             return TJS_S_OK;
           }
         TJS_END_NATIVE_PROP_GETTER
@@ -556,7 +589,7 @@ TJS_BEGIN_NATIVE_PROP_DECL(exitOnNoWindowStartup)
 {
 	TJS_BEGIN_NATIVE_PROP_GETTER
 	{
-		*result = TVPTerminateOnNoWindowStartup;
+		if (result) *result = TVPTerminateOnNoWindowStartup;
 		return TJS_S_OK;
 	}
 	TJS_END_NATIVE_PROP_GETTER
@@ -572,9 +605,9 @@ TJS_END_NATIVE_STATIC_PROP_DECL(exitOnNoWindowStartup)
 TJS_BEGIN_NATIVE_PROP_DECL(isWindows) {
 	TJS_BEGIN_NATIVE_PROP_GETTER {
 #ifdef __WINVER__
-		*result = (tjs_int)1;
+		if (result) *result = (tjs_int)1;
 #else
-		*result = (tjs_int)0;
+		if (result) *result = (tjs_int)0;
 #endif
 		return TJS_S_OK;
 	}
@@ -586,9 +619,9 @@ TJS_END_NATIVE_STATIC_PROP_DECL(isWindows)
 TJS_BEGIN_NATIVE_PROP_DECL(isGeneric) {
 	TJS_BEGIN_NATIVE_PROP_GETTER {
 #ifdef __GENERIC__
-		*result = (tjs_int)1;
+		if (result) *result = (tjs_int)1;
 #else
-		*result = (tjs_int)0;
+		if (result) *result = (tjs_int)0;
 #endif
 		return TJS_S_OK;
 	}
@@ -597,24 +630,10 @@ TJS_BEGIN_NATIVE_PROP_DECL(isGeneric) {
 }
 TJS_END_NATIVE_STATIC_PROP_DECL(isGeneric)
 //----------------------------------------------------------------------
-TJS_BEGIN_NATIVE_PROP_DECL(isAndroid) {
-	TJS_BEGIN_NATIVE_PROP_GETTER {
-#ifdef ANDROID
-		*result = (tjs_int)1;
-#else
-		*result = (tjs_int)0;
-#endif
-		return TJS_S_OK;
-	}
-	TJS_END_NATIVE_PROP_GETTER
-	TJS_DENY_NATIVE_PROP_SETTER
-}
-TJS_END_NATIVE_STATIC_PROP_DECL(isAndroid)
-//----------------------------------------------------------------------
 #ifdef TVP_USE_OPENGL
 TJS_BEGIN_NATIVE_PROP_DECL(openGLESVersion) {
 	TJS_BEGIN_NATIVE_PROP_GETTER {
-		*result = (tjs_int)TVPGetOpenGLESVersion();
+		if (result) *result = (tjs_int)TVPGetOpenGLESVersion();
 		return TJS_S_OK;
 	}
 	TJS_END_NATIVE_PROP_GETTER

@@ -21,6 +21,8 @@
 #include "MsgImpl.h"
 #include "GraphicsLoaderIntf.h"
 #include "DebugIntf.h"
+#include "LogIntf.h"
+#include "ThreadIntf.h"             // TVPDrawStatsLogEnabled
 #include "tjsLex.h"
 #include "LayerIntf.h"
 #include "Random.h"
@@ -54,8 +56,8 @@ bool TVPProjectDirSelected = false;
 // `common/visual/cpu_detect.cpp` の `TVPInitCPUFeatures()` に集約済み。
 //---------------------------------------------------------------------------
 #include "cpu_detect.h"
+#include "tvpgl_ia32_intf.h"  // TVP_CPU_HAS_* マクロ
 #if !defined(_WIN32)
-#include "tvpgl_ia32_intf.h"
 extern "C" {
     tjs_uint32 TVPCPUType = 0;
 }
@@ -105,6 +107,12 @@ static void TVPInitRandomGenerator()
 //---------------------------------------------------------------------------
 // TVPInitializeBaseSystems
 //---------------------------------------------------------------------------
+#include "BitmapBitsAlloc.h"
+#include "BinaryStreamBuffer.h"
+#include "SoundAllocator.h"
+#include "MemoryStatPeriodicDump.h"
+#include "MemoryOverlay.h"
+#include "PadOverlay.h"
 void TVPInitializeBaseSystems()
 {
 	// set system archive delimiter
@@ -124,6 +132,24 @@ void TVPInitializeBaseSystems()
 				TVPExecuteStorage(name_msgmap, NULL, false, TJS_W(""));
 		}
 	}
+
+	// Bitmap / File アロケータをここで初期化する。
+	// これ以降に TVPGetCommandLine 経由で参照されるオプション値は config.cf
+	// 反映済みなので、Application->Create*Allocator() の中で
+	// `-bitmapheapsize` `-fileheapsize` 等を読み取れる。
+	tTVPBitmapBitsAlloc::InitializeAllocator();
+	TVPInitializeFileAllocator();
+	TVPInitializeSoundAllocator();
+
+	// メモリ stats 周期ダンプ + 終了時ダンプ
+	// (-memstatinterval=N / -memstatonexit=1 が効くようになる)。
+	TVPInitializeMemoryStatPeriodicDump();
+
+	// オーバレイ用サンプラ thread 起動 (SetEnabled で実際の収集が始まる)。
+	TVPMemoryOverlay::Initialize();
+
+	// -padoverlay=1 で起動時から PadOverlay を ON にする。
+	TVPInitializePadOverlay();
 }
 //---------------------------------------------------------------------------
 
@@ -243,40 +269,88 @@ void TVPAfterSystemInit()
 	}
 
 
+	// BitmapAllocator pool が有効なら、その capacity を ImageCache 上限として
+	// 採用する (StorageCache が FileAllocator capacity と揃えているのと同じ理屈;
+	// 1e413695 参照)。ImageCache に積まれる Bitmap は最終的にこの pool から
+	// 確保されるので、pool 容量を超えて cache を許す意味はなく、逆に物理
+	// メモリ÷10 + 512MB cap で頭打ちにすると pool を広げても cache が
+	// それに追従しない。
+	// BasicAllocator (raw malloc, capacity=SIZE_MAX) の場合のみ、従来の
+	// 物理メモリ算出にフォールバックする。
+	const char *limitSource = (limitmb == -1) ? "auto" : "-gclim";
+	tjs_uint64 poolCap = 0;
+	{
+		iTVPMemoryAllocator *bmpAlloc = tTVPBitmapBitsAlloc::GetAllocator();
+		if(bmpAlloc) {
+			size_t cap = bmpAlloc->capacity();
+			if(cap != SIZE_MAX) poolCap = cap;
+		}
+	}
 	if(limitmb == -1)
 	{
-		if(TVPTotalPhysMemory <= 32*1024*1024)
-			TVPGraphicCacheSystemLimit = 0;
-		else if(TVPTotalPhysMemory <= 48*1024*1024)
-			TVPGraphicCacheSystemLimit = 0;
-		else if(TVPTotalPhysMemory <= 64*1024*1024)
-			TVPGraphicCacheSystemLimit = 0;
-		else if(TVPTotalPhysMemory <= 96*1024*1024)
-			TVPGraphicCacheSystemLimit = 4;
-		else if(TVPTotalPhysMemory <= 128*1024*1024)
-			TVPGraphicCacheSystemLimit = 8;
-		else if(TVPTotalPhysMemory <= 192*1024*1024)
-			TVPGraphicCacheSystemLimit = 12;
-		else if(TVPTotalPhysMemory <= 256*1024*1024)
-			TVPGraphicCacheSystemLimit = 20;
-		else if(TVPTotalPhysMemory <= 512*1024*1024)
-			TVPGraphicCacheSystemLimit = 40;
-		else
-			TVPGraphicCacheSystemLimit = tjs_uint64(TVPTotalPhysMemory / (1024*1024*10));	// cachemem = physmem / 10
-		TVPGraphicCacheSystemLimit *= 1024*1024;
+		if(poolCap > 0) {
+			TVPGraphicCacheSystemLimit = poolCap;
+			limitSource = "BitmapPool";
+		} else {
+			if(TVPTotalPhysMemory <= 32*1024*1024)
+				TVPGraphicCacheSystemLimit = 0;
+			else if(TVPTotalPhysMemory <= 48*1024*1024)
+				TVPGraphicCacheSystemLimit = 0;
+			else if(TVPTotalPhysMemory <= 64*1024*1024)
+				TVPGraphicCacheSystemLimit = 0;
+			else if(TVPTotalPhysMemory <= 96*1024*1024)
+				TVPGraphicCacheSystemLimit = 4;
+			else if(TVPTotalPhysMemory <= 128*1024*1024)
+				TVPGraphicCacheSystemLimit = 8;
+			else if(TVPTotalPhysMemory <= 192*1024*1024)
+				TVPGraphicCacheSystemLimit = 12;
+			else if(TVPTotalPhysMemory <= 256*1024*1024)
+				TVPGraphicCacheSystemLimit = 20;
+			else if(TVPTotalPhysMemory <= 512*1024*1024)
+				TVPGraphicCacheSystemLimit = 40;
+			else
+				TVPGraphicCacheSystemLimit = tjs_uint64(TVPTotalPhysMemory / (1024*1024*10));	// cachemem = physmem / 10
+			TVPGraphicCacheSystemLimit *= 1024*1024;
+			// BasicAllocator 経路のレガシー 512MB cap (32bit 想定)
+			if( TVPGraphicCacheSystemLimit >= 512*1024*1024 )
+				TVPGraphicCacheSystemLimit = 512*1024*1024;
+		}
 	}
 	else
 	{
 		TVPGraphicCacheSystemLimit = limitmb * 1024*1024;
+		// -gclim 指定でも pool cap を超えた値は意味がないので頭打ち
+		if(poolCap > 0 && TVPGraphicCacheSystemLimit > poolCap) {
+			TVPGraphicCacheSystemLimit = poolCap;
+			limitSource = "-gclim (capped by BitmapPool)";
+		}
 	}
-	// 32bit なので 512MB までに制限
-	if( TVPGraphicCacheSystemLimit >= 512*1024*1024 )
-		TVPGraphicCacheSystemLimit = 512*1024*1024;
 
+	// SystemLimit が決まったらデフォルトで cache を有効化。
+	// (これを入れる前は System.graphicCacheLimit = -1 を呼ばないと cache が
+	//  無効のままで Bitmap.load 等の cache push が空回りしていた)
+	if(TVPGraphicCacheSystemLimit > 0) {
+		TVPSetGraphicCacheLimit(TVPGraphicCacheSystemLimit);
+		TVPLOG_INFO("ImageCache enabled: limit={}MB (physmem={}MB, source={})",
+		            TVPGetGraphicCacheLimit() / (1024*1024),
+		            TVPTotalPhysMemory / (1024*1024),
+		            limitSource);
+	} else {
+		TVPLOG_INFO("ImageCache disabled (physmem={}MB too small)",
+		            TVPTotalPhysMemory / (1024*1024));
+	}
 
 	if(TVPTotalPhysMemory <= 64*1024*1024)
 		TVPSetFontCacheForLowMem();
 
+
+	// SDL3/GL バックエンドの既定は gsotNone。
+	// InternalComplete2 の更新領域 8 行帯分割 (gsotSimple) は GDI 旧経路向けの
+	// CPU キャッシュ最適化で、SDL3 では「帯の数 (例: 1080/8=135) ぶんの合成 +
+	// テクスチャ更新発行」のオーバーヘッドが支配的になり全面動画再生等で激しく
+	// 低速化する (実測 9fps→57fps)。スレッドプールが大ブリットを自前で分割するため
+	// 帯分割は不要。下の -gsplit オプションがあればそちらが優先。
+	TVPGraphicSplitOperationType = gsotNone;
 
 	// check TVPGraphicSplitOperation option
 	if(TVPGetCommandLine(TJS_W("-gsplit"), &opt))
@@ -336,6 +410,39 @@ void TVPAfterSystemInit()
 	TVPGL_NEON_Init();    // 内部で TVP_CPU_HAS_ARM_NEON を見て dispatch
 #endif
 
+	// 検出 + override + dispatch 後の SIMD 有効状況を 1 行サマリで残す。
+	// Win32 では TVPDetectCPU() が per-CPU 詳細を別途吐くが、Generic / SDL3
+	// (Linux / macOS / Android / iOS など) にはそれが無いので、NEON / SSE2 等が
+	// どう wire-up されたかをここで明示する。NEON がランタイムで有効になっている
+	// ことを Android logcat から目視確認できるようにするのが主目的。
+	{
+		std::string feats;
+		auto append_flag = [&feats](bool on, const char *name) {
+			if (!on) return;
+			if (!feats.empty()) feats += " ";
+			feats += name;
+		};
+#if defined(__i386__) || defined(__x86_64__) || defined(_M_IX86) || defined(_M_X64)
+		append_flag(TVPCPUType & TVP_CPU_HAS_MMX,   "MMX");
+		append_flag(TVPCPUType & TVP_CPU_HAS_SSE,   "SSE");
+		append_flag(TVPCPUType & TVP_CPU_HAS_SSE2,  "SSE2");
+		append_flag(TVPCPUType & TVP_CPU_HAS_SSE3,  "SSE3");
+		append_flag(TVPCPUType & TVP_CPU_HAS_SSSE3, "SSSE3");
+		append_flag(TVPCPUType & TVP_CPU_HAS_SSE41, "SSE4.1");
+		append_flag(TVPCPUType & TVP_CPU_HAS_SSE42, "SSE4.2");
+		append_flag(TVPCPUType & TVP_CPU_HAS_AVX,   "AVX");
+		append_flag(TVPCPUType & TVP_CPU_HAS_AVX2,  "AVX2");
+		append_flag(TVPCPUType & TVP_CPU_HAS_FMA3,  "FMA3");
+#endif
+#if defined(__aarch64__) || defined(__arm__) || defined(_M_ARM) || defined(_M_ARM64)
+		append_flag(TVPCPUType & TVP_CPU_HAS_ARM_NEON,    "NEON");
+		append_flag(TVPCPUType & TVP_CPU_HAS_ARM64_ASIMD, "ASIMD");
+#endif
+		if (feats.empty()) feats = "(none)";
+		TVPLOG_INFO("CPU SIMD: {} (TVPCPUType=0x{:08x})",
+		            feats, (unsigned)TVPCPUType);
+	}
+
 	// timer precision
 	tjs_uint prectick = 1;
 	if(TVPGetCommandLine(TJS_W("-timerprec"), &opt))
@@ -356,6 +463,18 @@ void TVPAfterSystemInit()
             drawThreadNum = (tjs_int)opt;
         }
         TVPDrawThreadNum = drawThreadNum;
+
+        // DrawStats log output (KRKRZ_DRAW_STATS=ON ビルド時のみ意味あり)。
+        // TJS の System.setDrawStatsLog(true) と同じものを起動オプションで
+        // 切り替えるためのフック。Android のように TJS hook を仕込みづらい
+        // 環境で config.cf 経由で有効化したいケース用。
+        if (TVPGetCommandLine(TJS_W("-drawstatslog"), &opt)) {
+            ttstr str(opt);
+            if (str == TJS_W("yes") || str == TJS_W("true") || str == TJS_W("1"))
+                TVPDrawStatsLogEnabled = true;
+            else
+                TVPDrawStatsLogEnabled = false;
+        }
 #if 0
 
 	TVPPushEnvironNoise(&TVPCPUType, sizeof(TVPCPUType));

@@ -5,14 +5,27 @@
 #include "TouchPoint.h"
 #include "VelocityTracker.h"
 #include "tvpinputdefs.h"
-#include "WindowIntf.h"
+#include "WindowImpl.h"
 #include "Application.h"
-#include "NativeEventQueue.h"
 #include "WindowFormEvent.h"
+#include "ObjectList.h"
+#include "ViewportConfig.h"
 
 typedef unsigned long TShiftState;
 extern tjs_uint32 TVP_TShiftState_To_uint32(TShiftState state);
 extern TShiftState TVP_TShiftState_From_uint32(tjs_uint32 state);
+
+//---------------------------------------------------------------------------
+// Window メッセージレシーバー登録レコード (Generic 版)
+// Window->Dispatch 経由で受信したメッセージを receiver に配信するための保持構造
+//---------------------------------------------------------------------------
+struct tTVPMessageReceiverRecord
+{
+	tTVPWindowMessageReceiver Proc;
+	const void *UserData;
+	bool Deliver(tTVPWindowMessage *Message)
+	{ return Proc(const_cast<void*>(UserData), Message); }
+};
 
 /*
  * tTJSNI_Window が持つ Form クラスに要求されるメソッドを列挙したもの。
@@ -20,20 +33,21 @@ extern TShiftState TVP_TShiftState_From_uint32(tjs_uint32 state);
  * このファイル自体は使われず、各環境で各メソッドを実装するためのベースとして使用する
  */
 
-class TTVPWindowForm : public FormEventHandler, TouchHandler {
+class TTVPWindowForm : public FormEventHandler, TouchHandler, public AppEventInterface {
 
 protected:
 	TouchPointList touch_points_;
 	VelocityTrackers TouchVelocityTracker;
 	VelocityTracker MouseVelocityTracker;
 
-	NativeEventQueue<TTVPWindowForm> EventQueue;
-
 	//-- TJS object related
 	tTJSNI_Window * TJSNativeInstance;
 	int LastMouseDownX, LastMouseDownY; // in Layer coodinates
 
 	tTVPMouseCursorState mcs_;
+
+	//-- interface to plugin (Window message receiver chain)
+	tObjectList<tTVPMessageReceiverRecord> WindowMessageReceivers;
 
 public:
 	virtual void *NativeWindowHandle() const = 0;
@@ -48,7 +62,8 @@ private:
 	}
 
 protected:
-	void WndProc(NativeEvent& ev);
+	// receiver chain への配信。block されたら true。
+	bool DeliverToReceiver( tjs_int message, tjs_int64 wparam, tjs_int64 lparam );
 
 	TTVPWindowForm( class tTJSNI_Window* ni );
 	virtual ~TTVPWindowForm();
@@ -65,8 +80,36 @@ protected:
 	tjs_int mCursorX;
 	tjs_int mCursorY;
 
+	//-- ビューポート (ゲーム画面を surface 内へ配置・スケール + 余白塗り)
+	tTVPViewportConfig mViewport;             //< 配置・スケール設定
+	tjs_uint32 mViewportBgColor;              //< 余白の背景色 (0xAARRGGBB)
+	tTJSVariant mViewportWallpaper;           //< 余白の壁紙 Layer/Bitmap オブジェクト (void なら無し)
+	tTVPViewportFit mViewportWallpaperFit;    //< 壁紙のフィット方式
+	double mViewportWpAlignX;                 //< 壁紙の水平配置 0..1
+	double mViewportWpAlignY;                 //< 壁紙の垂直配置 0..1
+	bool mViewportRenderDirty;                //< bg/壁紙を DrawDevice へ再 push する必要あり
+
 public:
 	virtual tTVPRect CalcDestRect(int w, int h); //< DrawDeviceの表示領域を計算する
+
+	//-- ビューポート設定 (配置は DestRect 更新、余白は DrawDevice へ push)
+	void SetViewportConfig(const tTVPViewportConfig &cfg);
+	const tTVPViewportConfig & GetViewportConfig() const { return mViewport; }
+	void SetViewportBgColor(tjs_uint32 color);
+	tjs_uint32 GetViewportBgColor() const { return mViewportBgColor; }
+	//! @param image  壁紙となる Layer/Bitmap オブジェクトの Variant (参照保持)。void でクリア。
+	void SetViewportWallpaper(const tTJSVariant &image, tTVPViewportFit fit,
+		double alignX, double alignY);
+	const tTJSVariant & GetViewportWallpaper() const { return mViewportWallpaper; }
+	tTVPViewportFit GetViewportWallpaperFit() const { return mViewportWallpaperFit; }
+	double GetViewportWpAlignX() const { return mViewportWpAlignX; }
+	double GetViewportWpAlignY() const { return mViewportWpAlignY; }
+	bool IsViewportRenderDirty() const { return mViewportRenderDirty; }
+	void SetViewportRenderDirty() { mViewportRenderDirty = true; }
+	void ClearViewportRenderDirty() { mViewportRenderDirty = false; }
+private:
+	void NotifyViewportDestRectChanged(); //< 配置変更を Window に伝え DestRect 更新要求
+public:
 
 	void TranslateWindowToDrawArea(int &x, int &y);
 	void TranslateWindowToDrawArea(float &x, float &y);
@@ -273,9 +316,19 @@ public:
 
 	void OnDisplayRotate( tjs_int orientation, tjs_int density );
 
-	NativeEventQueueIntarface* GetEventHandler() { return &EventQueue; }
+	// AppEventInterface: メインスレッドで Application から呼び返される。
+	// 非同期通知系メッセージ (surface / update / key / resize 等) を処理する。
+	// 入力系 (touch/mouse) は SendTouchMessage/SendMouseMessage で同期処理される
+	// ので、ここには来ない。doc/AppEvent.md §5 参照。
+	virtual bool Dispatch( tjs_int message, tjs_int64 wparam, tjs_int64 lparam ) override;
 
-	void PostEvent(const NativeEvent &ev) { EventQueue.PostEvent(ev); }
+	// --------------------------------------------------------
+	// プラグイン向け Window メッセージレシーバー API
+	// プラグイン内部から TVPPostWindowMessage 経由で送られたメッセージを
+	// メインスレッドの Dispatch 内で receiver chain に配信する。
+	// 配信は非同期 SendAppEvent 経由なので tTVPWindowMessage::Result は無効。
+	void RegisterWindowMessageReceiver(tTVPWMRRegMode mode, void *proc, const void *userdata);
+	bool InternalDeliverMessageToReceiver(tTVPWindowMessage &msg);
 
 	// --------------------------------------------------------
 	// FormEventHandler

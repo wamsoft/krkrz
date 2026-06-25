@@ -159,6 +159,14 @@ void tTJSByteCodeLoader::ReadObjects( tTJSScriptBlock* block, const tjs_uint8* b
 	std::vector<int> propGetter(objcount);
 	std::vector<int> superClassGetter(objcount);
 	std::vector<std::vector<int> > properties(objcount);
+	// 旧実装は per-iteration raw pointer (srcPos / code / vdata) を tTJSInterCodeContext の
+	// 所有権引き渡しまでガード無しで保持しており、TranslateCodeAddress や ctor が破損
+	// バイトコードで throw すると in-flight 分が漏れていた。さらに後続 iteration での
+	// throw で objs[0..o-1] の既構築 context も Release されず漏れる。
+	// 加えて srcPos / code は new[] だったが、tTJSInterCodeContext::Finalize は TJS_free
+	// で開放する (コンパイラ側が TJS_malloc を使う前提) ため new[]/TJS_free 不整合
+	// (= UB) になっていた。TJS_malloc に揃えて両方解消。
+	try {
 	for( int o = 0; o < objcount; o++ ) {
 		int tag = read4byte( &(buff[offset]) );
 		offset += 4;
@@ -196,116 +204,145 @@ void tTJSByteCodeLoader::ReadObjects( tTJSScriptBlock* block, const tjs_uint8* b
 		int count = read4byte( &(buff[offset]) );
 		offset += 4;
 
-		// デバッグ用のソース位置を読み込む
+		// In-flight raw pointers (per-iteration). Throws between alloc and ctor 引き渡し
+		// は inner catch で TJS_free / delete[]。所有権が ctor に渡ったら NULL に。
 		tTJSInterCodeContext::tSourcePos* srcPos = NULL;
 		tjs_int srcPosArraySize = 0;
-		if( count > 0 ) {
-			srcPos = new tTJSInterCodeContext::tSourcePos[count];
-			srcPosArraySize = count;
-			for( int i = 0; i < count; i++ ) {
-				srcPos[i].CodePos = read4byte( &(buff[offset]) );
-				offset += 4;
+		tjs_int32* code = NULL;
+		tTJSVariant* vdata = NULL;
+		try {
+			// デバッグ用のソース位置を読み込む
+			if( count > 0 ) {
+				srcPos = (tTJSInterCodeContext::tSourcePos*)TJS_malloc(sizeof(*srcPos) * count);
+				if(!srcPos) TJS_eTJSError(TJSInsufficientMem);
+				srcPosArraySize = count;
+				for( int i = 0; i < count; i++ ) {
+					srcPos[i].CodePos = read4byte( &(buff[offset]) );
+					offset += 4;
+				}
+				for( int i = 0; i < count; i++ ) {
+					srcPos[i].SourcePos = read4byte( &(buff[offset]) );
+					offset += 4;
+				}
+			} else {
+				offset += count << 3;
 			}
-			for( int i = 0; i < count; i++ ) {
-				srcPos[i].SourcePos = read4byte( &(buff[offset]) );
-				offset += 4;
-			}
-		} else {
-			offset += count << 3;
-		}
 
-		count = read4byte( &(buff[offset]) );
-		const tjs_int codeSize = count;
-		offset += 4;
-		tjs_int32* code = new tjs_int32[count];
-		for( int i = 0; i < count; i++ ) {
-			tjs_int16 c = (tjs_int16)read2byte( &(buff[offset]) );
-			code[i] = c;
-			offset += 2;
-		}
-		TranslateCodeAddress( block, code, codeSize );
-		offset += (count & 1) << 1;
-
-		count = read4byte( &(buff[offset]) );
-		offset += 4;
-		int vcount = count<<1;
-		std::vector<short> data(vcount);
-		for( int i = 0; i < vcount; i++ ) {
-			data[i] = read2byte( &(buff[offset]) );
-			offset += 2;
-		}
-
-		tTJSVariant* vdata = new tTJSVariant[count];
-		const tjs_int datacount = count;
-		for( int i = 0; i < datacount; i++ ) {
-			int pos = i << 1;
-			int type = data[pos];
-			int index = data[pos+1];
-			switch( type ) {
-			case TYPE_VOID:
-				vdata[i].Clear();
-				break;
-			case TYPE_OBJECT:
-				vdata[i] = (iTJSDispatch2*)NULL;
-				break;
-			case TYPE_INTER_OBJECT:
-				work.push_back( VariantRepalace( &(vdata[i]), index ) );
-				break;
-			case TYPE_INTER_GENERATOR:
-				work.push_back( VariantRepalace( &(vdata[i]), index ) );
-				break;
-			case TYPE_STRING:
-				vdata[i] = StringArray[index].c_str(); // tTJSString
-				break;
-			case TYPE_OCTET:
-				vdata[i] = OctetArray[index]; // tTJSVariantOctet
-				break;
-			case TYPE_REAL:
-				vdata[i] = (tjs_real)DoubleArray[index];
-				break;
-			case TYPE_BYTE:
-				vdata[i] = (tjs_int)ByteArray[index];
-				break;
-			case TYPE_SHORT:
-				vdata[i] = (tjs_int)ShortArray[index];
-				break;
-			case TYPE_INTEGER:
-				vdata[i] = (tjs_int)LongArray[index];
-				break;
-			case TYPE_LONG:
-				vdata[i] = (tjs_int64)LongLongArray[index];
-				break;
-			case TYPE_UNKNOWN:
-			default:
-				vdata[i].Clear();
-				break;
-			}
-		}
-		count = read4byte( &(buff[offset]) );
-		offset += 4;
-		//int* scgetterps = new int[count];
-		std::vector<tjs_int> scgetterps(count);
-		for( int i = 0; i < count; i++ ) {
-			scgetterps[i] = read4byte( &(buff[offset]) );
+			count = read4byte( &(buff[offset]) );
+			const tjs_int codeSize = count;
 			offset += 4;
-		}
-		// properties
-		count = read4byte( &(buff[offset]) );
-		offset += 4;
-		if( count > 0 ) {
-			int pcount = count << 1;
-			std::vector<int>& props = properties[o];
-			props.resize(pcount);
-			for( int i = 0; i < pcount; i++ ) {
-				props[i] = read4byte( &(buff[offset]) );
+			// count==0 (空コード context) でも new[] 同様に非NULLを返す必要がある。
+			// TJS_malloc は KRKRZ_ENABLE_ALLOC_STATS=OFF (MASTER / console 出荷) で
+			// std::malloc 直結になり、malloc(0) は環境により NULL を返すため、
+			// そのままだと size 0 を確保失敗と誤判定して偽の TJSInsufficientMem を
+			// 投げてしまう (起動時 bytecode ロードで顕在化)。size 0 は 1 に丸める。
+			code = (tjs_int32*)TJS_malloc(sizeof(tjs_int32) * (count ? count : 1));
+			if(!code) TJS_eTJSError(TJSInsufficientMem);
+			for( int i = 0; i < count; i++ ) {
+				tjs_int16 c = (tjs_int16)read2byte( &(buff[offset]) );
+				code[i] = c;
+				offset += 2;
+			}
+			TranslateCodeAddress( block, code, codeSize );
+			offset += (count & 1) << 1;
+
+			count = read4byte( &(buff[offset]) );
+			offset += 4;
+			int vcount = count<<1;
+			std::vector<short> data(vcount);
+			for( int i = 0; i < vcount; i++ ) {
+				data[i] = read2byte( &(buff[offset]) );
+				offset += 2;
+			}
+
+			vdata = new tTJSVariant[count];
+			const tjs_int datacount = count;
+			for( int i = 0; i < datacount; i++ ) {
+				int pos = i << 1;
+				int type = data[pos];
+				int index = data[pos+1];
+				switch( type ) {
+				case TYPE_VOID:
+					vdata[i].Clear();
+					break;
+				case TYPE_OBJECT:
+					vdata[i] = (iTJSDispatch2*)NULL;
+					break;
+				case TYPE_INTER_OBJECT:
+					work.push_back( VariantRepalace( &(vdata[i]), index ) );
+					break;
+				case TYPE_INTER_GENERATOR:
+					work.push_back( VariantRepalace( &(vdata[i]), index ) );
+					break;
+				case TYPE_STRING:
+					vdata[i] = StringArray[index].c_str(); // tTJSString
+					break;
+				case TYPE_OCTET:
+					vdata[i] = OctetArray[index]; // tTJSVariantOctet
+					break;
+				case TYPE_REAL:
+					vdata[i] = (tjs_real)DoubleArray[index];
+					break;
+				case TYPE_BYTE:
+					vdata[i] = (tjs_int)ByteArray[index];
+					break;
+				case TYPE_SHORT:
+					vdata[i] = (tjs_int)ShortArray[index];
+					break;
+				case TYPE_INTEGER:
+					vdata[i] = (tjs_int)LongArray[index];
+					break;
+				case TYPE_LONG:
+					vdata[i] = (tjs_int64)LongLongArray[index];
+					break;
+				case TYPE_UNKNOWN:
+				default:
+					vdata[i].Clear();
+					break;
+				}
+			}
+			count = read4byte( &(buff[offset]) );
+			offset += 4;
+			//int* scgetterps = new int[count];
+			std::vector<tjs_int> scgetterps(count);
+			for( int i = 0; i < count; i++ ) {
+				scgetterps[i] = read4byte( &(buff[offset]) );
 				offset += 4;
 			}
-		}
+			// properties
+			count = read4byte( &(buff[offset]) );
+			offset += 4;
+			if( count > 0 ) {
+				int pcount = count << 1;
+				std::vector<int>& props = properties[o];
+				props.resize(pcount);
+				for( int i = 0; i < pcount; i++ ) {
+					props[i] = read4byte( &(buff[offset]) );
+					offset += 4;
+				}
+			}
 
-		tTJSInterCodeContext* obj = new tTJSInterCodeContext( block, StringArray[name].c_str(), (tTJSContextType)contextType,
-			code, codeSize, vdata, datacount, maxVariableCount, variableReserveCount, maxFrameCount, funcDeclArgCount, funcDeclUnnamedArgArrayBase,
-			funcDeclCollapseBase, true, srcPos, srcPosArraySize, scgetterps );
-		objs[o] = obj;
+			tTJSInterCodeContext* obj = new tTJSInterCodeContext( block, StringArray[name].c_str(), (tTJSContextType)contextType,
+				code, codeSize, vdata, datacount, maxVariableCount, variableReserveCount, maxFrameCount, funcDeclArgCount, funcDeclUnnamedArgArrayBase,
+				funcDeclCollapseBase, true, srcPos, srcPosArraySize, scgetterps );
+			// ctor 成功 → 所有権引き渡し完了。in-flight ポインタを NULL 化して outer cleanup から除外。
+			srcPos = NULL;
+			code = NULL;
+			vdata = NULL;
+			objs[o] = obj;
+		} catch(...) {
+			if(srcPos) TJS_free(srcPos);
+			if(code) TJS_free(code);
+			if(vdata) delete[] vdata;
+			throw;
+		}
+	}
+	} catch(...) {
+		// 前段 iteration で構築済みの context を全部 Release。
+		for(auto *o : objs) {
+			if(o) o->Release();
+		}
+		throw;
 	}
 	tTJSVariant val;
 	for( int o = 0; o < objcount; o++ ) {

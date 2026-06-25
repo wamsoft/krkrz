@@ -27,6 +27,7 @@ public:
 	virtual void CommitSavedata();
 	virtual void RollbackSavedata();
 	virtual tjs_uint64 LastModifiedFileTime(const tjs_char *path);
+	virtual tjs_uint64 FileSize(const tjs_char *path);
 };
 
 StdFileSystem::StdFileSystem()
@@ -328,6 +329,17 @@ StdFileSystem::LastModifiedFileTime(const tjs_char *path)
 
 	// FILETIME: 100ns intervals since 1601-01-01 UTC.
 	return static_cast<tjs_uint64>(unix_100ns + 116444736000000000LL);
+}
+
+tjs_uint64
+StdFileSystem::FileSize(const tjs_char *path)
+{
+	std::error_code err;
+	auto sz = std::filesystem::file_size(path, err);
+	if (err) {
+		return 0;
+	}
+	return static_cast<tjs_uint64>(sz);
 }
 
 iTVPLocalFileSystem *

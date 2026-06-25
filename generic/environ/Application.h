@@ -5,8 +5,10 @@
 #include <vector>
 #include <map>
 #include <stack>
+#include <array>
 #include <algorithm>
 #include <queue>
+#include <tuple>
 #include <string>
 #include <assert.h>
 #include <functional>
@@ -27,11 +29,93 @@
 //---------------------------------------------------------------------------
 // memory allocation class
 //---------------------------------------------------------------------------
+// 用途識別タグ (doc/legacy/MemoryBudgetNegotiation.md §11.1)。
+// allocator が単一用途専用でも tag を渡しておけば後で getTagStats で
+// 集計できる。プラグインからの拡張要求が出るまでは enum 固定。
+enum class TVPAllocTag : uint16_t {
+	Unknown        = 0,
+	FileCache,        // StorageCache が使う file_malloc 経由
+	BitmapBits,       // tTVPBitmapBitsAlloc 経由
+	GraphicsLoader,  // 画像デコード作業バッファ (将来)
+	Texture,          // OpenGL テクスチャ (将来)
+	Sound,            // common/sound/ PCM/リング/DSP/クロスフェード一時 (Phase 1 計装済)
+	Movie,            // movie-player 経路 (将来)
+	TJS2,             // TJS_malloc 経路 (将来)
+	User,             // プラグイン任意用途
+	_Count
+};
+
+// 容量ネゴシエーション拡張 (capacity / used / available / setPressureCallback)
+// は doc/legacy/MemoryBudgetNegotiation.md §3.1 (case A) を参照。既存実装は
+// デフォルト (容量不明 = SIZE_MAX) のまま挙動不変。
+// テレメトリ (Stats / getStats / TagStats / getTagStats) は §11 を参照。
+// デフォルトは未対応値を返す。
 class iTVPMemoryAllocator {
 public:
+	using PressureCallback = std::function<void(float)>;
+
+	struct Stats {
+		size_t   current_used     = SIZE_MAX; // 現在使用 (= used())。未対応なら SIZE_MAX
+		size_t   peak_used        = SIZE_MAX; // ピーク。未対応なら SIZE_MAX
+		uint64_t total_allocated  = 0;        // 累積 alloc バイト数
+		uint64_t total_freed      = 0;        // 累積 free バイト数
+		uint64_t alloc_count      = 0;
+		uint64_t free_count       = 0;
+		// L2 サイズビン: <128, <1K, <16K, <256K, <4M, <64M, <1G, ≥1G
+		std::array<uint64_t, 8> alloc_size_hist = {};
+	};
+
+	// L3 tag 別集計 (doc §11.1)。total_freed は T4 で追加 (sanity check 用)。
+	struct TagStats {
+		size_t   current_used    = 0;
+		uint64_t alloc_count     = 0;
+		uint64_t free_count      = 0;
+		uint64_t total_allocated = 0;
+		uint64_t total_freed     = 0;
+	};
+
 	virtual ~iTVPMemoryAllocator() {};
 	virtual void* allocate( size_t size ) = 0;
 	virtual void free( void* mem ) = 0;
+
+	// タグ付き allocate。デフォルトは tag を捨てて allocate(size) を呼ぶ。
+	virtual void* allocate( size_t size, TVPAllocTag /*tag*/ ) { return allocate(size); }
+
+	// size 付き free。free 時に呼び出し側で確保サイズが分かる経路 (例:
+	// tTVPBitmapBitsAlloc が record->size を持っている) で使うと、
+	// allocator 側に header を置かなくても Sized mode (current_used 集計) を
+	// 維持できる。デフォルトは size を捨てて free(mem) を呼ぶ。
+	virtual void free( void* mem, size_t /*size*/ ) { free(mem); }
+
+	// realloc 相当。old==nullptr なら allocate と等価、new_size==0 なら free と等価。
+	// 既存内容をどれだけコピーするかは getAllocatedSize() の戻り値で決まる
+	// (== 0 を返す実装ではコピーされず内容が破棄される — その実装は本メソッドを
+	// 必ず override すること)。libogg の _ogg_realloc 等のフック先として使う。
+	virtual void* reallocate( void* old, size_t new_size, TVPAllocTag tag );
+
+	// 確保済みポインタの実サイズを返す。0 = 不明 (実装非対応)。
+	// デフォルト reallocate の memcpy 量決定に使う。
+	virtual size_t getAllocatedSize( void* /*mem*/ ) const { return 0; }
+
+	virtual size_t capacity() const { return SIZE_MAX; }
+	virtual size_t used()     const { return SIZE_MAX; }
+	virtual size_t available() const {
+		size_t c = capacity(), u = used();
+		if (c == SIZE_MAX || u == SIZE_MAX) return SIZE_MAX;
+		return (c > u) ? (c - u) : 0;
+	}
+	virtual void setPressureCallback(PressureCallback /*cb*/) {}
+	virtual Stats getStats() const { return Stats{}; }
+	virtual TagStats getTagStats(TVPAllocTag /*tag*/) const { return TagStats{}; }
+
+	// peak_used を current_used に揃え直す (Sized mode allocator のみ意味あり)。
+	// 「ここから先の peak をもう一度測りたい」用途。デフォルトは no-op。
+	virtual void resetPeak() {}
+
+	// fallback 経由の統計 (TVPPooledAllocator など pool ベース実装向け)。
+	// デフォルトは 0 (fallback なし)。
+	virtual uint64_t fallbackAllocCount() const { return 0; }
+	virtual uint64_t fallbackBytesInUse() const { return 0; }
 };
 
 
@@ -40,16 +124,17 @@ public:
 class tTJSNI_VideoOverlay;
 
 
-class NativeEventQueueIntarface;
-struct NativeEvent;
 class TTVPWindowForm;
 
 
-struct EventCommand {
-	NativeEventQueueIntarface*	target;
-	NativeEvent*				command;
-	EventCommand( NativeEventQueueIntarface* t, NativeEvent* c ) : target(t), command(c) {}
-	EventCommand() : target(nullptr), command(nullptr) {}
+// アプリイベント(スレッド間 message 配送)を受信するクラスのインターフェース。
+// 実装クラスは ctor で Application->addEventHandler、dtor で removeEventHandler。
+// 詳細は doc/AppEvent.md 参照。
+class AppEventInterface {
+public:
+	virtual ~AppEventInterface() {}
+	// 自分宛のイベントなら処理して true を返す。判定は message だけで行う。
+	virtual bool Dispatch( tjs_int message, tjs_int64 wparam, tjs_int64 lparam ) = 0;
 };
 
 
@@ -70,13 +155,6 @@ public:
 	virtual ~tTVPApplication();
 
 	TTVPWindowForm *MainWindowForm() const { return windows_.size() > 0 ? windows_[0] : nullptr; }
-
-private:
-	NativeEvent* createNativeEvent();
-	void releaseNativeEvent( NativeEvent* ev );
-
-	// アプリ固有イベント処理
-	bool appDispatch(NativeEvent& ev);
 
 public:
 	// -------------------------------------------------------------------
@@ -114,20 +192,18 @@ public:
 	// スクリプトからの呼び出し
 	// -------------------------------------------------------------------
 
-	void postEvent( const NativeEvent* ev, NativeEventQueueIntarface* handler = nullptr );
+	// 環境別実装。SDL は即 SDL_Event に詰めて送信し、失敗したら false を返す。
+	virtual bool _SendAppEvent( tjs_int message, tjs_int64 wparam, tjs_int64 lparam ) = 0;
 
-	void addEventHandler( NativeEventQueueIntarface* handler ) {
-		std::lock_guard<std::mutex> lock( event_handlers_mutex_ );
-		std::vector<NativeEventQueueIntarface*>::iterator it = std::find(event_handlers_.begin(), event_handlers_.end(), handler);
-		if( it == event_handlers_.end() ) {
-			event_handlers_.push_back( handler );
-		}
-	}
-	void removeEventHandler( NativeEventQueueIntarface* handler ) {
-		std::lock_guard<std::mutex> lock( event_handlers_mutex_ );
-		std::vector<NativeEventQueueIntarface*>::iterator it = std::remove(event_handlers_.begin(), event_handlers_.end(), handler);
-		event_handlers_.erase( it, event_handlers_.end() );
-	}
+	// 任意スレッドから呼べる。_SendAppEvent し、失敗時だけ retry_que_ に積む(要ロック)。
+	void SendAppEvent( tjs_int message, tjs_int64 wparam, tjs_int64 lparam );
+
+	// メインスレッドでの呼び返し。app 独自イベントを処理し、未消費なら
+	// addEventHandler 済みの全ハンドラへ配る。いずれかが処理したら true。
+	bool DispatchAppEvent( tjs_int message, tjs_int64 wparam, tjs_int64 lparam );
+
+	void addEventHandler( AppEventInterface* handler );
+	void removeEventHandler( AppEventInterface* handler );
 
 	/**
 	 * タイトルの設定
@@ -143,12 +219,37 @@ public:
 	// Bitmap用のAllocatorを返す
 	virtual iTVPMemoryAllocator *CreateBitmapAllocator();
 
+	// File読み込みバッファ用のAllocatorを返す
+	virtual iTVPMemoryAllocator *CreateFileAllocator();
+
+	// サウンド用バッファのAllocatorを返す
+	virtual iTVPMemoryAllocator *CreateSoundAllocator();
+
+	// GlobalAllocStats (operator new / TJS_malloc) 用のAllocatorを返す
+	// KRKRZ_ENABLE_ALLOC_STATS=ON 時に GlobalAllocStats::Initialize() から呼ばれる
+	virtual iTVPMemoryAllocator *CreateKrkrzAllocator();
+
+	// システムアロケータ情報を返す (組込みプラットフォーム固有実装用)
+	// デフォルトは一般 OS 向けの実装を返す。
+	// doc/MemoryDesign.md 参照。
+	virtual class iTVPSystemAllocatorInfo *GetSystemAllocatorInfo();
+
 	/**
 	 * 画像の非同期読込み要求
 	 */
 	void LoadImageRequest( class iTJSDispatch2 *owner, class tTJSNI_Bitmap* bmp, const ttstr &name );
 
-	void CacheFileRequest( const ttstr &name, bool fast=false );
+	/**
+	 * 画像 decode prefetch 要求 (owner なし、cache 登録のみ)
+	 */
+	void LoadImagePrefetchRequest( const ttstr &name );
+
+	/**
+	 * 内部用: AsyncImageLoader インスタンス取得 (NULL あり)
+	 */
+	class tTVPAsyncImageLoader* GetImageLoadThread() { return image_load_thread_; }
+
+	void CacheFileRequest( const ttstr &name, bool fast=false, tjs_uint64 minSize=0 );
 	void CacheFileClear( const ttstr &name );
 	void CacheFileClearOld(int keepTime, bool force);
 	void CacheFileSetMaxSize( int maxSize);
@@ -269,12 +370,36 @@ public:
 
 	virtual tjs_uint32 GetPadState(int no) = 0;
 
+	// パッド軸 ID (doc/Gamepad.md §3 参照)。値は SDL3 の SDL_GamepadAxis と同値で、
+	// SDL3 実装では axisId をそのまま SDL に渡せる。新規 ID は末尾に追加すること。
+	enum {
+		TVP_PAD_AXIS_LEFTX         = 0, //< 左スティック X (-1 = 左,  +1 = 右)
+		TVP_PAD_AXIS_LEFTY         = 1, //< 左スティック Y (-1 = 上,  +1 = 下)
+		TVP_PAD_AXIS_RIGHTX        = 2, //< 右スティック X
+		TVP_PAD_AXIS_RIGHTY        = 3, //< 右スティック Y
+		TVP_PAD_AXIS_LEFT_TRIGGER  = 4, //< L2 アナログ ( 0 〜 +1)
+		TVP_PAD_AXIS_RIGHT_TRIGGER = 5, //< R2 アナログ ( 0 〜 +1)
+		TVP_PAD_AXIS_COUNT         = 6,
+	};
+
+	// 指定パッドの指定軸の現在値を返す。
+	// スティック軸: -1.0f 〜 +1.0f (中立 0.0f)
+	// トリガ軸    :  0.0f 〜 +1.0f (未押下 0.0f)
+	// 未接続パッド・無効 axisId は 0.0f を返す。デッドゾーンは適用しない (呼び元責務)。
+	virtual float GetPadAxis(int /*no*/, int /*axisId*/) { return 0.0f; }
+
 	// SystemControl から移管
 	// イベント処理からのコールバック
 	void BeginContinuousEvent();
 	void EndContinuousEvent();
 
 	virtual tjs_string GetJoypadType(int no) { return TJS_W(""); } //< joypadの種別（環境依存値）
+	virtual tjs_int GetJoypadCount() { return 0; } //< 接続されているjoypadの数
+	virtual bool HasJoypad(int no) { return false; } //< 指定番号のjoypadが有効か
+
+	// 振動機能
+	virtual bool RumbleGamepad(int no, int low, int high, int duration_ms) { return false; }
+	virtual bool StopRumbleGamepad(int no) { return false; }
 
 	// ----------------------------------------------------------------------
     // 動画関係処理
@@ -296,16 +421,15 @@ protected:
 
 private:
 
-	std::vector<NativeEventQueueIntarface*>	event_handlers_;
-	std::vector<NativeEvent*>				command_cache_;
-	std::queue<EventCommand>				command_que_;
+	std::vector<AppEventInterface*>	event_handlers_;
+	// _SendAppEvent 失敗時のリトライ用。{ message, wparam, lparam }。
+	std::queue<std::tuple<tjs_int,tjs_int64,tjs_int64>>	retry_que_;
 
 	class tTVPAsyncImageLoader* image_load_thread_;
 	class tTVPStorageCacheThread* file_cache_thread_;
 
 	std::mutex event_handlers_mutex_;
-	std::mutex command_cache_mutex_;
-	std::mutex command_que_mutex_;
+	std::mutex retry_que_mutex_;
 
 	void DeliverEvents();
 
@@ -314,5 +438,11 @@ private:
 };
 
 extern class tTVPApplication* Application;
+
+// プール初期確保量 (バイト)。0 = pool 無効 (raw malloc フォールバック)。
+// CLI: -bitmappoolsize=N (MB)、none/off/0 で無効化。
+size_t TVPGetBitmapAllocatorPoolSize();
+// CLI: -filepoolsize=N (MB)、none/off/0 で無効化。 (FileAllocator.cpp 定義)
+size_t TVPGetFileAllocatorPoolSize();
 
 #endif // __T_APPLICATION_H__

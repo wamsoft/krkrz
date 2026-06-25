@@ -9,6 +9,7 @@
 // "System" class implementation
 //---------------------------------------------------------------------------
 #include "tjsCommHead.h"
+#include "tjsDictionary.h"         // TJSCreateDictionaryObject
 
 #include <shellapi.h>
 #include <shlobj.h>
@@ -32,6 +33,20 @@
 #include "DebugIntf.h"
 #include "VersionFormUnit.h"
 #include "PluginImpl.h"
+#include "BinaryStreamBuffer.h"     // TVPGetFileAllocator
+#include "SoundAllocator.h"         // TVPGetSoundAllocator
+#include "BitmapBitsAlloc.h"        // tTVPBitmapBitsAlloc::GetAllocator
+#include "MemoryAllocatorStats.h"   // TVPDumpAllocatorStats
+#include "ProcessMemory.h"          // TVPDumpProcessMemoryInfo
+#include "GlobalAllocStats.h"       // TVPGlobalAllocStats::Dump
+#include "AllocTagScope.h"          // TVPPushAllocTag / TVPPopAllocTag
+#include "tjsObjectStats.h"         // TVPDumpTJSObjectStats
+#include "MemoryOverlay.h"          // TVPMemoryOverlay::SetEnabled
+#include "SystemAllocatorInfo.h"    // TVPDumpSystemAllocatorInfo
+#include "PadOverlay.h"             // TVPPadOverlay::SetEnabled
+#include "ThreadIntf.h"             // TVPDrawStatsLogEnabled
+#include "StorageCache.h"           // TVPGetStorageCacheCount
+#include "GraphicsLoaderIntf.h"     // TVPGetGraphicCacheCount
 
 //---------------------------------------------------------------------------
 static ttstr TVPAppTitle;
@@ -667,6 +682,25 @@ static void TVPOnApplicationActivate(bool activate_or_deactivate)
 //---------------------------------------------------------------------------
 void TVPHeapDump()
 {
+	// per-allocator stats (FileAllocator / BitmapAllocator / SoundAllocator) を先頭に出力
+	TVPDumpAllocatorStats("FileAllocator", TVPGetFileAllocator());
+	TVPDumpAllocatorStats("BitmapAllocator", tTVPBitmapBitsAlloc::GetAllocator());
+	TVPDumpAllocatorStats("SoundAllocator", TVPGetSoundAllocator());
+	TVPGlobalAllocStats::Dump();
+	TVPDumpTJSObjectStats();
+	TVPDumpProcessMemoryInfo();
+	TVPDumpSystemAllocatorInfo();
+	// キャッシュエントリ件数 (file 層 / decode 層)。pinned 数は内訳。
+	// 詳細は Storages.dumpFileCacheList / dumpImageCacheList。
+	{
+		size_t fc_total = 0, fc_pinned = 0;
+		size_t ic_total = 0, ic_pinned = 0;
+		TVPGetStorageCacheCount(fc_total, fc_pinned);
+		TVPGetGraphicCacheCount(ic_total, ic_pinned);
+		TVPLOG_INFO("FileCache: count={} pinned={}", fc_total, fc_pinned);
+		TVPLOG_INFO("ImageCache: count={} pinned={}", ic_total, ic_pinned);
+	}
+
 	tjs_char buff[128];
 	HANDLE heaps[100];
 	DWORD c = ::GetProcessHeaps (100, heaps);
@@ -938,6 +972,146 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/dumpHeap)
 }
 TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
 	/*func. name*/dumpHeap)
+//----------------------------------------------------------------------
+// システムアロケータ情報を取得する。
+// コンソール機等のプラットフォームアロケータが提供する情報を含む。
+// 戻り値は Dictionary:
+//   %[
+//     totalFreeSize: ...,       // 空き領域合計
+//     allocatableSize: ...,     // 確保可能最大サイズ
+//     processRss: ...,          // プロセス RSS
+//     processPeakRss: ...,      // プロセス peak RSS
+//     processVsize: ...,        // プロセス virtual size
+//     systemTotalPhysical: ..., // システム物理メモリ総量
+//     systemAvailPhysical: ..., // システム利用可能物理メモリ
+//   ]
+// 値が取得できない項目はキー自体が存在しない (TJS で typeof が "Object" 扱いの void)。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/getSystemAllocatorInfo)
+{
+	iTJSDispatch2 *dict = TJSCreateDictionaryObject();
+	if (!dict) return TJS_E_FAIL;
+
+	// TVPGetSystemAllocatorInfo() が内部で Application に delegate するので
+	// プラットフォーム固有 override もそのまま反映される。
+	iTVPSystemAllocatorInfo *info = TVPGetSystemAllocatorInfo();
+	if (info) {
+		auto stats = info->GetStats();
+
+		// SIZE_MAX (= 取得不可) のキーは dict に入れない。
+		// TJS 側からは dict["xxx"] が void になり、`xxx in dict` で判定可能。
+		auto setVal = [&](const tjs_char *name, size_t val) {
+			if (val == SIZE_MAX) return;
+			tTJSVariant v(static_cast<tjs_int64>(val));
+			dict->PropSet(TJS_MEMBERENSURE, name, nullptr, &v, dict);
+		};
+
+		setVal(TJS_W("totalFreeSize"),       stats.total_free_size);
+		setVal(TJS_W("allocatableSize"),     stats.allocatable_size);
+		setVal(TJS_W("processRss"),          stats.process_rss);
+		setVal(TJS_W("processPeakRss"),      stats.process_peak_rss);
+		setVal(TJS_W("processVsize"),        stats.process_vsize);
+		setVal(TJS_W("systemTotalPhysical"), stats.system_total_physical);
+		setVal(TJS_W("systemAvailPhysical"), stats.system_avail_physical);
+		setVal(TJS_W("usedSize"),            stats.used_size);
+		setVal(TJS_W("peakUsedSize"),        stats.peak_used_size);
+		setVal(TJS_W("totalSize"),           stats.total_size);
+	}
+
+	if (result) *result = tTJSVariant(dict, dict);
+	dict->Release();
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
+	/*func. name*/getSystemAllocatorInfo)
+//----------------------------------------------------------------------
+// File/Bitmap allocator の peak_used を current_used に揃え直す。
+// MemoryOverlay の "(peak X.XX)" 表示を「ここから先の最大」に
+// リセットしたいときに使う。REPL `.mempeakclear` と同等。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/resetMemoryPeak)
+{
+	if (auto *fa = TVPGetFileAllocator())               fa->resetPeak();
+	if (auto *ba = tTVPBitmapBitsAlloc::GetAllocator()) ba->resetPeak();
+	if (auto *sa = TVPGetSoundAllocator())              sa->resetPeak();
+	TVPGlobalAllocStats::ResetKrkrzPeak();
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
+	/*func. name*/resetMemoryPeak)
+//----------------------------------------------------------------------
+// thread-local tag stack に push する。Krkrz allocator (operator new +
+// TJS_malloc) で起きる確保がこの tag 名に振り分けられる。終了は endAllocTag()。
+// tag 名は TVPAllocTag enum 名 ("TJS2" / "User" / "GraphicsLoader" 等)。
+// 一致しない名前は User として扱う。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/beginAllocTag)
+{
+	if (numparams < 1) return TJS_E_BADPARAMCOUNT;
+	ttstr name = *param[0];
+	tTJSNarrowStringHolder narrow(name.c_str());
+	TVPPushAllocTag(TVPAllocTagFromName(narrow));
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
+	/*func. name*/beginAllocTag)
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/endAllocTag)
+{
+	TVPPopAllocTag();
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
+	/*func. name*/endAllocTag)
+//----------------------------------------------------------------------
+// SDL3 build 限定: 画面右上にメモリ状態のリアルタイム折れ線グラフを
+// オーバレイ表示する。WINVER build では flag だけ立つが描画は行われない。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/setMemoryOverlay)
+{
+	bool enable;
+	if (numparams >= 1 && param[0]->Type() != tvtVoid) {
+		enable = ((tjs_int)*param[0]) != 0;
+	} else {
+		enable = !TVPMemoryOverlay::IsEnabled();
+	}
+	TVPMemoryOverlay::SetEnabled(enable);
+	if (result) *result = (tjs_int)(enable ? 1 : 0);
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
+	/*func. name*/setMemoryOverlay)
+//----------------------------------------------------------------------
+// SDL3 build 限定: 画面左上にゲームパッド 16 ボタンのマトリクスを
+// オーバレイ表示する。WINVER build では flag だけ立つが描画は行われない。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/setPadOverlay)
+{
+	bool enable;
+	if (numparams >= 1 && param[0]->Type() != tvtVoid) {
+		enable = ((tjs_int)*param[0]) != 0;
+	} else {
+		enable = !TVPPadOverlay::IsEnabled();
+	}
+	TVPPadOverlay::SetEnabled(enable);
+	if (result) *result = (tjs_int)(enable ? 1 : 0);
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
+	/*func. name*/setPadOverlay)
+//----------------------------------------------------------------------
+// KRKRZ_DRAW_STATS=ON ビルド + memoverlay 有効時、500ms ごとに DrawThreadPool
+// 利用統計を log に書き出す。WINVER build では memoverlay 自体が描画されない
+// ため、log も実質出ない。フラグだけは立つ (TJS 側の互換性のため)。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/setDrawStatsLog)
+{
+	bool enable;
+	if (numparams >= 1 && param[0]->Type() != tvtVoid) {
+		enable = ((tjs_int)*param[0]) != 0;
+	} else {
+		enable = !TVPDrawStatsLogEnabled;
+	}
+	TVPDrawStatsLogEnabled = enable;
+	if (result) *result = (tjs_int)(enable ? 1 : 0);
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
+	/*func. name*/setDrawStatsLog)
 //----------------------------------------------------------------------
 TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/nullpo)
 {

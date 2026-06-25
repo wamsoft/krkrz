@@ -11,7 +11,11 @@
 #include "tjsCommHead.h"
 
 #include <algorithm>
+#include <atomic>
+#include <new>
 #include <stdexcept>
+#include <map>
+#include <mutex>
 #include <set>
 #include "StorageIntf.h"
 #include "tjsUtils.h"
@@ -27,6 +31,8 @@
 #include "Application.h"
 #include "StorageCache.h"
 #include "LogIntf.h"
+#include "GraphicsLoaderIntf.h"
+#include "GraphicsLoadThread.h"
 
 #define TVP_DEFAULT_ARCHIVE_CACHE_NUM 64
 #define TVP_DEFAULT_AUTOPATH_CACHE_NUM 256
@@ -79,59 +85,23 @@ static tTJSCriticalSection TVPCreateStreamCS;
 // cache対象拡張子
 //---------------------------------------------------------------------------
 
-static std::set<ttstr> TVPCacheTargetExtensions;
+// 拡張子 → 最小キャッシュ対象サイズ。0 の場合は無条件でキャッシュ。
+static std::map<ttstr, tjs_uint64> TVPCacheTargetExtensions;
 static tTJSCriticalSection TVPCacheTargetExtensionsCS;
 
+// 拡張子 → 最小サイズ。Storages.requestCache 経路でデコードまで進める対象。
+static std::map<ttstr, tjs_uint64> TVPDecodeTargetExtensions;
+static tTJSCriticalSection TVPDecodeTargetExtensionsCS;
+
 //---------------------------------------------------------------------------
-void TVPAddCacheTargetExtension(const ttstr &ext)
-{	
+static ttstr TVPNormalizeCacheTargetExtension(const ttstr &ext)
+{
 	ttstr normalized_ext = ext;
 	if(!normalized_ext.IsEmpty() && normalized_ext[0] != TJS_W('.'))
 	{
 		normalized_ext = TJS_W(".") + normalized_ext;
 	}
-	
-	// make extension lowercase for case-insensitive comparison
-	tjs_char *p = normalized_ext.Independ();
-	while(*p)
-	{
-		if(*p >= TJS_W('A') && *p <= TJS_W('Z'))
-			*p += TJS_W('a') - TJS_W('A');
-		p++;
-	}
-	
-	TVPCacheTargetExtensions.insert(normalized_ext);
-}
-//---------------------------------------------------------------------------
-void TVPRemoveCacheTargetExtension(const ttstr &ext)
-{	
-	ttstr normalized_ext = ext;
-	if(!normalized_ext.IsEmpty() && normalized_ext[0] != TJS_W('.'))
-	{
-		normalized_ext = TJS_W(".") + normalized_ext;
-	}
-	
-	// make extension lowercase for case-insensitive comparison
-	tjs_char *p = normalized_ext.Independ();
-	while(*p)
-	{
-		if(*p >= TJS_W('A') && *p <= TJS_W('Z'))
-			*p += TJS_W('a') - TJS_W('A');
-		p++;
-	}
-	
-	TVPCacheTargetExtensions.erase(normalized_ext);
-}
-//---------------------------------------------------------------------------
-bool TVPIsCacheTargetExtension(const ttstr &ext)
-{	
-	ttstr normalized_ext = ext;
-	if(!normalized_ext.IsEmpty() && normalized_ext[0] != TJS_W('.'))
-	{
-		normalized_ext = TJS_W(".") + normalized_ext;
-	}
-	
-	// make extension lowercase for case-insensitive comparison
+
 	tjs_char *p = normalized_ext.Independ();
 	if (p) {
 		while(*p)
@@ -141,12 +111,43 @@ bool TVPIsCacheTargetExtension(const ttstr &ext)
 			p++;
 		}
 	}
-	
+	return normalized_ext;
+}
+//---------------------------------------------------------------------------
+void TVPAddCacheTargetExtension(const ttstr &ext, tjs_uint64 minSize)
+{
+	ttstr normalized_ext = TVPNormalizeCacheTargetExtension(ext);
+	tTJSCriticalSectionHolder cs_holder(TVPCacheTargetExtensionsCS);
+	TVPCacheTargetExtensions[normalized_ext] = minSize;
+}
+//---------------------------------------------------------------------------
+void TVPRemoveCacheTargetExtension(const ttstr &ext)
+{
+	ttstr normalized_ext = TVPNormalizeCacheTargetExtension(ext);
+	tTJSCriticalSectionHolder cs_holder(TVPCacheTargetExtensionsCS);
+	TVPCacheTargetExtensions.erase(normalized_ext);
+}
+//---------------------------------------------------------------------------
+bool TVPIsCacheTargetExtension(const ttstr &ext)
+{
+	ttstr normalized_ext = TVPNormalizeCacheTargetExtension(ext);
+	tTJSCriticalSectionHolder cs_holder(TVPCacheTargetExtensionsCS);
 	return TVPCacheTargetExtensions.find(normalized_ext) != TVPCacheTargetExtensions.end();
+}
+//---------------------------------------------------------------------------
+bool TVPGetCacheTargetExtensionMinSize(const ttstr &ext, tjs_uint64 *outMinSize)
+{
+	ttstr normalized_ext = TVPNormalizeCacheTargetExtension(ext);
+	tTJSCriticalSectionHolder cs_holder(TVPCacheTargetExtensionsCS);
+	auto i = TVPCacheTargetExtensions.find(normalized_ext);
+	if (i == TVPCacheTargetExtensions.end()) return false;
+	if (outMinSize) *outMinSize = i->second;
+	return true;
 }
 //---------------------------------------------------------------------------
 void TVPClearCacheTargetExtensions()
 {
+	tTJSCriticalSectionHolder cs_holder(TVPCacheTargetExtensionsCS);
 	TVPCacheTargetExtensions.clear();
 }
 
@@ -154,6 +155,170 @@ void TVPClearCacheTargetExtensions()
 bool TVPIsCacheTargetFile(const ttstr &name)
 {
 	return name != "" && name.StartsWith(TJS_W("file://"));
+}
+
+//---------------------------------------------------------------------------
+// pin 集合 (P2)
+// path 単位で両層 (file/decode) を sticky 化する。永続管理はここで一元化。
+//---------------------------------------------------------------------------
+static std::set<ttstr> TVPPinnedCachePaths;
+static tTJSCriticalSection TVPPinnedCachePathsCS;
+
+bool TVPIsCachePathPinned(const ttstr &nname)
+{
+	tTJSCriticalSectionHolder cs(TVPPinnedCachePathsCS);
+	return TVPPinnedCachePaths.find(nname) != TVPPinnedCachePaths.end();
+}
+
+// pin/unpin の path 正規化:
+//   pin set には**両方の正規化結果** (norm = NormalizeStorageName と
+//   placed = GetPlacedPath) を入れる。これは pin 時に file が存在しないと
+//   GetPlacedPath が空を返すなどの edge case に備えるため。
+//   通常運用では cache キーは TVPResolveCachePath で placed に統一される
+//   ので、norm form 単独のヒットは autopath 未解決時のフォールバック用。
+static void TVPCollectCachePathVariants(const ttstr &input,
+                                          ttstr &out_norm,
+                                          ttstr &out_placed)
+{
+	out_norm = TVPNormalizeStorageName(input);
+	out_placed = TVPGetPlacedPath(input);  // ファイルが見つからなければ空
+	if (out_placed == out_norm) out_placed = ttstr();  // 同じなら片方だけで OK
+}
+
+// cache キー用の path 正規化。GetPlacedPath で autopath 解決を試み、
+// 失敗時は NormalizeStorageName にフォールバック。
+ttstr TVPResolveCachePath(const ttstr &input)
+{
+	ttstr placed = TVPGetPlacedPath(input);
+	if (!placed.IsEmpty()) return placed;
+	return TVPNormalizeStorageName(input);
+}
+
+void TVPPinCache(const ttstr &input)
+{
+	ttstr norm, placed;
+	TVPCollectCachePathVariants(input, norm, placed);
+
+	bool inserted_norm = false, inserted_placed = false;
+	{
+		tTJSCriticalSectionHolder cs(TVPPinnedCachePathsCS);
+		if (!norm.IsEmpty()) inserted_norm = TVPPinnedCachePaths.insert(norm).second;
+		if (!placed.IsEmpty()) inserted_placed = TVPPinnedCachePaths.insert(placed).second;
+	}
+	if (inserted_norm || inserted_placed) {
+		if (placed.IsEmpty()) {
+			TVPLOG_DEBUG("Cache:pin:{}", norm);
+		} else {
+			TVPLOG_DEBUG("Cache:pin:{} (+placed:{})", norm, placed);
+		}
+	}
+	// 既に load 済の entry があればその pinned フラグを立てる (両 variant)
+	if (!norm.IsEmpty()) {
+		TVPSetStorageCacheEntryPinned(norm, true);
+		TVPSetGraphicCacheEntryPinned(norm, true);
+	}
+	if (!placed.IsEmpty()) {
+		TVPSetStorageCacheEntryPinned(placed, true);
+		TVPSetGraphicCacheEntryPinned(placed, true);
+	}
+
+	// pin 対象を実際にロードして cache に乗せる (= Storages.requestCache 相当)。
+	// pin set には先に登録済みなので、cache push のタイミングで pinned=true で
+	// 初期化される。idempotent (既に cache 済みの path に再度発火しても、
+	// cache thread 側で skip される)。
+	// path は scheme/拡張子を含むべきなので placed (autopath 解決済) を優先。
+	if (Application) {
+		const ttstr &request_path = !placed.IsEmpty() ? placed : norm;
+		if (!request_path.IsEmpty()) {
+			if (TVPIsCacheTargetFile(request_path)) {
+				Application->CacheFileRequest(request_path, /*fast=*/false, /*minSize=*/0);
+			}
+			if (TVPIsDecodeTargetFile(request_path)) {
+				Application->LoadImagePrefetchRequest(request_path);
+			}
+		}
+	}
+}
+
+void TVPUnpinCache(const ttstr &input)
+{
+	ttstr norm, placed;
+	TVPCollectCachePathVariants(input, norm, placed);
+
+	bool was_pinned = false;
+	{
+		tTJSCriticalSectionHolder cs(TVPPinnedCachePathsCS);
+		if (!norm.IsEmpty()) was_pinned |= TVPPinnedCachePaths.erase(norm) > 0;
+		if (!placed.IsEmpty()) was_pinned |= TVPPinnedCachePaths.erase(placed) > 0;
+	}
+	if (was_pinned) {
+		TVPLOG_DEBUG("Cache:unpin:{}{}", norm,
+		             placed.IsEmpty() ? ttstr() : ttstr(TJS_W(" (+placed)")));
+	}
+	// 既存 entry の pinned フラグを解除 (両 variant、次の駆逐サイクルで chop 候補に)
+	if (!norm.IsEmpty()) {
+		TVPSetStorageCacheEntryPinned(norm, false);
+		TVPSetGraphicCacheEntryPinned(norm, false);
+	}
+	if (!placed.IsEmpty()) {
+		TVPSetStorageCacheEntryPinned(placed, false);
+		TVPSetGraphicCacheEntryPinned(placed, false);
+	}
+}
+
+void TVPClearAllCachePins()
+{
+	size_t had;
+	{
+		tTJSCriticalSectionHolder cs(TVPPinnedCachePathsCS);
+		had = TVPPinnedCachePaths.size();
+		TVPPinnedCachePaths.clear();
+	}
+	if (had > 0) {
+		TVPLOG_DEBUG("Cache:clearAllPins: count={}", had);
+	}
+}
+
+//---------------------------------------------------------------------------
+// decode-target 拡張子 (Storages.requestCache でデコードまで進める対象)
+//---------------------------------------------------------------------------
+void TVPAddDecodeTargetExtension(const ttstr &ext, tjs_uint64 minSize)
+{
+	ttstr normalized_ext = TVPNormalizeCacheTargetExtension(ext);
+	tTJSCriticalSectionHolder cs_holder(TVPDecodeTargetExtensionsCS);
+	TVPDecodeTargetExtensions[normalized_ext] = minSize;
+}
+//---------------------------------------------------------------------------
+void TVPRemoveDecodeTargetExtension(const ttstr &ext)
+{
+	ttstr normalized_ext = TVPNormalizeCacheTargetExtension(ext);
+	tTJSCriticalSectionHolder cs_holder(TVPDecodeTargetExtensionsCS);
+	TVPDecodeTargetExtensions.erase(normalized_ext);
+}
+//---------------------------------------------------------------------------
+bool TVPIsDecodeTargetExtension(const ttstr &ext)
+{
+	ttstr normalized_ext = TVPNormalizeCacheTargetExtension(ext);
+	tTJSCriticalSectionHolder cs_holder(TVPDecodeTargetExtensionsCS);
+	return TVPDecodeTargetExtensions.find(normalized_ext) != TVPDecodeTargetExtensions.end();
+}
+//---------------------------------------------------------------------------
+void TVPClearDecodeTargetExtensions()
+{
+	tTJSCriticalSectionHolder cs_holder(TVPDecodeTargetExtensionsCS);
+	TVPDecodeTargetExtensions.clear();
+}
+//---------------------------------------------------------------------------
+// decode prefetch は path-keyed の TVPGraphicCache に展開後 bitmap を登録する
+// 仕組みなので、scheme は問わない (file:// / psb:// / psd:// 等の任意の
+// スキームで動作)。worker が tTVPStreamHolder 経由でストリームを開く際、
+// 各 scheme の iTVPStorageMedia::Open が呼ばれる。TVPCreateStream は
+// TVPCreateStreamCS で global lock 済みなので worker からの並列 open でも安全。
+bool TVPIsDecodeTargetFile(const ttstr &name)
+{
+	if(name.IsEmpty()) return false;
+	ttstr ext = TVPExtractStorageExt(name);
+	return TVPIsDecodeTargetExtension(ext);
 }
 
 //---------------------------------------------------------------------------
@@ -309,6 +474,7 @@ public:
 	bool Remove(const ttstr & name);
 	bool Move(const ttstr & from, const ttstr & to);
 	tjs_uint64 LastModifiedFileTime(const ttstr &name);
+	tjs_uint64 FileSize(const ttstr &name);
 
 } TVPStorageMediaManager;
 //---------------------------------------------------------------------------
@@ -735,6 +901,31 @@ tjs_uint64 tTVPStorageMediaManager::LastModifiedFileTime(const ttstr &name)
 	return 0;
 }
 
+tjs_uint64 tTVPStorageMediaManager::FileSize(const ttstr &name)
+{
+	tMediaRecord *rec = GetMediaRecord(name);
+	ttstr dname = rec->GetDomainAndPath(name);
+	if (rec->version >= 2) {
+		// if media supports iTVPStorageMedia2, use FileSize method
+		iTVPStorageMedia2 *media2 = (iTVPStorageMedia2 *)(rec->MediaIntf.GetObjectNoAddRef());
+		if (media2) {
+			tjs_uint64 size = media2->FileSize(dname);
+			if (size != 0) {
+				return size;
+			}
+		}
+	}
+	rec->MediaIntf.GetObjectNoAddRef()->GetLocallyAccessibleName(dname);
+	if (dname != "") {
+		// if the file is accessible from local file system, try to get size by ourselves
+		tjs_uint64 size = TVPFileSize(dname);
+		if (size != 0) {
+			return size;
+		}
+	}
+	return 0;
+}
+
 //---------------------------------------------------------------------------
 void TVPRegisterStorageMedia(iTVPStorageMedia *media)
 {
@@ -754,18 +945,38 @@ void TVPRegisterStorageMedia(iTVPStorageMedia2 *media)
 //---------------------------------------------------------------------------
 bool TVPRemoveStorage(const ttstr &name)
 {
+	// 削除する path について、_TVPCreateStream の WRITE 時と同じ要領で
+	// file 層 / decode 層の cache から該当 entry を駆逐する。これで「ファイルを
+	// 消した直後に同 path を再 load して古い decode 結果が返る」を防ぐ。
+	// 失敗しても cache miss が増えるだけで害はないので、Remove 前に無条件で行う。
+	ttstr norm = TVPNormalizeStorageName(name);
+	TVPClearStorageCache(norm, /*force=*/true);
+	TVPClearGraphicCacheEntry(norm);
 	return TVPStorageMediaManager.Remove(name);
 }
 //---------------------------------------------------------------------------
 bool TVPMoveStorage(const ttstr &from, const ttstr &to)
 {
+	// from は消える、to は中身が置き換わる、どちらも cache 内容が stale 化する。
+	// 両 path について file 層 / decode 層の cache を駆逐する。
+	ttstr norm_from = TVPNormalizeStorageName(from);
+	ttstr norm_to   = TVPNormalizeStorageName(to);
+	TVPClearStorageCache(norm_from, /*force=*/true);
+	TVPClearGraphicCacheEntry(norm_from);
+	TVPClearStorageCache(norm_to,   /*force=*/true);
+	TVPClearGraphicCacheEntry(norm_to);
 	return TVPStorageMediaManager.Move(from, to);
 }
 
 tjs_uint64 TVPLastModifiedFileTimeStorage(const ttstr &name)
 {
 	return TVPStorageMediaManager.LastModifiedFileTime(name);
-}	
+}
+
+tjs_uint64 TVPFileSizeStorage(const ttstr &name)
+{
+	return TVPStorageMediaManager.FileSize(name);
+}
 
 //---------------------------------------------------------------------------
 // TVPNormalizeStorgeName : storage name normalization
@@ -1268,16 +1479,33 @@ tTVPFileInfo *TVPFindAutoPathTable(const ttstr &name)
 }
 
 
+// ttstr(tTJSVariantString) の RefCount は非atomicで、文字列ヒープのセル確保/解放は
+// ロックされていても RefCount の増減自体は保護されない。AutoPath キャッシュは
+// キャッシュ系ワーカースレッドからも参照されるため、COW バッファを共有したまま
+// 別スレッドへ渡す/別スレッドが触るキャッシュへ格納すると、同一 VS の RefCount を
+// 複数スレッドが同時に増減して二重解放→メモリ例外を起こす。
+// c_str() から作り直して独立した VS を持たせ、スレッド間でバッファを共有させない。
+static inline ttstr TVPMakeIndependentString(const ttstr & s)
+{
+	if(s.IsEmpty()) return ttstr();
+	return ttstr(s.c_str());
+}
+
 void TVPClearAutoPathCacheFile(const ttstr & name)
 {
+	tTJSCriticalSectionHolder cs_holder(TVPCreateStreamCS);
 	// キャッシュから情報を消して再検索されるようにする
 	TVPAutoPathCache.Delete(name);
 }
 
 void TVPAddAutoPathCacheFile(const ttstr & name)
 {
+	tTJSCriticalSectionHolder cs_holder(TVPCreateStreamCS);
 	// キャッシュから情報を消して再検索されるようにする
-	TVPAutoPathCache.Add(name, name);
+	// キー/値ともに独立した VS を格納し、呼び出し元(別スレッド)の文字列と
+	// バッファを共有させない。
+	TVPAutoPathCache.Add(TVPMakeIndependentString(name),
+		TVPMakeIndependentString(name));
 }
 
 //---------------------------------------------------------------------------
@@ -1300,7 +1528,6 @@ struct tTVPClearAutoPathCacheCallback : public tTVPCompactEventCallbackIntf
 		}
 	}
 } static TVPClearAutoPathCacheCallback;
-static bool TVPClearAutoPathCacheCallbackInit = false;
 //---------------------------------------------------------------------------
 void TVPAddAutoPath(const ttstr & name)
 {
@@ -1341,11 +1568,10 @@ void TVPRemoveAutoPath(const ttstr &name)
 static tjs_uint TVPRebuildAutoPathTable()
 {
 	// rebuild auto path table
-	if(AutoPathTableInit) return 0;
-
 	TVPInitStorageOptions();
 
 	tTJSCriticalSectionHolder cs_holder(TVPCreateStreamCS);
+	if(AutoPathTableInit) return 0;
 
 	TVPAutoPathTable.Clear();
 
@@ -1485,51 +1711,70 @@ static tjs_uint TVPRebuildAutoPathTable()
 //---------------------------------------------------------------------------
 ttstr TVPGetPlacedPath(const ttstr & name)
 {
+	try
+	{
+		tTJSCriticalSectionHolder cs_holder(TVPCreateStreamCS);
 
 #ifndef TVP_DONT_CLEAR_AUTOPATH_CACHE
 	// search path and return the path which the "name" is placed.
 	// returned name is normalized. returns empty string if the storage is not
 	// found.
-	if(!TVPClearAutoPathCacheCallbackInit)
+	//
+	// TVPGetPlacedPath は TVPCreateStream / TVPClearStorageCache / cache thread
+	// 等から任意スレッドで呼ばれる。bool フラグだけでは初回呼び出しが同時に
+	// 走った場合に二重登録される (= compact 時に AutoPath cache が 2 回 clear
+	// される) ため、std::call_once で塞ぐ。
 	{
-		TVPAddCompactEventHook(&TVPClearAutoPathCacheCallback);
-		TVPClearAutoPathCacheCallbackInit = true;
+		static std::once_flag flag;
+		std::call_once(flag, []{
+			TVPAddCompactEventHook(&TVPClearAutoPathCacheCallback);
+		});
 	}
 #endif
 
-	ttstr * incache = TVPAutoPathCache.FindAndTouch(name);
-	if(incache) return *incache; // found in cache
+		ttstr * incache = TVPAutoPathCache.FindAndTouch(name);
+		if(incache) return TVPMakeIndependentString(*incache); // found in cache
 
-	tTJSCriticalSectionHolder cs_holder(TVPCreateStreamCS);
+		ttstr normalized(TVPNormalizeStorageName(name));
 
-	ttstr normalized(TVPNormalizeStorageName(name));
+		bool found = TVPIsExistentStorageNoSearchNoNormalize(normalized);
+		if(found)
+		{
+			// found in current folder
+			// キャッシュへは独立 VS を格納し、返り値も独立 VS にして
+			// スレッド間でバッファを共有させない。
+			TVPAutoPathCache.Add(TVPMakeIndependentString(name),
+				TVPMakeIndependentString(normalized));
+			return TVPMakeIndependentString(normalized);
+		}
 
-	bool found = TVPIsExistentStorageNoSearchNoNormalize(normalized);
-	if(found)
-	{
-		// found in current folder
-		TVPAutoPathCache.Add(name, normalized);
-		return normalized;
+		// not found in current folder
+		// search through auto path table
+
+		ttstr storagename = TVPExtractStorageName(normalized);
+
+		TVPRebuildAutoPathTable(); // ensure auto path table
+		tTVPFileInfo *result = TVPFindAutoPathTable(storagename);
+		if(result && (result->Flag & tTVPFileInfo::EMPTY_FILE) == 0 )
+		{
+			// found in table
+			TVPAutoPathCache.Add(TVPMakeIndependentString(name),
+				TVPMakeIndependentString(result->FilePath));
+			return TVPMakeIndependentString(result->FilePath);
+		}
+
+		// not found
+		TVPAutoPathCache.Add(TVPMakeIndependentString(name), ttstr());
+		return ttstr();
 	}
-
-	// not found in current folder
-	// search through auto path table
-
-	ttstr storagename = TVPExtractStorageName(normalized);
-
-	TVPRebuildAutoPathTable(); // ensure auto path table
-	tTVPFileInfo *result = TVPFindAutoPathTable(storagename);
-	if(result && (result->Flag & tTVPFileInfo::EMPTY_FILE) == 0 )
+	catch(const std::bad_alloc &)
 	{
-		// found in table
-		ttstr found = result->FilePath;
-		TVPAutoPathCache.Add(name, found);
-		return found;
+		static std::atomic<bool> warned(false);
+		if(!warned.exchange(true, std::memory_order_relaxed)) {
+			TVPAddImportantLog(TJS_W("(warn) TVPGetPlacedPath: memory allocation failed (further warnings suppressed)"));
+		}
+		return ttstr();
 	}
-
-	// not found
-	TVPAutoPathCache.Add(name, ttstr());
-	return ttstr();
 }
 //---------------------------------------------------------------------------
 
@@ -1595,6 +1840,7 @@ bool TVPIsExistentStorage(const ttstr &name)
 iTJSDispatch2* TVPGetFilePropertyNoAddRef( const ttstr& name )
 {
 	TVPRebuildAutoPathTable(); // ensure auto path table
+	tTJSCriticalSectionHolder cs_holder(TVPCreateStreamCS);
 	tTVPFileInfo *result = TVPAutoPathTable.Find( name );
 	if( result && ( result->Flag & tTVPFileInfo::EXIST_PROP) ) {
 		// found in table
@@ -1674,7 +1920,10 @@ iTJSBinaryStream * _InnerTVPCreateStream(const ttstr &name, tjs_uint32 flags)
 #else
 	if(access >= 1) {
 		// キャッシュから情報を消して再検索されるようにする
-		TVPAutoPathCache.Delete(name);
+		{
+			tTJSCriticalSectionHolder cs_holder(TVPCreateStreamCS);
+			TVPAutoPathCache.Delete(name);
+		}
 		// XXX こっちはいる？
 		TVPClearXP3SegmentCache();
 	}
@@ -1700,8 +1949,20 @@ static iTJSBinaryStream * _TVPCreateStream(const ttstr & _name, tjs_uint32 flags
 
 	if(name.IsEmpty()) TVPThrowExceptionMessage(TVPCannotOpenStorage, _name);
 
+	// Read 以外 (WRITE/APPEND/UPDATE) で開く path は中身が変わる可能性があるので
+	// 両層 cache から該当 path を駆逐する。これで「ファイルを書き換えた直後に
+	// 同 path を再 load して古い decode 結果が返る」を防ぐ。各 SaveHandler や
+	// 独自書き込み経路ごとに TVPClearGraphicCache 等を呼んで予防していたのを
+	// ここに集約。
+	// stale 化が目的なので force=true で表から強制削除 (外部保持中の stream は
+	// 旧 buffer を抱えたまま残るが、次の reader 用に表エントリは無効化)。
+	if(access != TJS_BS_READ) {
+		TVPClearStorageCache(name, /*force=*/true);
+		TVPClearGraphicCacheEntry(name);
+	}
+
 	if (access == TJS_BS_READ && TVPIsCacheTargetFile(name)) {
-		
+
 		// 拡張子を切り出す
 		ttstr ext = TVPExtractStorageExt(name);
 
@@ -1832,7 +2093,10 @@ void TVPClearStorageCaches()
 {
 	// clear all storage related caches
 	TVPClearXP3SegmentCache();
-	TVPClearAutoPathCache();
+	{
+		tTJSCriticalSectionHolder cs_holder(TVPCreateStreamCS);
+		TVPClearAutoPathCache();
+	}
 }
 //---------------------------------------------------------------------------
 
@@ -2005,25 +2269,216 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/addCacheTargetExtension) {
 	if( numparams < 1 ) return TJS_E_BADPARAMCOUNT;
 	ttstr ext = *param[0];
 	if( ext.IsEmpty() ) return TJS_E_INVALIDPARAM;
-	TVPAddCacheTargetExtension(ext);
+	tjs_uint64 minSize = 0;
+	if( numparams >= 2 && param[1]->Type() != tvtVoid ) {
+		tjs_int64 v = (tjs_int64)*param[1];
+		if (v > 0) minSize = (tjs_uint64)v;
+	}
+	TVPAddCacheTargetExtension(ext, minSize);
 	return TJS_S_OK;
 }
 TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/addCacheTargetExtension )
 //----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/addDecodeTargetExtension) {
+	if( numparams < 1 ) return TJS_E_BADPARAMCOUNT;
+	ttstr ext = *param[0];
+	if( ext.IsEmpty() ) return TJS_E_INVALIDPARAM;
+	tjs_uint64 minSize = 0;
+	if( numparams >= 2 && param[1]->Type() != tvtVoid ) {
+		tjs_int64 v = (tjs_int64)*param[1];
+		if (v > 0) minSize = (tjs_uint64)v;
+	}
+	TVPAddDecodeTargetExtension(ext, minSize);
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/addDecodeTargetExtension )
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/removeDecodeTargetExtension) {
+	if( numparams < 1 ) return TJS_E_BADPARAMCOUNT;
+	ttstr ext = *param[0];
+	if( ext.IsEmpty() ) return TJS_E_INVALIDPARAM;
+	TVPRemoveDecodeTargetExtension(ext);
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/removeDecodeTargetExtension )
+//----------------------------------------------------------------------
 TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/requestCache) {
 	if( numparams < 1 ) return TJS_E_BADPARAMCOUNT;
 	ttstr path = *param[0];
-	Application->CacheFileRequest(path);
+	tjs_uint64 minSize = 0;
+	if( numparams >= 2 && param[1]->Type() != tvtVoid ) {
+		tjs_int64 v = (tjs_int64)*param[1];
+		if (v > 0) minSize = (tjs_uint64)v;
+	}
+	ttstr nname = TVPNormalizeStorageName(path);
+	// file:// の場合のみ file 層キャッシュを発火 (psb:// / psd:// 等の
+	// MediaStorage プラグイン経由のスキームでは file 層は適用外なので
+	// CacheFileRequest を呼ばず、警告ログも出さない)
+	if( TVPIsCacheTargetFile(nname) ) {
+		Application->CacheFileRequest(path, false, minSize);
+	}
+	// 拡張子が decode-target に登録されていれば、scheme を問わず decode
+	// prefetch を発火 (worker は tTVPStreamHolder → 各 MediaStorage の
+	// Open 経由でストリームを得る。TVPCreateStreamCS で global lock 済)
+	if( TVPIsDecodeTargetFile(nname) ) {
+		Application->LoadImagePrefetchRequest(path);
+	}
 	return TJS_S_OK;
 }
 TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/requestCache )
 //----------------------------------------------------------------------
 TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/clearCache) {
-	ttstr path = numparams > 1 ? *param[0] : TJS_W("");
-	Application->CacheFileClear(path);
+	// 両層 (file 層 / decode 層) を対象にした evict。
+	// 引数なし: transient 全消し (P2 で pinned エントリを残す)
+	// 引数あり: path 単位 evict (両層)
+	// (旧実装は numparams>1 という条件で path 引数が事実上機能していなかった
+	//  バグがあった。ここで修正)
+	ttstr path = (numparams >= 1 && param[0]->Type() != tvtVoid) ? *param[0] : TJS_W("");
+	if( path.IsEmpty() ) {
+		// transient 全消し (両層)
+		Application->CacheFileClear(path); // file 層全消し
+		TVPClearTransientGraphicCache();   // decode 層 transient 全消し
+		TVPFlushImagePrefetchQueue();
+	} else {
+		// path 単位。decode 層 cache key は autopath 解決後の物理 path で
+		// 揃えているので TVPResolveCachePath で同じ正規化を行う。
+		// file 層 cache は元から GetPlacedPath で登録されているので同様。
+		ttstr resolved = TVPResolveCachePath(path);
+		Application->CacheFileClear(resolved); // file 層 path 単位
+		TVPClearGraphicCacheEntry(resolved);   // decode 層 path 単位
+	}
 	return TJS_S_OK;
 }
 TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/clearCache )
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/clearAllCaches) {
+	// 両層全消し (P2 以降は pinned 含めて全部消える MAX Compact 相当)
+	Application->CacheFileClear(TJS_W(""));
+	TVPClearGraphicCache();
+	TVPFlushImagePrefetchQueue();
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/clearAllCaches )
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/clearTransientCaches) {
+	// 両層 transient 全消し (pinned は残る)。タイトル戻り想定。
+	TVPClearTransientStorageCache();
+	TVPClearTransientGraphicCache();
+	TVPFlushImagePrefetchQueue();
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/clearTransientCaches )
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/pinCache) {
+	if( numparams < 1 ) return TJS_E_BADPARAMCOUNT;
+	ttstr path = *param[0];
+	ttstr nname = TVPNormalizeStorageName(path);
+	TVPPinCache(nname);
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/pinCache )
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/unpinCache) {
+	if( numparams < 1 ) return TJS_E_BADPARAMCOUNT;
+	ttstr path = *param[0];
+	ttstr nname = TVPNormalizeStorageName(path);
+	TVPUnpinCache(nname);
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/unpinCache )
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/isCachePinned) {
+	if( numparams < 1 ) return TJS_E_BADPARAMCOUNT;
+	ttstr path = *param[0];
+	ttstr nname = TVPNormalizeStorageName(path);
+	if( result ) {
+		*result = TVPIsCachePathPinned(nname) ? 1 : 0;
+	}
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/isCachePinned )
+//----------------------------------------------------------------------
+// file 層キャッシュエントリ一覧。Array<Dictionary> で返す。
+// 各エントリ: %[ path:..., size:..., lastaccess:..., usecount:..., pinned:0/1 ]
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/getFileCacheList) {
+	if( !result ) return TJS_S_OK;
+	std::vector<TVPStorageCacheEntryInfo> entries;
+	TVPGetStorageCacheEntries(entries);
+	iTJSDispatch2 *array = TJSCreateArrayObject();
+	try {
+		tjs_int idx = 0;
+		for( auto &e : entries ) {
+			iTJSDispatch2 *dic = TJSCreateDictionaryObject();
+			try {
+				tTJSVariant v;
+				v = e.name;                  dic->PropSet(TJS_MEMBERENSURE, TJS_W("path"),       0, &v, dic);
+				v = (tjs_int64)e.size;       dic->PropSet(TJS_MEMBERENSURE, TJS_W("size"),       0, &v, dic);
+				v = (tjs_int64)e.lastaccess; dic->PropSet(TJS_MEMBERENSURE, TJS_W("lastaccess"), 0, &v, dic);
+				v = (tjs_int)e.usecount;     dic->PropSet(TJS_MEMBERENSURE, TJS_W("usecount"),   0, &v, dic);
+				v = e.pinned ? 1 : 0;        dic->PropSet(TJS_MEMBERENSURE, TJS_W("pinned"),     0, &v, dic);
+				tTJSVariant dv(dic, dic);
+				array->PropSetByNum(TJS_MEMBERENSURE, idx++, &dv, array);
+			} catch(...) { dic->Release(); throw; }
+			dic->Release();
+		}
+		*result = tTJSVariant(array, array);
+	} catch(...) { array->Release(); throw; }
+	array->Release();
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/getFileCacheList )
+//----------------------------------------------------------------------
+// decode 層キャッシュエントリ一覧。Array<Dictionary> で返す。
+// 各エントリ: %[ path:..., keyidx:..., mode:..., dw:..., dh:...,
+//                width:..., height:..., bytes:..., pinned:0/1 ]
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/getImageCacheList) {
+	if( !result ) return TJS_S_OK;
+	std::vector<TVPGraphicCacheEntryInfo> entries;
+	TVPGetGraphicCacheEntries(entries);
+	iTJSDispatch2 *array = TJSCreateArrayObject();
+	try {
+		tjs_int idx = 0;
+		for( auto &e : entries ) {
+			iTJSDispatch2 *dic = TJSCreateDictionaryObject();
+			try {
+				tTJSVariant v;
+				v = e.name;             dic->PropSet(TJS_MEMBERENSURE, TJS_W("path"),   0, &v, dic);
+				v = (tjs_int)e.keyidx;  dic->PropSet(TJS_MEMBERENSURE, TJS_W("keyidx"), 0, &v, dic);
+				v = (tjs_int)e.mode;    dic->PropSet(TJS_MEMBERENSURE, TJS_W("mode"),   0, &v, dic);
+				v = (tjs_int)e.dw;      dic->PropSet(TJS_MEMBERENSURE, TJS_W("dw"),     0, &v, dic);
+				v = (tjs_int)e.dh;      dic->PropSet(TJS_MEMBERENSURE, TJS_W("dh"),     0, &v, dic);
+				v = (tjs_int)e.width;   dic->PropSet(TJS_MEMBERENSURE, TJS_W("width"),  0, &v, dic);
+				v = (tjs_int)e.height;  dic->PropSet(TJS_MEMBERENSURE, TJS_W("height"), 0, &v, dic);
+				v = (tjs_int64)e.bytes; dic->PropSet(TJS_MEMBERENSURE, TJS_W("bytes"),  0, &v, dic);
+				v = e.pinned ? 1 : 0;   dic->PropSet(TJS_MEMBERENSURE, TJS_W("pinned"), 0, &v, dic);
+				tTJSVariant dv(dic, dic);
+				array->PropSetByNum(TJS_MEMBERENSURE, idx++, &dv, array);
+			} catch(...) { dic->Release(); throw; }
+			dic->Release();
+		}
+		*result = tTJSVariant(array, array);
+	} catch(...) { array->Release(); throw; }
+	array->Release();
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/getImageCacheList )
+//----------------------------------------------------------------------
+// file 層キャッシュ一覧をログ出力。WARNING (TVPAddImportantLog) で
+// MASTER ビルドでも見えるレベルで出す (調査用途のため)。
+// 共通実装は TVPDumpFileCacheList()/TVPDumpImageCacheList() で本体定義 (REPL から
+// も同じ実体を呼ぶ)。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/dumpFileCacheList) {
+	TVPDumpFileCacheList();
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/dumpFileCacheList )
+//----------------------------------------------------------------------
+// decode 層キャッシュ一覧をログ出力。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/dumpImageCacheList) {
+	TVPDumpImageCacheList();
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/dumpImageCacheList )
 TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/clearOldCache) {
 	int keepTime = numparams > 1 ? (int)*param[0] : 0;
 	int force = numparams > 2 ? (int)*param[1] : 0;
@@ -2047,17 +2502,49 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/isCacheLoading) {
 }
 TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/isCacheLoading )
 //----------------------------------------------------------------------
+// 画像 decode prefetch (Storages.requestCache 経路の async decode) が
+// 進行中かどうか。requestCache 後に loadImages する前の polling 用。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/isImagePrefetchLoading) {
+	if( result ) {
+		*result = TVPIsImagePrefetchLoading() ? 1 : 0;
+	}
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/isImagePrefetchLoading )
+//----------------------------------------------------------------------
 TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/requestFastCache) {
 	if( numparams < 1 ) return TJS_E_BADPARAMCOUNT;
 	ttstr path = *param[0];
-	Application->CacheFileRequest(path, true);
+	tjs_uint64 minSize = 0;
+	if( numparams >= 2 && param[1]->Type() != tvtVoid ) {
+		tjs_int64 v = (tjs_int64)*param[1];
+		if (v > 0) minSize = (tjs_uint64)v;
+	}
+	ttstr nname = TVPNormalizeStorageName(path);
+	if( TVPIsCacheTargetFile(nname) ) {
+		Application->CacheFileRequest(path, true, minSize);
+	}
+	if( TVPIsDecodeTargetFile(nname) ) {
+		Application->LoadImagePrefetchRequest(path);
+	}
 	return TJS_S_OK;
 }
 TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/requestFastCache )
 //----------------------------------------------------------------------
 TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/clearFastCache) {
-	ttstr path = numparams > 1 ? *param[0] : TJS_W("");
-	Application->CacheFileClear(path);
+	// 旧 fast 系 alias。clearCache と同じく両層対応に揃える。
+	// (旧実装は numparams>1 で path 引数が事実上無効だったバグを修正)
+	ttstr path = (numparams >= 1 && param[0]->Type() != tvtVoid) ? *param[0] : TJS_W("");
+	if( path.IsEmpty() ) {
+		Application->CacheFileClear(path);
+		TVPClearTransientGraphicCache();
+		TVPFlushImagePrefetchQueue();
+	} else {
+		// clearCache と同じく autopath 解決後の物理 path で揃える
+		ttstr resolved = TVPResolveCachePath(path);
+		Application->CacheFileClear(resolved);
+		TVPClearGraphicCacheEntry(resolved);
+	}
 	return TJS_S_OK;
 }
 TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/clearFastCache )

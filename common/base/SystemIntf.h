@@ -37,6 +37,10 @@ TJS_EXP_FUNC_DEF(ttstr, TVPGetPlatformName, ());
 TJS_EXP_FUNC_DEF(ttstr, TVPGetOSName, ());
 		// retrieve OS name
 		// implement in each platform.
+TJS_EXP_FUNC_DEF(ttstr, TVPGetBuildVariantName, ());
+		// retrieve variant name (eg. "WIN", "SDL")
+		// predefined KRKRZ_VARIANT + KRKRZ_VARIANT_OPTION
+
 extern void TVPFireOnApplicationActivateEvent(bool activate_or_deactivate);
 extern void TVPFireOnApplicationTerminating();
 extern tjs_int TVPGetOSBits();

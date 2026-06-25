@@ -9,7 +9,7 @@ set(SIMPLEBIND_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../simplebinder CACHE PATH "Path 
 function(krkrz_plugin PROJECT_NAME)
     set(options STATIC NCBIND SIMPLEBIND)
     set(oneValueArgs VERSION)
-    set(multiValueArgs SOURCES INCLUDES LIBRARIES)
+    set(multiValueArgs SOURCES INCLUDES LIBRARIES DEFINITIONS)
     cmake_parse_arguments(KRKRZ "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
     
     if(NOT KRKRZ_VERSION)
@@ -52,6 +52,10 @@ function(krkrz_plugin PROJECT_NAME)
             $<$<CXX_COMPILER_ID:MSVC>:/WHOLEARCHIVE:$<TARGET_FILE:${PROJECT_NAME}>>
             $<$<OR:$<CXX_COMPILER_ID:GNU>,$<CXX_COMPILER_ID:Clang>>:-Wl,--whole-archive,$<TARGET_FILE:${PROJECT_NAME}>,--no-whole-archive>
         )
+    endif()
+
+    if (KRKRZ_DEFINITIONS)
+        target_compile_definitions(${PROJECT_NAME} PRIVATE ${KRKRZ_DEFINITIONS})
     endif()
 
     if(KRKRZ_INCLUDES)

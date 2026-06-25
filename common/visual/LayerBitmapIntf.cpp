@@ -80,7 +80,9 @@ static float sBmFactor[] =
 //---------------------------------------------------------------------------
 static tjs_int GetAdaptiveThreadNum(tjs_int pixelNum, float factor)
 {
-  if (pixelNum >= factor * 500)
+  // 閾値乗数は CMake -DKRKRZ_THREAD_PIXEL_SCALE=N (デフォルト 500) で調整可能。
+  // ThreadIntf.h で fallback 定義あり。
+  if (pixelNum >= factor * KRKRZ_THREAD_PIXEL_SCALE)
     return TVPGetThreadNum();
   else
     return 1;

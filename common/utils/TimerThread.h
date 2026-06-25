@@ -11,7 +11,13 @@
 #ifndef TimerBaseH
 #define TimerBaseH
 
+// WINVER は従来の Win32 窓ベース NativeEventQueue、それ以外 (SDL/Generic) は
+// Application の AppEventInterface 経由で wake メッセージを受ける。doc/AppEvent.md 参照。
+#ifdef __WINVER__
 #include "NativeEventQueue.h"
+#else
+#include "Application.h"
+#endif
 #include "ThreadIntf.h"
 
 //---------------------------------------------------------------------------
@@ -64,6 +70,9 @@ protected:
 // tTVPTimerThread
 //---------------------------------------------------------------------------
 class tTVPTimerThread : public tTVPThread
+#ifndef __WINVER__
+	, public AppEventInterface
+#endif
 {
 	// thread for triggering punctual event.
 	// normal Windows timer cannot call the timer callback routine at
@@ -74,8 +83,10 @@ class tTVPTimerThread : public tTVPThread
 	std::vector<tTVPTimerBase *> ProcWork;
 	bool PendingEventsAvailable;
 	tTVPThreadEvent Event;
-	
+
+#ifdef __WINVER__
 	NativeEventQueue<tTVPTimerThread> EventQueue;
+#endif
 
 public:
 
@@ -88,7 +99,13 @@ protected:
 	void Execute();
 
 private:
+	// wake メッセージを受けたときの本体処理 (メインスレッド)。
+	void HandleWake();
+#ifdef __WINVER__
 	void Proc( NativeEvent& event );
+#else
+	bool Dispatch( tjs_int message, tjs_int64 wparam, tjs_int64 lparam ) override;
+#endif
 
 	void AddItem(tTVPTimerBase * item);
 	bool RemoveItem(tTVPTimerBase *item);

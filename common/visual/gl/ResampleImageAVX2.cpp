@@ -722,7 +722,7 @@ public:
 		int maxheight = srcheight > dstheight ? srcheight : dstheight;
 		int threadNum = 1;
 		int pixelNum = maxwidth*(int)tap*maxheight + maxheight*(int)tap*maxwidth;
-		if( pixelNum >= 50 * 500 ) {
+		if( pixelNum >= 50 * KRKRZ_THREAD_PIXEL_SCALE ) {
 			threadNum = TVPGetThreadNum();
 		}
 		if( threadNum == 1 ) { // 面積が少なくスレッドが1の時はそのまま実行
@@ -756,7 +756,7 @@ public:
 		int maxheight = srcheight > dstheight ? srcheight : dstheight;
 		int threadNum = 1;
 		int pixelNum = maxwidth*maxheight;
-		if( pixelNum >= 50 * 500 ) {
+		if( pixelNum >= 50 * KRKRZ_THREAD_PIXEL_SCALE ) {
 			threadNum = TVPGetThreadNum();
 		}
 		if( threadNum == 1 ) { // 面積が少なくスレッドが1の時はそのまま実行
@@ -1066,7 +1066,7 @@ public:
 		int maxheight = srcheight > dstheight ? srcheight : dstheight;
 		int threadNum = 1;
 		int pixelNum = maxwidth*(int)tap*maxheight + maxheight*(int)tap*maxwidth;
-		if( pixelNum >= 50 * 500 ) {
+		if( pixelNum >= 50 * KRKRZ_THREAD_PIXEL_SCALE ) {
 			threadNum = TVPGetThreadNum();
 		}
 		if( threadNum == 1 ) { // 面積が少なくスレッドが1の時はそのまま実行
@@ -1099,7 +1099,7 @@ public:
 		int maxheight = srcheight > dstheight ? srcheight : dstheight;
 		int threadNum = 1;
 		int pixelNum = maxwidth*maxheight;
-		if( pixelNum >= 50 * 500 ) {
+		if( pixelNum >= 50 * KRKRZ_THREAD_PIXEL_SCALE ) {
 			threadNum = TVPGetThreadNum();
 		}
 		if( threadNum == 1 ) { // 面積が少なくスレッドが1の時はそのまま実行

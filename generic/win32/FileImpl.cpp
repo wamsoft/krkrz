@@ -29,6 +29,7 @@ public:
 	virtual void CommitSavedata();
 	virtual void RollbackSavedata();
 	virtual tjs_uint64 LastModifiedFileTime(const tjs_char *path);
+	virtual tjs_uint64 FileSize(const tjs_char *path);
 };
 
 StdFileSystem::StdFileSystem()
@@ -373,6 +374,16 @@ StdFileSystem::LastModifiedFileTime(const tjs_char *path)
 	// FILETIME 互換に変換
 	ret += 11644473600LL; // 1970-01-01T00
 	return ret;
+}
+
+tjs_uint64
+StdFileSystem::FileSize(const tjs_char *path)
+{
+	struct __stat64 stbuf;
+	if(_wstat64( (const wchar_t*)path, &stbuf) != 0 ) {
+		return 0;
+	}
+	return static_cast<tjs_uint64>(stbuf.st_size);
 }
 
 iTVPLocalFileSystem *

@@ -186,14 +186,24 @@ void TVPLoadJPEG(void* formatdata, void *callbackdata, tTVPGraphicSizeCallback s
 	iTJSBinaryStream *src, tjs_int keyidx,  tTVPGraphicLoadMode mode)
 {
 #ifdef TVP_USE_TURBO_JPEG_API
-	static tjhandle jpegDecompressor = nullptr;
-	if (!jpegDecompressor) {
-		jpegDecompressor = tjInitDecompress();
-		if (!jpegDecompressor) {
+	// libjpeg-turbo の tjhandle は **スレッドセーフではない** (1 ハンドルを
+	// 並列 thread から触ると内部状態が壊れて decompress 中にクラッシュする)。
+	// 旧実装は static で共有していたが、async image loader thread と
+	// メインスレッドが同時に Bitmap.load → TVPLoadJPEG を実行する経路で
+	// 顕在化したため、thread_local 化して各スレッド固有の handle を持つ。
+	struct tjHandleHolder {
+		tjhandle h = nullptr;
+		~tjHandleHolder() { if (h) tjDestroy(h); }
+	};
+	thread_local tjHandleHolder _jpegHolder;
+	if (!_jpegHolder.h) {
+		_jpegHolder.h = tjInitDecompress();
+		if (!_jpegHolder.h) {
 			TVPThrowExceptionMessage(TVPJPEGLoadError,
 				ttstr(TVPErrorCode) + ttstr("tjInitDecompress failed"));
 		}
 	}
+	tjhandle jpegDecompressor = _jpegHolder.h;
 
 	// JPEG does not support palettized image
 	if(mode == glmPalettized)
@@ -567,7 +577,9 @@ void TVPSaveAsJPG(void* formatdata, iTJSBinaryStream* dst, const tTVPBaseBitmap*
 	size_t buff_size = width*height*sizeof(tjs_uint32);
 	tjs_uint8* dest_buf = new tjs_uint8[buff_size];
 	try {
-		TVPClearGraphicCache();
+		// 旧実装は冒頭で TVPClearGraphicCache() を呼んでいた (decode 層全消し)。
+		// 過剰なので tTVPGraphicHandlerType::Save 側で対象 path の entry のみ
+		// 駆逐する形に変更済み。
 
 		struct jpeg_error_mgr jerr;
 		cinfo.err = jpeg_std_error( &jerr );

@@ -13,6 +13,56 @@ add_link_options("$<$<AND:$<C_COMPILER_ID:MSVC>,$<COMPILE_LANGUAGE:C,CXX>>:/DEBU
 set(PROJECT_NAME krkrz)
 set(PROJECT_VERSION 2.0.0)
 
+# ----------------------------------------------------
+# vcpkg マニフェスト統合
+#
+# トップの vcpkg.json を BASE として、サブモジュール側 (movie-player や
+# libplugin など) の vcpkg.json をマージしたものを ${CMAKE_BINARY_DIR}/vcpkg.json
+# に書き出し、VCPKG_MANIFEST_DIR を build dir に向ける。トップの vcpkg.json
+# 自体は触らない (commit 済みファイルのまま)。
+#
+# 追加で取り込みたいフォルダがあれば -DKRKRZ_VCPKG_EXTRA_MANIFESTS="dir1;dir2"
+# で指定する。各フォルダ直下の vcpkg.json が拾われる。
+# ----------------------------------------------------
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/MergeVcpkgManifest.cmake)
+
+set(KRKRZ_VCPKG_EXTRA_MANIFESTS "" CACHE STRING
+    "Additional directories whose vcpkg.json should be merged into the build manifest")
+
+set(_KRKRZ_VCPKG_SUBDIRS
+    "${CMAKE_CURRENT_SOURCE_DIR}/external/movie-player"
+)
+if(KRKRZ_VCPKG_EXTRA_MANIFESTS)
+    list(APPEND _KRKRZ_VCPKG_SUBDIRS ${KRKRZ_VCPKG_EXTRA_MANIFESTS})
+endif()
+
+# TVP_PLUGINS × TVP_PLUGIN_FOLDERS を pre-project でも解決して、各プラグイン
+# 直下の vcpkg.json を統合対象に含める。本体側 foreach(PLUGIN ${TVP_PLUGINS})
+# と同じ検索順 (フォルダリストの先頭で一致したものを採用)。
+# TVP_PLUGINS / TVP_PLUGIN_FOLDERS は -D もしくは初期 CACHE で渡しておく
+# 必要がある (project() 後に win32/custom.cmake 等で設定したものは
+# pre-project マージには間に合わない)。
+foreach(_plugin IN LISTS TVP_PLUGINS)
+    foreach(_folder IN LISTS TVP_PLUGIN_FOLDERS)
+        if(EXISTS "${_folder}/${_plugin}")
+            list(APPEND _KRKRZ_VCPKG_SUBDIRS "${_folder}/${_plugin}")
+            break()
+        endif()
+    endforeach()
+endforeach()
+
+krkrz_merge_vcpkg_manifest(
+    BASE    "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg.json"
+    OUTPUT  "${CMAKE_BINARY_DIR}/vcpkg.json"
+    SUBDIRS ${_KRKRZ_VCPKG_SUBDIRS}
+    # movie-player の glew/glfw3 はサンプル用で krkrz のビルドには不要
+    EXCLUDE
+        "movie-player:glew"
+        "movie-player:glfw3"
+)
+set(VCPKG_MANIFEST_DIR "${CMAKE_BINARY_DIR}" CACHE PATH
+    "vcpkg manifest directory (merged manifest written by krkrz_merge_vcpkg_manifest)" FORCE)
+
 project(${PROJECT_NAME} VERSION ${PROJECT_VERSION})
 
 option(MASTER "build master version" OFF)
@@ -23,23 +73,161 @@ set(KRKRZ_VARIANT "SDL" CACHE STRING "Build variant: SDL (default), WIN (Windows
 option(KRKRZ_BUILD_TESTS "build SIMD parity tests" ON)
 option(KRKRZ_SDL3_SPLASHWINDOW "use splash window" OFF)
 
-# REPL はデスクトップ (Win/Mac/Linux) でのみデフォルト有効
-if(WIN32 OR APPLE OR (UNIX AND NOT ANDROID AND NOT IOS))
-	set(KRKRZ_REPL_DEFAULT ON)
+# Elements (汎用ダイアログ機構 / -userconf UI) を組み込むかどうか。
+# SDL build でのみ意味があり、 OFF にすると:
+#   - external/elements を add_subdirectory しない
+#     (cycfi::elements / thorvg / elements_modal が要らなくなる。 elements_modal は
+#      elements リポ配下 external/elements/external/elements_modal でビルドされる)
+#   - common/visual/elements/* と sdl3/visual/SDL{Dialog,Elements*}.cpp /
+#     common/visual/opengl/OGLDialogRenderer.cpp が build から外れる
+#   - KRKRZ_HAS_ELEMENTS マクロが立たないので、 DrawDevice / Window / TJS の
+#     dialog overlay / 入力転送 / `Dialog` ネイティブクラス / `-userconf` UI 経路が
+#     #ifdef で全部 stub 化される
+# WIN / LIB バリアントには元から Elements は組み込まれていないので、 この
+# オプションは事実上 SDL ビルド専用の knob。
+option(KRKRZ_USE_ELEMENTS "embed Elements dialog UI (cycfi::elements + thorvg + elements_modal, SDL build only)" ON)
+
+# デスクトップ判定 (Win/Mac/Linux)
+# Android/iOS はデスクトップ機能を無効化
+if(WIN32 OR (APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS") OR (UNIX AND NOT ANDROID))
+	set(KRKRZ_DESKTOP ON)
 else()
-	set(KRKRZ_REPL_DEFAULT OFF)
+	set(KRKRZ_DESKTOP OFF)
 endif()
-option(KRKRZ_REPL "enable interactive TJS REPL (requires icline)" ${KRKRZ_REPL_DEFAULT})
+
+# REPL はデスクトップでのみデフォルト有効
+option(KRKRZ_REPL "enable interactive TJS REPL (requires icline)" ${KRKRZ_DESKTOP})
+# 端末制御 (raw mode / termios / Win32 console API) を持たない環境向けに
+# icline を切り、fgets ベースの簡易行入力に切り替えるオプション。
+# Switch 等で有効にする想定。デフォルト ON (= icline を使う)。
+option(KRKRZ_REPL_LINE_EDIT "use icline (line editing/history/color) for REPL" ON)
+
+# LogCore はデスクトップでのみ有効 (リングバッファ、ファイル出力、TJS handler 等)
+# モバイルでは SDL3 のネイティブログ出力を直接使用 (Android→logcat, iOS→os_log)
+option(KRKRZ_USE_LOGCORE "enable LogCore (desktop logging features)" ${KRKRZ_DESKTOP})
+
+# コンパイル時 TVPLOG_LEVEL の上書き。空文字列なら build type に応じて自動
+# (MASTER=WARNING / NDEBUG=INFO / それ以外=DEBUG)。実行時 -loglevel=DEBUG を
+# 効かせるためには Release/RelWithDebInfo (NDEBUG) でも DEBUG マクロが
+# コンパイル時に展開される必要があるので、その場合 -DKRKRZ_LOG_LEVEL=DEBUG
+# (= 1) を渡してビルドする。
+# 値: VERBOSE / DEBUG / INFO / WARNING / ERROR / CRITICAL / OFF (大文字)
+set(KRKRZ_LOG_LEVEL "" CACHE STRING "Compile-time log level override (VERBOSE/DEBUG/INFO/WARNING/ERROR/CRITICAL/OFF; empty = auto by build type)")
+if(NOT KRKRZ_LOG_LEVEL STREQUAL "")
+	set(_kz_log_level_map_VERBOSE  0)
+	set(_kz_log_level_map_DEBUG    1)
+	set(_kz_log_level_map_INFO     2)
+	set(_kz_log_level_map_WARNING  3)
+	set(_kz_log_level_map_ERROR    4)
+	set(_kz_log_level_map_CRITICAL 5)
+	set(_kz_log_level_map_OFF      6)
+	if(DEFINED _kz_log_level_map_${KRKRZ_LOG_LEVEL})
+		set(_kz_log_level_value ${_kz_log_level_map_${KRKRZ_LOG_LEVEL}})
+		message(STATUS "KRKRZ_LOG_LEVEL=${KRKRZ_LOG_LEVEL} -> -DTVPLOG_LEVEL=${_kz_log_level_value}")
+		add_compile_definitions(TVPLOG_LEVEL=${_kz_log_level_value})
+	else()
+		message(WARNING "KRKRZ_LOG_LEVEL '${KRKRZ_LOG_LEVEL}' is not recognized; ignoring")
+	endif()
+endif()
 
 # VSCode Debug Adapter Protocol サーバ。デフォルト ON。OFF にすると DAP 関連の
 # ソケット/JSON 処理が #ifdef で全部抜ける (組み込み等で不要な場合)。
 option(KRKRZ_ENABLE_DAP "enable VSCode Debug Adapter Protocol server" ON)
+
+# 動画プレイヤーをストリーム経由で開く (XP3 アーカイブ対応)。
+# OFF にするとファイルパス直接指定で開く。
+option(KRKRZ_MOVIE_STREAM "use stream-based movie player (XP3 archive support)" ON)
+
+# DrawThreadPool (TVPBeginThreadTask 系) の利用統計を atomic カウンタで採取。
+# memoverlay やログから「分散経路の利用率」「メイン spin 時間」等を観察できる。
+# Switch 等で他コアが使われずメインだけ詰まる現象の調査用。
+# OFF (デフォルト): カウンタ操作が完全に消えるので実 build に影響なし。
+option(KRKRZ_DRAW_STATS "collect DrawThreadPool usage stats (atomic counters)" OFF)
+
+# SDL3 内部の malloc/calloc/realloc/free を SDL_SetMemoryFunctions で
+# 本体側に redirect し GlobalAllocStats の Sdl collector に集計する機能。
+# OFF (デフォルト): SDL3 はデフォルトのアロケータをそのまま使う (SDL_SetMemoryFunctions
+# は呼ばれない)。NX 等で SDL_SetMemoryFunctions による hook が問題を起こすため、
+# 動作検証中はデフォルト OFF。観測したいプラットフォームでのみ ON にする。
+option(KRKRZ_SDLMEMORY_STAT "hook SDL3 allocator via SDL_SetMemoryFunctions for GlobalAllocStats" OFF)
+
+# GlobalAllocStats[Krkrz] の細粒度 breakdown (tag 別集計 / size histogram /
+# AllocTagScope による event dispatch 計装) と TJS 言語側 Dictionary/Array
+# instance tracking を有効化する。OFF にすると以下が完全に消える:
+#   - TVPAllocTagScope ctor/dtor (inline 空クラス、thread-local 参照しない)
+#   - operator new override 内の per-tag / size_hist 更新
+#   - tTJSCustomObject ctor/dtor の counter inc/dec
+#   - tTJSDictionaryObject/tTJSArrayObject の register/unregister (mutex+hashset)
+#   - TVPDumpTJSObjectStats と Krkrz Dump の tag/size_hist 行
+# 基本カウンタ (alloc_count / live_bytes) と per-allocator stats (File/
+# Bitmap/Sound) は影響なし、常に有効。
+# OFF (デフォルト): 量産ビルド向け、観測経路が完全に消える。
+# 開発・調査時のみ ON にしてリーク種別を可視化。
+option(KRKRZ_ENABLE_MEMSTAT_DETAIL "Enable per-tag / size_hist / TJSObjectStats diagnostics in Krkrz memory tracking" OFF)
+
+# ----------------------------------------------------------------------------
+# 統計機能の個別 gate (default ON、MASTER=ON 時は強制 OFF)
+#
+# 共通方針: TJS 層 (System.dumpHeap 等) と REPL コマンド (.mem / .memdump /
+# .memoverlay 等) は OFF でもビルドされる。呼ばれた先の観測 API が空値 /
+# "(disabled)" を返すだけで、機能としては何も起きない。
+# ----------------------------------------------------------------------------
+
+# GlobalAllocStats core: operator new override + TJS_malloc redirect + Krkrz
+# pool (TLSF) + 基本カウンタ (alloc_count / live_bytes / peak_bytes)。
+# OFF にすると operator new override / TJS_malloc redirect / 全観測 API が
+# stub 化し、全 alloc は素 std::malloc 直行 (header なし / pool なし)。
+option(KRKRZ_ENABLE_ALLOC_STATS "Enable global new/malloc tracking + Krkrz pool" ON)
+
+# Per-allocator stats: File/Bitmap/Sound allocator が持つ
+# tTVPMemoryAllocatorStatsCollector (size bin + tag 別) 集計。
+# OFF にすると recordAlloc/recordFree が no-op、snapshot が空 Stats、
+# used() が SIZE_MAX を返す ("不明" マーカー)。
+option(KRKRZ_ENABLE_ALLOCATOR_STATS "Enable per-allocator (File/Bitmap/Sound) stats collector" ON)
+
+# MemoryOverlay: 画面右上のリアルタイム折れ線グラフ (sampler thread + GL render)。
+# OFF にすると Initialize/Finalize/SetEnabled/GetSnapshot が no-op、sampler
+# thread が起動せず、GL 側の overlay 描画も呼ばれない。
+option(KRKRZ_ENABLE_MEMORY_OVERLAY "Enable on-screen memory overlay (sampler thread + GL render)" ON)
+
+# MemoryStatPeriodicDump: -memstatinterval=N で起動する周期 dump thread +
+# -memstatonexit / -cachelistonexit による終了時ダンプ。
+# OFF にすると Initialize が空となり cmdline 解析と thread 起動が抜ける。
+option(KRKRZ_ENABLE_PERIODIC_DUMP "Enable -memstatinterval / -memstatonexit / -cachelistonexit" ON)
+
+# MASTER ビルド時は統計機能をすべて強制 OFF (量産バイナリでは観測 overhead /
+# code を排除)。MEMSTAT_DETAIL も同様に強制 OFF。
+if (MASTER)
+    set(KRKRZ_ENABLE_ALLOC_STATS      OFF CACHE BOOL "Forced OFF by MASTER" FORCE)
+    set(KRKRZ_ENABLE_ALLOCATOR_STATS  OFF CACHE BOOL "Forced OFF by MASTER" FORCE)
+    set(KRKRZ_ENABLE_MEMORY_OVERLAY   OFF CACHE BOOL "Forced OFF by MASTER" FORCE)
+    set(KRKRZ_ENABLE_PERIODIC_DUMP    OFF CACHE BOOL "Forced OFF by MASTER" FORCE)
+    set(KRKRZ_ENABLE_MEMSTAT_DETAIL   OFF CACHE BOOL "Forced OFF by MASTER" FORCE)
+    set(KRKRZ_DRAW_STATS              OFF CACHE BOOL "Forced OFF by MASTER" FORCE)
+    set(KRKRZ_SDLMEMORY_STAT          OFF CACHE BOOL "Forced OFF by MASTER" FORCE)
+    message(STATUS "MASTER build: all stat features forced OFF")
+endif()
+
+# 描画分散判定 (GetAdaptiveThreadNum 等) の pixel 数閾値乗数。
+# 各 callsite ごとの factor に対して "pixelNum >= factor * SCALE" で threading 化判定。
+# 値を下げるほど小さい画像でも threading 化される。Switch (Tegra) 実機で 500 / 200 / 100
+# を比較計測した結果 100 が sweet spot だったため 100 をデフォルト採用 (2026-05-08)。
+# - 500: 1T 99% (= ほぼ分散経路に乗らない) → 旧仕様、PC では妥当だが他コアが活用されない
+# - 200: 1T ~46%、Main -130ms/s、FPS +30%。Spin +30ms/s で sync コストはまだ余裕
+# - 100: 1T ~30%、site:244 (Fill) もほぼ NT へ、Spin 増えず。これ以上下げても頭打ち
+# PC 等で旧挙動を確認したい場合は -DKRKRZ_THREAD_PIXEL_SCALE=500 で復元可能。
+set(KRKRZ_THREAD_PIXEL_SCALE "100" CACHE STRING "Pixel-count multiplier for adaptive thread dispatch (lower = more aggressive threading)")
 
 if(KRKRZ_ENABLE_DAP)
 	set(KRKRZ_DEFINES_DAP KRKRZ_ENABLE_DAP)
 	if(WIN32)
 		set(KRKRZ_LIB_DAP ws2_32)
 	endif()
+endif()
+
+# LogCore 有効時: ソース追加 (マクロ定義は KRKRZ_DEFINES 初期化後に追加)
+if(KRKRZ_USE_LOGCORE)
+	list(APPEND KRKRZ_SRC_ADD common/utils/LogCore.cpp)
 endif()
 
 if(WIN32 AND (CMAKE_SIZEOF_VOID_P EQUAL 8))
@@ -83,13 +271,12 @@ TVP_ENABLE_EXECUTE_AT_EXCEPTION
 TVP_LOG_TO_COMMANDLINE_CONSOLE
 UNICODE
 _UNICODE
-# ファイル名をノーマライズしない
-#TVP_NO_NORMALIZE_PATH
 # ファイル検索時はケース無視
 TVP_AUTOPATH_IGNORECASE
 # ローカルパス参照のcaseを強制参照
 #TVP_LOCALFILE_FORCE_CASESENSITIVE
 __CODEGUARD__
+KRKRZ_VARIANT=${KRKRZ_VARIANT}
 )
 
 if(NOT WIN32)
@@ -106,12 +293,57 @@ endif()
 
 if (KRKRZ_REPL)
 list(APPEND KRKRZ_DEFINES KRKRZ_USE_REPL)
+if (NOT KRKRZ_REPL_LINE_EDIT)
+list(APPEND KRKRZ_DEFINES KRKRZ_REPL_NO_ICLINE)
 endif()
+endif()
+
+if (KRKRZ_USE_LOGCORE)
+list(APPEND KRKRZ_DEFINES TVP_USE_LOGCORE)
+endif()
+
+if (KRKRZ_DRAW_STATS)
+list(APPEND KRKRZ_DEFINES KRKRZ_DRAW_STATS)
+endif()
+
+if (KRKRZ_SDLMEMORY_STAT)
+list(APPEND KRKRZ_DEFINES KRKRZ_SDLMEMORY_STAT)
+endif()
+
+if (KRKRZ_ENABLE_MEMSTAT_DETAIL)
+list(APPEND KRKRZ_DEFINES KRKRZ_ENABLE_MEMSTAT_DETAIL)
+endif()
+
+if (KRKRZ_ENABLE_ALLOC_STATS)
+list(APPEND KRKRZ_DEFINES KRKRZ_ENABLE_ALLOC_STATS)
+endif()
+
+if (KRKRZ_ENABLE_ALLOCATOR_STATS)
+list(APPEND KRKRZ_DEFINES KRKRZ_ENABLE_ALLOCATOR_STATS)
+endif()
+
+if (KRKRZ_ENABLE_MEMORY_OVERLAY)
+list(APPEND KRKRZ_DEFINES KRKRZ_ENABLE_MEMORY_OVERLAY)
+endif()
+
+if (KRKRZ_ENABLE_PERIODIC_DUMP)
+list(APPEND KRKRZ_DEFINES KRKRZ_ENABLE_PERIODIC_DUMP)
+endif()
+
+# pixel 閾値乗数。500 (デフォルト値) のときも明示で渡しておく
+# (header の #ifndef フォールバックと一致するので副作用なし)。
+list(APPEND KRKRZ_DEFINES KRKRZ_THREAD_PIXEL_SCALE=${KRKRZ_THREAD_PIXEL_SCALE})
 
 if (KRKRZ_USE_SJIS)
 list(APPEND KRKRZ_DEFINES
 # 標準をSJISにするかどうか
 TVP_TEXT_READ_ANSI_MBCS
+)
+endif()
+
+if (KRKRZ_MOVIE_STREAM)
+list(APPEND KRKRZ_DEFINES
+KRKRZ_MOVIE_STREAM
 )
 endif()
 
@@ -126,34 +358,6 @@ include(sources.cmake)
 if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/win32/custom.cmake")
 message(STATUS "add custom system")
 include(${CMAKE_CURRENT_SOURCE_DIR}/win32/custom.cmake)
-endif()
-
-# ----------------------------------------------------
-# libkrkrz plugin
-# ----------------------------------------------------
-
-if (NOT TARGET libkrkrzplugin)
-
-if (KRKRZ_LIBPLUGIN_FOLDER AND EXISTS "${KRKRZ_LIBPLUGIN_FOLDER}/CMakeLists.txt")
-set(KRKRZ_SRC_FOLDER ${CMAKE_CURRENT_SOURCE_DIR})
-add_subdirectory(${KRKRZ_LIBPLUGIN_FOLDER} ${CMAKE_CURRENT_BINARY_DIR}/krkrz_libplugin)
-elseif (EXISTS "${CMAKE_SOURCE_DIR}/krkrz_libplugin/CMakeLists.txt")
-set(KRKRZ_SRC_FOLDER ${CMAKE_CURRENT_SOURCE_DIR})
-add_subdirectory(${CMAKE_SOURCE_DIR}/krkrz_libplugin ${CMAKE_CURRENT_BINARY_DIR}/krkrz_libplugin)
-endif()
-
-endif()
-
-if (TARGET libkrkrzplugin)
-
-message("krkrz with libkrkrplugin")
-
-list(APPEND KRKRZ_DEFINES
-	USE_LIBPLUGIN
-)
-list(APPEND KRKRZ_LIB_ADD
-	libkrkrzplugin
-)
 endif()
 
 # ----------------------------------------------------
@@ -236,11 +440,13 @@ endif()
 if (NOT TARGET freetype)
 	find_package(freetype CONFIG REQUIRED)
 endif()
-if (NOT TARGET Ogg::ogg)
-	find_package(Ogg CONFIG REQUIRED)
-endif()
-if (NOT TARGET Vorbis::vorbis)
-find_package(Vorbis CONFIG REQUIRED)
+# libogg + libvorbis は krkrz/external/sound-codecs/ で FetchContent して
+# 自前ビルドする。これにより _ogg_malloc/_ogg_calloc/_ogg_realloc/_ogg_free を
+# SoundAllocator (sound_malloc 等) に差し替えられる。
+# 既に親 CMakeLists で Ogg::ogg 等が定義されている場合 (LIB build や別途取込み)
+# は重複構築しない。
+if (NOT TARGET Ogg::ogg OR NOT TARGET Vorbis::vorbis)
+	add_subdirectory(external/sound-codecs)
 endif()
 find_package(PNG MODULE)
 find_package(Opus)
@@ -260,20 +466,9 @@ else()
 	list(APPEND KRKRZ_DEFINES TVP_USE_TURBO_JPEG_API)
 endif()
 
-find_package(OpusFile CONFIG REQUIRED)
-
-if (0)
-find_library(OPUSFILE NAMES opusfile)
-if(OPUSFILE_FOUND AND NOT TARGET opusfile)
-  find_path(OPUSFILE_INCLUDE_DIRS "opus/opusfile.h")
-  add_library(opusfile UNKNOWN IMPORTED)
-  set_target_properties(opusfile PROPERTIES
-    IMPORTED_LINK_INTERFACE_LANGUAGES "C"
-    IMPORTED_LOCATION "${OPUSFILE_LIBRARY}"
-    INTERFACE_INCLUDE_DIRECTORIES "${OPUSFILE_INCLUDE_DIR}"
-    )
-endif()
-endif()
+# opusfile は撤去 (OpusCodecDecoder.cpp が libopus 直叩きに移行)。
+# decoder state は krkrz 側で sound_malloc 経由で確保するので、外部依存は
+# libopus のみで十分。
 
 find_path(PICOJSON_INCLUDE_DIRS "picojson/picojson.h")
 # ----------------------------------------------------
@@ -285,7 +480,7 @@ find_path(PICOJSON_INCLUDE_DIRS "picojson/picojson.h")
 # ----------------------------------------------------
 # icline (portable readline replacement, isocline fork)
 # ----------------------------------------------------
-if (KRKRZ_REPL AND NOT TARGET icline)
+if (KRKRZ_REPL AND KRKRZ_REPL_LINE_EDIT AND NOT TARGET icline)
 	include(FetchContent)
 	FetchContent_Declare(
 		icline
@@ -350,15 +545,13 @@ target_link_libraries( ${LIBNAME} PUBLIC
 	${JPEG_LIBRARIES}
 	Ogg::ogg
 	Vorbis::vorbis
-	Vorbis::vorbisenc 
+	Vorbis::vorbisenc
 	Vorbis::vorbisfile
 	ZLIB::ZLIB
 	oniguruma::onig
 	PNG::PNG
 	glm::glm
 	$<IF:$<TARGET_EXISTS:Opus::opus>,Opus::opus,>
-	$<IF:$<TARGET_EXISTS:OpusFile::opusfile>,OpusFile::opusfile,>
-	$<IF:$<TARGET_EXISTS:opusfile>,opusfile,>
 	${KRKRZ_LIB_REPL}
 	${KRKRZ_LIB_ADD}
 	${KRKRZ_LIB_DAP}
@@ -369,11 +562,6 @@ elseif(KRKRZ_VARIANT STREQUAL "SDL") # !LIB
 # ----------------------------------------------------
 # krkrz SDL version
 # ----------------------------------------------------
-
-list(APPEND KRKRZ_DEFINES
-# ファイル名をノーマライズしない
-#TVP_NO_NORMALIZE_PATH
-)
 
 # ----------------------------------------------------
 # SDL3
@@ -414,6 +602,71 @@ endif()
 if(NOT TARGET movieplayer)
 option(MOVIEPLAYER_EXTERNAL_MINIAUDIO "use external miniaudio" ON)
 add_subdirectory(external/movie-player)
+endif()
+
+# ----------------------------------------------------
+# Elements (汎用ダイアログ機構, ThorVG ベース)
+#
+# KRKRZ_USE_ELEMENTS=OFF で完全に除外する。OFF のときは:
+#   - external/elements を add_subdirectory しない (elements_modal はその配下で
+#     ビルドされる)
+#   - KRKRZ_LIB_SDL3 に cycfi::elements / elements_modal を足さない
+#   - KRKRZ_HAS_ELEMENTS が立たないので consumer 側コードが #ifdef で抜ける
+# (Elements 関連ソース自体の除外は sources.cmake 側で同じ option を見て分岐)
+
+if (KRKRZ_USE_ELEMENTS)
+	if (NOT TARGET cycfi::elements)
+		# Elements は SDL3 ホストモードで使う (krkrz は SDL3 ベース)
+		set(ELEMENTS_HOST_UI_LIBRARY "sdl" CACHE STRING "Elements host UI library" FORCE)
+		# サンプル/テストはビルド対象外
+		set(ELEMENTS_BUILD_EXAMPLES OFF CACHE BOOL "Build Elements examples" FORCE)
+		# ThorVG は krkrz に静的リンクする
+		set(TVG_BUILD_SHARED OFF CACHE BOOL "Build ThorVG as static" FORCE)
+		set(TVG_STATIC_MODULES ON CACHE BOOL "Use static modules in ThorVG" FORCE)
+		# 多言語テキストレンダリング: FreeType + HarfBuzz ローダを使う (TTF reader と
+		# 相互排他)。Elements 側のデフォルトと同じだが、cache を旧値で持ち越して
+		# しまうケースがあるため明示 force-set する。
+		set(TVG_LOADER_TTF OFF CACHE BOOL "Disable built-in TTF loader" FORCE)
+		set(TVG_LOADER_FT  ON  CACHE BOOL "Enable FT+HarfBuzz multilingual text loader" FORCE)
+		# Elements / ThorVG が直接ファイル I/O することを禁止する。 krkrz では
+		# 全てのリソース読み込み (フォント / 画像 / Dialog JSON) を Storages 経由に
+		# 統一したい (XP3 アーカイブ / Switch サンドボックスでも動かすため)。
+		# OFF にすると elements 側の default resource_loader が null_resource_loader
+		# になり、 アプリ側で set_resource_loader() を呼ぶ責務を負う。 krkrz では
+		# common/visual/elements/StoragesResourceLoader.cpp で TVPReadStream に橋渡し。
+		set(ELEMENTS_FILE_IO_SUPPORT OFF CACHE BOOL "Allow elements to read resources from disk" FORCE)
+		add_subdirectory(external/elements)
+
+		# ThorVG は自前で global operator new/delete を override しているが、
+		# krkrz は GlobalAllocStats で同じものを override しているため LNK2005 で
+		# 衝突する。ThorVG 側のガード (THORVG_NO_GLOBAL_NEW_OVERRIDE) を有効化して
+		# 抑止し、ThorVG 内部の new も krkrz の統計プールに通す。
+		if (TARGET thorvg)
+			target_compile_definitions(thorvg PRIVATE THORVG_NO_GLOBAL_NEW_OVERRIDE=1)
+		endif()
+	endif()
+
+	# elements_modal — 純粋 SDL + Elements + ThorVG ベース モーダル UI ライブラリ。
+	# krkrz 本体に依存しない独立ライブラリで、 SDL3 を使う任意のアプリから利用可能。
+	# krkrz 側はこれを薄くラップして TJS Dialog 等の機能を提供する。
+	#
+	# 実体は elements リポ管轄 (external/elements/external/elements_modal) に移動した。
+	# 上の add_subdirectory(external/elements) が ELEMENTS_BUILD_MODAL=ON のとき
+	# elements_modal / elements_modal::elements_modal target を生成するので、 krkrz
+	# 側で個別に add_subdirectory する必要はない。
+
+	# krkrz wrap (sdl3/visual/SDLElementsModalRunner.cpp) が elements_modal を
+	# include / link するため、 ここで PUBLIC include + リンクを足す。
+	# sources.cmake の KRKRZ_LIB_SDL3 リスト経由ではタイミング (sources.cmake が
+	# include される時点ではまだ TARGET 未生成) で取りこぼすので、 add_subdirectory
+	# 直後のこの位置で関連付ける。
+	if (TARGET elements_modal AND KRKRZ_VARIANT STREQUAL "SDL")
+		list(APPEND KRKRZ_LIB_SDL3 elements_modal::elements_modal)
+	endif()
+
+	# Elements ダイアログ機構が組み込まれていることを示すマクロ。
+	# DrawDevice 等の共通コードは #ifdef でガードする。
+	list(APPEND KRKRZ_DEFINES KRKRZ_HAS_ELEMENTS)
 endif()
 
 # ----------------------------------------------------
@@ -628,15 +881,13 @@ target_link_libraries( ${EXENAME} PRIVATE
 	${JPEG_LIBRARIES}
 	Ogg::ogg
 	Vorbis::vorbis
-	Vorbis::vorbisenc 
+	Vorbis::vorbisenc
 	Vorbis::vorbisfile
 	ZLIB::ZLIB
 	oniguruma::onig
 	PNG::PNG
 	glm::glm
 	$<IF:$<TARGET_EXISTS:Opus::opus>,Opus::opus,>
-	$<IF:$<TARGET_EXISTS:OpusFile::opusfile>,OpusFile::opusfile,>
-	$<IF:$<TARGET_EXISTS:opusfile>,opusfile,>
 	$<IF:$<TARGET_EXISTS:movieplayer>,movieplayer,>
 	${KRKRZ_LIB_REPL}
 	${KRKRZ_LIB_SDL3}
@@ -664,13 +915,29 @@ if (ANDROID)
 
 elseif(SDL_SHARED)
 
-	# 実行ディレクトリの場所にコピー
+	# KRKRZ_LIB_SDL3 はリンク用と「ランタイムライブラリの配布」用に共用しているが、
+	# cycfi::elements / elements_modal などの静的ライブラリ (.lib/.a) は exe に
+	# 静的リンクされるので配布・install 対象にしない。 SHARED (DLL/.so) のみ拾う。
+	set(KRKRZ_LIB_SDL3_RUNTIME)
 	foreach(LIB ${KRKRZ_LIB_SDL3})
+		set(_lib_target ${LIB})
+		get_target_property(_aliased ${_lib_target} ALIASED_TARGET)
+		if(_aliased)
+			set(_lib_target ${_aliased})
+		endif()
+		get_target_property(_lib_type ${_lib_target} TYPE)
+		if(_lib_type STREQUAL "SHARED_LIBRARY")
+			list(APPEND KRKRZ_LIB_SDL3_RUNTIME ${LIB})
+		endif()
+	endforeach()
+
+	# 実行ディレクトリの場所にコピー
+	foreach(LIB ${KRKRZ_LIB_SDL3_RUNTIME})
 		add_custom_command(TARGET ${EXENAME} POST_BUILD
 			COMMAND ${CMAKE_COMMAND} -E copy_if_different
 				$<TARGET_FILE:${LIB}>
 				$<TARGET_FILE_DIR:${EXENAME}>
-		)		
+		)
 	endforeach()
 
 	install(TARGETS ${EXENAME}
@@ -679,9 +946,9 @@ elseif(SDL_SHARED)
 		BUNDLE DESTINATION .
 	)
 
-	if (!APPLE)
+	if (NOT APPLE)
 		# SDL3 の DLL も一緒にインストール
-		foreach(LIB ${KRKRZ_LIB_SDL3})
+		foreach(LIB ${KRKRZ_LIB_SDL3_RUNTIME})
 			install(FILES $<TARGET_FILE:${LIB}> DESTINATION .)
 		endforeach()
 	endif()
@@ -747,11 +1014,10 @@ target_compile_definitions( ${EXENAME} PRIVATE
 target_link_libraries( ${EXENAME} PRIVATE
 	freetype
 	${JPEG_LIBRARIES}
-	OpusFile::opusfile
 	Ogg::ogg
 	Opus::opus
 	Vorbis::vorbis
-	Vorbis::vorbisenc 
+	Vorbis::vorbisenc
 	Vorbis::vorbisfile
 	ZLIB::ZLIB
 	oniguruma::onig

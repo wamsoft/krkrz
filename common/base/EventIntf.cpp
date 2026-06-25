@@ -18,6 +18,7 @@
 #include "MsgIntf.h"
 #include "ScriptMgnIntf.h"
 #include "TickCount.h"
+#include "AllocTagScope.h"
 
 
 
@@ -577,6 +578,9 @@ static bool _TVPDeliverAllEvents()
 //---------------------------------------------------------------------------
 void TVPDeliverAllEvents()
 {
+	// C++ -> TJS event dispatch 入口。ここから fire される handler 内の
+	// operator new / TJS_malloc を TJS2 tag に振り分ける。
+	TVPAllocTagScope _alloc_tag_scope("TJS2");
 	bool r = false;
 
 	if(!TVPEventInterrupting)
@@ -734,6 +738,7 @@ void TVPDeliverWindowUpdateEvents()
 {
 	if(TVPWindowUpdateEventsDelivering) return; // does not allow re-entering
 	TVPWindowUpdateEventsDelivering = true;
+	TVPAllocTagScope _alloc_tag_scope("TJS2");
 
 	try
 	{
@@ -1062,6 +1067,7 @@ void TVPDeliverContinuousEvent()
 {
 	if(TVPContinuousEventProcessing) return;
 	TVPContinuousEventProcessing = true;
+	TVPAllocTagScope _alloc_tag_scope("TJS2");
 	try
 	{
 		try
@@ -1145,6 +1151,7 @@ void TVPRemoveCompactEventHook(tTVPCompactEventCallbackIntf *cb)
 //---------------------------------------------------------------------------
 void TVPDeliverCompactEvent(tjs_int level)
 {
+	TVPAllocTagScope _alloc_tag_scope("TJS2");
 	// must be called by each platforms's implementation
 	//std::vector<tTVPCompactEventCallbackIntf *>::iterator i;
 	if(TVPCompactEventVector.size())

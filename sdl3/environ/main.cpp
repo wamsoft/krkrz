@@ -1,26 +1,37 @@
 #include "tjsCommHead.h"
 #include "CharacterSet.h"
+#include "EventIntf.h"
 #include "LogIntf.h"
 #include "SysInitIntf.h"
 #include "SystemIntf.h"
 #ifdef KRKRZ_USE_REPL
 #include "REPL.h"
+#endif
+// tjsDebuggerCore.h は DAP 関数 (TVPCreateDAP 等) も宣言する。 DAP は REPL とは
+// 独立に有効化できる (KRKRZ_ENABLE_DAP) ので、 REPL=OFF + DAP=ON でも include する。
+#if defined(KRKRZ_USE_REPL) || defined(KRKRZ_ENABLE_DAP)
 #include "tjsDebuggerCore.h"
 #endif
 #include "WinConsole.h"
+#include "GlobalAllocStats.h"   // SDL_SetMemoryFunctions wrapper の入口
 #include "app.h"
+
+#ifdef KRKRZ_HAS_ELEMENTS
+#include "elements/ElementsUserConfig.h"
+#endif
 
 #define SDL_MAIN_USE_CALLBACKS
 #include <SDL3/SDL_main.h>
 
-#ifdef USE_LIBPLUGIN
-extern void plugins_init();
-#endif
-
 // 最後に押されたパッドをメインパッドにする
-// 0: 無効, 1: 有効
+// 0: 無効 (旧挙動: 最初に認識されたパッドを保持、それが切断されない限り別パッドに
+//          切り替わらない)
+// 1: 有効 (現在の既定。ボタン or タッチパッド DOWN が来たパッドを以後のメインとする)
+//
+// 複数パッド対応は別課題。本機能はあくまで「1 枚のメインパッドを最後に触ったものに
+// 追従させる」だけ。ボタン入力ベースなのでスティックドリフトでは切り替わらない。
 #ifndef USE_LAST_PUSHDOWN_PAD
-#define USE_LAST_PUSHDOWN_PAD 0
+#define USE_LAST_PUSHDOWN_PAD 1
 #endif
 
 SDL_Joystick *joystick = NULL;
@@ -35,6 +46,44 @@ tjs_string SDL3Application::GetJoypadType(int no)
     tjs_string name;
     TVPUtf8ToUtf16(name, SDL_GetGamepadName(gamepad));
     return name;
+}
+
+bool SDL3Application::RumbleGamepad(int no, int low, int high, int duration_ms)
+{
+    if (gamepad == NULL) {
+        return false;
+    }
+    // 0〜255 を 0〜0xFFFF にスケール
+    Uint16 low16 = (Uint16)((low * 0xFFFF) / 255);
+    Uint16 high16 = (Uint16)((high * 0xFFFF) / 255);
+    return SDL_RumbleGamepad(gamepad, low16, high16, (Uint32)duration_ms);
+}
+
+bool SDL3Application::StopRumbleGamepad(int no)
+{
+    if (gamepad == NULL) {
+        return false;
+    }
+    return SDL_RumbleGamepad(gamepad, 0, 0, 0);
+}
+
+tjs_int SDL3Application::GetJoypadCount()
+{
+    int count = 0;
+    SDL_JoystickID *ids = SDL_GetGamepads(&count);
+    if (ids) {
+        SDL_free(ids);
+    }
+    return count;
+}
+
+bool SDL3Application::HasJoypad(int no)
+{
+    // 現状は no=0 のメインゲームパッドのみ対応
+    if (no == 0) {
+        return gamepad != NULL;
+    }
+    return false;
 }
 
 static void ShowGamepadInfo(const char *state)
@@ -57,19 +106,70 @@ static void ShowGamepadInfo(const char *state)
     }
 }
 
-SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) 
+SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event)
 {
     switch (event->type) {
     case SDL_EVENT_QUIT:
         return SDL_APP_SUCCESS; // アプリを正常終了
     
+    case SDL_EVENT_WILL_ENTER_BACKGROUND:
+        // バックグラウンドに入る前に描画を停止
+        {
+            SDL3Application *app = static_cast<SDL3Application *>(appstate);
+            if (app) {
+                SDL_Log("App will enter background");
+                app->SetInBackground(true);
+            }
+        }
+        break;
+
+    case SDL_EVENT_DID_ENTER_BACKGROUND:
+        // バックグラウンドに完全に入った（リソース解放などに使う）
+        SDL_Log("App did enter background");
+        break;
+
+    case SDL_EVENT_WILL_ENTER_FOREGROUND:
+        // フォアグラウンドに戻る直前（リソース再取得準備）
+        SDL_Log("App will enter foreground");
+        break;
+
+    case SDL_EVENT_DID_ENTER_FOREGROUND:
+        // フォアグラウンドに戻ったら描画を再開
+        {
+            SDL3Application *app = static_cast<SDL3Application *>(appstate);
+            if (app) {
+                SDL_Log("App did enter foreground");
+                app->SetInBackground(false);
+            }
+        }
+        break;
+
+    case SDL_EVENT_LOW_MEMORY:
+        // メモリ不足警告 - キャッシュ解放等を行う。
+        // P4 で MAX → MINIMIZE に降格 (doc/legacy/ImagePreloadAndCache.md §18.2 C)。
+        // pinned (UI 等) は残し transient のみ全消しする。
+        // OOM 一歩手前なので解放はするが、復帰時の UI 再ロードコストは避けたい。
+        SDL_Log("Low memory warning - releasing transient caches");
+        TVPDeliverCompactEvent(TVP_COMPACT_LEVEL_MINIMIZE);
+        break;
+
+    case SDL_EVENT_LOCALE_CHANGED:
+        // ロケール変更
+        SDL_Log("Locale changed");
+        break;
+
+    case SDL_EVENT_SYSTEM_THEME_CHANGED:
+        // システムテーマ変更（ダーク/ライトモード）
+        SDL_Log("System theme changed");
+        break;
+
     case SDL_EVENT_TERMINATING:
         // アプリ終了処理
         {
             TVPFireOnApplicationTerminating();
             SDL3Application *app = static_cast<SDL3Application *>(appstate);
             if (app) {
-                app->OnTerminatingEnd();            
+                app->OnTerminatingEnd();
             }
         }
         break;
@@ -135,11 +235,6 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event)
     case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
     case SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN:
         // 最後にボタンを押したパッドをメインパッドにする処理
-
-        SDL_Log("Button %d pressed on gamepad %d\n",
-                           event->gbutton.button,
-                           event->gdevice.which);
-
         if (!gamepad || (gamepad && (SDL_GetGamepadID(gamepad) != event->gbutton.which))) {
             auto newgamepad = SDL_OpenGamepad(event->gdevice.which);
             if (newgamepad) {
@@ -148,6 +243,11 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event)
                 }
                 gamepad = newgamepad;
                 SDL_Log("change main gamepad ID %u", (unsigned int) event->gdevice.which);
+                // TJS 側に「メインパッドが切り替わった」を通知 (ADDED / REMOVED と
+                // 同経路)。これがないとパッド種別表示が古いままになる。
+                tjs_string name;
+                TVPUtf8ToUtf16(name, SDL_GetGamepadName(gamepad));
+                TVPFireOnJoypadChange(0, name.c_str());
             } else {
                 SDL_Log("Failed to open gamepad ID %u: %s", (unsigned int) event->gdevice.which, SDL_GetError());
             }
@@ -169,12 +269,80 @@ extern void DoneAudioSystem();
 
 extern void DoneStorageSystem();
 
+// 機種別グローバル初期化処理（実体は各プラットフォーム別の app ファイルで定義）
+extern void TVPAppInit(int argc, char *argv[]);
+
 SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
 {
+#ifdef KRKRZ_SDLMEMORY_STAT
+    // SDL3 内部の malloc/calloc/realloc/free を本体の Sdl collector に redirect。
+    // SDL_Init / SDL_LogInfo 等あらゆる SDL 関数より前で差し替える必要がある
+    // (それ以降に呼ばれた SDL alloc を全部捕捉するため)。失敗しても致命傷
+    // ではないので戻り値は無視。fallback path も用意してあるので、抜け漏れ
+    // が一部あっても crash はしない。
+    //
+    // KRKRZ_SDLMEMORY_STAT=OFF (デフォルト) では SDL のデフォルトアロケータを
+    // そのまま使う。NX 等で SDL_SetMemoryFunctions が動作しない/問題を起こす
+    // 環境への対応。
+    SDL_SetMemoryFunctions(&TVPGlobalAllocStats::SdlMalloc,
+                           &TVPGlobalAllocStats::SdlCalloc,
+                           &TVPGlobalAllocStats::SdlRealloc,
+                           &TVPGlobalAllocStats::SdlFree);
+#endif
+
     // Windows で GUI サブシステム化した場合、親シェルのコンソールに attach して
     // stdout/stderr (ログ出力) と REPL の stdin を可視化する。
     // 非 Windows / 既にコンソールを持っている場合は no-op。
     TVPAttachWindowsConsole();
+
+    // ログレベル設定
+#ifdef MASTER
+    TVPLogInit(TVPLOG_LEVEL_WARNING);
+#else
+    {
+#ifdef NDEBUG
+        TVPLogLevel logLevel = TVPLOG_LEVEL_INFO;
+#else
+        TVPLogLevel logLevel = TVPLOG_LEVEL_DEBUG;
+#endif
+        // -loglevel=<level> をパース。値は大文字小文字どちらでも受け付ける。
+        // 注意: NDEBUG ビルドではコンパイル時 TVPLOG_LEVEL=INFO で固定され、
+        // TVPLOG_DEBUG() マクロが no-op に展開されるため、実行時に
+        // logLevel を DEBUG にしても DEBUG ログは出ない。
+        // DEBUG ログを出すには Debug ビルドにするか、cmake 構成時に
+        // -DTVPLOG_LEVEL=1 (=DEBUG) を渡してビルドする必要がある。
+        const char *prefix = "-loglevel=";
+        const size_t prefix_len = strlen(prefix); // 10
+        auto eq_icmp = [](const char *a, const char *b) {
+            for (; *a && *b; ++a, ++b) {
+                char ca = (*a >= 'a' && *a <= 'z') ? (*a - 'a' + 'A') : *a;
+                char cb = (*b >= 'a' && *b <= 'z') ? (*b - 'a' + 'A') : *b;
+                if (ca != cb) return false;
+            }
+            return *a == '\0' && *b == '\0';
+        };
+        for (int i = 1; i < argc; i++) {
+            if (strncmp(argv[i], prefix, prefix_len) != 0) continue;
+            const char *level = argv[i] + prefix_len;
+            if (eq_icmp(level, "ERROR")) {
+                logLevel = TVPLOG_LEVEL_ERROR;
+            } else if (eq_icmp(level, "WARNING")) {
+                logLevel = TVPLOG_LEVEL_WARNING;
+            } else if (eq_icmp(level, "INFO")) {
+                logLevel = TVPLOG_LEVEL_INFO;
+            } else if (eq_icmp(level, "DEBUG")) {
+                logLevel = TVPLOG_LEVEL_DEBUG;
+            } else if (eq_icmp(level, "VERBOSE")) {
+                logLevel = TVPLOG_LEVEL_VERBOSE;
+            }
+            break;
+        }
+        TVPLogInit(logLevel);
+    }
+#endif
+
+    // 各機種別のグローバル初期化処理を呼び出す SDL_Init より前のタイミング
+    TVPAppInit(argc, argv);
 
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_AUDIO)) {
         SDL_Log("SDL_Init failed: %s", SDL_GetError());
@@ -191,40 +359,10 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
     SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 8);
     SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 8);
     SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 8);
-    // Canvas/Shader等でステンシルバッファを使用するため8bit確保
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
 #endif
 
-    // ログレベル設定
-#ifdef MASTER
-    TVPLogInit(TVPLOG_LEVEL_WARNING);
-#else
-    {
-#ifdef NDEBUG
-        TVPLogLevel logLevel = TVPLOG_LEVEL_INFO;
-#else
-        TVPLogLevel logLevel = TVPLOG_LEVEL_DEBUG;
-#endif
-        for (int i = 1; i < argc; i++) {
-            if (strncmp(argv[i], "-loglevel=", 11) == 0) {
-                const char* level = argv[i] + 11;
-                if (strcmp(level, "ERROR") == 0) {
-                    logLevel = TVPLOG_LEVEL_ERROR;
-                } else if (strcmp(level, "WARNING") == 0) {
-                    logLevel = TVPLOG_LEVEL_WARNING;
-                } else if (strcmp(level, "INFO") == 0) {
-                    logLevel = TVPLOG_LEVEL_INFO;
-                } else if (strcmp(level, "DEBUG") == 0) {
-                    logLevel = TVPLOG_LEVEL_DEBUG;
-                } else if (strcmp(level, "VERBOSE") == 0) {
-                    logLevel = TVPLOG_LEVEL_VERBOSE;
-                }
-                break;
-            }
-        }
-        TVPLogInit(logLevel);
-    }
-#endif
+    // resource:// などの追加ストレージシステム初期化のため先に呼び出す
     TVPStartup();
 
     SDL3Application *app = GetSDL3Application();
@@ -243,16 +381,26 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
 
 	// アプリ初期化
 	if (!app->InitializeApplication()) {
+#ifdef KRKRZ_HAS_ELEMENTS
+		// `-userconf` フローが正常終了した場合は graceful exit。
+		if (TVPGetUserConfigExitFlag()) {
+			delete app;
+			DoneAudioSystem();
+			return SDL_APP_SUCCESS;
+		}
+#endif
 		TVPLOG_ERROR("failed to initialize application");
         delete app;
         DoneAudioSystem();
         return SDL_APP_FAILURE;
 	}
 
-#ifdef USE_LIBPLUGIN
-	// 内蔵化プラグイン初期化
-	plugins_init();
-#endif
+    // GlobalAllocStats プール初期化。Application + InitPath が済んで
+    // TVPGetCommandLine が使える状態になったので、ここで `-krkrzpoolsize` /
+    // `-sdlpoolsize` (CLI / .cf) を読み取って pool 構築 + tracking flag を on。
+    // これより前の SDL_Init / config 読み出し時の alloc は全部素 malloc 直行
+    // (オーバーヘッドゼロ、stats 対象外) で動く。
+    TVPGlobalAllocStats::Initialize();
 
 #ifdef KRKRZ_ENABLE_DAP
 	// DAP server 起動 (-dap=<port> 指定時のみ)。
@@ -318,7 +466,9 @@ SDL_AppResult SDL_AppIterate(void *appstate)
     if (app) {
         app->AppIterate();
         app->SendPadEvent();
-		app->RequestUpdate(); // 画面再描画用に常に更新要求を送る
+		if (!app->IsInBackground()) {
+			app->RequestUpdate(); // 画面再描画用に常に更新要求を送る
+		}
 		app->Dispatch();
 		if (app->IsTerminated()) {
 			return app->TerminateCode() ? SDL_APP_FAILURE : SDL_APP_SUCCESS;

@@ -19,7 +19,7 @@
 static const tTVPThreadPriority TVPDecodeThreadHighPriority = ttpHigher;
 //---------------------------------------------------------------------------
 tTVPSoundDecodeThread::tTVPSoundDecodeThread( tTJSNI_QueueSoundBuffer * owner )
- : Owner(owner), DecodedSamples(0) {
+ : tTVPThread("SoundDecodeThread"), Owner(owner), DecodedSamples(0) {
 	StartThread();
 }
 //---------------------------------------------------------------------------
@@ -34,6 +34,10 @@ void tTVPSoundDecodeThread::Execute(void) {
 	SetPriority(TVPDecodeThreadHighPriority);
 	while( !GetTerminated() ) {
 		tjs_uint32 count = 0;
+
+		// audio thread が消費完了して consumed ring に積んだ buffer を引き取る。
+		// (旧実装で audio callback コンテキストが直接呼んでいた処理をこちらに移したもの)
+		Owner->DrainConsumedBuffers();
 
 		tTVPSoundSamplesBuffer* buf = nullptr;
 		{

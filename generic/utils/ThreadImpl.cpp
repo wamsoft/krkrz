@@ -15,7 +15,7 @@ class tTVPNativeThread : public tTVPNativeThreadIntf
 public:
   tTVPNativeThread();
 	virtual ~tTVPNativeThread();
-	virtual void Start(tTVPThreadFunc func, void *arg, tTVPThreadPriority pri);
+	virtual void Start(tTVPThreadFunc func, void *arg, tTVPThreadPriority pri, const char *name);
 	virtual void WaitFor();
 	virtual void SetPriority(tTVPThreadPriority pri);
 	virtual void SetProcessorNo(int no);
@@ -25,6 +25,7 @@ private:
 	std::thread::native_handle_type GetHandle() { return Thread ? Thread->native_handle() : 0; }
 	static unsigned ThreadFunc(void *arg);
 	static std::vector<tjs_int> processor_ids;
+	void ApplyThreadName(const char *name);
 };
 
 std::vector<tjs_int> tTVPNativeThread::processor_ids;
@@ -42,13 +43,34 @@ tTVPNativeThread::~tTVPNativeThread()
 	}
 };
 
-void 
-tTVPNativeThread::Start(tTVPThreadFunc func, void *arg, tTVPThreadPriority pri)
+void
+tTVPNativeThread::Start(tTVPThreadFunc func, void *arg, tTVPThreadPriority pri, const char *name)
 {
 	if( Thread == nullptr ) {
 	    Thread = new std::thread( func, arg );
     	SetPriority(pri);
+		ApplyThreadName(name);
 	}
+}
+
+void
+tTVPNativeThread::ApplyThreadName(const char *name)
+{
+	if (!Thread || !name || !*name) return;
+#if defined(__linux__) || defined(__ANDROID__)
+	// Linux/Android: pthread_setname_np は 15 文字 + NUL 制限
+	char buf[16];
+	size_t i = 0;
+	for (; name[i] && i < sizeof(buf) - 1; ++i) buf[i] = name[i];
+	buf[i] = '\0';
+	pthread_setname_np( GetHandle(), buf );
+#elif defined(__APPLE__)
+	// macOS: 自スレッドのみ設定可能、ApplyThreadName は呼び出しスレッドで動作不可なので
+	// SetPriority と同様にここでは何もしない (将来 ThreadFunc 経由で設定する余地あり)
+	(void)name;
+#else
+	(void)name;
+#endif
 }
 
 void

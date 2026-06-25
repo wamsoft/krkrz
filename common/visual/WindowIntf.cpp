@@ -26,6 +26,21 @@
 
 #include "Application.h"
 
+#ifdef KRKRZ_HAS_ELEMENTS
+#include "elements/ElementsDialogManager.h"
+// Window レベルの入力イベントを Elements ダイアログがアクティブな場合に
+// onClick/onMouseDown/onKeyDown 等の TJS 通知より前に Elements 側へ転送する。
+#define TVP_DIALOG_INTERCEPT(forward_call) \
+	do { \
+		if (tTVPElementsDialogManager::Instance().IsModalActive()) { \
+			if (tTVPElementsDialogManager::Instance().forward_call) \
+				return; \
+		} \
+	} while(0)
+#else
+#define TVP_DIALOG_INTERCEPT(forward_call) ((void)0)
+#endif
+
 extern tjs_int TVPGetCursor( const ttstr & name );
 //---------------------------------------------------------------------------
 // Window List
@@ -141,7 +156,7 @@ tTVPUniqueTagForInputEvent tTVPOnDisplayRotateInputEvent      ::Tag;
 //---------------------------------------------------------------------------
 tTJSNI_BaseWindow::tTJSNI_BaseWindow()
 {
-	WaitVSync = false;
+	WaitVSync = true;
 	ObjectVectorLocked = false;
 	DrawBuffer = NULL;
 	WindowExposedRegion.clear();
@@ -386,6 +401,7 @@ void tTJSNI_BaseWindow::OnResize()
 void tTJSNI_BaseWindow::OnClick(tjs_int x, tjs_int y)
 {
 	if(!CanDeliverEvents()) return;
+	TVP_DIALOG_INTERCEPT(ForwardClick(x, y));
 	if(Owner)
 	{
 		tTJSVariant arg[2] = { x, y };
@@ -399,6 +415,7 @@ void tTJSNI_BaseWindow::OnClick(tjs_int x, tjs_int y)
 void tTJSNI_BaseWindow::OnDoubleClick(tjs_int x, tjs_int y)
 {
 	if(!CanDeliverEvents()) return;
+	TVP_DIALOG_INTERCEPT(ForwardDoubleClick(x, y));
 	if(Owner)
 	{
 		tTJSVariant arg[2] = { x, y };
@@ -413,6 +430,7 @@ void tTJSNI_BaseWindow::OnMouseDown(tjs_int x, tjs_int y, tTVPMouseButton mb,
 	tjs_uint32 flags)
 {
 	if(!CanDeliverEvents()) return;
+	TVP_DIALOG_INTERCEPT(ForwardMouseDown(x, y, mb, flags));
 	if(Owner)
 	{
 		tTJSVariant arg[4] = { x, y, (tjs_int64)mb, (tjs_int64)flags };
@@ -427,6 +445,7 @@ void tTJSNI_BaseWindow::OnMouseUp(tjs_int x, tjs_int y, tTVPMouseButton mb,
 	tjs_uint32 flags)
 {
 	if(!CanDeliverEvents()) return;
+	TVP_DIALOG_INTERCEPT(ForwardMouseUp(x, y, mb, flags));
 	if(Owner)
 	{
 		tTJSVariant arg[4] = { x, y, (tjs_int)mb, (tjs_int)flags };
@@ -440,6 +459,7 @@ void tTJSNI_BaseWindow::OnMouseUp(tjs_int x, tjs_int y, tTVPMouseButton mb,
 void tTJSNI_BaseWindow::OnMouseMove(tjs_int x, tjs_int y, tjs_uint32 flags)
 {
 	if(!CanDeliverEvents()) return;
+	TVP_DIALOG_INTERCEPT(ForwardMouseMove(x, y, flags));
 	if(Owner)
 	{
 		static ttstr eventname(TJS_W("onMouseMove"));
@@ -590,6 +610,7 @@ void tTJSNI_BaseWindow::OnMouseLeave()
 void tTJSNI_BaseWindow::OnKeyDown(tjs_uint key, tjs_uint32 shift)
 {
 	if(!CanDeliverEvents()) return;
+	TVP_DIALOG_INTERCEPT(ForwardKeyDown(key, shift));
 	if(Owner)
 	{
 		tTJSVariant arg[2] = { (tjs_int)key, (tjs_int)shift };
@@ -603,6 +624,7 @@ void tTJSNI_BaseWindow::OnKeyDown(tjs_uint key, tjs_uint32 shift)
 void tTJSNI_BaseWindow::OnKeyUp(tjs_uint key, tjs_uint32 shift)
 {
 	if(!CanDeliverEvents()) return;
+	TVP_DIALOG_INTERCEPT(ForwardKeyUp(key, shift));
 	if(Owner)
 	{
 		tTJSVariant arg[2] = { (tjs_int)key, (tjs_int)shift };
@@ -616,6 +638,7 @@ void tTJSNI_BaseWindow::OnKeyUp(tjs_uint key, tjs_uint32 shift)
 void tTJSNI_BaseWindow::OnKeyPress(tjs_char key)
 {
 	if(!CanDeliverEvents()) return;
+	TVP_DIALOG_INTERCEPT(ForwardKeyPress(key));
 	if(Owner)
 	{
 		tjs_char buf[2];
@@ -644,6 +667,7 @@ void tTJSNI_BaseWindow::OnMouseWheel(tjs_uint32 shift, tjs_int delta,
 	tjs_int x, tjs_int y)
 {
 	if(!CanDeliverEvents()) return;
+	TVP_DIALOG_INTERCEPT(ForwardMouseWheel(shift, delta, x, y));
 	if(Owner)
 	{
 		tTJSVariant arg[4] = { (tjs_int)shift, delta, x, y };
@@ -852,6 +876,34 @@ bool tTJSNI_BaseWindow::GetWaitVSync() const
 {
 	return WaitVSync;
 }
+
+#ifdef __GENERIC__
+//---------------------------------------------------------------------------
+// ビューポート fit 名 ⇔ tTVPViewportFit 変換 (Generic 版のみ)
+//---------------------------------------------------------------------------
+static tjs_int TVPViewportFitFromString(const ttstr &s)
+{
+	if(s == TJS_W("contain")) return vfContain;
+	if(s == TJS_W("cover"))   return vfCover;
+	if(s == TJS_W("fill"))    return vfFill;
+	if(s == TJS_W("none"))    return vfNone;
+	if(s == TJS_W("integer")) return vfInteger;
+	if(s == TJS_W("custom"))  return vfCustom;
+	return vfContain;
+}
+static const tjs_char * TVPViewportFitToString(tjs_int f)
+{
+	switch(f) {
+	case vfCover:   return TJS_W("cover");
+	case vfFill:    return TJS_W("fill");
+	case vfNone:    return TJS_W("none");
+	case vfInteger: return TJS_W("integer");
+	case vfCustom:  return TJS_W("custom");
+	case vfContain:
+	default:        return TJS_W("contain");
+	}
+}
+#endif
 
 //---------------------------------------------------------------------------
 // tTJSNC_Window : TJS Window class
@@ -1720,6 +1772,186 @@ TJS_BEGIN_NATIVE_PROP_DECL(innerHeight)
 	TJS_END_NATIVE_PROP_SETTER
 }
 TJS_END_NATIVE_PROP_DECL(innerHeight)
+#ifdef __GENERIC__
+//----------------------------------------------------------------------
+// ビューポート (ゲーム画面の表示画角制御)。外側 surface (innerWidth/Height)
+// 内に内側ゲーム (primaryLayer) を fit/zoom/align/offset で配置し、余白を
+// 背景色/壁紙で埋める。Generic (SDL) 版のみ。
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_PROP_DECL(viewportFit)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(_this, tTJSNI_Window);
+		*result = ttstr(TVPViewportFitToString(_this->GetViewportFit()));
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+	TJS_BEGIN_NATIVE_PROP_SETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(_this, tTJSNI_Window);
+		_this->SetViewportFit(TVPViewportFitFromString(ttstr(*param)));
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_PROP_DECL(viewportFit)
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_PROP_DECL(viewportZoom)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(_this, tTJSNI_Window);
+		*result = (tjs_real)_this->GetViewportZoom();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+	TJS_BEGIN_NATIVE_PROP_SETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(_this, tTJSNI_Window);
+		_this->SetViewportZoom((double)(tjs_real)*param);
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_PROP_DECL(viewportZoom)
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_PROP_DECL(viewportAlignX)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(_this, tTJSNI_Window);
+		*result = (tjs_real)_this->GetViewportAlignX();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+	TJS_BEGIN_NATIVE_PROP_SETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(_this, tTJSNI_Window);
+		_this->SetViewportAlignX((double)(tjs_real)*param);
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_PROP_DECL(viewportAlignX)
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_PROP_DECL(viewportAlignY)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(_this, tTJSNI_Window);
+		*result = (tjs_real)_this->GetViewportAlignY();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+	TJS_BEGIN_NATIVE_PROP_SETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(_this, tTJSNI_Window);
+		_this->SetViewportAlignY((double)(tjs_real)*param);
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_PROP_DECL(viewportAlignY)
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_PROP_DECL(viewportOffsetX)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(_this, tTJSNI_Window);
+		*result = _this->GetViewportOffsetX();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+	TJS_BEGIN_NATIVE_PROP_SETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(_this, tTJSNI_Window);
+		_this->SetViewportOffsetX((tjs_int)*param);
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_PROP_DECL(viewportOffsetX)
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_PROP_DECL(viewportOffsetY)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(_this, tTJSNI_Window);
+		*result = _this->GetViewportOffsetY();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+	TJS_BEGIN_NATIVE_PROP_SETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(_this, tTJSNI_Window);
+		_this->SetViewportOffsetY((tjs_int)*param);
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_PROP_DECL(viewportOffsetY)
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_PROP_DECL(viewportBgColor)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(_this, tTJSNI_Window);
+		*result = (tjs_int64)(tjs_uint32)_this->GetViewportBgColor();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+	TJS_BEGIN_NATIVE_PROP_SETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(_this, tTJSNI_Window);
+		_this->SetViewportBgColor((tjs_uint32)(tjs_int64)*param);
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_PROP_DECL(viewportBgColor)
+//----------------------------------------------------------------------
+// setViewportWallpaper(image [, fit="cover" [, alignX=0.5 [, alignY=0.5]]])
+//   image: ストレージ名 (文字列) または Layer / Bitmap オブジェクト。
+//          オブジェクトは Variant のまま参照保持され、描画デバイスが
+//          imageWidth/imageHeight/mainImageBuffer/mainImageBufferPitch から取得する。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/setViewportWallpaper)
+{
+	TJS_GET_NATIVE_INSTANCE(_this, tTJSNI_Window);
+	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
+	tjs_int fit = vfCover;
+	if(numparams >= 2 && param[1]->Type() != tvtVoid)
+		fit = TVPViewportFitFromString(ttstr(*param[1]));
+	double ax = (numparams >= 3 && param[2]->Type() != tvtVoid) ? (double)(tjs_real)*param[2] : 0.5;
+	double ay = (numparams >= 4 && param[3]->Type() != tvtVoid) ? (double)(tjs_real)*param[3] : 0.5;
+	_this->SetViewportWallpaper(*param[0], fit, ax, ay);
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_METHOD_DECL(/*func. name*/setViewportWallpaper)
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/clearViewportWallpaper)
+{
+	TJS_GET_NATIVE_INSTANCE(_this, tTJSNI_Window);
+	_this->ClearViewportWallpaper();
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_METHOD_DECL(/*func. name*/clearViewportWallpaper)
+//----------------------------------------------------------------------
+// setViewport(fit [, zoom [, alignX [, alignY [, offsetX [, offsetY]]]]])
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/setViewport)
+{
+	TJS_GET_NATIVE_INSTANCE(_this, tTJSNI_Window);
+	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
+	_this->SetViewportFit(TVPViewportFitFromString(ttstr(*param[0])));
+	if(numparams >= 2 && param[1]->Type() != tvtVoid) _this->SetViewportZoom((double)(tjs_real)*param[1]);
+	if(numparams >= 3 && param[2]->Type() != tvtVoid) _this->SetViewportAlignX((double)(tjs_real)*param[2]);
+	if(numparams >= 4 && param[3]->Type() != tvtVoid) _this->SetViewportAlignY((double)(tjs_real)*param[3]);
+	if(numparams >= 5 && param[4]->Type() != tvtVoid) _this->SetViewportOffsetX((tjs_int)*param[4]);
+	if(numparams >= 6 && param[5]->Type() != tvtVoid) _this->SetViewportOffsetY((tjs_int)*param[5]);
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_METHOD_DECL(/*func. name*/setViewport)
+#endif // __GENERIC__
 //----------------------------------------------------------------------
 TJS_BEGIN_NATIVE_PROP_DECL(zoomNumer)
 {

@@ -559,6 +559,8 @@ void TJS_INTF_METHOD tTVPBasicDrawDevice::Show()
 		drect.bottom = client.bottom - client.top;
 
 		RECT srect = drect;
+		// Layer 合成完了直後・Present 直前に Elements ダイアログをオーバーレイ
+		PresentDialogOverlay();
 		hr = Direct3DDevice->Present( &srect, &drect, TargetWindow, NULL );
 	} else {
 		ShouldShow = true;

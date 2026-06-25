@@ -4,3 +4,7 @@
 [submodule "external/movie-player"]
 	path = external/movie-player
 	url = https://github.com/wamsoft/movie-player.git
+[submodule "external/elements"]
+	path = external/elements
+	url = https://github.com/wamsoft/elements.git
+	branch = develop

@@ -36,6 +36,78 @@ REPL 特殊コマンド:
 | `.clear` | 継続入力のバッファをクリア |
 | `.depth [N]` | 結果表示の展開深さを表示または設定 |
 | `.compact [on\|off]` | 結果表示のコンパクトモード切替 |
+| `.mem` | File/Bitmap allocator + GlobalAlloc (Krkrz/SDL) + Process memory + システムアロケータの 1 行サマリ |
+| `.memdump` | 詳細メモリ統計をログへダンプ (`TVPHeapDump` = per-allocator + GlobalAlloc + Process memory + システム空き + WINVER の HeapWalk) |
+| `.memoverlay [on\|off]` | 画面オーバレイを切替 (SDL3 build) |
+| `.mempeakclear` | File/Bitmap allocator + GlobalAlloc collector の peak を current_used に揃える |
+| `.sysalloc` | システムアロケータ情報 (空き / 確保可能 / RSS) を 1 行表示 (コンソール機等のプラットフォーム固有値含む) |
+| `.padoverlay [on\|off]` | 画面左上にゲームパッド 16 ボタン + 6 軸アナログ値をオーバレイ表示 (SDL3 build)。CLI `-padoverlay=1` でも可 |
+| `.filecache` | StorageCache (file 層) の全エントリをログへダンプ |
+| `.imagecache` | TVPGraphicCache (decode 層) の全エントリをログへダンプ |
+| `.cap [path]` | overlay 込みの実画面を PNG 保存 (`Agent.captureScreen`、省略時 `agent_cap.png`) |
+| `.dlg` | アクティブな Elements ダイアログ一覧 (`Agent.dialogs`) |
+| `.dlgclose` | 全 Elements ダイアログを強制クローズ (`Agent.closeAllDialogs`) |
+| `.click X Y` | (X,Y) にマウスクリックを注入 (`Agent.click`) |
+
+メモリ系コマンドの詳細は `doc/MemoryGuide.md`、パッドオーバレイの詳細は
+`doc/PadOverlay.md`、エージェント駆動 API の詳細は後述「エージェント駆動」参照。
+
+## エージェント駆動 (Agent API + ファイルチャネル)
+
+エージェント / 自動テストから krkrz を「外から」操作するための機構 (SDL3 ビルド
+専用)。 入力イベント注入・画面キャプチャ・Elements ダイアログ制御を、 REPL
+(対話) または `-replfile` ファイルチャネル (非対話) のどちらからでも使える。
+
+### `Agent` TJS クラス
+
+`System` 同様にインスタンス不要でクラスメソッドを呼ぶ。 入力注入は実入力と
+同じ `TTVPWindowForm::Send*` 経路を通るので、 ゲームにも Elements ダイアログにも
+届く (DrawDevice / Window の dialog intercept を経由)。
+
+| メソッド | 説明 |
+|---|---|
+| `Agent.mouseMove(x, y [, shift])` | マウス移動 (論理座標) |
+| `Agent.mouseDown / mouseUp(x, y [, button [, shift]])` | ボタン押下 / 解放 (button: 0=左 1=右 2=中) |
+| `Agent.click(x, y [, button [, shift]])` | move + down + up |
+| `Agent.wheel(delta, x, y [, shift])` | ホイール (delta は 120 単位) |
+| `Agent.keyDown / keyUp / keyPress(vk [, shift])` | キー (vk は `VK_*` 数値) |
+| `Agent.text(str)` | アクティブダイアログへ UTF-8 テキスト入力 (input_box 等) |
+| `Agent.dialogs()` | アクティブダイアログ記述の配列 `%[index, modal, active, screen, focused, x, y, w, h]` |
+| `Agent.dialogTree(index)` | ダイアログ内の id 付き widget 一覧 `%[id, type, value]` (UI ツリー dump)。 どの widget が居るか・現在値を観測でき、 id 指定操作と組で使う |
+| `Agent.closeDialog() / closeAllDialogs()` | 最前面 / 全ダイアログを閉じる |
+| `Agent.dialogClick(index, id)` | 指定ダイアログの widget を **id で起動** (座標不要)。 focus を即時適用してから Enter (button=click / checkbox=toggle)。 内部は `overlay_session::activate_by_id` |
+| `Agent.dialogFocus(index, id)` | 指定 widget へフォーカス移動 |
+| `Agent.captureScreen(path [, x, y, w, h])` | overlay 込みの実画面を次フレームで PNG 保存 (即 return、 戻り値 = path) |
+| `Agent.lastCapture()` | 直近キャプチャの結果 `%[path, width, height, ok]` |
+
+画面キャプチャは、 アクティブな DrawDevice (既定 `SDLOGLDrawDevice` = GL、 または
+`SDLDrawDevice` = SDL_Renderer) の present 直前に backbuffer を読み戻して保存する。
+`captureScreen` は内部で `RequestUpdate` を呼ぶのでアイドル時でも 1 フレーム後に
+ファイルが出来る。
+
+### `-replfile=<dir>` ファイルチャネル
+
+console (CONIN$) を介さずにエージェントが REPL を駆動するための、 ファイル
+ベースのコマンドチャネル。 `-repl` と独立に起動でき (両方同時も可)、 メイン
+スレッド実行は共有キュー (`ReplMainQueue`) で console REPL と共用される。
+
+プロトコル (`<dir>` 配下、 lockstep):
+
+1. エージェント: コマンド (UTF-8 TJS) を `cmd.tmp` に書き、 `cmd` に rename。
+2. チャネル: `cmd` を検出→読取→削除→メイン実行→結果 JSON を `resp.tmp` に
+   書き `resp` に rename。
+3. エージェント: `resp` の出現を待ち、 読取→削除。 次コマンドへ。
+
+結果 JSON: `{ "ok": bool, "result": "<pretty-printed>", "error": "<msg>" }`。
+未読の `resp` が残る間は次コマンドを処理しない (取りこぼし防止)。
+
+```bash
+krkrz64 data/ -replfile=/tmp/krkrzchan
+```
+
+典型フロー (擬似): `win.openMenu()` → `Agent.dialogs()` で状態確認 →
+`Agent.click(255,80)` で遷移 → `Agent.captureScreen("cap.png")` → PNG を読んで
+目視確認。
 
 ## 結果表示
 
@@ -58,10 +130,17 @@ INFO=デフォルト, WARNING=yellow, ERROR=red, CRITICAL=bold red)。
 ## スレッド構造
 
 REPL ワーカースレッドが `ic_readline` で入力をブロッキング取得し、
-完成した式を専用の CV 付き request スロットに積み、メインスレッドを
-起床させます。メインスレッドは毎 frame `TVPDrainREPL()` を呼び出して
-リクエストを 1 件ずつ取り出し `TVPExecuteExpression` を実行、結果を
-response スロットに詰めて CV で worker を起こします。
+完成した式を共有実行キュー `ReplMainQueue` (CV 付き request/response スロット)
+に積み、メインスレッドを起床させます。メインスレッドは毎 frame
+`TVPDrainREPL()` → `TVPReplMainQueue::Drain()` を呼び出してリクエストを
+1 件ずつ取り出し `TVPExecuteExpression` を実行、結果を response スロットに
+詰めて CV で worker を起こします。
+
+`-replfile` ファイルチャネルスレッド (`tTVPReplFileChannel`) も同じ
+`ReplMainQueue` に提出するため、 console REPL と file channel が共存しても
+メインスレッド実行は 1 件ずつ直列化されます (提出は submit mutex で排他)。
+`TVPCreateREPL()` が `-repl` / `-replfile` の有無を見て console / channel
+スレッドを独立に起動します。
 
 この構造により:
 

@@ -251,7 +251,37 @@ extern tjs_uint64 TVPGraphicCacheSystemLimit;
 	// maximum possible value of Graphic Cache Limit
 
 TJS_EXP_FUNC_DEF(void, TVPClearGraphicCache, ());
-	// clear graphic cache
+	// clear graphic cache (両層 transient とは異なり pinned 含めて全消し)
+
+extern void TVPClearGraphicCacheEntry(const ttstr& nname);
+	// path 単位 evict。同一 Name で (keyidx, mode, dw, dh) が異なる複数
+	// エントリは全て削除する。nname は事前に正規化済みであること。
+
+extern void TVPClearTransientGraphicCache();
+	// transient 全消し (pinned エントリは残す)。
+
+extern void TVPSetGraphicCacheEntryPinned(const ttstr &nname, bool pinned);
+	// 同名の全 entry に対して pinned 状態を変更 (path 単位)。
+	// nname は事前に正規化済みであること。pin/unpin の永続管理は
+	// TVPPinCache / TVPUnpinCache (StorageIntf.h) 側で行う
+
+// 現在の decode 層キャッシュエントリ列挙用。
+// Storages.getImageCacheList / dumpImageCacheList / MemoryOverlay 等の観測系で利用。
+struct TVPGraphicCacheEntryInfo {
+	ttstr               name;
+	tjs_int32           keyidx;
+	tTVPGraphicLoadMode mode;
+	tjs_uint            dw, dh;
+	tjs_uint            width, height;
+	tjs_uint            bytes;
+	bool                pinned;
+};
+extern void TVPGetGraphicCacheEntries(std::vector<TVPGraphicCacheEntryInfo> &out);
+// 件数のみ取得 (overlay 等の軽い観測用)。
+extern void TVPGetGraphicCacheCount(size_t &total, size_t &pinned);
+// decode 層キャッシュ一覧を WARNING ログに出力。
+// Storages.dumpImageCacheList / REPL .imagecache から共通で呼ばれる実体。
+extern void TVPDumpImageCacheList();
 
 
 extern void TVPTouchImages(const std::vector<ttstr> & storages, tjs_int64 limit,

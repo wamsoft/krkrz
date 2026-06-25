@@ -4,23 +4,28 @@
 #include "CharacterSet.h"
 
 #include "IMoviePlayer.h"
+#include "MovieAudioSinkAdapter.h"
 
 // ラッピング処理
 class tTVPMoviePlayer : public iTVPMoviePlayer {
  public:
 
-  tTVPMoviePlayer() 
-  : mPlayer(nullptr) 
+  tTVPMoviePlayer()
+  : mPlayer(nullptr)
   {
   }
 
   virtual ~tTVPMoviePlayer() {
+    // 先に movie-player を破棄してから sink を破棄 (sink には残った
+    // pending DecodedBuffer の参照があるが、movie-player 破棄で decoder
+    // も消えるので参照先を辿らない)
     delete mPlayer;
   }
 
   bool Open(const char *filename) {
     IMoviePlayer::InitParam param;
-    param.useOwnAudioEngine = true;
+    param.Init();
+    param.audioSink        = &mSink;
     param.videoColorFormat = IMoviePlayer::COLOR_BGRA;
     mPlayer = IMoviePlayer::CreateMoviePlayer(filename, param);
     if (!mPlayer) {
@@ -31,7 +36,8 @@ class tTVPMoviePlayer : public iTVPMoviePlayer {
 
   bool OpenStream(IMovieReadStream *stream) {
     IMoviePlayer::InitParam param;
-    param.useOwnAudioEngine = true;
+    param.Init();
+    param.audioSink        = &mSink;
     param.videoColorFormat = IMoviePlayer::COLOR_BGRA;
     mPlayer = IMoviePlayer::CreateMoviePlayer(stream, param);
     if (!mPlayer) {
@@ -103,6 +109,8 @@ class tTVPMoviePlayer : public iTVPMoviePlayer {
 
  private:
   IMoviePlayer* mPlayer;
+  // 音声出力用 sink。mPlayer より先に置いて mPlayer 破棄まで生きる。
+  tTVPMovieAudioSinkAdapter mSink;
   iTVPMoviePlayer::OnVideoDecoded mVideoDecoded;
   void *mUserData;
 };

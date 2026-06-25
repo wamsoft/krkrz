@@ -120,6 +120,8 @@ public:
 
 	void PushPlaySample( class tTVPSoundSamplesBuffer* buffer );
 	void ReleasePlayedSample( class tTVPSoundSamplesBuffer* buffer);
+	// audio thread が consumed ring に積んだ完了 buffer をすべて引き取る (decode thread から呼ばれる)
+	void DrainConsumedBuffers();
 
 	tjs_int FireLabelEventsAndGetNearestLabelEventStep(tjs_int64 tick);
 	tjs_int GetNearestEventStep();
@@ -127,6 +129,10 @@ public:
 
 //	bool DoDecode(); // for tTVPSoundDecodeThread
 	void Update();	// for tTVPSoundEventThread(FillBuffer)
+
+	// デコードスレッドを必要になったとき(初回 Open 時)に遅延生成する。
+	// 一度生成したら Invalidate まで生かし続ける。
+	void EnsureDecodeThread();
 
 	tjs_uint Decode( void *buffer, tjs_uint bufsamplelen, tTVPWaveSegmentQueue & segments );
 

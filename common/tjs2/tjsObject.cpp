@@ -16,6 +16,7 @@
 #include "tjsHashSearch.h"
 #include "tjsGlobalStringMap.h"
 #include "tjsDebug.h"
+#include "tjsObjectStats.h"
 
 
 namespace TJS
@@ -389,6 +390,7 @@ void tTJSCustomObject::tTJSSymbolData::ReShare()
 //---------------------------------------------------------------------------
 tTJSCustomObject::tTJSCustomObject(tjs_int hashbits)
 {
+	::TVPIncrementTJSCustomObjectCount();
 	if(TJSObjectHashMapEnabled()) TJSAddObjectHashRecord(this);
 	Count = 0;
 	RebuildHashMagic = TJSGlobalRebuildHashMagic;
@@ -414,6 +416,7 @@ tTJSCustomObject::tTJSCustomObject(tjs_int hashbits)
 //---------------------------------------------------------------------------
 tTJSCustomObject::~tTJSCustomObject()
 {
+	::TVPDecrementTJSCustomObjectCount();
 	for (auto ci = ClassInstances.rbegin(); ci != ClassInstances.rend(); ci++) {
 		if ((*ci) != nullptr) {
 			(*ci)->Destruct();

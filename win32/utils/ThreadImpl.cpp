@@ -10,7 +10,7 @@ class tTVPNativeThread : public tTVPNativeThreadIntf
 public:
   tTVPNativeThread();
 	virtual ~tTVPNativeThread();
-	virtual void Start(tTVPThreadFunc func, void *arg, tTVPThreadPriority pri);
+	virtual void Start(tTVPThreadFunc func, void *arg, tTVPThreadPriority pri, const char *name);
 	virtual void WaitFor();
 	virtual void SetPriority(tTVPThreadPriority pri);
 	virtual void SetProcessorNo(int no);
@@ -23,6 +23,7 @@ private:
 	void *arg;
 	static std::vector<tjs_int> processor_ids;
 	static unsigned __stdcall ThreadFunc(void *arg);
+	static void ApplyThreadName(HANDLE h, const char *name);
 };
 
 std::vector<tjs_int> tTVPNativeThread::processor_ids;
@@ -46,8 +47,8 @@ tTVPNativeThread::~tTVPNativeThread()
 	}
 };
 
-void 
-tTVPNativeThread::Start(tTVPThreadFunc func, void *arg, tTVPThreadPriority pri)
+void
+tTVPNativeThread::Start(tTVPThreadFunc func, void *arg, tTVPThreadPriority pri, const char *name)
 {
 	if (!Handle) {
 		this->func = func;
@@ -56,7 +57,31 @@ tTVPNativeThread::Start(tTVPThreadFunc func, void *arg, tTVPThreadPriority pri)
 	}
 	if(Handle == INVALID_HANDLE_VALUE) TVPThrowInternalError;
 	SetPriority(pri);
+	ApplyThreadName(Handle, name);
 	::ResumeThread(Handle);
+}
+
+void
+tTVPNativeThread::ApplyThreadName(HANDLE h, const char *name)
+{
+	// Windows 10 1607+ で利用可能な SetThreadDescription を動的解決
+	if (!h || !name || !*name) return;
+	typedef HRESULT (WINAPI *SetThreadDescriptionFn)(HANDLE, PCWSTR);
+	static SetThreadDescriptionFn s_fn = []() -> SetThreadDescriptionFn {
+		HMODULE k32 = ::GetModuleHandleW(L"kernel32.dll");
+		return k32 ? (SetThreadDescriptionFn)::GetProcAddress(k32, "SetThreadDescription") : nullptr;
+	}();
+	if (!s_fn) return;
+	wchar_t wname[64];
+	int n = ::MultiByteToWideChar(CP_UTF8, 0, name, -1, wname, (int)(sizeof(wname)/sizeof(wname[0])));
+	if (n <= 0) {
+		wname[0] = L'\0';
+		// fallback: ASCII コピー
+		size_t i = 0;
+		for (; name[i] && i < (sizeof(wname)/sizeof(wname[0]) - 1); ++i) wname[i] = (wchar_t)(unsigned char)name[i];
+		wname[i] = L'\0';
+	}
+	s_fn(h, wname);
 }
 
 void

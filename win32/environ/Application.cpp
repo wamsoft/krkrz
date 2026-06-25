@@ -33,6 +33,8 @@
 #include "Exception.h"
 #include "WindowFormUnit.h"
 #include "resource.h"
+#include "GlobalAllocStats.h"
+#include "SystemAllocatorInfo.h"
 #include "SystemControl.h"
 #include "MouseCursor.h"
 #include "SystemImpl.h"
@@ -234,26 +236,37 @@ int APIENTRY wWinMain( _In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstanc
 #else
 	        TVPLogLevel logLevel = TVPLOG_LEVEL_DEBUG;
 #endif
+			// -loglevel=<level> を大文字小文字どちらでも受付。
+			// (NDEBUG ビルドでは TVPLOG_LEVEL=INFO 固定で TVPLOG_DEBUG マクロが
+			//  no-op に展開されるため、実行時 DEBUG 化しても DEBUG ログは出ない。
+			//  Debug ビルドか cmake -DTVPLOG_LEVEL=1 が必要)
 			const char* logLevelArg = "-loglevel=";
+			auto eq_icmp = [](const char *a, const char *b) {
+				for (; *a && *b; ++a, ++b) {
+					char ca = (*a >= 'a' && *a <= 'z') ? (*a - 'a' + 'A') : *a;
+					char cb = (*b >= 'a' && *b <= 'z') ? (*b - 'a' + 'A') : *b;
+					if (ca != cb) return false;
+				}
+				return *a == '\0' && *b == '\0';
+			};
 			for (int i = 1; i < __argc; i++) {
 				char argStr[256];
 				WideCharToMultiByte(CP_UTF8, 0, __wargv[i], -1, argStr, sizeof(argStr), NULL, NULL);
-				if (strncmp(argStr, logLevelArg, strlen(logLevelArg)) == 0) {
-					const char* levelStr = argStr + strlen(logLevelArg);
-					if (strcmp(levelStr, "ERROR") == 0) {
-						logLevel = TVPLOG_LEVEL_ERROR;
-					} else if (strcmp(levelStr, "WARNING") == 0) {
-						logLevel = TVPLOG_LEVEL_WARNING;
-					} else if (strcmp(levelStr, "INFO") == 0) {
-						logLevel = TVPLOG_LEVEL_INFO;
-					} else if (strcmp(levelStr, "DEBUG") == 0) {
-						logLevel = TVPLOG_LEVEL_DEBUG;
-					} else if (strcmp(levelStr, "VERBOSE") == 0) {
-						logLevel = TVPLOG_LEVEL_VERBOSE;
-					}
-					break;
+				if (strncmp(argStr, logLevelArg, strlen(logLevelArg)) != 0) continue;
+				const char* levelStr = argStr + strlen(logLevelArg);
+				if (eq_icmp(levelStr, "ERROR")) {
+					logLevel = TVPLOG_LEVEL_ERROR;
+				} else if (eq_icmp(levelStr, "WARNING")) {
+					logLevel = TVPLOG_LEVEL_WARNING;
+				} else if (eq_icmp(levelStr, "INFO")) {
+					logLevel = TVPLOG_LEVEL_INFO;
+				} else if (eq_icmp(levelStr, "DEBUG")) {
+					logLevel = TVPLOG_LEVEL_DEBUG;
+				} else if (eq_icmp(levelStr, "VERBOSE")) {
+					logLevel = TVPLOG_LEVEL_VERBOSE;
 				}
-			}			
+				break;
+			}
 			TVPLogInit(logLevel);
 		}
 #endif
@@ -268,6 +281,14 @@ int APIENTRY wWinMain( _In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstanc
 
 		MouseCursor::Initialize();
 		Application = new tTVPApplication();
+
+		// GlobalAllocStats プール初期化。Application が組み上がって
+		// TVPGetCommandLine が使える状態になったので、ここで `-krkrzpoolsize`
+		// (CLI / .cf) を読み取って pool 構築 + tracking flag を on。
+		// SDL pool は __GENERIC__ build のみで作られる (WINVER では SDL3 を
+		// 使わないので不要)。Initialize() 内で #ifdef __GENERIC__ 制御。
+		TVPGlobalAllocStats::Initialize();
+
 		Application->StartApplication( __argc, (tjs_char**)__wargv );
 	
 		// delete application and exit forcely
@@ -807,10 +828,16 @@ void tTVPApplication::LoadImageRequest( class iTJSDispatch2 *owner, class tTJSNI
 	}
 }
 
-void tTVPApplication::CacheFileRequest( const ttstr &name, bool fast )
+void tTVPApplication::LoadImagePrefetchRequest( const ttstr &name ) {
+	if( image_load_thread_ ) {
+		image_load_thread_->PrefetchRequest( name );
+	}
+}
+
+void tTVPApplication::CacheFileRequest( const ttstr &name, bool fast, tjs_uint64 minSize )
 {
 	if (file_cache_thread_) {
-		file_cache_thread_->LoadRequest(name, fast);
+		file_cache_thread_->LoadRequest(name, fast, minSize);
 	}
 }
 
@@ -869,4 +896,16 @@ tjs_int
 tTVPApplication::GetDensity() const
 {
 	return ::GetDeviceCaps( ::GetDC(0), LOGPIXELSX );
+}
+
+// システムアロケータ情報を返す
+// デフォルトはグローバルなデフォルト実装を返す。
+// 組込みプラットフォーム固有実装は、派生クラスでオーバーライドして
+// プラットフォームアロケータの情報を返す。
+// 注: TVPGetSystemAllocatorInfo() は Application 経由で取りに来るので、
+// ここで呼ぶと無限再帰になる。default 取得は専用関数を使う。
+iTVPSystemAllocatorInfo *
+tTVPApplication::GetSystemAllocatorInfo()
+{
+	return TVPGetDefaultSystemAllocatorInfo();
 }

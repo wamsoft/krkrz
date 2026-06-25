@@ -705,6 +705,13 @@ tTJSVariantString * TJSFormatString(const tjs_char *format, tjs_uint numparams,
 
 	TJSSetFPUE();
 	tTJSVariantString *ret = TJSAllocVariantStringBuffer(TJS_VS_FS_OUT_INC_SIZE);
+
+	// 旧実装は本体内 18 箇所の `goto error` と 15 箇所の
+	// `TJS_eTJSVariantError(TJSBadParamCount)` 直接 throw のいずれも
+	// `ret` を Release せずに例外を投げており、フォーマット文字列が壊れている
+	// or 引数不足で TJS スクリプト側から踏ませると StringHeap セル + LongString
+	// が leak していた。本体全体を try-catch で包み、再 throw 前に ret を回収。
+	try {
 	tjs_uint allocsize = TJS_VS_FS_OUT_INC_SIZE;
 	tjs_char *o = const_cast<tjs_char*>(ret->operator const tjs_char*());
 	tjs_uint s = 0;
@@ -1011,6 +1018,10 @@ tTJSVariantString * TJSFormatString(const tjs_char *format, tjs_uint numparams,
 error:
 	TJS_eTJSVariantError(TJSInvalidFormatString);
 	return NULL; // not reached
+	} catch(...) {
+		if(ret) ret->Release();
+		throw;
+	}
 }
 //---------------------------------------------------------------------------
 

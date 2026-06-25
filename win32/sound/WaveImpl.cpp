@@ -1565,7 +1565,8 @@ public:
 } static *TVPWaveSoundBufferThread = NULL;
 //---------------------------------------------------------------------------
 tTVPWaveSoundBufferThread::tTVPWaveSoundBufferThread()
-	: EventQueue(this,&tTVPWaveSoundBufferThread::UtilWndProc),
+	: tTVPThread("WaveSoundBufferThread"),
+	EventQueue(this,&tTVPWaveSoundBufferThread::UtilWndProc),
 	SuspendThread( false ), PendingLabelEventExists( false ),
 	NextLabelEventTick( 0 ), LastFilledTick( 0 ), WndProcToBeCalled( false )
 {
@@ -1875,6 +1876,7 @@ public:
 //---------------------------------------------------------------------------
 tTVPWaveSoundBufferDecodeThread::tTVPWaveSoundBufferDecodeThread(
 	tTJSNI_WaveSoundBuffer * owner)
+	: tTVPThread("WaveSoundBufferDecode")
 {
 	TVPInitSoundOptions();
 

@@ -20,7 +20,8 @@ public:
 	virtual iTJSBinaryStream *OpenStream(const tjs_char *path, const tjs_uint32 flags) = 0;
 	virtual void CommitSavedata() = 0;
 	virtual void RollbackSavedata() = 0;
-	virtual tjs_uint64 LastModifiedFileTime(const tjs_char *path) = 0;	
+	virtual tjs_uint64 LastModifiedFileTime(const tjs_char *path) = 0;
+	virtual tjs_uint64 FileSize(const tjs_char *path) = 0;
 };
 
 extern iTVPLocalFileSystem* TVPCreateLocalFileSystem();

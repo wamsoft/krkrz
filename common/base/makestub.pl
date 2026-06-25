@@ -603,10 +603,12 @@ process_exp_stub("../../common/visual/LayerManager.h");
 print OFH "#include \"WindowIntf.h\"\n";
 process_exp_stub("../../common/visual/WindowIntf.h");
 
-print OFH "#ifdef __WINVER__\n";
 print OFH "#include \"WindowImpl.h\"\n";
-print OFH "#endif\n";
 process_exp_stub("../../win32/visual/WindowImpl.h");
+process_exp_stub("../../generic/visual/WindowImpl.h");
+
+print OFH "#include \"ViewportConfig.h\"\n";
+process_exp_stub("../../common/visual/ViewportConfig.h");
 
 print OFH "#include \"DrawDevice.h\"\n";
 process_exp_stub("../../common/visual/DrawDevice.h");
@@ -789,7 +791,7 @@ struct IDirect3D9;
 #include <string>
 #include <stdarg.h>
 #include <stdint.h>
-+#include <climits>
+#include <climits>
 
 namespace krkrz_plugin {
 

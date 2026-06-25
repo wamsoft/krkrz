@@ -87,8 +87,8 @@ GLTexture::create( GLuint w, GLuint h, const GLvoid* bits, tTVPTextureColorForma
     glBindTexture( GL_TEXTURE_2D, 0 );
 }
 
-void 
-GLTexture::createMipmapTexture( std::vector<GLTextreImageSet>& img ) 
+void
+GLTexture::createMipmapTexture( std::vector<GLTextreImageSet>& img )
 {
     if( img.size() > 0 ) {
         GLuint w = img[0].width;
@@ -107,27 +107,49 @@ GLTexture::createMipmapTexture( std::vector<GLTextreImageSet>& img )
         // ミップマップの最小と最大レベルを指定する、これがないと存在しないレベルを参照しようとすることが発生しうる
         glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0 );
         glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, count - 1 );
+
+        // C: 入力 bitmap は BGRA byte order (DIB 内部表現と同じ) を期待する。
+        //    BGRA_EXT サポートあり → そのまま GL_BGRA_EXT で upload
+        //    swizzle あり → GL_RGBA で upload + sampling 時に R/B swizzle
+        //    両方無し → fallback として GL_RGBA で upload (色が反転して見えるが
+        //               この呼び出しは glmNormalRGBA 系の経路では使われない前提)
+        GLenum uploadFormat;
+        GLint internalFormat;
+        if( SupportBGRAFormat() ) {
+            uploadFormat  = GL_BGRA_EXT;
+            internalFormat = GL_BGRA_EXT;
+        } else {
+            uploadFormat  = GL_RGBA;
+            internalFormat = GL_RGBA;
+        }
+
         if( TVPOpenGLESVersion < 300 ) {
             // OpenGL ES2.0 の時は、glGenerateMipmap しないと正しくミップマップ描画できない模様
             GLTextreImageSet& tex = img[0];
-            glTexImage2D( GL_TEXTURE_2D, 0, GL_RGBA, tex.width, tex.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, tex.bits );
+            glTexImage2D( GL_TEXTURE_2D, 0, internalFormat, tex.width, tex.height, 0, uploadFormat, GL_UNSIGNED_BYTE, tex.bits );
             glHint( GL_GENERATE_MIPMAP_HINT, GL_FASTEST );
             glGenerateMipmap( GL_TEXTURE_2D );
             // 自前で生成したものに一部置き換える
             for( GLint i = 1; i < count; i++ ) {
                 GLTextreImageSet& tex = img[i];
-                glTexSubImage2D( GL_TEXTURE_2D, i, 0, 0, tex.width, tex.height, GL_RGBA, GL_UNSIGNED_BYTE, tex.bits );
+                glTexSubImage2D( GL_TEXTURE_2D, i, 0, 0, tex.width, tex.height, uploadFormat, GL_UNSIGNED_BYTE, tex.bits );
             }
         } else {
             for( GLint i = 0; i < count; i++ ) {
                 GLTextreImageSet& tex = img[i];
-                glTexImage2D( GL_TEXTURE_2D, i, GL_RGBA, tex.width, tex.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, tex.bits );
+                glTexImage2D( GL_TEXTURE_2D, i, internalFormat, tex.width, tex.height, 0, uploadFormat, GL_UNSIGNED_BYTE, tex.bits );
             }
-
         }
+
+        // BGRA_EXT 不可 + swizzle 可なら sampling 時に R/B 入れ替え
+        if( uploadFormat == GL_RGBA && _support_swizzle ) {
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R, GL_BLUE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, GL_RED);
+        }
+
         glBindTexture( GL_TEXTURE_2D, 0 );
         format_ = tTVPTextureColorFormat::RGBA;
-        glformat_ = GL_RGBA;
+        glformat_ = uploadFormat;
         width_ = w;
         height_ = h;
     }
@@ -156,7 +178,15 @@ GLTexture::UpdateTexture(GLuint tex_id, GLuint pbo, int format, int x, int y, in
 
     if (pbo) {
         glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
-        GLubyte *texPixels = (GLubyte *)glMapBufferRange(GL_PIXEL_UNPACK_BUFFER, 0, size, GL_MAP_WRITE_BIT);
+        // GL_MAP_INVALIDATE_BUFFER_BIT で「以前の PBO 内容は破棄して良い」を driver に伝える。
+        // これにより GPU が前 frame の PBO を読み中でも CPU map が wait せず、
+        // driver が orphan して新しい backing store を割り当てる。
+        // PBO single buffer のままで multi-buffer 相当の効果が得られる (Phase C-α、
+        // 2026-05-10 SDLOGLDrawDevice 計測で idle frame TexUp=240 ms/s と CPU map wait
+        // らしき症状が見られたための対策)。
+        GLubyte *texPixels = (GLubyte *)glMapBufferRange(
+            GL_PIXEL_UNPACK_BUFFER, 0, size,
+            GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
         if (texPixels) {
             updator((char*)texPixels, pitch);
             glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER);
@@ -252,7 +282,7 @@ GLTextureDrawer::Done()
 
 // 描画範囲にべた書き処理
 void
-GLTextureDrawer::DrawTexture(GLTexture *tex, int scr_w, int scr_h, float position[], int tex_w, int tex_h)
+GLTextureDrawer::DrawTexture(GLTexture *tex, int scr_w, int scr_h, float position[], int tex_w, int tex_h, bool blend)
 {
 	if (_shader_program && tex) {
 
@@ -277,7 +307,13 @@ GLTextureDrawer::DrawTexture(GLTexture *tex, int scr_w, int scr_h, float positio
 		glDisable( GL_STENCIL_TEST );
 		glDisable( GL_SCISSOR_TEST );
 		glDisable( GL_CULL_FACE );
-		glDisable( GL_BLEND );
+		if (blend) {
+			// straight-alpha 合成 (Elements ダイアログ overlay 等で使用)
+			glEnable( GL_BLEND );
+			glBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
+		} else {
+			glDisable( GL_BLEND );
+		}
 
 		// シェーダー設定
 		glUseProgram(_shader_program);

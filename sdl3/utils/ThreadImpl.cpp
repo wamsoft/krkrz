@@ -10,7 +10,7 @@ class tTVPNativeThread : public tTVPNativeThreadIntf
 public:
   tTVPNativeThread();
 	virtual ~tTVPNativeThread();
-	virtual void Start(tTVPThreadFunc func, void *arg, tTVPThreadPriority pri);
+	virtual void Start(tTVPThreadFunc func, void *arg, tTVPThreadPriority pri, const char *name);
 	virtual void WaitFor();
 	virtual void SetPriority(tTVPThreadPriority pri);
 	virtual void SetProcessorNo(int no);
@@ -41,13 +41,13 @@ tTVPNativeThread::~tTVPNativeThread()
 	}
 };
 
-void 
-tTVPNativeThread::Start(tTVPThreadFunc func, void *arg, tTVPThreadPriority pri)
+void
+tTVPNativeThread::Start(tTVPThreadFunc func, void *arg, tTVPThreadPriority pri, const char *name)
 {
 	if( Thread == nullptr ) {
 		thread_func = func;
 		thread_arg = arg;
-	    Thread = SDL_CreateThread(ThreadFunc, "TVPThread", this);
+	    Thread = SDL_CreateThread(ThreadFunc, (name && *name) ? name : "TVPThread", this);
     	SetPriority(pri);
 	}
 }

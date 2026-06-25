@@ -81,7 +81,26 @@ bool MySDL3Application::InitPath()
 {
     // プラグインパス
     // 実行ファイルのパス
+
+#if defined(SDL_PLATFORM_ANDROID)
+	// BootstrapActivity が `<filesDir>/assets/` に *.xp3 をコピー済みなら
+	// setAssetCacheDir 経由で受け取った絶対パスをそのまま appPath にする
+	// (SDL3 の Android backend は絶対パスを通常 filesystem として扱う)。
+	//
+	// 未設定 (= cache 未生成 / BootstrapActivity を経由していない) ケース用
+	// にレガシー AssetManager 経路を残してある。レガシー側は SDL3 が「相対パス
+	// なら assets」と扱う仕様を使うため、appPath を `/_assets/` のような
+	// **絶対パス風マーカー** にしておき、SDL_GetLocallyAccessibleName 側で
+	// その先頭を丸ごと剥がして相対パス化してから SDL に渡す。マーカーを使う
+	// ことで「真の絶対パス (= cache 経由)」と「assets 相対変換が必要な経路」
+	// を分岐できる。
+	extern std::string g_AndroidAssetCacheDir;
+	std::string appPath = g_AndroidAssetCacheDir.empty()
+		? std::string("/_assets/")
+		: g_AndroidAssetCacheDir;
+#else
 	std::string appPath = SDL_GetBasePath();
+#endif
 	char delimiter = appPath.back();
 
 	// 引数でプロジェクトパスを明示指定
@@ -108,6 +127,9 @@ bool MySDL3Application::InitPath()
 			projectPath = appPath + "data/";
 			TVPLOG_INFO("data/startup.tjs found, using data/ as project path");
 		} else {
+#if defined(SDL_PLATFORM_ANDROID)
+			return false;
+#else
 			// 自動探索で見つからなかった場合、フォルダ選択ダイアログを表示
 			TVPLOG_INFO("No project data found automatically, showing folder selection dialog");
 			std::string selected = ShowProjectFolderDialog();
@@ -118,6 +140,7 @@ bool MySDL3Application::InitPath()
 			} else {
 				return false;
 			}
+#endif
 		}
 	}
 	TVPLOG_INFO("appPath: {}", appPath);
@@ -128,7 +151,9 @@ bool MySDL3Application::InitPath()
 
 	/// XXX
 	_ExePath = _AppPath + TJS_W("krkrz.exe");
-#if defined(SDL_PLATFORM_APPLE)
+#if defined(SDL_PLATFORM_ANDROID)
+	_PluginPath = TJS_W("");
+#elif defined(SDL_PLATFORM_APPLE)
 	_PluginPath = _AppPath;
 #elif defined(TJS_64BIT_OS)
 	_PluginPath = _AppPath + TJS_W("plugin64/");;
@@ -158,9 +183,23 @@ const tjs_string& MySDL3Application::TempPath() const
     return _TempPath;
 }
 
+// 機種別グローバル初期化処理（デスクトップ/Windows 版）
+void TVPAppInit(int argc, char *argv[])
+{
+    // デスクトップ版では特に必要な初期化処理はない
+}
+
 SDL3Application *GetSDL3Application()
 {
-    return new MySDL3Application();
+    // シングルトン。 過去は呼出毎に `new MySDL3Application()` していたが、
+    // tTVPApplication の ctor が `Application = this` でグローバルを奪う
+    // (Application.cpp:56) ため、 2 回目以降の呼出で form の addEventHandler 登録
+    // (旧インスタンスの event_handlers_) が孤立し、 dispatch 経路が破綻する。
+    // 既存 Application グローバルを再利用する形にする。
+    if (!Application) {
+        new MySDL3Application();   // ctor が Application = this を設定
+    }
+    return static_cast<SDL3Application*>(Application);
 }
 
 bool SDL_CommitSavedata()
@@ -269,6 +308,27 @@ void SDL_GetLocallyAccessibleName(tjs_string &name)
 	std::replace(newname.begin(), newname.end(), TJS_W('/'), TJS_W('\\'));
 
 	name = newname;
+#elif defined(SDL_PLATFORM_ANDROID)
+	// SDL3 (Android backend) は「相対パス → assets、絶対パス → filesystem」
+	// と内部でルーティングするので、2 経路でその挙動を使い分ける:
+	//   (A) cache モード (BootstrapActivity が xp3 を `<filesDir>/assets/` に
+	//       コピー済み): appPath は real な絶対パス (例 `/data/user/0/pkg/files/assets/`)。
+	//       kirikiri 内部で "./" がついて "./data/user/0/.../data.xp3" となるので、
+	//       他の Unix と同じく "." だけ除去して leading "/" を残し絶対パスとして渡す。
+	//   (B) legacy AssetManager 経路 (cache 未生成 fallback): appPath は
+	//       `/_assets/` というマーカー。"./_assets/data.xp3" を丸ごと剥がして
+	//       "data.xp3" にし、SDL3 に相対パスとして渡すと assets 直行する。
+	// 判定は **`./_assets/` 先頭一致** で分岐。
+	const tjs_char *ptr = name.c_str();
+	static const tjs_char kLegacyPrefix[] = TJS_W("./_assets/");
+	static const size_t kLegacyPrefixLen = sizeof(kLegacyPrefix) / sizeof(tjs_char) - 1; // 10
+	if (TJS_strncmp(ptr, kLegacyPrefix, kLegacyPrefixLen) == 0) {
+		// legacy AssetManager 経路: marker prefix を丸ごと剥がして相対パス化
+		name = ptr + kLegacyPrefixLen;
+	} else if (ptr[0] == '.' && ptr[1] == '/') {
+		// cache 経路: "." だけ除去して絶対パスとして残す
+		name = ptr + 1;
+	}
 #else
 	const tjs_char *ptr = name.c_str();
 	// 先頭の "." を取り除く
@@ -282,4 +342,9 @@ void SDL_GetLocallyAccessibleName(tjs_string &name)
 bool SDL_GetListAt(const tjs_char *name, std::function<void(const tjs_char *, bool isDir)> lister, bool withDir)
 {
 	return false;
+}
+
+iTJSBinaryStream* SDL_OpenStream(const char *path, const tjs_uint32 flags)
+{
+	return nullptr;
 }

@@ -29,8 +29,18 @@ extern void TVPClearAllWindowInputEvents();
 extern bool TVPIsWaitVSync();
 //---------------------------------------------------------------------------
 
-
-
+//---------------------------------------------------------------------------
+// プラグイン向け非同期 Window メッセージ送信 API
+//---------------------------------------------------------------------------
+// プラグインのワーカースレッドからメインスレッドの Window 処理に対して
+// メッセージをポストする (戻り値なし)。WIN 版は ::PostMessage 経由、
+// Generic 版は NativeEventQueue 経由でいずれもメインスレッドで配信される。
+// 配信先 Window は plugin handle で識別する:
+//   - WIN: tTJSNI_Window::GetWindowHandleForPlugin() の HWND
+//   - Generic: TTVPWindowForm::NativeWindowHandle() (例: SDL_Window*)
+TJS_EXP_FUNC_DEF(void, TVPPostWindowMessage,
+	(void *window, tjs_uint32 message, tjs_uint64 wparam, tjs_uint64 lparam));
+//---------------------------------------------------------------------------
 
 /*[*/
 //---------------------------------------------------------------------------

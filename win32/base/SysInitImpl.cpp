@@ -25,6 +25,7 @@
 #include "GraphicsLoaderIntf.h"
 #include "SystemControl.h"
 #include "DebugIntf.h"
+#include "LogIntf.h"
 #include "tjsLex.h"
 #include "LayerIntf.h"
 #include "Random.h"
@@ -887,6 +888,12 @@ static void TVPInitRandomGenerator()
 //---------------------------------------------------------------------------
 // TVPInitializeBaseSystems
 //---------------------------------------------------------------------------
+#include "BitmapBitsAlloc.h"
+#include "BinaryStreamBuffer.h"
+#include "SoundAllocator.h"
+#include "MemoryStatPeriodicDump.h"
+#include "MemoryOverlay.h"
+#include "PadOverlay.h"
 void TVPInitializeBaseSystems()
 {
 	// set system archive delimiter
@@ -908,6 +915,26 @@ void TVPInitializeBaseSystems()
 		if(TVPIsExistentStorage(name_msgmap))
 			TVPExecuteStorage(name_msgmap, NULL, false, TJS_W(""));
 	}
+
+	// Bitmap / File アロケータをここで初期化する。
+	// これ以降に TVPGetCommandLine 経由で参照されるオプション値は config.cf
+	// 反映済みなので、Application->Create*Allocator() の中で
+	// `-bitmapheapsize` `-fileheapsize` 等を読み取れる。
+	tTVPBitmapBitsAlloc::InitializeAllocator();
+	TVPInitializeFileAllocator();
+	TVPInitializeSoundAllocator();
+
+	// メモリ stats 周期ダンプ + 終了時ダンプ
+	// (-memstatinterval=N / -memstatonexit=1 が効くようになる)。
+	TVPInitializeMemoryStatPeriodicDump();
+
+	// オーバレイ用サンプラ thread 起動 (SetEnabled で実際の収集が始まる。
+	// 描画自体は SDL3 build のみだが、サンプラは OS 共通)。
+	TVPMemoryOverlay::Initialize();
+
+	// -padoverlay=1 で起動時から PadOverlay を ON にする
+	// (WINVER は flag だけで描画なし)。
+	TVPInitializePadOverlay();
 }
 //---------------------------------------------------------------------------
 
@@ -1289,40 +1316,82 @@ void TVPAfterSystemInit()
 	if( totalMemory > status.ullTotalVirtual ) {
 		totalMemory = status.ullTotalVirtual;
 	}
+
+	// BitmapAllocator pool が有効なら、その capacity を ImageCache 上限として
+	// 採用する (StorageCache が FileAllocator capacity と揃えているのと同じ理屈;
+	// 1e413695 参照)。ImageCache に積まれる Bitmap は最終的にこの pool から
+	// 確保されるので、pool 容量を超えて cache を許す意味はなく、逆に物理
+	// メモリ÷10 + 512MB cap で頭打ちにすると pool を広げても cache が
+	// それに追従しない。
+	// BasicAllocator (raw malloc, capacity=SIZE_MAX) の場合のみ、従来の
+	// 物理メモリ算出にフォールバックする。
+	const char *limitSource = (limitmb == -1) ? "auto" : "-gclim";
+	tjs_uint64 poolCap = 0;
+	{
+		iTVPMemoryAllocator *bmpAlloc = tTVPBitmapBitsAlloc::GetAllocator();
+		if(bmpAlloc) {
+			size_t cap = bmpAlloc->capacity();
+			if(cap != SIZE_MAX) poolCap = cap;
+		}
+	}
 	if(limitmb == -1)
 	{
-		if(totalMemory <= 32*1024*1024)
-			TVPGraphicCacheSystemLimit = 0;
-		else if(totalMemory <= 48*1024*1024)
-			TVPGraphicCacheSystemLimit = 0;
-		else if(totalMemory <= 64*1024*1024)
-			TVPGraphicCacheSystemLimit = 0;
-		else if(totalMemory <= 96*1024*1024)
-			TVPGraphicCacheSystemLimit = 4;
-		else if(totalMemory <= 128*1024*1024)
-			TVPGraphicCacheSystemLimit = 8;
-		else if(totalMemory <= 192*1024*1024)
-			TVPGraphicCacheSystemLimit = 12;
-		else if(totalMemory <= 256*1024*1024)
-			TVPGraphicCacheSystemLimit = 20;
-		else if(totalMemory <= 512*1024*1024)
-			TVPGraphicCacheSystemLimit = 40;
-		else
-			TVPGraphicCacheSystemLimit = tjs_uint64(totalMemory / (1024*1024*10));	// cachemem = physmem / 10
-		TVPGraphicCacheSystemLimit *= 1024*1024;
+		if(poolCap > 0) {
+			TVPGraphicCacheSystemLimit = poolCap;
+			limitSource = "BitmapPool";
+		} else {
+			if(totalMemory <= 32*1024*1024)
+				TVPGraphicCacheSystemLimit = 0;
+			else if(totalMemory <= 48*1024*1024)
+				TVPGraphicCacheSystemLimit = 0;
+			else if(totalMemory <= 64*1024*1024)
+				TVPGraphicCacheSystemLimit = 0;
+			else if(totalMemory <= 96*1024*1024)
+				TVPGraphicCacheSystemLimit = 4;
+			else if(totalMemory <= 128*1024*1024)
+				TVPGraphicCacheSystemLimit = 8;
+			else if(totalMemory <= 192*1024*1024)
+				TVPGraphicCacheSystemLimit = 12;
+			else if(totalMemory <= 256*1024*1024)
+				TVPGraphicCacheSystemLimit = 20;
+			else if(totalMemory <= 512*1024*1024)
+				TVPGraphicCacheSystemLimit = 40;
+			else
+				TVPGraphicCacheSystemLimit = tjs_uint64(totalMemory / (1024*1024*10));	// cachemem = physmem / 10
+			TVPGraphicCacheSystemLimit *= 1024*1024;
+			// BasicAllocator 経路のレガシー 512MB cap
+			if( TVPGraphicCacheSystemLimit >= 512*1024*1024 )
+				TVPGraphicCacheSystemLimit = 512*1024*1024;
+		}
 	}
 	else
 	{
 		TVPGraphicCacheSystemLimit = limitmb * 1024*1024;
+		// -gclim 指定でも pool cap を超えた値は意味がないので頭打ち
+		if(poolCap > 0 && TVPGraphicCacheSystemLimit > poolCap) {
+			TVPGraphicCacheSystemLimit = poolCap;
+			limitSource = "-gclim (capped by BitmapPool)";
+		}
 	}
-	// キャッシュは 512MB までに制限
-	if( TVPGraphicCacheSystemLimit >= 512*1024*1024 )
-		TVPGraphicCacheSystemLimit = 512*1024*1024;
+
+	// SystemLimit が決まったらデフォルトで cache を有効化。
+	// (これを入れる前は System.graphicCacheLimit = -1 を呼ばないと cache が
+	//  無効のままで Bitmap.load 等の cache push が空回りしていた)
+	if(TVPGraphicCacheSystemLimit > 0) {
+		TVPSetGraphicCacheLimit(TVPGraphicCacheSystemLimit);
+		TVPLOG_INFO("ImageCache enabled: limit={}MB (totalMemory={}MB, source={})",
+		            TVPGetGraphicCacheLimit() / (1024*1024),
+		            totalMemory / (1024*1024),
+		            limitSource);
+	} else {
+		TVPLOG_INFO("ImageCache disabled (totalMemory={}MB too small)",
+		            totalMemory / (1024*1024));
+	}
 
 	if(totalMemory <= 64*1024*1024)
 		TVPSetFontCacheForLowMem();
 
-//	TVPGraphicCacheSystemLimit = 1*1024*1024; // DEBUG 
+//	TVPGraphicCacheSystemLimit = 1*1024*1024; // DEBUG
 
 
 	// check TVPGraphicSplitOperation option

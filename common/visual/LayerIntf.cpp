@@ -29,6 +29,7 @@
 #include "DebugIntf.h"
 #include "LayerManager.h"
 #include "BitmapIntf.h"
+#include "ThreadIntf.h"  // KRKRZ_RENDER_STATS_SCOPE / TVPRenderStatsTopLevelScopedTimer
 
 #include "TVPColor.h"
 #ifdef __WINVER__
@@ -293,6 +294,11 @@ void TVPTempBitmapHolderRelease()
 //---------------------------------------------------------------------------
 // global options
 //---------------------------------------------------------------------------
+// グローバル既定は従来どおり gsotSimple (win32/GDI 旧経路の挙動を温存)。
+// SDL3/GL バックエンドでは InternalComplete2 の 8 行帯分割が
+// 「帯の数だけ合成/テクスチャ更新を発行する」オーバーヘッドになるため、
+// generic/base/SysInitImpl.cpp の SDL3 初期化で gsotNone に上書きする
+// (起動オプション -gsplit があればそちらが優先)。
 tTVPGraphicSplitOperationType TVPGraphicSplitOperationType = gsotSimple;
 bool TVPDefaultHoldAlpha = false;
 //---------------------------------------------------------------------------
@@ -5073,6 +5079,12 @@ void tTJSNI_BaseLayer::UpdateAllChildren(bool tempupdate)
 //---------------------------------------------------------------------------
 void tTJSNI_BaseLayer::BeforeCompletion()
 {
+#ifdef KRKRZ_DRAW_STATS
+	// Layer 木に再帰呼び出し (line 5127-5131 参照)、thread_local depth で top-level only。
+	static thread_local int s_before_completion_depth = 0;
+	TVPRenderStatsTopLevelScopedTimer _krkrz_before_timer(
+		s_before_completion_depth, TVPRenderStatsAddLayerBeforeCompletion);
+#endif
 	// called before the drawing is processed
 	if(InCompletion) return;
 		// calling during completion more than once is not allowed
@@ -5132,6 +5144,12 @@ void tTJSNI_BaseLayer::BeforeCompletion()
 //---------------------------------------------------------------------------
 void tTJSNI_BaseLayer::AfterCompletion()
 {
+#ifdef KRKRZ_DRAW_STATS
+	// Layer 木に再帰呼び出し (line 5157-5161 参照)、thread_local depth で top-level only。
+	static thread_local int s_after_completion_depth = 0;
+	TVPRenderStatsTopLevelScopedTimer _krkrz_after_timer(
+		s_after_completion_depth, TVPRenderStatsAddLayerAfterCompletion);
+#endif
 	// called after the drawing is processed
 	if(InCompletion) return;
 		// calling during completion more than once is not allowed
@@ -5575,7 +5593,7 @@ void tTJSNI_BaseLayer::Draw(tTVPDrawable *target, const tTVPRect &r, bool visibl
 	// draw the layer content to "target".
 	// "r" is a rectangle to be drawn in the parent's coordinates.
 	// parent has responsibility for piling the image returned from children.
-
+	KRKRZ_RENDER_STATS_SCOPE(TVPRenderStatsAddLayerDraw);
 
 	if(visiblecheck && !IsSeen()) return;
 
@@ -5983,6 +6001,13 @@ void tTJSNI_BaseLayer::DrawCompleted(const tTVPRect &destrect,
 void tTJSNI_BaseLayer::InternalComplete2(tTVPComplexRect & updateregion,
 	tTVPDrawable *drawable)
 {
+#ifdef KRKRZ_DRAW_STATS
+	// 再帰呼び出しがある (CompleteForWindow → InternalComplete2 → Draw → child->Draw →
+	// 親 InternalComplete2) ので thread_local depth で top-level だけ計測する。
+	static thread_local int s_internal_complete2_depth = 0;
+	TVPRenderStatsTopLevelScopedTimer _krkrz_layer_complete_timer(
+		s_internal_complete2_depth, TVPRenderStatsAddLayerComplete);
+#endif
 //--- querying phase
 
 	// search ltOpaque, not to draw region behind them.
@@ -6122,6 +6147,7 @@ void tTJSNI_BaseLayer::InternalComplete(tTVPComplexRect & updateregion,
 //---------------------------------------------------------------------------
 void tTJSNI_BaseLayer::CompleteForWindow(tTVPDrawable *drawable)
 {
+	KRKRZ_RENDER_STATS_SCOPE(TVPRenderStatsAddLayerCompleteWindow);
 	BeforeCompletion();
 
 	if(Manager) Manager->NotifyUpdateRegionFixed();

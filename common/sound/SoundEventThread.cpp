@@ -10,12 +10,19 @@
 
 //---------------------------------------------------------------------------
 tTVPSoundEventThread::tTVPSoundEventThread( tTVPSoundBuffers* parent )
-	: EventQueue(this,&tTVPSoundEventThread::UtilWndProc),
+	: tTVPThread("SoundEventThread"),
+#ifdef __WINVER__
+	EventQueue(this,&tTVPSoundEventThread::UtilWndProc),
+#endif
 	Buffers( parent ),
 	SuspendThread( false ), PendingLabelEventExists( false ),
 	NextLabelEventTick( 0 ), LastFilledTick( 0 ), WndProcToBeCalled( false )
 {
+#ifdef __WINVER__
 	EventQueue.Allocate();
+#else
+	Application->addEventHandler(this);
+#endif
 	SetPriority(ttpHighest);
 	StartThread();
 }
@@ -27,49 +34,66 @@ tTVPSoundEventThread::~tTVPSoundEventThread()
 	ResetSuspend();
 	Event.Set();
 	WaitFor();
+#ifdef __WINVER__
 	EventQueue.Deallocate();
+#else
+	Application->removeEventHandler(this);
+#endif
 }
 //---------------------------------------------------------------------------
+// wake メッセージを受けたときの本体処理 (メインスレッド)。
+void tTVPSoundEventThread::HandleWake()
+{
+	// pending events occur
+	tTJSCriticalSectionHolder holder(Buffers->GetCriticalSection()); // protect the object
+
+	WndProcToBeCalled = false;
+
+	tjs_int64 tick = TVPGetTickCount();
+
+	int nearest_next = TVP_TIMEOFS_INVALID_VALUE;
+
+	for( auto i = Buffers->Begin(); i != Buffers->End(); i++)
+	{
+		int next = (*i)->FireLabelEventsAndGetNearestLabelEventStep(tick);
+			// fire label events and get nearest label event step
+		if(next != TVP_TIMEOFS_INVALID_VALUE)
+		{
+			if(nearest_next == TVP_TIMEOFS_INVALID_VALUE || nearest_next > next)
+				nearest_next = next;
+		}
+	}
+
+	if(nearest_next != TVP_TIMEOFS_INVALID_VALUE)
+	{
+		PendingLabelEventExists = true;
+		NextLabelEventTick = TVPGetRoughTickCount32() + nearest_next;
+	}
+	else
+	{
+		PendingLabelEventExists = false;
+	}
+}
+//---------------------------------------------------------------------------
+#ifdef __WINVER__
 void tTVPSoundEventThread::UtilWndProc( NativeEvent& ev )
 {
 	// Window procedure of UtilWindow
 	if( ev.Message == TVP_EV_WAVE_SND_BUF_THREAD && !GetTerminated())
-	{
-		// pending events occur
-		tTJSCriticalSectionHolder holder(Buffers->GetCriticalSection()); // protect the object
-
-		WndProcToBeCalled = false;
-
-		tjs_int64 tick = TVPGetTickCount();
-
-		int nearest_next = TVP_TIMEOFS_INVALID_VALUE;
-
-		for( auto i = Buffers->Begin(); i != Buffers->End(); i++)
-		{
-			int next = (*i)->FireLabelEventsAndGetNearestLabelEventStep(tick);
-				// fire label events and get nearest label event step
-			if(next != TVP_TIMEOFS_INVALID_VALUE)
-			{
-				if(nearest_next == TVP_TIMEOFS_INVALID_VALUE || nearest_next > next)
-					nearest_next = next;
-			}
-		}
-
-		if(nearest_next != TVP_TIMEOFS_INVALID_VALUE)
-		{
-			PendingLabelEventExists = true;
-			NextLabelEventTick = TVPGetRoughTickCount32() + nearest_next;
-		}
-		else
-		{
-			PendingLabelEventExists = false;
-		}
-	}
+		HandleWake();
 	else
-	{
 		EventQueue.HandlerDefault(ev);
-	}
 }
+#else
+bool tTVPSoundEventThread::Dispatch( tjs_int message, tjs_int64 /*wparam*/, tjs_int64 /*lparam*/ )
+{
+	if( message == TVP_EV_WAVE_SND_BUF_THREAD && !GetTerminated() ) {
+		HandleWake();
+		return true;
+	}
+	return false;
+}
+#endif
 //---------------------------------------------------------------------------
 void tTVPSoundEventThread::ReschedulePendingLabelEvent(tjs_int tick)
 {
@@ -108,7 +132,11 @@ void tTVPSoundEventThread::Execute(void)
 				if(!WndProcToBeCalled)
 				{
 					WndProcToBeCalled = true;
+#ifdef __WINVER__
 					EventQueue.PostEvent( NativeEvent(TVP_EV_WAVE_SND_BUF_THREAD) );
+#else
+					Application->SendAppEvent( TVP_EV_WAVE_SND_BUF_THREAD, 0, 0 );
+#endif
 				}
 			}
 
@@ -199,6 +227,9 @@ void tTVPSoundBuffers::Shutdown() {
 void tTVPSoundBuffers::EnsureBufferWorking() {
 	if( EventThread == nullptr ) {
 		EventThread = new tTVPSoundEventThread(this);
+#ifdef KRKRZ_CPU_CORE_AUDIO
+		EventThread->SetProcessorNo(KRKRZ_CPU_CORE_AUDIO);
+#endif
 	}
 	EventThread->Start();
 }

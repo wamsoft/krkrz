@@ -58,20 +58,33 @@ void tTJSLocalSymbolList::Add(const tjs_char * name)
 {
 	if(Find(name)==-1)
 	{
+		// 旧実装は new tjs_char[] / List.push_back の bad_alloc で newsym (+Name) を
+		// 漏らしていた (OOM 時のみだが latent leak)。2 段 try-catch で塞ぐ。
 		tTJSLocalSymbol *newsym=new tTJSLocalSymbol;
-		newsym->Name=new tjs_char[TJS_strlen(name)+1];
-		TJS_strcpy(newsym->Name,name);
-		size_t i;
-		for(i=0;i<List.size();i++)
-		{
-			tTJSLocalSymbol *sym=List[i];
-			if(sym==NULL)
-			{
-				List[i]=newsym;
-				return;
-			}
+		try {
+			newsym->Name=new tjs_char[TJS_strlen(name)+1];
+		} catch(...) {
+			delete newsym;
+			throw;
 		}
-		List.push_back(newsym);
+		TJS_strcpy(newsym->Name,name);
+		try {
+			size_t i;
+			for(i=0;i<List.size();i++)
+			{
+				tTJSLocalSymbol *sym=List[i];
+				if(sym==NULL)
+				{
+					List[i]=newsym;
+					return;
+				}
+			}
+			List.push_back(newsym);
+		} catch(...) {
+			delete [] newsym->Name;
+			delete newsym;
+			throw;
+		}
 	}
 }
 //---------------------------------------------------------------------------

@@ -49,8 +49,14 @@ SDL3Application::SDL3Application()
  : tTVPApplication() 
  ,_Terminated(false)
  ,_TerminateCode(0)
+ ,_InBackground(false)
  ,mKirikiriStorage(nullptr)
 {
+	// アプリイベント用のユーザイベント型を確保 (SDL_Init 済み前提)。
+	// 失敗時は (Uint32)-1 が返り、_SendAppEvent は SDL_PushEvent 失敗で
+	// リトライキューに回るだけなので致命的ではない。
+	mAppEventType = SDL_RegisterEvents(1);
+
 	_language = "ja";
 	_country = "jp";
 
@@ -171,8 +177,16 @@ SDL3Application::MessageDlg(const tjs_string& string, const tjs_string& caption,
 	std::string str_utf8, cap_utf8;
 	TVPUtf16ToUtf8(str_utf8, string);
 	TVPUtf16ToUtf8(cap_utf8, caption);
-	
-	SDL_ShowSimpleMessageBox(flags, cap_utf8.c_str(), str_utf8.c_str(), NULL);
+
+	// 親 window を渡してモーダル化する。 NULL のままだと OS の native message
+	// box が「親なし」状態で出て、 ゲーム window を裏に回したり前面に重ねたり
+	// できてしまう。 親が居れば z-order が固定され、 OS レベルで親側の入力も
+	// ブロックされる (Elements 製モーダルダイアログと同じ振る舞い)。
+	SDL_Window* parent = nullptr;
+	if (auto* mainForm = (SDL3WindowForm*)MainWindowForm()) {
+		parent = static_cast<SDL_Window*>(mainForm->NativeWindowHandle());
+	}
+	SDL_ShowSimpleMessageBox(flags, cap_utf8.c_str(), str_utf8.c_str(), parent);
 }
 
 // 解像度情報
@@ -184,10 +198,52 @@ SDL3Application::GetDensity() const
 }
 
 #include "SDLDrawDevice.h"
-tTJSNativeClass* 
+#ifdef TVP_USE_OPENGL
+#include "SDLOGLDrawDevice.h"
+#include "OGLDrawDevice.h"
+#endif
+tTJSNativeClass*
 SDL3Application::GetDefaultDrawDevice()
 {
+	// 起動オプション -drawdevice=<name> でデフォルト DrawDevice を選択。
+	//   sdl    : SDLDrawDevice    (SDL_Renderer 経由、backend 自動選択)
+	//   sdlogl : SDLOGLDrawDevice (OpenGL 直接 + 将来 PBO 経由、Canvas なしの純粋版)
+	//   ogl    : OGLDrawDevice    (OpenGL 直接 + Canvas/Texture/Shader/Offscreen 等のフル機能)
+	// 未指定時:
+	//   TVP_USE_OPENGL=ON  ビルド: sdlogl (Switch 等で TexUp 削減狙い、Phase A skeleton 段階)
+	//   TVP_USE_OPENGL=OFF ビルド: sdl    (OpenGL 機能なし)
+	tTJSVariant val;
+	if (TVPGetCommandLine(TJS_W("-drawdevice"), &val))
+	{
+		ttstr name(val);
+		if (name == TJS_W("sdl")) {
+			TVPLOG_INFO("GetDefaultDrawDevice: -drawdevice=sdl -> SDLDrawDevice");
+			return new tTJSNC_SDLDrawDevice();
+		}
+#ifdef TVP_USE_OPENGL
+		if (name == TJS_W("sdlogl")) {
+			TVPLOG_INFO("GetDefaultDrawDevice: -drawdevice=sdlogl -> SDLOGLDrawDevice");
+			return new tTJSNC_SDLOGLDrawDevice();
+		}
+		if (name == TJS_W("ogl")) {
+			TVPLOG_INFO("GetDefaultDrawDevice: -drawdevice=ogl -> OGLDrawDevice");
+			return new tTJSNC_OGLDrawDevice();
+		}
+#endif
+		// 未知の値 -> default にフォールバック (警告)
+		std::string narrow_name;
+		TVPUtf16ToUtf8(narrow_name, name.c_str());
+		TVPLOG_WARNING("GetDefaultDrawDevice: unknown -drawdevice={}, fall back to default", narrow_name);
+	}
+
+	// 未指定時 default
+#ifdef TVP_USE_OPENGL
+	TVPLOG_INFO("GetDefaultDrawDevice: default -> SDLOGLDrawDevice");
+	return new tTJSNC_SDLOGLDrawDevice();
+#else
+	TVPLOG_INFO("GetDefaultDrawDevice: default -> SDLDrawDevice");
 	return new tTJSNC_SDLDrawDevice();
+#endif
 }
 
 void
@@ -197,10 +253,28 @@ SDL3Application::Terminate(int code)
 	_TerminateCode = code;
 }
 
+// アプリイベント送信 (任意スレッドから呼ばれる)。SDL_PushEvent はスレッド
+// セーフ。確保した単一ユーザイベント型に message / wparam / lparam を載せる。
+// 失敗 (キュー満杯等) で false を返し、呼び元 (SendAppEvent) がリトライキューへ。
+bool
+SDL3Application::_SendAppEvent(tjs_int message, tjs_int64 wparam, tjs_int64 lparam)
+{
+	SDL_Event ev;
+	SDL_zero(ev);
+	ev.type = mAppEventType;
+	ev.user.code = (Sint32)message;
+	ev.user.data1 = (void*)(intptr_t)wparam;
+	ev.user.data2 = (void*)(intptr_t)lparam;
+	bool ok = SDL_PushEvent(&ev);
+	if( !ok )
+		TVPLOG_WARNING("[AppEvent] SDL_PushEvent failed (type={}): {}", mAppEventType, SDL_GetError());
+	return ok;
+}
+
 void
 SDL3Application::Exit(int code)
 {
-	SDL_Quit();
+	std::exit(code);
 }
 
 // DLL処理
@@ -238,9 +312,11 @@ SDL3Application::FreeLibrary( void* handle )
 	}
 }
 
+// 物理メモリ総量を返す。Windows の long は 32bit なので tjs_uint64 を返す型で
+// 統一しないと ullTotalPhys が切り捨てられて TVPTotalPhysMemory が壊れる。
 #if defined(SDL_PLATFORM_WINDOWS)
 #include <windows.h>
-long getAvailableMemory() {
+static tjs_uint64 getTotalPhysMemoryBytes() {
     MEMORYSTATUSEX memInfo;
     memInfo.dwLength = sizeof(MEMORYSTATUSEX);
     GlobalMemoryStatusEx(&memInfo);
@@ -249,11 +325,11 @@ long getAvailableMemory() {
 
 #elif defined(sysconf) // LinuxやmacOSなどのUnix系
 #include <unistd.h>
-long getAvailableMemory() {
-    return sysconf(_SC_PHYS_PAGES) * sysconf(_SC_PAGE_SIZE);
+static tjs_uint64 getTotalPhysMemoryBytes() {
+    return (tjs_uint64)sysconf(_SC_PHYS_PAGES) * (tjs_uint64)sysconf(_SC_PAGE_SIZE);
 }
 #else
-long getAvailableMemory() {
+static tjs_uint64 getTotalPhysMemoryBytes() {
     return 0;
 }
 #endif
@@ -261,7 +337,7 @@ long getAvailableMemory() {
 tjs_uint64
 SDL3Application::GetTotalPhysMemory()
 {
-	return getAvailableMemory();;
+	return getTotalPhysMemoryBytes();
 }
 
 //< システムフォント一覧取得
@@ -275,6 +351,15 @@ SDL3Application::GetSystemFontList(std::vector<tjs_string>& fontFiles)
 SDL_AppResult
 SDL3Application::AppEvent(const SDL_Event& event)
 {
+	// アプリイベント (SendAppEvent で送られた user event) の呼び返し。
+	// window 紐付けが無いので window lookup より前に処理する。
+	if (event.type == mAppEventType) {
+		DispatchAppEvent((tjs_int)event.user.code,
+		                 (tjs_int64)(intptr_t)event.user.data1,
+		                 (tjs_int64)(intptr_t)event.user.data2);
+		return SDL_APP_CONTINUE;
+	}
+
 	SDL_Window* window = SDL_GetWindowFromID(event.window.windowID);
 	if (!window) return SDL_APP_CONTINUE;
 	

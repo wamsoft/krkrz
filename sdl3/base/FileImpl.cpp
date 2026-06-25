@@ -32,6 +32,7 @@ public:
 	virtual void CommitSavedata();
 	virtual void RollbackSavedata();
 	virtual tjs_uint64 LastModifiedFileTime(const tjs_char *path);
+	virtual tjs_uint64 FileSize(const tjs_char *path);
 };
 
 SDL3FileSystem::SDL3FileSystem()
@@ -124,7 +125,7 @@ SDL3FileSystem::ExistentFile(const tjs_char *path)
 	// Convert tjs_char* to UTF-8 for SDL3
 	std::string path_utf8;
 	TVPUtf16ToUtf8(path_utf8, path);
-	TVPLOG_DEBUG("Checking if file exists: {}", path_utf8);
+	//TVPLOG_DEBUG("Checking if file exists: {}", path_utf8);
 
 	// path_utf8 の中に　& という文字が含まれている場合は低層で abort されるので false　を返す
 	if (path_utf8.find('&') != std::string::npos) {
@@ -339,6 +340,8 @@ SDL3FileSystem::OpenStream(const tjs_char *path, const tjs_uint32 flags)
 {
 	std::string file_path_utf8;
 	TVPUtf16ToUtf8(file_path_utf8, path);
+	iTJSBinaryStream *stream = SDL_OpenStream(file_path_utf8.c_str(), flags);
+	if (stream) return stream;
 	return CreateStreamFromSDL(file_path_utf8.c_str(), flags);
 }
 
@@ -369,7 +372,19 @@ SDL3FileSystem::LastModifiedFileTime(const tjs_char *path)
 	if (SDL_GetPathInfo(file_path_utf8.c_str(), &pathInfo) && pathInfo.type == SDL_PATHTYPE_FILE) {
 		constexpr tjs_uint64 UNIX_EPOCH_IN_100NS = 11644473600000000000ULL; // 100-ns intervals from 1601-01-01 to 1970-01-01
 		tjs_uint64 mod_time_100ns = static_cast<tjs_uint64>(pathInfo.modify_time) * 10000000ULL + UNIX_EPOCH_IN_100NS;
-		return mod_time_100ns;				
+		return mod_time_100ns;
+	}
+	return 0;
+}
+
+tjs_uint64
+SDL3FileSystem::FileSize(const tjs_char *path)
+{
+	std::string file_path_utf8;
+	TVPUtf16ToUtf8(file_path_utf8, path);
+	SDL_PathInfo pathInfo;
+	if (SDL_GetPathInfo(file_path_utf8.c_str(), &pathInfo) && pathInfo.type == SDL_PATHTYPE_FILE) {
+		return static_cast<tjs_uint64>(pathInfo.size);
 	}
 	return 0;
 }

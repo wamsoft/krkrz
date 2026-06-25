@@ -53,8 +53,12 @@ GLuint CompileShader(GLenum type, const std::string &source)
 
 GLuint CheckLinkStatusAndReturnProgram(GLuint program, bool outputErrorMessages)
 {
-    if (glGetError() != GL_NO_ERROR)
+    if (glGetError() != GL_NO_ERROR) {
+        // 既に GL エラーが立っている場合でも、確保済みの program は解放しないと
+        // GL 側でリークする。
+        glDeleteProgram(program);
         return 0;
+    }
 
     GLint linkStatus;
     glGetProgramiv(program, GL_LINK_STATUS, &linkStatus);

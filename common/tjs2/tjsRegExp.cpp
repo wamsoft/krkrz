@@ -85,75 +85,88 @@ void replace_regex( tTJSVariant **param, tjs_int numparams, tTJSNI_RegExp *_this
 	// grep thru target string
 	bool isreplaceall = (_this->Flags & globalsearch) != 0;
 	OnigRegion* region = onig_region_new();
-	const tjs_char* s = target.c_str();
-	const tjs_char* send = s + target.GetLen();
-	int r = onig_search( _this->RegEx, (UChar*)s, (UChar*)send, (UChar*)s, (UChar*)send, region, ONIG_OPTION_NONE );
-	int offset = 0;
-	if( r >= 0 ) { // match
-		do {
-			tjs_int pos = region->beg[0]/sizeof(tjs_char);
-			tjs_int end = region->end[0]/sizeof(tjs_char);
-			if( pos > 0 ) {
-				res += ttstr(s,pos);
-			}
-			if( !func ) {
-				res += to;
-			} else {
-				// call the callback function descripted as param[1]
-				tTJSVariant result;
-				tjs_error hr;
-				iTJSDispatch2 *array = tTJSNC_RegExp::GetResultArray( true, s, _this, region );
-				tTJSVariant arrayval(array, array);
-				tTJSVariant *param = &arrayval;
-				array->Release();
-				hr = funcval.FuncCall(0, NULL, NULL, &result, 1, &param, NULL);
-				if( TJS_FAILED(hr) ) {
-					onig_region_free( region, 1  );
-					return;
+	// ユーザ closure (FuncCall) や ttstr alloc, GetResultArray が例外を投げると旧実装は
+	// region を漏らしていた。本体を try-catch で包んで例外路でも free。
+	try {
+		const tjs_char* s = target.c_str();
+		const tjs_char* send = s + target.GetLen();
+		int r = onig_search( _this->RegEx, (UChar*)s, (UChar*)send, (UChar*)s, (UChar*)send, region, ONIG_OPTION_NONE );
+		int offset = 0;
+		if( r >= 0 ) { // match
+			do {
+				tjs_int pos = region->beg[0]/sizeof(tjs_char);
+				tjs_int end = region->end[0]/sizeof(tjs_char);
+				if( pos > 0 ) {
+					res += ttstr(s,pos);
 				}
-				result.ToString();
-				res += result.GetString();
+				if( !func ) {
+					res += to;
+				} else {
+					// call the callback function descripted as param[1]
+					tTJSVariant result;
+					tjs_error hr;
+					iTJSDispatch2 *array = tTJSNC_RegExp::GetResultArray( true, s, _this, region );
+					tTJSVariant arrayval(array, array);
+					tTJSVariant *param = &arrayval;
+					array->Release();
+					hr = funcval.FuncCall(0, NULL, NULL, &result, 1, &param, NULL);
+					if( TJS_FAILED(hr) ) {
+						onig_region_free( region, 1  );
+						return;
+					}
+					result.ToString();
+					res += result.GetString();
+				}
+				s += end;
+				onig_region_free( region, 0  );
+			} while( isreplaceall && s < send && onig_search( _this->RegEx, (UChar*)s, (UChar*)send, (UChar*)s, (UChar*)send, region, ONIG_OPTION_NONE ) >= 0 );
+			if( s < send ) {
+				res += ttstr(s,(int)(send-s));
 			}
-			s += end;
-			onig_region_free( region, 0  );
-		} while( isreplaceall && s < send && onig_search( _this->RegEx, (UChar*)s, (UChar*)send, (UChar*)s, (UChar*)send, region, ONIG_OPTION_NONE ) >= 0 );
-		if( s < send ) {
+		} else {
 			res += ttstr(s,(int)(send-s));
 		}
-	} else {
-		res += ttstr(s,(int)(send-s));
+		onig_region_free( region, 1  );
+	} catch(...) {
+		onig_region_free( region, 1  );
+		throw;
 	}
-	onig_region_free( region, 1  );
 }
 //---------------------------------------------------------------------------
 iTJSDispatch2* split_regex( const ttstr &target, iTJSDispatch2 * array, tTJSNI_RegExp *_this, bool purgeempty ) {
 	tjs_uint targlen = target.GetLen();
 	OnigRegion* region = onig_region_new();
-	const tjs_char* s = target.c_str();
-	const tjs_char* send = s + targlen;
-	int r = onig_search( _this->RegEx, (UChar*)s, (UChar*)send, (UChar*)s, (UChar*)send, region, ONIG_OPTION_NONE );
-	int storecount = 0;
-	if( r >= 0 ) { // match
-		do {
-			int len = region->beg[0] / sizeof(tjs_char);
-			if( !purgeempty || len > 0 ) {
-				tTJSVariant val = ttstr( s, len );
+	// ttstr alloc や array->PropSetByNum が例外を投げると旧実装は region を漏らしていた。
+	try {
+		const tjs_char* s = target.c_str();
+		const tjs_char* send = s + targlen;
+		int r = onig_search( _this->RegEx, (UChar*)s, (UChar*)send, (UChar*)s, (UChar*)send, region, ONIG_OPTION_NONE );
+		int storecount = 0;
+		if( r >= 0 ) { // match
+			do {
+				int len = region->beg[0] / sizeof(tjs_char);
+				if( !purgeempty || len > 0 ) {
+					tTJSVariant val = ttstr( s, len );
+					array->PropSetByNum(TJS_MEMBERENSURE, storecount++, &val, array);
+				}
+				s += region->end[0] / sizeof(tjs_char);
+				onig_region_clear( region );
+			} while( onig_search( _this->RegEx, (UChar*)s, (UChar*)send, (UChar*)s, (UChar*)send, region, ONIG_OPTION_NONE ) >= 0 );
+			if( !purgeempty || s < send ) {
+				tTJSVariant val = ttstr( s, (int)(send-s) );
 				array->PropSetByNum(TJS_MEMBERENSURE, storecount++, &val, array);
 			}
-			s += region->end[0] / sizeof(tjs_char);
-			onig_region_clear( region );
-		} while( onig_search( _this->RegEx, (UChar*)s, (UChar*)send, (UChar*)s, (UChar*)send, region, ONIG_OPTION_NONE ) >= 0 );
-		if( !purgeempty || s < send ) {
+		} else {
 			tTJSVariant val = ttstr( s, (int)(send-s) );
 			array->PropSetByNum(TJS_MEMBERENSURE, storecount++, &val, array);
 		}
-	} else {
-		tTJSVariant val = ttstr( s, (int)(send-s) );
-		array->PropSetByNum(TJS_MEMBERENSURE, storecount++, &val, array);
+		onig_region_clear( region );
+		onig_region_free( region, 1  );
+		return array;
+	} catch(...) {
+		onig_region_free( region, 1  );
+		throw;
 	}
-	onig_region_clear( region );
-	onig_region_free( region, 1  );
-	return array;
 }
 //---------------------------------------------------------------------------
 void TJSReleaseRegex()

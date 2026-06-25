@@ -3,25 +3,19 @@
   "version": "2.0.0",
   "dependencies": [
     "glm",
-    "libogg",
     "libpng",
-    "libvorbis",
     "oniguruma",
     "opus",
-    "opusfile",
     "picojson",
     "libjpeg-turbo",
     "zlib",
-    "libvpx",
-    "libwebm",
     "miniaudio",
     "plog",
     {
       "name": "freetype",
       "features": [
         "zlib",
-        "png",
-        "bzip2"
+        "png"
       ]
     }
   ],

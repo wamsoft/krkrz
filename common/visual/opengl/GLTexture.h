@@ -15,8 +15,6 @@ struct GLTextreImageSet {
 
 class GLTexture {
 
-	friend class tTJSNI_Offscreen;
-
 protected:
 	GLuint texture_id_;
 	tTVPTextureColorFormat format_;
@@ -136,7 +134,7 @@ public:
 	void setWrapT( GLenum s ) {
 		if( texture_id_ && wrapT_ != s ) {
 			glBindTexture( GL_TEXTURE_2D, texture_id_ );
-			glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, s );
+			glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, s );
 			glBindTexture( GL_TEXTURE_2D, 0 );
 		}
 		wrapT_ = s;
@@ -144,6 +142,17 @@ public:
 
     static void UpdateTexture(GLuint tex_id, GLuint pbo, int format, int x, int y, int w, int h, std::function<void(char *dest, int pitch)> updator);
     void UpdateTexture(int x, int y, int w, int h, std::function<void(char *dest, int pitch)> updator);
+
+    /**
+     * 外部から所有権を引き取る形で texture_id_ を差し替える。
+     * 旧 ID は glDeleteTextures せず単に上書きする (所有権は呼び出し側で
+     * 別コンテナに移譲済みであることが前提)。Offscreen の ExchangeTexture
+     * のような GL handle 入れ替え操作で使う。
+     *
+     * 注意: width / height / format / glformat / pbo は更新しないので、
+     *       同一サイズ・同一フォーマットのテクスチャ間でのみ使うこと。
+     */
+    void AdoptTextureId(GLuint id) { texture_id_ = id; }
 
 public:
 	static bool _support_inited;
@@ -178,7 +187,9 @@ public:
 	void Init();
 	void Done();
 
-	void DrawTexture(GLTexture *tex, int scr_w, int scr_h, float position[], int tex_w=0, int tex_h=0);
+	//! @param blend  true なら GL_BLEND を有効にし (SRC_ALPHA, ONE_MINUS_SRC_ALPHA)
+	//!               で straight-alpha 合成。false (default) なら GL_BLEND を無効化。
+	void DrawTexture(GLTexture *tex, int scr_w, int scr_h, float position[], int tex_w=0, int tex_h=0, bool blend=false);
 
 private:
 	GLuint _shader_program;

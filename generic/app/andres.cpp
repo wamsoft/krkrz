@@ -24,6 +24,14 @@
 
 AAssetManager* assetManager = nullptr;
 
+// 起動側 (Android Java 層) から渡されるアセットキャッシュフォルダ。
+// BootstrapActivity が assets 内の *.xp3 等を `<filesDir>/assets/` に
+// コピーした後の絶対パス (末尾 '/' 付き)。stdapp.cpp::InitPath() が
+// xp3 / startup.tjs の検索基点として参照する。
+// 未設定 (空文字) のときは legacy AssetManager 経路 (= appPath="/") に
+// フォールバック。
+std::string g_AndroidAssetCacheDir;
+
 class AndroidResourceStream : public iTJSBinaryStream {
 private:
     std::vector<tjs_uint8> Data;
@@ -276,5 +284,25 @@ extern "C" {
     Java_jp_wamsoft_krkrz_KrkrzActivity_setAssetManager(JNIEnv *env, jobject thiz, jobject asset_manager) {
         AAssetManager* mgr = AAssetManager_fromJava(env, asset_manager);
         tTVPResourceStorageMedia::SetAssetManagerInstance(mgr);
+    }
+
+    // BootstrapActivity が assets を内部ストレージにコピーした後に呼ぶ。
+    // 末尾は '/' 付きで渡される想定。stdapp.cpp::InitPath() がこの値を
+    // xp3 / startup.tjs の検索基点として使う。
+    JNIEXPORT void JNICALL
+    Java_jp_wamsoft_krkrz_KrkrzActivity_setAssetCacheDir(JNIEnv *env, jobject thiz, jstring path) {
+        if (!path) {
+            g_AndroidAssetCacheDir.clear();
+            return;
+        }
+        const char *utf = env->GetStringUTFChars(path, nullptr);
+        if (utf) {
+            g_AndroidAssetCacheDir = utf;
+            env->ReleaseStringUTFChars(path, utf);
+            // 末尾スラッシュ補正 (Java 側で付けて渡すが念のため)
+            if (!g_AndroidAssetCacheDir.empty() && g_AndroidAssetCacheDir.back() != '/') {
+                g_AndroidAssetCacheDir += '/';
+            }
+        }
     }
 }

@@ -1,0 +1,39 @@
+{
+    /* menu から push される子画面。 back / Esc / 右クリックで menu に戻る。 */
+    "size": [420, 280],
+    "background": [30, 40, 30, 245],
+    "locale": "ja-JP",
+
+    "input": { "arrow_focus_nav": true },
+
+    "transitions": {
+        "back": "<back>",
+        "":     "<back>",
+    },
+
+    "content": {
+        "type": "margin", "padding": 20,
+        "child": {
+            "type": "vtile",
+            "children": [
+                { "type": "hspacer", "width": 380 },
+
+                { "type": "align_center",
+                  "child": { "type": "label", "text": "このアプリについて", "size": 1.4 } },
+                { "type": "vspacer", "height": 16 },
+                { "type": "align_center",
+                  "child": { "type": "label",
+                             "text": "elements_modal::navigator フローのデモ画面です。" } },
+                { "type": "align_center",
+                  "child": { "type": "label",
+                             "text": "menu → settings / about を push / pop で遷移します。",
+                             "size": 0.9 } },
+                { "type": "vspacer", "height": 22 },
+
+                { "type": "vsize", "height": 40,
+                  "child": { "type": "button", "id": "back", "text": "戻る",
+                             "close_on_click": true, "initial_focus": true } },
+            ],
+        },
+    },
+}

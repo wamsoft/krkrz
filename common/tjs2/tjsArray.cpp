@@ -20,6 +20,7 @@
 #include "tjsUtils.h"
 #include "tjsBinarySerializer.h"
 #include "tjsOctPack.h"
+#include "tjsObjectStats.h"
 
 #ifndef TJS_NO_REGEXP
 #include "tjsRegExp.h"
@@ -1461,10 +1462,12 @@ void tTJSArrayNI::AssignStructure(iTJSDispatch2 * dsp,
 tTJSArrayObject::tTJSArrayObject() : tTJSCustomObject(TJS_ARRAY_BASE_HASH_BITS)
 {
 	CallFinalize = false;
+	TVPRegisterTJSArray(this);
 }
 //---------------------------------------------------------------------------
 tTJSArrayObject::~tTJSArrayObject()
 {
+	TVPUnregisterTJSArray(this);
 }
 //---------------------------------------------------------------------------
 

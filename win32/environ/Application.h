@@ -5,15 +5,101 @@
 #include <vector>
 #include <map>
 #include <stack>
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <functional>
 
 //---------------------------------------------------------------------------
 // memory allocation class
 //---------------------------------------------------------------------------
+// 用途識別タグ (doc/legacy/MemoryBudgetNegotiation.md §11.1)。
+// allocator が単一用途専用でも tag を渡しておけば後で getTagStats で
+// 集計できる。プラグインからの拡張要求が出るまでは enum 固定。
+enum class TVPAllocTag : uint16_t {
+	Unknown        = 0,
+	FileCache,        // StorageCache が使う file_malloc 経由
+	BitmapBits,       // tTVPBitmapBitsAlloc 経由
+	GraphicsLoader,  // 画像デコード作業バッファ (将来)
+	Texture,          // OpenGL テクスチャ (将来)
+	Sound,            // common/sound/ PCM/リング/DSP/クロスフェード一時 (Phase 1 計装済)
+	Movie,            // movie-player 経路 (将来)
+	TJS2,             // TJS_malloc 経路 (将来)
+	User,             // プラグイン任意用途
+	_Count
+};
+
+// 容量ネゴシエーション拡張 (capacity / used / available / setPressureCallback)
+// は doc/legacy/MemoryBudgetNegotiation.md §3.1 (case A) を参照。既存実装は
+// デフォルト (容量不明 = SIZE_MAX) のまま挙動不変。
+// テレメトリ (Stats / getStats / TagStats / getTagStats) は §11 を参照。
+// デフォルトは未対応値を返す。
 class iTVPMemoryAllocator {
 public:
+	using PressureCallback = std::function<void(float)>;
+
+	struct Stats {
+		size_t   current_used     = SIZE_MAX; // 現在使用 (= used())。未対応なら SIZE_MAX
+		size_t   peak_used        = SIZE_MAX; // ピーク。未対応なら SIZE_MAX
+		uint64_t total_allocated  = 0;        // 累積 alloc バイト数
+		uint64_t total_freed      = 0;        // 累積 free バイト数
+		uint64_t alloc_count      = 0;
+		uint64_t free_count       = 0;
+		// L2 サイズビン: <128, <1K, <16K, <256K, <4M, <64M, <1G, ≥1G
+		std::array<uint64_t, 8> alloc_size_hist = {};
+	};
+
+	// L3 tag 別集計 (doc §11.1)。total_freed は T4 で追加 (sanity check 用)。
+	struct TagStats {
+		size_t   current_used    = 0;
+		uint64_t alloc_count     = 0;
+		uint64_t free_count      = 0;
+		uint64_t total_allocated = 0;
+		uint64_t total_freed     = 0;
+	};
+
 	virtual ~iTVPMemoryAllocator() {};
 	virtual void* allocate( size_t size ) = 0;
 	virtual void free( void* mem ) = 0;
+
+	// タグ付き allocate。デフォルトは tag を捨てて allocate(size) を呼ぶ。
+	virtual void* allocate( size_t size, TVPAllocTag /*tag*/ ) { return allocate(size); }
+
+	// size 付き free。free 時に呼び出し側で確保サイズが分かる経路 (例:
+	// tTVPBitmapBitsAlloc が record->size を持っている) で使うと、
+	// allocator 側に header を置かなくても Sized mode (current_used 集計) を
+	// 維持できる。デフォルトは size を捨てて free(mem) を呼ぶ。
+	virtual void free( void* mem, size_t /*size*/ ) { free(mem); }
+
+	// realloc 相当。old==nullptr なら allocate と等価、new_size==0 なら free と等価。
+	// 既存内容をどれだけコピーするかは getAllocatedSize() の戻り値で決まる
+	// (== 0 を返す実装ではコピーされず内容が破棄される — その実装は本メソッドを
+	// 必ず override すること)。libogg の _ogg_realloc 等のフック先として使う。
+	virtual void* reallocate( void* old, size_t new_size, TVPAllocTag tag );
+
+	// 確保済みポインタの実サイズを返す。0 = 不明 (実装非対応)。
+	// デフォルト reallocate の memcpy 量決定に使う。
+	virtual size_t getAllocatedSize( void* /*mem*/ ) const { return 0; }
+
+	virtual size_t capacity() const { return SIZE_MAX; }
+	virtual size_t used()     const { return SIZE_MAX; }
+	virtual size_t available() const {
+		size_t c = capacity(), u = used();
+		if (c == SIZE_MAX || u == SIZE_MAX) return SIZE_MAX;
+		return (c > u) ? (c - u) : 0;
+	}
+	virtual void setPressureCallback(PressureCallback /*cb*/) {}
+	virtual Stats getStats() const { return Stats{}; }
+	virtual TagStats getTagStats(TVPAllocTag /*tag*/) const { return TagStats{}; }
+
+	// peak_used を current_used に揃え直す (Sized mode allocator のみ意味あり)。
+	// 「ここから先の peak をもう一度測りたい」用途。デフォルトは no-op。
+	virtual void resetPeak() {}
+
+	// fallback 経由の統計 (TVPPooledAllocator など pool ベース実装向け)。
+	// デフォルトは 0 (fallback なし)。
+	virtual uint64_t fallbackAllocCount() const { return 0; }
+	virtual uint64_t fallbackBytesInUse() const { return 0; }
 };
 
 
@@ -182,14 +268,39 @@ public:
 	// Bitmap用のAllocatorを返す
 	virtual iTVPMemoryAllocator *CreateBitmapAllocator();
 
+	// File読み込みバッファ用のAllocatorを返す
+	virtual iTVPMemoryAllocator *CreateFileAllocator();
+
+	// サウンド用バッファのAllocatorを返す
+	virtual iTVPMemoryAllocator *CreateSoundAllocator();
+
+	// GlobalAllocStats (operator new / TJS_malloc) 用のAllocatorを返す
+	// KRKRZ_ENABLE_ALLOC_STATS=ON 時に GlobalAllocStats::Initialize() から呼ばれる
+	virtual iTVPMemoryAllocator *CreateKrkrzAllocator();
+
+	// システムアロケータ情報を返す (組込みプラットフォーム固有実装用)
+	// デフォルトは一般 OS 向けの実装を返す。
+	// doc/MemoryDesign.md 参照。
+	virtual class iTVPSystemAllocatorInfo *GetSystemAllocatorInfo();
+
 	/**
 	 * 画像の非同期読込み要求
 	 */
 	void LoadImageRequest( class iTJSDispatch2 *owner, class tTJSNI_Bitmap* bmp, const ttstr &name );
 
+	/**
+	 * 画像 decode prefetch 要求 (owner なし、cache 登録のみ)
+	 */
+	void LoadImagePrefetchRequest( const ttstr &name );
+
+	/**
+	 * 内部用: AsyncImageLoader インスタンス取得 (NULL あり)
+	 */
+	class tTVPAsyncImageLoader* GetImageLoadThread() { return image_load_thread_; }
+
 	// -------------------------------------------------------------
 
-	void CacheFileRequest( const ttstr &name, bool fast=false );
+	void CacheFileRequest( const ttstr &name, bool fast=false, tjs_uint64 minSize=0 );
 	void CacheFileClear( const ttstr &name);
 	void CacheFileClearOld(int keepTime, bool force);
 	void CacheFileSetMaxSize( int maxSize);

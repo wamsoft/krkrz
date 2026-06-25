@@ -759,82 +759,94 @@ static bool TJSParseOctet(tTJSVariant &val, const tjs_char **ptr)
 	bool leading = true;
 	tjs_uint8 cur = 0;
 
-	for(;*(*ptr);)
-	{
-		switch(TJSSkipComment(ptr))
+	// 旧実装は (a) `buf = realloc(buf, ...)` パターンで realloc 失敗時の旧 buf を喪失、
+	// (b) parse error 系の TJS_eTJSError throw で蓄積済み buf を漏らしていた。
+	// (a) は tmp 経由の安全な realloc に直し、(b) は try-catch で buf を回収。
+	try {
+		for(;*(*ptr);)
 		{
-		case scrEnded:
-			TJS_eTJSError(TJSStringParseError);
-		case scrContinue:
-		case scrNotComment:
-			;
-		}
-
-
-		const tjs_char *next = *ptr;
-		TJSNext(&next);
-		if(*(*ptr) == TJS_W('%') && *next == TJS_W('>'))
-		{
-			*ptr = next;
-			TJSNext(ptr);
-
-			// literal ended
-
-			if(!leading)
+			switch(TJSSkipComment(ptr))
 			{
-				buf = (tjs_uint8*)TJS_realloc(buf, buflen+1);
-				if(!buf)
-					throw eTJSError(ttstr(TJSInsufficientMem));
-				buf[buflen] = cur;
-				buflen++;
+			case scrEnded:
+				TJS_eTJSError(TJSStringParseError);
+			case scrContinue:
+			case scrNotComment:
+				;
 			}
 
-			val = tTJSVariant(buf, buflen); // create octet variant
-			if(buf) TJS_free(buf);
-			return true;
-		}
 
-		tjs_char ch = *(*ptr);
-		tjs_int n = TJSHexNum(ch);
-		if(n != -1)
-		{
-			if(leading)
+			const tjs_char *next = *ptr;
+			TJSNext(&next);
+			if(*(*ptr) == TJS_W('%') && *next == TJS_W('>'))
 			{
-				cur = (tjs_uint8)(n);
-				leading = false;
+				*ptr = next;
+				TJSNext(ptr);
+
+				// literal ended
+
+				if(!leading)
+				{
+					tjs_uint8 *tmp = (tjs_uint8*)TJS_realloc(buf, buflen+1);
+					if(!tmp)
+						TJS_eTJSError(TJSInsufficientMem);
+					buf = tmp;
+					buf[buflen] = cur;
+					buflen++;
+				}
+
+				val = tTJSVariant(buf, buflen); // create octet variant (data copied)
+				if(buf) TJS_free(buf);
+				buf = NULL;
+				return true;
 			}
-			else
-			{
-				cur <<= 4;
-				cur += n;
 
-				// store cur
-				buf = (tjs_uint8*)TJS_realloc(buf, buflen+1);
-				if(!buf)
-					throw eTJSError(ttstr(TJSInsufficientMem));
+			tjs_char ch = *(*ptr);
+			tjs_int n = TJSHexNum(ch);
+			if(n != -1)
+			{
+				if(leading)
+				{
+					cur = (tjs_uint8)(n);
+					leading = false;
+				}
+				else
+				{
+					cur <<= 4;
+					cur += n;
+
+					// store cur
+					tjs_uint8 *tmp = (tjs_uint8*)TJS_realloc(buf, buflen+1);
+					if(!tmp)
+						TJS_eTJSError(TJSInsufficientMem);
+					buf = tmp;
+					buf[buflen] = cur;
+					buflen++;
+
+					leading = true;
+				}
+			}
+
+			if(!leading && ch == TJS_W(','))
+			{
+				tjs_uint8 *tmp = (tjs_uint8*)TJS_realloc(buf, buflen+1);
+				if(!tmp)
+					TJS_eTJSError(TJSInsufficientMem);
+				buf = tmp;
 				buf[buflen] = cur;
 				buflen++;
 
 				leading = true;
 			}
+
+			*ptr = next;
 		}
 
-		if(!leading && ch == TJS_W(','))
-		{
-			buf = (tjs_uint8*)TJS_realloc(buf, buflen+1);
-			if(!buf)
-				TJS_eTJSError(TJSInsufficientMem);
-			buf[buflen] = cur;
-			buflen++;
-
-			leading = true;
-		}
-
-		*ptr = next;
+		// error
+		TJS_eTJSError(TJSStringParseError);
+	} catch(...) {
+		if(buf) TJS_free(buf);
+		throw;
 	}
-
-	// error
-	TJS_eTJSError(TJSStringParseError);
 
 	return false;
 }

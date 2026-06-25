@@ -24,7 +24,6 @@
 #include "TVPTimer.h"
 #include "Application.h"
 #include "UserEvent.h"
-#include "NativeEventQueue.h"
 #include "LogIntf.h"
 
 #include "SoundEventThread.h"
@@ -111,7 +110,9 @@ tTJSNI_QueueSoundBuffer::tTJSNI_QueueSoundBuffer() : Paused(false)
 	}
 
 	TVPSoundBuffers.AddBuffer( this );
-	Thread = new tTVPSoundDecodeThread( this );
+	// デコードスレッドは初回 Open 時まで生成しない (EnsureDecodeThread)。
+	// 多数の SoundBuffer を確保するだけで未使用スレッドが大量常駐するのを避けるため。
+
 	memset( &InputFormat, 0, sizeof( InputFormat ) );
 	Looping = false;
 	BufferPlaying = false;
@@ -127,6 +128,17 @@ tTJSNI_QueueSoundBuffer::Construct(tjs_int numparams, tTJSVariant **param,
 	if(TJS_FAILED(hr)) return hr;
 
 	return TJS_S_OK;
+}
+//---------------------------------------------------------------------------
+void tTJSNI_QueueSoundBuffer::EnsureDecodeThread()
+{
+	// 初回 Open 時に呼ばれ、まだ無ければデコードスレッドを生成する。
+	// メインスレッド (Open 経路) からのみ呼ばれるので生成競合は起きない。
+	if( Thread ) return;
+	Thread = new tTVPSoundDecodeThread( this );
+#ifdef KRKRZ_CPU_CORE_AUDIO
+	Thread->SetProcessorNo(KRKRZ_CPU_CORE_AUDIO);
+#endif
 }
 //---------------------------------------------------------------------------
 void TJS_INTF_METHOD tTJSNI_QueueSoundBuffer::Invalidate()
@@ -194,7 +206,7 @@ void tTJSNI_QueueSoundBuffer::Clear()
 	Stop();
 	ThreadCallbackEnabled = false;
 	TVPSoundBuffers.CheckAllSleep();
-	Thread->Interrupt();
+	if(Thread) Thread->Interrupt();
 	if(LoopManager) delete LoopManager, LoopManager = nullptr;
 	ClearFilterChain();
 	if(Decoder) delete Decoder, Decoder = nullptr;
@@ -272,6 +284,25 @@ void tTJSNI_QueueSoundBuffer::ReleasePlayedSample(tTVPSoundSamplesBuffer* buffer
 	// 再生が終了したバッファ。まだ再生するのなら Decoder へ入れる
 	if (!buffer->IsEnded()) {
 		if(Thread) Thread->PushSamplesBuffer( buffer );
+	}
+}
+//---------------------------------------------------------------------------
+void tTJSNI_QueueSoundBuffer::DrainConsumedBuffers() {
+	// decode thread から呼ばれる。
+	// audio thread が consumed ring に積んだ完了 buffer をすべて引き取る。
+	//
+	// Stream ポインタの寿命は StopPlay() が BufferCS 越しに nullptr 化することで
+	// 保護されている (StopPlay 側参照)。ここでは BufferCS 内で Stream を捕まえ、
+	// その間に TryPopConsumed→ReleasePlayedSample まで一括して行う。
+	//   ReleasePlayedSample 内部の BufferCS 取得は再帰ロックなので問題ない。
+	while (true) {
+		void* param = nullptr;
+		{
+			tTJSCriticalSectionHolder holder(BufferCS);
+			if (!Stream) return;
+			if (!Stream->TryPopConsumed(param)) return;
+		}
+		ReleasePlayedSample((tTVPSoundSamplesBuffer*)param);
 	}
 }
 
@@ -419,11 +450,13 @@ void tTJSNI_QueueSoundBuffer::StartPlay()
 			if( Stream == nullptr ) {
 				TVPThrowExceptionMessage(TJS_W("Faild to create audio stream."));
 			}
-			Stream->SetCallback([](void *userData, void *data){
-				tTJSNI_QueueSoundBuffer *self = (tTJSNI_QueueSoundBuffer*)userData;
-				tTVPSoundSamplesBuffer *buffer = (tTVPSoundSamplesBuffer*)data;
-				if(self && buffer) self->ReleasePlayedSample(buffer);
-			}, this);
+			// audio thread が完了 buffer を consumed ring に積んだら decode thread を起こす。
+			// 起こされた側 (Execute ループ) は Owner->DrainConsumedBuffers() で取り出す。
+			// 旧来の audio thread から ReleasePlayedSample を直接呼ぶ経路は廃止。
+			Stream->SetWakeupHandler([](void *userData){
+				tTVPSoundDecodeThread *t = (tTVPSoundDecodeThread*)userData;
+				if (t) t->Wakeup();
+			}, Thread);
 
 			// reset volume, sound position and frequency
 			SetVolumeToStream();
@@ -464,13 +497,21 @@ void tTJSNI_QueueSoundBuffer::StopPlay()
 {
 	if(!Decoder) return;
 
-	if (Stream) {
-		Stream->StopStream();
-		delete Stream;
-		Stream = nullptr;
+	// Stream ポインタは decode thread の DrainConsumedBuffers() からも参照される。
+	// (1) StopStream で audio callback を止める
+	// (2) Stream=nullptr の publish を BufferCS 越しに行い decode thread に visibility 保証
+	// (3) 実際の delete (ma_sound_uninit が drain 待ちで block する可能性あり) はロック外
+	iTVPAudioStream* tobedeleted = nullptr;
+	{
+		tTJSCriticalSectionHolder holder(BufferCS);
+		if (Stream) {
+			Stream->StopStream();
+			tobedeleted = Stream;
+			Stream = nullptr;
+		}
+		BufferPlaying = false;
 	}
-
-	BufferPlaying = false;
+	if (tobedeleted) delete tobedeleted;
 }
 //---------------------------------------------------------------------------
 void tTJSNI_QueueSoundBuffer::Play() {
@@ -493,7 +534,7 @@ void tTJSNI_QueueSoundBuffer::Stop() {
 	// delete thread
 	ThreadCallbackEnabled = false;
 	TVPSoundBuffers.CheckAllSleep();
-	Thread->Interrupt();
+	if(Thread) Thread->Interrupt();
 
 	// set status
 	if(Status != ssUnload) SetStatus(ssStop);
@@ -513,6 +554,9 @@ void tTJSNI_QueueSoundBuffer::SetPaused(bool b) {
 void tTJSNI_QueueSoundBuffer::Open(const ttstr & storagename) {
 	// open a storage and prepare to play
 	//TVPEnsurePrimaryBufferPlay(); // let primary buffer to start running
+
+	// ファイルを開く=実際に再生に入る段になって初めてデコードスレッドを起こす
+	EnsureDecodeThread();
 
 	Clear();
 
@@ -742,7 +786,7 @@ void tTJSNI_QueueSoundBuffer::TimerBeatHandler() {
 		// buffer was stopped
 		ThreadCallbackEnabled = false;
 		TVPSoundBuffers.CheckAllSleep();
-		Thread->Interrupt();
+		if(Thread) Thread->Interrupt();
 		SetStatusAsync(ssStop);
 	}
 }

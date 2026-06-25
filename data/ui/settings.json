@@ -1,0 +1,45 @@
+{
+    /* menu から push される子画面。 back / Esc / 右クリックで menu に戻る。
+       checkbox / slide_switch の値変化は onAction で観測でき、 画面を閉じる
+       ときの値は フロー結果 (result.values) にも乗る。 */
+    "size": [420, 320],
+    "background": [40, 30, 30, 245],
+    "locale": "ja-JP",
+
+    "input": { "arrow_focus_nav": true },
+
+    "transitions": {
+        "back": "<back>",
+        "":     "<back>",
+    },
+
+    "content": {
+        "type": "margin", "padding": 20,
+        "child": {
+            "type": "vtile",
+            "children": [
+                { "type": "hspacer", "width": 380 },
+
+                { "type": "align_center",
+                  "child": { "type": "label", "text": "設定", "size": 1.4 } },
+                { "type": "vspacer", "height": 20 },
+
+                { "type": "align_left",
+                  "child": { "type": "checkbox", "id": "fullscreen",
+                             "text": "フルスクリーン", "value": false } },
+                { "type": "vspacer", "height": 8 },
+                { "type": "align_left",
+                  "child": { "type": "htile",
+                             "children": [
+                                 { "type": "label", "text": "サウンド " },
+                                 { "type": "slide_switch", "id": "sound", "value": true },
+                             ] } },
+                { "type": "vspacer", "height": 20 },
+
+                { "type": "vsize", "height": 40,
+                  "child": { "type": "button", "id": "back", "text": "戻る",
+                             "close_on_click": true, "initial_focus": true } },
+            ],
+        },
+    },
+}

@@ -21,12 +21,14 @@ class tTVPBitmapBitsAlloc {
 	#pragma pack(pop)
 	static iTVPMemoryAllocator* Allocator;
 	static tTJSCriticalSection AllocCS;
-	static void InitializeAllocator();
 
 public:
+	static void InitializeAllocator();
 	static void FreeAllocator();
 	static void* Alloc( tjs_uint size, tjs_uint width, tjs_uint height );
 	static void Free( void* ptr );
+	// テレメトリ取得用 (doc/legacy/MemoryBudgetNegotiation.md §11)。
+	static iTVPMemoryAllocator* GetAllocator() { return Allocator; }
 };
 
 #endif // __BITMAP_BITS_ALLOC_H__

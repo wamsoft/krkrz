@@ -21,15 +21,19 @@
 #include "EventIntf.h"
 #include "SysInitIntf.h"
 #include "DebugIntf.h"
+#include "LogIntf.h"
+#include "AllocTagScope.h"
 #include "tvpgl.h"
 #include "TickCount.h"
 //#include "DetectCPU.h"
 #include "UtilStreams.h"
 #include "tjsDictionary.h"
 #include "ScriptMgnIntf.h"
+#include "GraphicsLoadThread.h"
 #include <cstdlib>
 #include <cmath>
 #include "StorageImpl.h"
+#include "StorageCache.h"  // P3: file→decode auto-drop の TVPClearStorageCache 用
 
 //---------------------------------------------------------------------------
 
@@ -64,6 +68,8 @@ void tTVPGraphicHandlerType::Save( const ttstr & storagename, const ttstr & mode
 {
 	if( SaveHandler == NULL ) TVPThrowExceptionMessage(TVPUnknownGraphicFormat, mode );
 
+	// cache 駆逐は _TVPCreateStream(WRITE) 側で対象 path を両層 evict する
+	// 形に集約済 (StorageIntf.cpp)。ここで個別に呼ぶ必要なし。
 	iTJSBinaryStream *stream = TVPCreateStream(TVPNormalizeStorageName(storagename), TJS_BS_WRITE);
 #ifdef __WINVER__
 	if( IsPlugin )
@@ -788,7 +794,9 @@ void TVPSaveAsBMP( void* formatdata, iTJSBinaryStream* dst, const tTVPBaseBitmap
 
 	try
 	{
-		TVPClearGraphicCache();
+		// 旧実装は冒頭で TVPClearGraphicCache() を呼んでいた (decode 層全消し)。
+		// 過剰なので tTVPGraphicHandlerType::Save 側で対象 path の entry のみ
+		// 駆逐する形に変更済み。
 
 		// prepare header
 		tjs_uint bmppitch = bmp->GetWidth() * pixelbytes;
@@ -1264,7 +1272,11 @@ bool TVPAllocGraphicCacheOnHeap = false;
 //---------------------------------------------------------------------------
 struct tTVPGraphicsSearchData
 {
-	ttstr Name;
+	// Name は decode 層キャッシュキーの一部。prefetch worker が挿入し main /
+	// pressure callback が削除する越境キーなので、非 atomic RefCount を持つ
+	// ttstr では二重解放が起きる。RefCount を持たない tjs_string で保持する
+	// (doc/TtstrDataRetention.md H4)。境界では AsStdString() で独立化する。
+	tjs_string Name;
 	tjs_int32 KeyIdx; // color key index
 	tTVPGraphicLoadMode Mode; // image mode
 	tjs_uint DesW; // desired width ( 0 for original size )
@@ -1282,7 +1294,9 @@ class tTVPGraphicsSearchHashFunc
 public:
 	static tjs_uint32 Make(const tTVPGraphicsSearchData &val)
 	{
-		tjs_uint32 v = tTJSHashFunc<ttstr>::Make(val.Name);
+		// Name は tjs_string。内容ベースで ttstr 版と同一アルゴリズムの
+		// tjs_char* 特殊化を使う (空文字は両者とも 0 を返す)。
+		tjs_uint32 v = tTJSHashFunc<tjs_char *>::Make(val.Name.c_str());
 
 		v ^= val.KeyIdx + (val.KeyIdx >> 23);
 		v ^= (val.Mode << 30);
@@ -1302,19 +1316,23 @@ private:
 	tjs_int PixelSize;
 
 public:
-	ttstr ProvinceName;
+	// 値側 path。push 時 worker、内部ロード/読出し時 main が触る。境界で独立化
+	// するため tjs_string で保持する (doc/TtstrDataRetention.md H5)。
+	tjs_string ProvinceName;
 
 	std::vector<tTVPGraphicMetaInfoPair> * MetaInfo;
 
 private:
 	tjs_int RefCount;
 	tjs_uint Size;
+	bool Pinned;            // P2: pin (sticky) フラグ。LRU/transient 駆逐対象外
 
 public:
 	tTVPGraphicImageData()
 	{
 		RefCount = 1; Size = 0; Bitmap = NULL; RawData = NULL;
 		MetaInfo = NULL;
+		Pinned = false;
 	}
 	~tTVPGraphicImageData()
 	{
@@ -1379,6 +1397,12 @@ public:
 	}
 
 	tjs_uint GetSize() const { return Size; }
+	tjs_int GetWidth() const { return Width; }
+	tjs_int GetHeight() const { return Height; }
+	tjs_int GetPixelSize() const { return PixelSize; }
+
+	bool IsPinned() const { return Pinned; }
+	void SetPinned(bool v) { Pinned = v; }
 
 	void AddRef() { RefCount ++; }
 	void Release()
@@ -1404,31 +1428,277 @@ static bool TVPGraphicCacheEnabled = false;
 static tjs_uint64 TVPGraphicCacheLimit = 0;
 static tjs_uint64 TVPGraphicCacheTotalBytes = 0;
 tjs_uint64 TVPGraphicCacheSystemLimit = 0; // maximum possible value of  TVPGraphicCacheLimit
+// 非同期 prefetch worker スレッドからも TVPGraphicCache を触れるよう CS で保護する。
+// 既存のメインスレッド経由の触り口 (TVPCheckImageCache / TVPHasImageCache /
+// TVPPushGraphicCache / TVPClearGraphicCache / TVPLoadGraphic 内部ロジック)
+// を全てこの CS でガード。粒度は粗いが、もとから処理は短時間 (hash 操作 + LRU
+// chop) なので問題にならない想定。
+static tTJSCriticalSection TVPGraphicCacheCS;
 //---------------------------------------------------------------------------
 static void TVPCheckGraphicCacheLimit()
 {
+	// 呼び出し元で TVPGraphicCacheCS を取得済みであることを前提とする
+	// P2: pinned エントリは chop 対象外。LRU 末尾から非 pinned を探して削除する。
 	while(TVPGraphicCacheTotalBytes > TVPGraphicCacheLimit)
 	{
-		// chop last graphics
-		tTVPGraphicCache::tIterator i;
-		i = TVPGraphicCache.GetLast();
-		if(!i.IsNull())
+		// LRU 末尾から最初の非 pinned エントリを探す
+		tTVPGraphicCache::tIterator i = TVPGraphicCache.GetLast();
+		while(!i.IsNull() && i.GetValue().GetObjectNoAddRef()->IsPinned())
 		{
-			tjs_uint size = i.GetValue().GetObjectNoAddRef()->GetSize();
-			TVPGraphicCacheTotalBytes -= size;
-			TVPGraphicCache.ChopLast(1);
+			i--;
 		}
-		else
+		if(i.IsNull())
 		{
+			// 全部 pinned。これ以上駆逐できない (上限超過のまま継続)
+			ttstr msg(TJS_W("TVPGraphicCache: limit exceeded but all entries are pinned (totalBytes="));
+			msg += ttstr((tjs_int)TVPGraphicCacheTotalBytes);
+			msg += TJS_W(" limit=");
+			msg += ttstr((tjs_int)TVPGraphicCacheLimit);
+			msg += TJS_W(")");
+			TVPAddImportantLog(msg);
 			break;
 		}
+		// 該当 entry を削除。ChopLast(1) は末尾依存なので個別 Delete を使う
+		tTVPGraphicsSearchData key = i.GetKey();
+		tjs_uint size = i.GetValue().GetObjectNoAddRef()->GetSize();
+		TVPLOG_DEBUG("ImageCache:lruChop:{} size={} total={} limit={}",
+		             key.Name, size, (tjs_uint64)TVPGraphicCacheTotalBytes,
+		             (tjs_uint64)TVPGraphicCacheLimit);
+		if(TVPGraphicCacheTotalBytes >= size)
+			TVPGraphicCacheTotalBytes -= size;
+		else
+			TVPGraphicCacheTotalBytes = 0;
+		TVPGraphicCache.Delete(key);
 	}
 }
 //---------------------------------------------------------------------------
 void TVPClearGraphicCache()
 {
+	tTJSCriticalSectionHolder cs(TVPGraphicCacheCS);
+	const tjs_uint count = TVPGraphicCache.GetCount();
+	const tjs_uint64 bytes = TVPGraphicCacheTotalBytes;
 	TVPGraphicCache.Clear();
 	TVPGraphicCacheTotalBytes = 0;
+	if(count > 0)
+		TVPLOG_DEBUG("ImageCache:clearAll: dropped={} bytes={}", count, bytes);
+}
+//---------------------------------------------------------------------------
+// path 単位 evict。同一 Name で (keyidx, mode, dw, dh) の異なる複数エントリが
+// 並立しうるため、Name 一致するエントリを全て削除する。
+// nname は事前に正規化済みであること (TVPNormalizeStorageName 通過済み)。
+//---------------------------------------------------------------------------
+void TVPClearGraphicCacheEntry(const ttstr& nname)
+{
+	if(!TVPGraphicCacheEnabled) return;
+	tTJSCriticalSectionHolder cs(TVPGraphicCacheCS);
+
+	// iteration 中の削除で iterator 失効を避けるため、まずキーを集める
+	// (キー Name は tjs_string なので同型で比較する)
+	tjs_string nn = nname.AsStdString();
+	std::vector<tTVPGraphicsSearchData> hits;
+	for(tTVPGraphicCache::tIterator i = TVPGraphicCache.GetFirst();
+		!i.IsNull(); i++)
+	{
+		if(i.GetKey().Name == nn)
+		{
+			hits.push_back(i.GetKey());
+		}
+	}
+	tjs_uint64 dropped_bytes = 0;
+	for(const auto &k : hits)
+	{
+		tTVPGraphicImageHolder *ptr = TVPGraphicCache.Find(k);
+		if(ptr)
+		{
+			tjs_uint size = ptr->GetObjectNoAddRef()->GetSize();
+			dropped_bytes += size;
+			if(TVPGraphicCacheTotalBytes >= size)
+				TVPGraphicCacheTotalBytes -= size;
+			else
+				TVPGraphicCacheTotalBytes = 0;
+			TVPGraphicCache.Delete(k);
+		}
+	}
+	if(!hits.empty())
+		TVPLOG_DEBUG("ImageCache:clearEntry:{} dropped={} bytes={}",
+		             nname, hits.size(), dropped_bytes);
+}
+//---------------------------------------------------------------------------
+// transient 全消し (pinned エントリは残す)。
+//---------------------------------------------------------------------------
+void TVPClearTransientGraphicCache()
+{
+	if(!TVPGraphicCacheEnabled) {
+		// 無効化されている場合は念のため Clear だけしておく
+		TVPClearGraphicCache();
+		return;
+	}
+	tTJSCriticalSectionHolder cs(TVPGraphicCacheCS);
+
+	// pinned 以外のキーを集めて削除
+	std::vector<tTVPGraphicsSearchData> drop_keys;
+	tjs_uint kept_pinned = 0;
+	for(tTVPGraphicCache::tIterator i = TVPGraphicCache.GetFirst();
+		!i.IsNull(); i++)
+	{
+		if(!i.GetValue().GetObjectNoAddRef()->IsPinned())
+		{
+			drop_keys.push_back(i.GetKey());
+		}
+		else
+		{
+			++kept_pinned;
+		}
+	}
+	tjs_uint64 dropped_bytes = 0;
+	for(const auto &k : drop_keys)
+	{
+		tTVPGraphicImageHolder *ptr = TVPGraphicCache.Find(k);
+		if(ptr)
+		{
+			tjs_uint size = ptr->GetObjectNoAddRef()->GetSize();
+			dropped_bytes += size;
+			if(TVPGraphicCacheTotalBytes >= size)
+				TVPGraphicCacheTotalBytes -= size;
+			else
+				TVPGraphicCacheTotalBytes = 0;
+			TVPGraphicCache.Delete(k);
+		}
+	}
+	TVPLOG_DEBUG("ImageCache:clearTransient: dropped={} bytes={} kept(pinned)={}",
+	             drop_keys.size(), dropped_bytes, kept_pinned);
+}
+//---------------------------------------------------------------------------
+// 現在の decode 層キャッシュエントリを全件コピー。
+// Storages.getImageCacheList / dumpImageCacheList / MemoryOverlay 等の観測系で利用。
+//---------------------------------------------------------------------------
+void TVPGetGraphicCacheEntries(std::vector<TVPGraphicCacheEntryInfo> &out)
+{
+	out.clear();
+	if(!TVPGraphicCacheEnabled) return;
+	tTJSCriticalSectionHolder cs(TVPGraphicCacheCS);
+	for(tTVPGraphicCache::tIterator i = TVPGraphicCache.GetFirst();
+		!i.IsNull(); i++)
+	{
+		const tTVPGraphicsSearchData &k = i.GetKey();
+		const tTVPGraphicImageData *d = i.GetValue().GetObjectNoAddRef();
+		TVPGraphicCacheEntryInfo info;
+		// k.Name は tjs_string。observation 用 ttstr へは独立コピーで変換。
+		info.name   = ttstr(k.Name);
+		info.keyidx = k.KeyIdx;
+		info.mode   = k.Mode;
+		info.dw     = k.DesW;
+		info.dh     = k.DesH;
+		info.width  = d ? (tjs_uint)d->GetWidth()  : 0;
+		info.height = d ? (tjs_uint)d->GetHeight() : 0;
+		info.bytes  = d ? d->GetSize() : 0;
+		info.pinned = d ? d->IsPinned() : false;
+		out.push_back(info);
+	}
+}
+//---------------------------------------------------------------------------
+// 件数のみ取得 (overlay 等の軽い観測用)。
+//---------------------------------------------------------------------------
+void TVPGetGraphicCacheCount(size_t &total, size_t &pinned)
+{
+	total = 0;
+	pinned = 0;
+	if(!TVPGraphicCacheEnabled) return;
+	tTJSCriticalSectionHolder cs(TVPGraphicCacheCS);
+	for(tTVPGraphicCache::tIterator i = TVPGraphicCache.GetFirst();
+		!i.IsNull(); i++)
+	{
+		++total;
+		const tTVPGraphicImageData *d = i.GetValue().GetObjectNoAddRef();
+		if(d && d->IsPinned()) ++pinned;
+	}
+}
+//---------------------------------------------------------------------------
+// decode 層キャッシュ一覧を WARNING ログに出力。
+// 1 行目: サマリ (件数 + pinned 数 + 総バイト)
+// 続く各行: per-entry 詳細 (path / size(WxH) / bytes / pinned 印)。
+// 既定以外のキー (colorkey/mode/desired) があるエントリのみ末尾に併記。
+//---------------------------------------------------------------------------
+void TVPDumpImageCacheList()
+{
+	std::vector<TVPGraphicCacheEntryInfo> entries;
+	TVPGetGraphicCacheEntries(entries);
+	tjs_uint64 total_bytes = 0;
+	size_t pinned_count = 0;
+	for(auto &e : entries) {
+		total_bytes += e.bytes;
+		if(e.pinned) ++pinned_count;
+	}
+	tjs_char buf[128];
+	{
+		ttstr msg = TJS_W("ImageCache: ");
+		TJS_snprintf(buf, sizeof(buf)/sizeof(tjs_char), TJS_W("%zu"), entries.size());
+		msg += buf;
+		msg += TJS_W(" entries (pinned=");
+		TJS_snprintf(buf, sizeof(buf)/sizeof(tjs_char), TJS_W("%zu"), pinned_count);
+		msg += buf;
+		msg += TJS_W(", totalBytes=");
+		TJS_snprintf(buf, sizeof(buf)/sizeof(tjs_char), TJS_W("%llu"),
+		             (unsigned long long)total_bytes);
+		msg += buf;
+		msg += TJS_W(")");
+		TVPAddImportantLog(msg);
+	}
+	// TVP_clNone = 0x1fffffff (tp_stub.h)。既定キーは clNone なので、
+	// それ以外 (実際に colorkey 指定された) エントリだけ key= を出す。
+	const tjs_int32 kClNone = (tjs_int32)0x1fffffff;
+	for(auto &e : entries) {
+		ttstr msg = e.pinned ? TJS_W("  [pin] ") : TJS_W("        ");
+		msg += e.name;
+		TJS_snprintf(buf, sizeof(buf)/sizeof(tjs_char),
+		             TJS_W(" %ux%u bytes=%u"),
+		             e.width, e.height, e.bytes);
+		msg += buf;
+		// 既定キー以外があるときだけ追記
+		if(e.keyidx != kClNone) {
+			TJS_snprintf(buf, sizeof(buf)/sizeof(tjs_char),
+			             TJS_W(" key=0x%x"), (unsigned)e.keyidx);
+			msg += buf;
+		}
+		if(e.mode != 0 /*glmNormal*/) {
+			TJS_snprintf(buf, sizeof(buf)/sizeof(tjs_char),
+			             TJS_W(" mode=%d"), (int)e.mode);
+			msg += buf;
+		}
+		if(e.dw != 0 || e.dh != 0) {
+			TJS_snprintf(buf, sizeof(buf)/sizeof(tjs_char),
+			             TJS_W(" desired=%ux%u"), e.dw, e.dh);
+			msg += buf;
+		}
+		TVPAddImportantLog(msg);
+	}
+}
+//---------------------------------------------------------------------------
+// 同名の全 entry に対して pinned 状態を変更。
+// (同 path で colorkey/mode/dw/dh の異なる複数 entry が並立しうる)
+// nname は事前に正規化済みであること。
+//---------------------------------------------------------------------------
+void TVPSetGraphicCacheEntryPinned(const ttstr &nname, bool pinned)
+{
+	if(!TVPGraphicCacheEnabled) return;
+	tTJSCriticalSectionHolder cs(TVPGraphicCacheCS);
+	tjs_uint changed = 0;
+	tjs_string nn = nname.AsStdString();
+	for(tTVPGraphicCache::tIterator i = TVPGraphicCache.GetFirst();
+		!i.IsNull(); i++)
+	{
+		if(i.GetKey().Name == nn)
+		{
+			tTVPGraphicImageData *d = i.GetValue().GetObjectNoAddRef();
+			if(d->IsPinned() != pinned) {
+				d->SetPinned(pinned);
+				++changed;
+			}
+		}
+	}
+	if(changed > 0)
+		TVPLOG_DEBUG("ImageCache:pin:{}={} entries={}",
+		             nname, pinned ? "true" : "false", changed);
 }
 static tTVPAtExit
 	TVPUninitMessageLoad(TVP_ATEXIT_PRI_RELEASE, TVPClearGraphicCache);
@@ -1437,10 +1707,21 @@ struct tTVPClearGraphicCacheCallback : public tTVPCompactEventCallbackIntf
 {
 	virtual void TJS_INTF_METHOD OnCompact(tjs_int level)
 	{
-		if(level >= TVP_COMPACT_LEVEL_MINIMIZE)
+		// P4: Compact level の意味付け再定義 (doc/legacy/ImagePreloadAndCache.md §18.2 C)
+		//   IDLE / DEACTIVATE: 何もしない (P5 で IDLE 時 dormant 整理を入れる予定)
+		//   MINIMIZE: transient 全消し (pinned エントリは残す)
+		//   MAX:      pinned 含めて全消し (アプリ終了/OOM 相当)
+		if(level >= TVP_COMPACT_LEVEL_MAX)
 		{
-			// clear the font cache on application minimize
+			TVPLOG_DEBUG("ImageCache:compact level={} -> clearAll + flushPrefetch", (int)level);
+			TVPFlushImagePrefetchQueue();
 			TVPClearGraphicCache();
+		}
+		else if(level >= TVP_COMPACT_LEVEL_MINIMIZE)
+		{
+			TVPLOG_DEBUG("ImageCache:compact level={} -> clearTransient + flushPrefetch", (int)level);
+			TVPFlushImagePrefetchQueue();
+			TVPClearTransientGraphicCache();
 		}
 	}
 } static TVPClearGraphicCacheCallback;
@@ -1450,6 +1731,11 @@ void TVPPushGraphicCache( const ttstr& nname, tTVPBaseBitmap* bmp, std::vector<t
 {
 	if( TVPGraphicCacheEnabled ) {
 		// graphic compact initialization
+		// (Add/Remove event hook はメインスレッド前提の処理だが、TVPPushGraphicCache
+		//  自体はワーカースレッドからも呼ばれうる。CompactEventHook の登録は
+		//  起動時に 1 度走れば十分なので、最初の登録はメインスレッド (TVPLoadGraphic
+		//  経路) で済ませる前提とする。worker からの初回 push の前に
+		//  メインスレッドで一度でも push/load が走っていれば登録済みとなる)
 		if(!TVPClearGraphicCacheCallbackInit)
 		{
 			TVPAddCompactEventHook(&TVPClearGraphicCacheCallback);
@@ -1461,7 +1747,7 @@ void TVPPushGraphicCache( const ttstr& nname, tTVPBaseBitmap* bmp, std::vector<t
 			tjs_uint32 hash;
 			tTVPGraphicsSearchData searchdata;
 
-			searchdata.Name = nname;
+			searchdata.Name = nname.AsStdString();
 			searchdata.KeyIdx = TVP_clNone;
 			searchdata.Mode = glmNormal;
 			searchdata.DesW = 0;
@@ -1474,15 +1760,29 @@ void TVPPushGraphicCache( const ttstr& nname, tTVPBaseBitmap* bmp, std::vector<t
 			data->ProvinceName = TJS_W("");
 			data->MetaInfo = meta;
 			meta = NULL;
+			// P2: pin 集合に登録済みなら pinned=true で初期化
+			data->SetPinned(TVPIsCachePathPinned(nname));
 
-			// check size limit
-			TVPCheckGraphicCacheLimit();
+			tjs_uint datasize = 0;
+			bool was_pinned = false;
+			{
+				tTJSCriticalSectionHolder cs(TVPGraphicCacheCS);
+				// check size limit
+				TVPCheckGraphicCacheLimit();
 
-			// push into hash table
-			tjs_uint datasize = data->GetSize();
-			TVPGraphicCacheTotalBytes += datasize;
-			tTVPGraphicImageHolder holder(data);
-			TVPGraphicCache.AddWithHash(searchdata, hash, holder);
+				// push into hash table
+				datasize = data->GetSize();
+				was_pinned = data->IsPinned();
+				TVPGraphicCacheTotalBytes += datasize;
+				tTVPGraphicImageHolder holder(data);
+				TVPGraphicCache.AddWithHash(searchdata, hash, holder);
+			}
+			TVPLOG_DEBUG("ImageCache:push:{} {}x{} bytes={} pinned={}",
+			             nname, bmp->GetWidth(), bmp->GetHeight(), datasize,
+			             was_pinned ? "true" : "false");
+			// P3: decode 層に積めたので file 層 raw bytes は不要 (file→decode auto-drop)
+			//     TVPGraphicCacheCS を解放してから StorageCacheCS を取る (CS 入れ子回避)
+			TVPClearStorageCache(nname);
 		} catch(...) {
 			if(meta) delete meta;
 			if(data) data->Release();
@@ -1500,7 +1800,7 @@ bool TVPCheckImageCache( const ttstr& nname, tTVPBaseBitmap* dest, tTVPGraphicLo
 	tTVPGraphicsSearchData searchdata;
 	if(TVPGraphicCacheEnabled)
 	{
-		searchdata.Name = nname;
+		searchdata.Name = nname.AsStdString();
 		searchdata.KeyIdx = keyidx;
 		searchdata.Mode = mode;
 		searchdata.DesW = dw;
@@ -1508,6 +1808,7 @@ bool TVPCheckImageCache( const ttstr& nname, tTVPBaseBitmap* dest, tTVPGraphicLo
 
 		hash = tTVPGraphicCache::MakeHash(searchdata);
 
+		tTJSCriticalSectionHolder cs(TVPGraphicCacheCS);
 		tTVPGraphicImageHolder * ptr =
 			TVPGraphicCache.FindAndTouchWithHash(searchdata, hash);
 		if(ptr)
@@ -1516,6 +1817,8 @@ bool TVPCheckImageCache( const ttstr& nname, tTVPBaseBitmap* dest, tTVPGraphicLo
 			ptr->GetObjectNoAddRef()->AssignToBitmap(dest);
 			if(metainfo)
 				*metainfo = TVPMetaInfoPairsToDictionary(ptr->GetObjectNoAddRef()->MetaInfo);
+			TVPLOG_DEBUG("ImageCache:hit:{} mode={} key={} {}x{}",
+			             nname, (int)mode, keyidx, dw, dh);
 			return true;
 		}
 	}
@@ -1529,7 +1832,7 @@ bool TVPHasImageCache( const ttstr& nname, tTVPGraphicLoadMode mode, tjs_uint dw
 	tTVPGraphicsSearchData searchdata;
 	if(TVPGraphicCacheEnabled)
 	{
-		searchdata.Name = nname;
+		searchdata.Name = nname.AsStdString();
 		searchdata.KeyIdx = keyidx;
 		searchdata.Mode = mode;
 		searchdata.DesW = dw;
@@ -1537,6 +1840,7 @@ bool TVPHasImageCache( const ttstr& nname, tTVPGraphicLoadMode mode, tjs_uint dw
 
 		hash = tTVPGraphicCache::MakeHash(searchdata);
 
+		tTJSCriticalSectionHolder cs(TVPGraphicCacheCS);
 		tTVPGraphicImageHolder * ptr =
 			TVPGraphicCache.FindAndTouchWithHash(searchdata, hash);
 		if(ptr)
@@ -1549,11 +1853,14 @@ bool TVPHasImageCache( const ttstr& nname, tTVPGraphicLoadMode mode, tjs_uint dw
 //---------------------------------------------------------------------------
 static bool TVPInternalLoadGraphic(tTVPBaseBitmap *dest, const ttstr &_name,
 	tjs_uint32 keyidx, tjs_uint desw, tjs_int desh, std::vector<tTVPGraphicMetaInfoPair> * * MetaInfo,
-		tTVPGraphicLoadMode mode, ttstr *provincename, bool unpadding=false)
+		tTVPGraphicLoadMode mode, ttstr *provincename, bool unpadding=false,
+		ttstr *resolvedname=nullptr)
 {
 	// name must be normalized.
 	// if "provincename" is non-null, this function set it to province storage
 	// name ( with _p suffix ) for convinience.
+	// if "resolvedname" is non-null, this function sets it to the actually
+	// opened storage name (= input name with auto-completed extension).
 	// desw and desh are desired size. if the actual picture is smaller than
 	// the given size, the graphic is to be tiled. give 0,0 to obtain default
 	// size graphic.
@@ -1606,6 +1913,10 @@ static bool TVPInternalLoadGraphic(tTVPBaseBitmap *dest, const ttstr &_name,
 
 	if(!handler) TVPThrowExceptionMessage(TVPUnknownGraphicFormat, name);
 
+	// 拡張子補完後の名前を呼び出し元に通知 (file 層 cache の drop 対象を
+	// 特定するため。auto-drop 時に unresolved な _name で TVPGetPlacedPath
+	// を呼ぶと存在しないので例外になる)
+	if(resolvedname) *resolvedname = name;
 
 	tTVPStreamHolder holder(name); // open a storage named "name"
 
@@ -1783,14 +2094,20 @@ void TVPLoadGraphic(tTVPBaseBitmap *dest, const ttstr &name, tjs_int32 keyidx,
 	tjs_uint desw, tjs_uint desh,
 	tTVPGraphicLoadMode mode, ttstr *provincename, iTJSDispatch2 ** metainfo, bool unpadding)
 {
+	// decoder 作業バッファ / metainfo / cache record 等の operator new を
+	// GraphicsLoader tag に振り分け。
+	TVPAllocTagScope _alloc_tag_scope("GraphicsLoader");
 	// loading with cache management
-	ttstr nname = TVPNormalizeStorageName(name);
+	// cache key は autopath 解決後の物理 path に統一する。
+	// "bg.jpg" (autopath 経由) と "image/bg.jpg" (直接 path) の両方が同じ
+	// 物理 file を指す場合、cache キーが揃って二重 cache を回避できる。
+	ttstr nname = TVPResolveCachePath(name);
 	tjs_uint32 hash;
 	tTVPGraphicsSearchData searchdata;
 
 	if(TVPGraphicCacheEnabled)
 	{
-		searchdata.Name = nname;
+		searchdata.Name = nname.AsStdString();
 		searchdata.KeyIdx = keyidx;
 		searchdata.Mode = mode;
 		searchdata.DesW = desw;
@@ -1798,16 +2115,43 @@ void TVPLoadGraphic(tTVPBaseBitmap *dest, const ttstr &name, tjs_int32 keyidx,
 
 		hash = tTVPGraphicCache::MakeHash(searchdata);
 
-		tTVPGraphicImageHolder * ptr =
-			TVPGraphicCache.FindAndTouchWithHash(searchdata, hash);
-		if(ptr)
 		{
-			// found in cache
-			ptr->GetObjectNoAddRef()->AssignToBitmap(dest);
-			if(provincename) *provincename = ptr->GetObjectNoAddRef()->ProvinceName;
-			if(metainfo)
-				*metainfo = TVPMetaInfoPairsToDictionary(ptr->GetObjectNoAddRef()->MetaInfo);
-			return;
+			tTJSCriticalSectionHolder cs(TVPGraphicCacheCS);
+			tTVPGraphicImageHolder * ptr =
+				TVPGraphicCache.FindAndTouchWithHash(searchdata, hash);
+			if(ptr)
+			{
+				// found in cache
+				ptr->GetObjectNoAddRef()->AssignToBitmap(dest);
+				if(provincename) *provincename = ptr->GetObjectNoAddRef()->ProvinceName.c_str();
+				if(metainfo)
+					*metainfo = TVPMetaInfoPairsToDictionary(ptr->GetObjectNoAddRef()->MetaInfo);
+				return;
+			}
+		}
+
+		// 既定キー (TVP_clNone, glmNormal, 0, 0) のとき、async prefetch が
+		// 進行中なら完了まで待ってからキャッシュ再検索する。
+		// prefetch は常に既定キーで登録されるので、それ以外の引数で
+		// 呼ばれた場合は待っても意味がない (= 同期 decode に直行する)
+		if(keyidx == TVP_clNone && mode == glmNormal && desw == 0 && desh == 0)
+		{
+			if(TVPWaitForImagePrefetch(nname, 10 * 1000))
+			{
+				// 完了通知あり → キャッシュ再検索
+				tTJSCriticalSectionHolder cs(TVPGraphicCacheCS);
+				tTVPGraphicImageHolder * ptr =
+					TVPGraphicCache.FindAndTouchWithHash(searchdata, hash);
+				if(ptr)
+				{
+					ptr->GetObjectNoAddRef()->AssignToBitmap(dest);
+					if(provincename) *provincename = ptr->GetObjectNoAddRef()->ProvinceName.c_str();
+					if(metainfo)
+						*metainfo = TVPMetaInfoPairsToDictionary(ptr->GetObjectNoAddRef()->MetaInfo);
+					return;
+				}
+				// 完了したのにキャッシュにない = エラー終了。同期 decode へフォールスルー
+			}
 		}
 	}
 
@@ -1817,10 +2161,11 @@ void TVPLoadGraphic(tTVPBaseBitmap *dest, const ttstr &name, tjs_int32 keyidx,
 	tTVPGraphicImageData * data = NULL;
 
 	ttstr pn;
+	ttstr resolved_name; // 拡張子補完後の実 path (P3 file→decode auto-drop 用)
 	std::vector<tTVPGraphicMetaInfoPair> * mi = NULL;
 	try
 	{
-		TVPInternalLoadGraphic(dest, nname, keyidx, desw, desh, &mi, mode, &pn, unpadding);
+		TVPInternalLoadGraphic(dest, nname, keyidx, desw, desh, &mi, mode, &pn, unpadding, &resolved_name);
 
 		if(provincename) *provincename = pn;
 		if(metainfo)
@@ -1830,21 +2175,30 @@ void TVPLoadGraphic(tTVPBaseBitmap *dest, const ttstr &name, tjs_int32 keyidx,
 		{
 			data = new tTVPGraphicImageData();
 			data->AssignBitmap(dest);
-			data->ProvinceName = pn;
+			data->ProvinceName = pn.c_str();
 			data->MetaInfo = mi; // now mi is managed under tTVPGraphicImageData
 			mi = NULL;
+			// P2: pin 集合に登録済みなら pinned=true で初期化
+			data->SetPinned(TVPIsCachePathPinned(nname));
 
-			// check size limit
-			TVPCheckGraphicCacheLimit();
+			{
+				tTJSCriticalSectionHolder cs(TVPGraphicCacheCS);
+				// check size limit
+				TVPCheckGraphicCacheLimit();
 
-			// push into hash table
-			tjs_uint datasize = data->GetSize();
-//			if(datasize < TVPGraphicCacheLimit)
-//			{
+				// push into hash table
+				tjs_uint datasize = data->GetSize();
 				TVPGraphicCacheTotalBytes += datasize;
 				tTVPGraphicImageHolder holder(data);
 				TVPGraphicCache.AddWithHash(searchdata, hash, holder);
-//			}
+			}
+			// P3: decode 層に積めたので file 層 raw bytes は不要 (file→decode auto-drop)
+			//     TVPGraphicCacheCS を解放してから StorageCacheCS を取る (CS 入れ子回避)。
+			//     呼び出し元 nname は拡張子補完前のことがあるので、
+			//     TVPInternalLoadGraphic が返した resolved_name (実 path) を使う。
+			if(!resolved_name.IsEmpty()) {
+				TVPClearStorageCache(resolved_name);
+			}
 		}
 	}
 	catch(...)
@@ -1951,7 +2305,7 @@ void TVPTouchImages(const std::vector<ttstr> & storages, tjs_int64 limit,
 	for(;count >= 0; count--)
 	{
 		tTVPGraphicsSearchData searchdata;
-		searchdata.Name = TVPNormalizeStorageName(storages[count]);
+		searchdata.Name = TVPNormalizeStorageName(storages[count]).AsStdString();
 		searchdata.KeyIdx = TVP_clNone;
 		searchdata.Mode = glmNormal;
 		searchdata.DesW = 0;

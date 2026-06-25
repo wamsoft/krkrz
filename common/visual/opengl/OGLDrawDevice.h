@@ -5,13 +5,23 @@
 #include "OpenGLHeader.h"
 #include "TextureUpdateRect.h"
 #include "GLTexture.h"
+#ifdef __GENERIC__
+#include "OGLViewportBackground.h"
+#endif
 #include <functional>
 #include <mutex>
+
+#ifdef KRKRZ_HAS_ELEMENTS
+#include "OGLDialogRenderer.h"
+#endif
 
 //---------------------------------------------------------------------------
 //! @brief	OpelGL のテクスチャに描画する想定の DrawDevice
 //---------------------------------------------------------------------------
 class tTVPOGLDrawDevice : public tTVPDrawDevice
+#ifdef KRKRZ_HAS_ELEMENTS
+	, public iTVPGLDialogHost
+#endif
 {
 	typedef tTVPDrawDevice inherited;
 
@@ -106,6 +116,11 @@ public:
 private:
 	std::mutex videooverlay_mutex_;
 
+#ifdef __GENERIC__
+	// ビューポート余白の壁紙テクスチャキャッシュ (背景色は base が保持)
+	tTVPGLWallpaperCache mWallpaperCache;
+#endif
+
 	// 動画用テクスチャ
 	GLTexture *_video_texture;
 	GLfloat _video_position[8];
@@ -118,6 +133,22 @@ private:
 	bool ShowVideo();
 	void UpdateVideoPosition(int w, int h);
 
+#endif
+
+#ifdef KRKRZ_HAS_ELEMENTS
+public:
+	// iTVPGLDialogHost — Elements ダイアログ overlay 用に GL リソース / DestRect
+	// を借用させるための accessor。GLContext は InitContext 前 / DoneContext 後は
+	// nullptr を返す。
+	iTVPGLContext * DialogHost_GetGLContext() override { return GLContext; }
+	GLTextureDrawer * DialogHost_GetTextureDrawer() override { return &TextureDrawer; }
+	void DialogHost_GetDestRect(int & x, int & y, int & w, int & h) override
+	{
+		x = DestRect.left;
+		y = DestRect.top;
+		w = DestRect.get_width();
+		h = DestRect.get_height();
+	}
 #endif
 };
 //---------------------------------------------------------------------------

@@ -93,7 +93,7 @@ tTVPWebpMovie::Open(const char *path)
     IMoviePlayer::InitParam param;
     param.Init();
     param.videoColorFormat = IMoviePlayer::ColorFormat::COLOR_BGRA;
-	param.useOwnAudioEngine = true;
+	param.audioSink        = &AudioSink;
 	Player = IMoviePlayer::CreateMoviePlayer(path, param);
 
 	if (Player) {
@@ -117,7 +117,7 @@ tTVPWebpMovie::Open(IStream *stream)
     IMoviePlayer::InitParam param;
     param.Init();
     param.videoColorFormat = IMoviePlayer::ColorFormat::COLOR_BGRA;
-	param.useOwnAudioEngine = true;
+	param.audioSink        = &AudioSink;
 	Player = IMoviePlayer::CreateMoviePlayer(new MovieStream(stream), param);
 
 	if (Player) {

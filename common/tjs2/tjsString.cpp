@@ -36,7 +36,7 @@ tTJSString::tTJSString(tjs_int n) // from int
 //---------------------------------------------------------------------------
 tjs_int tTJSString::GetNarrowStrLen() const
 {
-	// note that this function will return -1 when there are invalid chars in string.
+	// 変換不能文字は '?' に置換されるため、常に有効な長さを返す。
 	if(!Ptr) return 0;
 	return (tjs_int)TJS_wcstombs(NULL, c_str(), 0);
 }

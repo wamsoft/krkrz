@@ -1,0 +1,50 @@
+{
+    /* グラフィック / レイヤー系サンプル。 非モーダル常駐メニュー: サンプル button は
+       close_on_click 無しなので、 click すると onAction が発火するだけでメニューは
+       閉じず、 その場に残る。 ホストはその場でサンプルを起動する (背景で動作)。
+       もう一度同じ項目を選ぶとトグル停止できる。 "back"/Esc で top に戻る。
+       (DrawDevice 切替 "ddev" だけはメニューを一度閉じてから実行する = ホスト側で
+       deferred 起動) */
+    "size": [460, 380],
+    "background": [22, 30, 40, 248],
+    "locale": "ja-JP",
+    "align": "top_left",
+    "margin": 24,
+    "input": { "arrow_focus_nav": true },
+
+    "transitions": {
+        "back": "<back>",
+        "":     "<back>",
+    },
+
+    "content": {
+        "type": "margin", "padding": 22,
+        "child": {
+            "type": "vtile",
+            "children": [
+                { "type": "hspacer", "width": 416 },
+                { "type": "align_center",
+                  "child": { "type": "label", "text": "グラフィック / レイヤー", "size": 1.3 } },
+                { "type": "vspacer", "height": 16 },
+
+                { "type": "vsize", "height": 42, "child": {
+                    "type": "button", "id": "anim", "text": "レイヤー透明度アニメ (開始/停止)",
+                    "initial_focus": true } },
+                { "type": "vspacer", "height": 8 },
+                { "type": "vsize", "height": 42, "child": {
+                    "type": "button", "id": "cross", "text": "クロスフェード遷移" } },
+                { "type": "vspacer", "height": 8 },
+                { "type": "vsize", "height": 42, "child": {
+                    "type": "button", "id": "univ", "text": "ユニバーサル遷移 (ルール)" } },
+                { "type": "vspacer", "height": 8 },
+                { "type": "vsize", "height": 42, "child": {
+                    "type": "button", "id": "ddev", "text": "DrawDevice 切替 (メニュー閉)" } },
+
+                { "type": "vspacer", "height": 14 },
+                { "type": "vsize", "height": 38, "child": {
+                    "type": "button", "id": "back", "text": "← 戻る",
+                    "close_on_click": true } },
+            ],
+        },
+    },
+}

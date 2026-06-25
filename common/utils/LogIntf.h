@@ -154,16 +154,21 @@ enum TVPLogLevel {
     TVPLOG_LEVEL_OFF = 6
 };
 
-// コンパイル時に定義されるログレベル
+// コンパイル時に定義されるログレベル。
+// このレベル未満のマクロは無条件で `do {} while(0)` に展開され、引数も
+// 評価されない (cost ゼロ)。実行時の -loglevel フィルタはこの上で動く。
+//
+// - MASTER: WARNING (DEBUG/INFO/VERBOSE は完全 strip。リリース成果物用)
+// - それ以外 (Release/RelWithDebInfo/Debug): DEBUG (VERBOSE のみ strip)
+//   → -loglevel=DEBUG で実行時に DEBUG ログを表示可能
+//
+// もっと絞りたい/緩めたい場合は CMake `-DKRKRZ_LOG_LEVEL=...` で上書き
+// (CMakeLists.txt 参照)。
 #ifndef TVPLOG_LEVEL
 #ifdef MASTER
 #define TVPLOG_LEVEL TVPLOG_LEVEL_WARNING
 #else
-#ifdef NDEBUG
-#define TVPLOG_LEVEL TVPLOG_LEVEL_INFO
-#else
 #define TVPLOG_LEVEL TVPLOG_LEVEL_DEBUG
-#endif
 #endif
 #endif
 

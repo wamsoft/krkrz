@@ -241,12 +241,26 @@ size_t TJS_mbstowcs(tjs_char *pwcs, const tjs_nchar *s, size_t n)
 //---------------------------------------------------------------------------
 size_t TJS_wcstombs(tjs_nchar *s, const tjs_char *pwcs, size_t n)
 {
+	// 変換不能文字は '?' に置換し、全体としては常に変換成功扱いで返す。
+	// UnicodeToSJISString は失敗時 (size_t)-1 を返すためここでは使わない。
 	if(s && !n) return 0;
 
 	if(s)
 	{
-		tjs_size count = UnicodeToSJISString( pwcs, s, n );
-		if( n > count )
+		size_t count = 0;
+		while(*pwcs && count < n)
+		{
+			tjs_uint c = UnicodeToSJIS(*pwcs);
+			if(c == 0) c = '?';
+			if(c & 0xff00)
+			{
+				if(count + 1 >= n) break; // 2バイト目が入りきらないので打ち切り
+				s[count++] = static_cast<tjs_nchar>((c >> 8) & 0xff);
+			}
+			s[count++] = static_cast<tjs_nchar>(c & 0xff);
+			pwcs++;
+		}
+		if(n > count)
 		{
 			s[count] = '\0';
 		}
@@ -254,8 +268,17 @@ size_t TJS_wcstombs(tjs_nchar *s, const tjs_char *pwcs, size_t n)
 	}
 	else
 	{
-		// Returns the buffer size to store the result
-		return UnicodeToSJISString(pwcs,NULL);
+		// 出力に必要なバッファサイズを返す
+		size_t count = 0;
+		while(*pwcs)
+		{
+			tjs_uint c = UnicodeToSJIS(*pwcs);
+			if(c == 0) c = '?';
+			if(c & 0xff00) count++;
+			count++;
+			pwcs++;
+		}
+		return count;
 	}
 }
 //---------------------------------------------------------------------------

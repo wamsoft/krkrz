@@ -1,0 +1,15 @@
+{
+    /* 大規模サンプルの genre メニュー (Dialog.showFlow が読む navigator マニフェスト)。
+       top = ジャンル選択画面。 各ジャンル画面はサンプル一覧で、 サンプル button は
+       "<exit>" 遷移でフローを抜け、 button id が result.action としてホストに返る。
+       ホスト (startup.tjs) はその action でサンプルを起動する。 */
+    "entry": "top",
+    "screens": {
+        "top":      "top.json",
+        "graphics": "graphics.json",
+        "sound":    "sound.json",
+        "video":    "video.json",
+        "dialog":   "dialog.json",
+        "system":   "system.json",
+    },
+}

@@ -17,17 +17,34 @@ struct tTVPAudioStreamParam {
 	TVPAudioSampleType SampleType;	// サンプルの形式
 };
 
-// バッファ利用後のコールバック
-typedef void (*StreamQueueCallback)(void* userData, void *param);
+// 再生済みバッファを通知する経路は SetCallback ではなく
+// SetWakeupHandler + TryPopConsumed のポーリングに変更されている。
+// audio callback スレッドが BufferCS / OneLoopCS / Event.Set 等の
+// 非自明な処理を行わないようにするためのもの。
+//   - audio thread は ReadData 内で完了 buffer の param を Consumed ring に push し
+//     wakeup handler を 1 回呼ぶだけ
+//   - 呼び出し側 (decode thread) はその wakeup を受けて TryPopConsumed で排出する
+typedef void (*StreamWakeupHandler)(void* userData);
 
 class iTVPAudioStream
 {
 public:
 	virtual ~iTVPAudioStream(){}
 
-	virtual void SetCallback( StreamQueueCallback callback, void* user ) = 0;
+	// audio thread から完了通知を呼び出し側のスレッドへ渡すフック
+	// (handler は audio callback コンテキストで呼ばれるので、内部では Event.Set 等の
+	//  最低限の wakeup のみを行うこと)
+	virtual void SetWakeupHandler( StreamWakeupHandler handler, void* user ) = 0;
+
+	// 再生用データの投入 (1 producer 想定)
 	virtual void Enqueue( void *data, size_t size, bool last, void *param ) = 0;
 
+	// 再生済み buffer の param を 1 件取り出す。なければ false。
+	// 1 consumer 想定 (典型的には decode thread)
+	virtual bool TryPopConsumed( void*& outParam ) = 0;
+
+	// pending を全て破棄して consumed 側へ移す
+	// (再生停止時の cleanup 用。audio thread が停止していない状態で呼んではいけない)
 	virtual void ClearQueue() = 0;
 
 	virtual void StartStream() = 0;

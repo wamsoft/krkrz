@@ -43,6 +43,12 @@ extern void TVPMainWindowClosed(); // called from WindowIntf.cpp, caused by clos
 extern bool TVPTerminateOnWindowClose;
 extern bool TVPTerminateOnNoWindowStartup;
 
+// REPL (-repl) が起動済みで対話実行中か。 REPL.cpp の TVPCreateREPL /
+// TVPDestroyREPL が設定する。 REPL 無効ビルドでは常に false のまま。
+// エージェント駆動のため、 true のとき例外で即終了せず、 inform / MessageDlg を
+// ネイティブダイアログでなく REPL コンソールへ流す判定に使う。
+extern bool TVPReplActive;
+
 //---------------------------------------------------------------------------
 
 extern bool TVPSystemUninitCalled;
@@ -99,6 +105,9 @@ TJS_EXP_FUNC_DEF(tjs_int, TVPGetCommandLineArgumentGeneration, ());
 TJS_EXP_FUNC_DEF(void, TVPSetCommandLine, (const tjs_char * name, const ttstr & value));
 	// sets command line to the specified value.
 	// note that this function does not check any consistency or correctness of the value.
+
+TJS_EXP_FUNC_DEF(int, TVPGetCommandLineInt, (const tjs_char * name, int defaultValue));
+	// retrieves command line parameter as integer. if the parameter is not exist or invalid, returns defaultValue.
 
 //---------------------------------------------------------------------------
 

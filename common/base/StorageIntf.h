@@ -146,8 +146,11 @@ public:
 	virtual bool TJS_INTF_METHOD Move(const ttstr & from, const ttstr & to) = 0;
 		// move file or directory. "from" and "to" are normalized but do not contain media name.		
 
-	virtual tjs_uint64 TJS_INTF_METHOD  LastModifiedFileTime(const ttstr &name) = 0;	
+	virtual tjs_uint64 TJS_INTF_METHOD  LastModifiedFileTime(const ttstr &name) = 0;
 		// returns last modified file time in 100-nanosecond intervals since January 1, 1601 (UTC).
+
+	virtual tjs_uint64 TJS_INTF_METHOD  FileSize(const ttstr &name) = 0;
+		// returns file size in bytes. if the file does not exist or size cannot be determined, return 0.
 };
 
 //---------------------------------------------------------------------------
@@ -221,6 +224,10 @@ extern tjs_uint64 TVPLastModifiedFileTime(const ttstr &name);
 	// returns last modified file time in 100-nanosecond intervals since January 1, 1601 (UTC).
 	// "name" is a local *native* name. if the file does not exist, return 0.
 
+extern tjs_uint64 TVPFileSize(const ttstr &name);
+	// returns file size in bytes.
+	// "name" is a local *native* name. if the file does not exist or size cannot be determined, return 0.
+
 //---------------------------------------------------------------------------
 
 //---------------------------------------------------------------------------
@@ -238,7 +245,10 @@ TJS_EXP_FUNC_DEF(bool, TVPRemoveStorage, (const ttstr &name));
 TJS_EXP_FUNC_DEF(bool, TVPMoveStorage, (const ttstr &from, const ttstr &to));
 	// move file path
 TJS_EXP_FUNC_DEF(tjs_uint64, TVPLastModifiedFileTimeStorage, (const ttstr &name));
-	// returns last modified file time in 100-nanosecond intervals since January 1, 1601 (UTC).	
+	// returns last modified file time in 100-nanosecond intervals since January 1, 1601 (UTC).
+
+TJS_EXP_FUNC_DEF(tjs_uint64, TVPFileSizeStorage, (const ttstr &name));
+	// returns file size in bytes. if the file does not exist or size cannot be determined, return 0.
 
 TJS_EXP_FUNC_DEF(iTJSBinaryStream *, TVPCreateStream, (const ttstr & name, tjs_uint32 flags = 0));
 	// open "name" and return iTJSBinaryStream instance.
@@ -327,12 +337,53 @@ extern tTJSNativeClass * TVPCreateNativeClass_Storages();
 //---------------------------------------------------------------------------
 
 // 指定の拡張子はファイルロード時にオンメモリにする
-void TVPAddCacheTargetExtension(const ttstr &ext);
+// minSize > 0 の場合、ファイルサイズが minSize を超えるもののみキャッシュ対象。
+// minSize == 0 (デフォルト) なら従来通り無条件にキャッシュ。
+void TVPAddCacheTargetExtension(const ttstr &ext, tjs_uint64 minSize = 0);
 void TVPRemoveCacheTargetExtension(const ttstr &ext);
 bool TVPIsCacheTargetExtension(const ttstr &ext);
+// 拡張子のキャッシュ最小サイズ閾値を取得。登録なしなら false。
+bool TVPGetCacheTargetExtensionMinSize(const ttstr &ext, tjs_uint64 *outMinSize);
 void TVPClearCacheTargetExtensions();
 
 bool TVPIsCacheTargetFile(const ttstr &name);
+
+//---------------------------------------------------------------------------
+// pin / unpin / isPinned (P2: 両層共通)
+//
+// 「path 単位で sticky 化する」概念は file 層 (StorageCache) と decode 層
+// (TVPGraphicCache) の両方に共通して効く。pin の永続管理 (path 集合) は
+// ここで一元化し、各層は「load 時に集合参照で pinned 初期化」「pin/unpin
+// 操作時に既存 entry の pinned フラグ更新」の責務だけ持つ。
+//
+// pin は load 前後どちらの順でも反映される:
+//   - pin → load: entry 作成時に集合参照で pinned=true 初期化
+//   - load → pin: pinCache 呼出で既存 entry の pinned フラグを更新
+//---------------------------------------------------------------------------
+void TVPPinCache(const ttstr &nname);
+void TVPUnpinCache(const ttstr &nname);
+bool TVPIsCachePathPinned(const ttstr &nname);
+void TVPClearAllCachePins();    // pin 集合を空にする (両層 entry の pinned は触らない)
+
+// cache キーとして使う path に正規化する。
+// TVPGetPlacedPath で autopath 解決 (= 物理 path) を試み、解決できない
+// (= file が存在しない or 非 file:// scheme) 場合は TVPNormalizeStorageName
+// にフォールバック。
+//
+// 同一 file を異なる名前 (例: "bg.jpg" vs "image/bg.jpg") で load した場合
+// でも同じキーに正規化されるよう、TVPLoadGraphic / PrefetchRequest /
+// Storages.clearCache 等の cache 系統 API はここで揃える。
+ttstr TVPResolveCachePath(const ttstr &input);
+
+// 指定の拡張子は Storages.requestCache 等のプリロード時にデコードまで進めて
+// TVPGraphicCache に登録する。Layer.loadImages 同期経路から自動でヒットする。
+// minSize はファイルキャッシュ側と同様、ファイルサイズの最小閾値 (現状未使用)。
+void TVPAddDecodeTargetExtension(const ttstr &ext, tjs_uint64 minSize = 0);
+void TVPRemoveDecodeTargetExtension(const ttstr &ext);
+bool TVPIsDecodeTargetExtension(const ttstr &ext);
+void TVPClearDecodeTargetExtensions();
+// file:// + 拡張子登録済みなら true
+bool TVPIsDecodeTargetFile(const ttstr &name);
 
 
 #endif

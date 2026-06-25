@@ -1,0 +1,16 @@
+{
+    /* elements_modal navigator マニフェスト (Dialog.showFlow が読む)。
+       JSONC 対応 (行/ブロックコメント + 末尾カンマ可)。
+
+       entry   : 起点画面名 (screens のキー)。
+       screens : 画面名 → JSON ファイルの相対パス。 パスはこの app.jsonc が
+                 あるディレクトリ起点で解決される (= data/ui/)。 各画面の中で
+                 参照する画像等の相対資材も、 その画面ファイルのディレクトリ
+                 (= data/ui/) を起点に Storages 解決される。 */
+    "entry": "menu",
+    "screens": {
+        "menu":     "menu.json",
+        "settings": "settings.json",
+        "about":    "about.json",
+    },
+}

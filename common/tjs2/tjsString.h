@@ -202,25 +202,32 @@ public:
 		return *this;
 	}
 
+	// 旧実装は Release してから Alloc していたため、Alloc 失敗時に Ptr が
+	// dangling のまま残り、後続の dtor / 再代入で解放済みセルへの Release が
+	// 走って StringHeap 内部 free-list を破壊する経路があった。
+	// operator =(const tTJSString &) と同じ "alloc-first, then release old" に揃える。
 	TJS_METHOD_DEF(tTJSString &, operator =, (const tjs_nchar *rhs))
 	{
+		tTJSVariantString *newPtr = TJSAllocVariantString(rhs);
 		if(Ptr) Ptr->Release();
-		Ptr = TJSAllocVariantString(rhs);
+		Ptr = newPtr;
 		return *this;
 	}
 
 #ifdef TJS_SUPPORT_VCL
 	tTJSString & operator =(AnsiString &rhs)
 	{
+		tTJSVariantString *newPtr = TJSAllocVariantString(rhs.c_str());
 		if(Ptr) Ptr->Release();
-		Ptr = TJSAllocVariantString(rhs.c_str());
+		Ptr = newPtr;
 		return *this;
 	}
 
 	tTJSString & operator =(WideString &rhs)
 	{
+		tTJSVariantString *newPtr = TJSAllocVariantString(rhs.c_bstr());
 		if(Ptr) Ptr->Release();
-		Ptr = TJSAllocVariantString(rhs.c_bstr());
+		Ptr = newPtr;
 		return *this;
 	}
 #endif
@@ -371,8 +378,10 @@ public:
 	{
 		/* you must call FixLen when you allocate larger buffer than actual string length */
 
+		// alloc-first, then release. operator =(const tjs_nchar *) と同じ理由。
+		tTJSVariantString *newPtr = TJSAllocVariantStringBuffer(len);
 		if(Ptr) Ptr->Release();
-		Ptr = TJSAllocVariantStringBuffer(len);
+		Ptr = newPtr;
 		return const_cast<tjs_char*>(Ptr->operator const tjs_char *());
 	}
 

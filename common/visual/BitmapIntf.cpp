@@ -491,6 +491,87 @@ TJS_BEGIN_NATIVE_PROP_DECL(bufferPitch)
 }
 TJS_END_NATIVE_PROP_DECL(bufferPitch)
 //----------------------------------------------------------------------
+// 以下は Layer と同名のプロパティ別名。DrawDevice / プラグインが Layer・Bitmap を
+// 区別せず PropGet で画像イメージを取得できるようにするためのもの。
+//   imageWidth              -> width
+//   imageHeight             -> height
+//   mainImageBuffer         -> buffer
+//   mainImageBufferForWrite -> bufferForWrite
+//   mainImageBufferPitch    -> bufferPitch
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_PROP_DECL(imageWidth)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Bitmap);
+		*result = (tjs_int64)_this->GetWidth();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_DENY_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_PROP_DECL(imageWidth)
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_PROP_DECL(imageHeight)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Bitmap);
+		*result = (tjs_int64)_this->GetHeight();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_DENY_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_PROP_DECL(imageHeight)
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_PROP_DECL(mainImageBuffer)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Bitmap);
+		if( _this->IsLoading() ) TVPThrowExceptionMessage(TVPCurrentlyAsyncLoadBitmap);
+		*result = reinterpret_cast<tjs_intptr_t>(_this->GetPixelBuffer());
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_DENY_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_PROP_DECL(mainImageBuffer)
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_PROP_DECL(mainImageBufferForWrite)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Bitmap);
+		if( _this->IsLoading() ) TVPThrowExceptionMessage(TVPCurrentlyAsyncLoadBitmap);
+		*result = reinterpret_cast<tjs_intptr_t>(_this->GetPixelBufferForWrite());
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_DENY_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_PROP_DECL(mainImageBufferForWrite)
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_PROP_DECL(mainImageBufferPitch)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Bitmap);
+		if( _this->IsLoading() ) TVPThrowExceptionMessage(TVPCurrentlyAsyncLoadBitmap);
+		*result = _this->GetPixelBufferPitch();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_DENY_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_PROP_DECL(mainImageBufferPitch)
+//----------------------------------------------------------------------
 TJS_BEGIN_NATIVE_PROP_DECL(loading)
 {
 	TJS_BEGIN_NATIVE_PROP_GETTER

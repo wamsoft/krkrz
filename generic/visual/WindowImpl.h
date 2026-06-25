@@ -16,6 +16,35 @@
 #include "WindowIntf.h"
 #include <functional>
 
+/*[*/
+//---------------------------------------------------------------------------
+// window message receivers (Generic 版)
+//---------------------------------------------------------------------------
+// 配信は Application の SendAppEvent 経由の非同期処理なので Result は無効
+// （呼び出し元には返らない）。doc/AppEvent.md 参照。
+#ifdef __GENERIC__
+enum tTVPWMRRegMode { wrmRegister=0, wrmUnregister=1 };
+struct tTVPWindowMessage
+{
+	tjs_uint32 Msg;    // window message id
+	tjs_uint64 WParam;
+	tjs_uint64 LParam;
+	tjs_uint64 Result; // 非同期配信のため無効。互換のため保持
+};
+typedef bool (* tTVPWindowMessageReceiver)
+	(void *userdata, tTVPWindowMessage *Message);
+
+// Generic 用のメッセージ ID 帯域。WM_USER 由来でない固定数値。
+// プラグインは TVP_WM_USER 以降を自由に使用可能。
+#define TVP_WM_USER 0x8000
+#define TVP_WM_DETACH (TVP_WM_USER+106)
+#define TVP_WM_ATTACH (TVP_WM_USER+107)
+#define TVP_WM_FULLSCREEN_CHANGING (TVP_WM_USER+108)
+#define TVP_WM_FULLSCREEN_CHANGED  (TVP_WM_USER+109)
+#endif
+
+/*]*/
+
 //---------------------------------------------------------------------------
 // tTJSNI_Window : Window Native Instance
 //---------------------------------------------------------------------------
@@ -50,6 +79,10 @@ public:
 
 public:
 	TTVPWindowForm * GetForm() const { return Form; }
+
+	// プラグイン向け Native Window ハンドル取得
+	// (例: SDL3 では SDL_Window*)。WIN 版の HWND と同じ位置付け。
+	void *GetNativeHandle();
 
 	void NotifyWindowClose();
 
@@ -93,6 +126,10 @@ public:
 	tTVPImeMode GetDefaultImeMode() const { return imDisable; }
 	void TJS_INTF_METHOD ResetImeMode();
 
+//-- interface to plugin
+	void RegisterWindowMessageReceiver(tTVPWMRRegMode mode,
+		void * proc, const void *userdata);
+
 //-- methods
 	void Close();
 	void OnCloseQueryCalled(bool b);
@@ -103,6 +140,27 @@ public:
 	void ShowModal();
 
 	void HideMouseCursor();
+
+//-- ビューポート (ゲーム画面の表示画角制御)。Form に設定を保持し、配置は
+//   DestRect 再計算、余白色/壁紙は UpdateContent で DrawDevice へ push する。
+	void SetViewportFit(tjs_int fit);
+	tjs_int GetViewportFit() const;
+	void SetViewportZoom(double scale);
+	double GetViewportZoom() const;
+	void SetViewportAlignX(double v);
+	double GetViewportAlignX() const;
+	void SetViewportAlignY(double v);
+	double GetViewportAlignY() const;
+	void SetViewportOffsetX(tjs_int v);
+	tjs_int GetViewportOffsetX() const;
+	void SetViewportOffsetY(tjs_int v);
+	tjs_int GetViewportOffsetY() const;
+	void SetViewportBgColor(tjs_uint32 color);
+	tjs_uint32 GetViewportBgColor() const;
+	// 壁紙: 文字列なら Bitmap を生成してロード、Layer/Bitmap オブジェクトならそのまま
+	// 参照保持して Form へ渡す。fit/align は壁紙用。
+	void SetViewportWallpaper(const tTJSVariant &image, tjs_int fit, double alignX, double alignY);
+	void ClearViewportWallpaper();
 
 //-- properties
 	bool GetVisible() const;

@@ -114,6 +114,7 @@ protected:
 
 public:
 	tTVPMemoryStream();
+	explicit tTVPMemoryStream(tjs_uint reserve_size);
 	tTVPMemoryStream(const void * block, tjs_uint size);
 	~tTVPMemoryStream();
 

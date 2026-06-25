@@ -18,9 +18,9 @@
 
 /*[*/
 //---------------------------------------------------------------------------
-// window message receivers
+// window message receivers (WIN 版)
 //---------------------------------------------------------------------------
-#ifdef _WIN32
+#ifdef __WINVER__
 enum tTVPWMRRegMode { wrmRegister=0, wrmUnregister=1 };
 #pragma pack(push, 4)
 struct tTVPWindowMessage

@@ -25,7 +25,8 @@ class StorageMemoryStream : public tTVPMemoryStream
     SDL_Storage *Storage;
     std::string Path;
 public:
-    StorageMemoryStream(SDL_Storage *storage, const char *path) : tTVPMemoryStream(), Storage(storage), Path(path) {
+    // 書き込み用。初期バッファ1MBで開始
+    StorageMemoryStream(SDL_Storage *storage, const char *path) : tTVPMemoryStream(1024*1024), Storage(storage), Path(path) {
     }
 
     StorageMemoryStream(SDL_Storage *storage, const char *path, size_t initial_size) : tTVPMemoryStream(nullptr, initial_size), Storage(storage), Path(path) {
@@ -232,10 +233,22 @@ public:
         if (SDL_GetStoragePathInfo(Storage, path_utf8.c_str(), &pathInfo) && pathInfo.type == SDL_PATHTYPE_FILE) {
             constexpr tjs_uint64 UNIX_EPOCH_IN_100NS = 11644473600000000000ULL; // 100-ns intervals from 1601-01-01 to 1970-01-01
             tjs_uint64 mod_time_100ns = static_cast<tjs_uint64>(pathInfo.modify_time) * 10000000ULL + UNIX_EPOCH_IN_100NS;
-            return mod_time_100ns;				
+            return mod_time_100ns;
         }
-        return 0;		
-    }    
+        return 0;
+    }
+
+    virtual tjs_uint64 TJS_INTF_METHOD FileSize(const ttstr &name) override {
+
+        std::string path_utf8;
+        TVPUtf16ToUtf8(path_utf8, name.c_str());
+
+        SDL_PathInfo pathInfo;
+        if (SDL_GetStoragePathInfo(Storage, path_utf8.c_str(), &pathInfo) && pathInfo.type == SDL_PATHTYPE_FILE) {
+            return static_cast<tjs_uint64>(pathInfo.size);
+        }
+        return 0;
+    }
 };
 
 static SDLStorageMedia *UserStorage = nullptr;

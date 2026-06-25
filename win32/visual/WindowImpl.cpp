@@ -35,6 +35,12 @@
 #include "MouseCursor.h"
 
 //---------------------------------------------------------------------------
+void TVPPostWindowMessage(void *window, tjs_uint32 message, tjs_uint64 wparam, tjs_uint64 lparam)
+{
+	::PostMessage((HWND)window, (UINT)message, (WPARAM)(tjs_uintptr_t)wparam, (LPARAM)(tjs_uintptr_t)lparam);
+}
+
+//---------------------------------------------------------------------------
 // Mouse Cursor management
 //---------------------------------------------------------------------------
 static tTJSHashTable<ttstr, tjs_int> TVPCursorTable;
@@ -1105,6 +1111,10 @@ tTJSNI_Window::Construct(tjs_int numparams, tTJSVariant **param,
 
 	InitDrawContext(tjs_obj);
 
+	// WaitVSync の既定が true の場合、VSyncTimingThread を起動しないと
+	// Show() が呼ばれず画面が更新されないので、ここで明示的に同期する。
+	UpdateWaitVSync();
+
 	return TJS_S_OK;
 }
 //---------------------------------------------------------------------------
@@ -2143,6 +2153,20 @@ TJS_BEGIN_NATIVE_METHOD_DECL(registerMessageReceiver)
 	return TJS_S_OK;
 }
 TJS_END_NATIVE_METHOD_DECL_OUTER(cls, registerMessageReceiver)
+//---------------------------------------------------------------------------
+TJS_BEGIN_NATIVE_METHOD_DECL(postMessage)
+{
+	TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Window);
+	if(numparams < 3) return TJS_E_BADPARAMCOUNT;
+
+	TVPPostWindowMessage(_this->GetNativeHandle(),
+		(tjs_uint32)(tjs_int64)*param[0],
+		(tjs_uint64)(tjs_int64)*param[1],
+		(tjs_uint64)(tjs_int64)*param[2]);
+
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_METHOD_DECL_OUTER(cls, postMessage)
 //---------------------------------------------------------------------------
 TJS_BEGIN_NATIVE_METHOD_DECL(getTouchPoint)
 {

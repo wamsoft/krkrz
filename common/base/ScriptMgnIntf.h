@@ -44,6 +44,8 @@ TJS_EXP_FUNC_DEF(void, TVPDumpScriptEngine, ());
 TJS_EXP_FUNC_DEF(void, TVPExecuteBytecode, (const tjs_uint8* content, size_t len, iTJSDispatch2 *context, tTJSVariant *result = NULL, const tjs_char *name = NULL ));
 
 extern void TVPExecuteStartupScript();
+// -nostartup 指定で起動スクリプトの自動実行を抑止するか。
+extern bool TVPIsStartupScriptDisabled();
 TJS_EXP_FUNC_DEF(void, TVPCreateMessageMapFile, (const ttstr &filename));
 
 //---------------------------------------------------------------------------

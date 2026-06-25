@@ -56,11 +56,7 @@ public:
 		const tjs_char *p = name.c_str();
 		const tjs_char *q;
 		if ((q = TJS_strchr(p, '/'))) {
-	        std::string path_utf8;
-    	    TVPUtf16ToUtf8(path_utf8, q+1); // skip "/"
-			fname = SDL_GetBasePath();
-			fname += "/";
-			fname += path_utf8; 			
+    	    TVPUtf16ToUtf8(fname, q+1); // skip "/"
 			TVPAddLog(ttstr(TJS_W("Resource path: ")) + ttstr(fname.c_str()));
 		} else {
 			TVPThrowExceptionMessage(TJS_W("invalid path:%1"), name);

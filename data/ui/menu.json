@@ -1,0 +1,53 @@
+{
+    /* navigator フローの起点画面。 各ボタンは close_on_click=true で画面を
+       閉じ、 id が下の "transitions" のキーになって次手を決める。 */
+    "size": [420, 360],
+    "background": [28, 30, 40, 245],
+    "locale": "ja-JP",
+
+    "input": { "arrow_focus_nav": true },
+
+    /* 閉じトリガ (= 閉じた button の id / Esc 等は "") → 次手。
+         "<name>"   画面 name を push (山括弧不要)
+         "<back>"   現画面を pop
+         "<exit>"   フロー終了 (空 target も同義)
+       "effect":"fade" は navigator が解釈するが、 krkrz overlay の演出配線は
+       後フェーズなので現状は即時切替。 */
+    "transitions": {
+        "settings": { "target": "settings", "effect": "fade", "duration": 200 },
+        "about":    "about",
+        "quit":     "<exit>",
+        "":         "<exit>",
+    },
+
+    "content": {
+        "type": "margin", "padding": 20,
+        "child": {
+            "type": "vtile",
+            "children": [
+                { "type": "hspacer", "width": 380 },
+
+                { "type": "align_center",
+                  "child": { "type": "label", "text": "メインメニュー", "size": 1.4 } },
+                { "type": "vspacer", "height": 20 },
+
+                { "type": "vsize", "height": 40,
+                  "child": { "type": "button", "id": "settings", "text": "設定",
+                             "close_on_click": true, "initial_focus": true } },
+                { "type": "vspacer", "height": 10 },
+                { "type": "vsize", "height": 40,
+                  "child": { "type": "button", "id": "about", "text": "このアプリについて",
+                             "close_on_click": true } },
+                { "type": "vspacer", "height": 10 },
+                { "type": "vsize", "height": 40,
+                  "child": { "type": "button", "id": "quit", "text": "終了",
+                             "close_on_click": true } },
+
+                { "type": "vspacer", "height": 14 },
+                { "type": "align_center",
+                  "child": { "type": "label",
+                             "text": "Esc / 右クリック = 終了", "size": 0.85 } },
+            ],
+        },
+    },
+}

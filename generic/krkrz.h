@@ -1000,7 +1000,7 @@ class tTVPNativeThreadIntf
 {
 public:
 	virtual ~tTVPNativeThreadIntf() {};
-	virtual void Start(tTVPThreadFunc func, void *arg, tTVPThreadPriority pri) = 0;
+	virtual void Start(tTVPThreadFunc func, void *arg, tTVPThreadPriority pri, const char *name) = 0;
 	virtual void WaitFor() = 0;
 	virtual void SetPriority(tTVPThreadPriority pri) = 0;
 	virtual void SetProcessorNo(int no) = 0;

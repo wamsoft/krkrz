@@ -4,7 +4,13 @@
 #define __SOUND_EVENT_THREAD_H__
 
 #include "ThreadIntf.h"
+// WINVER は従来の Win32 窓ベース NativeEventQueue、それ以外 (SDL/Generic) は
+// Application の AppEventInterface 経由で wake メッセージを受ける。doc/AppEvent.md 参照。
+#ifdef __WINVER__
 #include "NativeEventQueue.h"
+#else
+#include "Application.h"
+#endif
 #include <vector>
 
 //---------------------------------------------------------------------------
@@ -16,6 +22,9 @@
 	このアルゴリズムで使用される技法は、Timerクラスの実装に似ています。
 */
 class tTVPSoundEventThread : public tTVPThread
+#ifndef __WINVER__
+	, public AppEventInterface
+#endif
 {
 	tTVPThreadEvent Event;
 	std::mutex SuspendMutex;
@@ -27,13 +36,21 @@ class tTVPSoundEventThread : public tTVPThread
 	tjs_uint LastFilledTick;
 
 	class tTVPSoundBuffers* Buffers;
+#ifdef __WINVER__
 	NativeEventQueue<tTVPSoundEventThread> EventQueue;
+#endif
 public:
 	tTVPSoundEventThread( class tTVPSoundBuffers* parent );
 	~tTVPSoundEventThread();
 
 private:
+	// wake メッセージを受けたときの本体処理 (メインスレッド)。
+	void HandleWake();
+#ifdef __WINVER__
 	void UtilWndProc( NativeEvent& ev );
+#else
+	bool Dispatch( tjs_int message, tjs_int64 wparam, tjs_int64 lparam ) override;
+#endif
 
 	void SetSuspend()
 	{

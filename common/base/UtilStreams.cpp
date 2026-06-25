@@ -99,6 +99,19 @@ tTVPMemoryStream::tTVPMemoryStream()
 	Init();
 }
 //---------------------------------------------------------------------------
+tTVPMemoryStream::tTVPMemoryStream(tjs_uint reserve_size)
+{
+	// pre-allocate the internal buffer with the given capacity.
+	// Size stays 0; AllocSize reflects the reserved capacity.
+	Init();
+	if(reserve_size)
+	{
+		Block = Alloc(reserve_size);
+		if(!Block) TVPThrowExceptionMessage(TVPInsufficientMemory);
+		AllocSize = reserve_size;
+	}
+}
+//---------------------------------------------------------------------------
 tTVPMemoryStream::tTVPMemoryStream(const void * block, tjs_uint size)
 {
 	Init();
@@ -155,12 +168,13 @@ tjs_uint64 TJS_INTF_METHOD tTVPMemoryStream::Seek(tjs_int64 offset, tjs_int when
 //---------------------------------------------------------------------------
 tjs_uint TJS_INTF_METHOD tTVPMemoryStream::Read(void *buffer, tjs_uint read_size)
 {
-	if(CurrentPos + read_size >= Size)
-	{
-		read_size = Size - CurrentPos;
-	}
+	// clamp read_size to remaining bytes; computing from Size/CurrentPos
+	// (both bounded) avoids tjs_uint overflow in CurrentPos + read_size.
+	tjs_uint remain = (CurrentPos < Size) ? (Size - CurrentPos) : 0;
+	if(read_size > remain) read_size = remain;
 
-	memcpy(buffer, (tjs_uint8*)Block + CurrentPos, read_size);
+	if(read_size)
+		memcpy(buffer, (tjs_uint8*)Block + CurrentPos, read_size);
 
 	CurrentPos += read_size;
 
@@ -172,27 +186,35 @@ tjs_uint TJS_INTF_METHOD tTVPMemoryStream::Write(const void *buffer, tjs_uint wr
 	// writing may increase the internal buffer size.
 	if(Reference) TVPThrowExceptionMessage(TVPWriteError);
 
-	tjs_uint newpos = CurrentPos + write_size;
-	if(newpos >= AllocSize)
-	{
-		// exceeds AllocSize
-		tjs_uint onesize;
-		if(AllocSize < 64*1024) onesize = 4*1024;
-		else if(AllocSize < 512*1024) onesize = 16*1024;
-		else if(AllocSize < 4096*1024) onesize = 256*1024;
-		else onesize = 2024*1024;
-		AllocSize += onesize;
+	// guard against tjs_uint overflow in CurrentPos + write_size
+	if(write_size > (tjs_uint)-1 - CurrentPos)
+		TVPThrowExceptionMessage(TVPWriteError);
 
-		if(CurrentPos + write_size >= AllocSize) // still insufficient ?
+	tjs_uint newpos = CurrentPos + write_size;
+	if(newpos > AllocSize)
+	{
+		// grow the buffer geometrically (doubling) so that repeated
+		// appends are amortized O(1). starts at 4KiB when empty.
+		tjs_uint newalloc = AllocSize ? AllocSize : 4*1024;
+		while(newalloc < newpos)
 		{
-			AllocSize = CurrentPos + write_size;
+			if(newalloc > ((tjs_uint)-1) / 2)
+			{
+				// doubling would overflow; fall back to exact size
+				newalloc = newpos;
+				break;
+			}
+			newalloc *= 2;
 		}
 
-		Block = Realloc(Block, AllocSize);
+		void *newblock = Realloc(Block, newalloc);
 
-		if(AllocSize && !Block)
+		if(newalloc && !newblock)
 			TVPThrowExceptionMessage(TVPInsufficientMemory);
 			// this exception cannot be repaird; a fatal error.
+
+		Block = newblock;
+		AllocSize = newalloc;
 	}
 
 	memcpy((tjs_uint8*)Block + CurrentPos, buffer, write_size);
@@ -208,11 +230,13 @@ void TJS_INTF_METHOD tTVPMemoryStream::SetEndOfStorage()
 {
 	if(Reference) TVPThrowExceptionMessage(TVPWriteError);
 
+	void *newblock = Realloc(Block, CurrentPos);
+	if(CurrentPos && !newblock)
+		TVPThrowExceptionMessage(TVPInsufficientMemory);
+
+	Block = newblock;
 	Size = CurrentPos;
 	AllocSize = Size;
-	Block = Realloc(Block, Size);
-	if(Size && !Block)
-		TVPThrowExceptionMessage(TVPInsufficientMemory);
 }
 //---------------------------------------------------------------------------
 void tTVPMemoryStream::Clear(void)
@@ -225,26 +249,14 @@ void tTVPMemoryStream::SetSize(tjs_uint size)
 {
 	if(Reference) TVPThrowExceptionMessage(TVPWriteError);
 
-	if(Size > size)
-	{
-		// decrease
-		Size = size;
-		AllocSize = size;
-		Block = Realloc(Block, size);
-		if(CurrentPos > Size) CurrentPos = Size;
-		if(size && !Block)
-			TVPThrowExceptionMessage(TVPInsufficientMemory);
-	}
-	else
-	{
-		// increase
-		AllocSize = size;
-		Size = size;
-		Block = Realloc(Block, size);
-		if(size && !Block)
-			TVPThrowExceptionMessage(TVPInsufficientMemory);
+	void *newblock = Realloc(Block, size);
+	if(size && !newblock)
+		TVPThrowExceptionMessage(TVPInsufficientMemory);
 
-	}
+	Block = newblock;
+	Size = size;
+	AllocSize = size;
+	if(CurrentPos > Size) CurrentPos = Size;
 }
 //---------------------------------------------------------------------------
 void tTVPMemoryStream::Init()

@@ -14,6 +14,9 @@
 #include "LayerIntf.h"
 #include "LayerManager.h"
 #include "ComplexRect.h"
+#ifdef __GENERIC__
+#include "ViewportConfig.h"
+#endif
 
 class iTVPWindow;
 class tTJSNI_BaseLayer;
@@ -442,6 +445,31 @@ public:
 	//! @note		このメソッドは、VSync待ちを有効にするかどうかを設定する。
 	//!				有効にすると、描画デバイスは低層側の機能で VSYnc を待つ
 	virtual void SetWaitVSync(bool enable) = 0;
+
+	//---------------------------------------------------------------------------
+	// ビューポート余白塗り (ゲーム画面が surface 全面を覆わないときの周囲)
+	//---------------------------------------------------------------------------
+
+	//! @brief		(Window->DrawDevice) 余白の背景色を設定する
+	//! @param		color	0xAARRGGBB
+	//! @note		既定は no-op。tTVPDrawDevice が保持・描画する。
+	//!				iTVPDrawDevice 直接実装 (NullDrawDevice 等) は何もしない。
+	virtual void SetViewportBackgroundColor(tjs_uint32 color) {}
+
+	//! @brief		(Window->DrawDevice) 余白の壁紙を設定する
+	//! @param		image	壁紙となる Layer / Bitmap オブジェクトを保持する Variant。
+	//!						void / null でクリア。tTJSVariant が参照を保持するので
+	//!						イメージデータは維持される。描画デバイス (プラグイン可) は
+	//!						imageWidth/imageHeight/mainImageBuffer/mainImageBufferPitch
+	//!						プロパティから画像イメージを取得する (内部型は渡さない)。
+	//! @param		fit		壁紙のフィット方式
+	//! @param		alignX	水平配置 0..1
+	//! @param		alignY	垂直配置 0..1
+	virtual void SetViewportWallpaper(const tTJSVariant &image,
+		tTVPViewportFit fit, double alignX, double alignY) {}
+
+	//! @brief		(Window->DrawDevice) 余白の壁紙をクリアする
+	virtual void ClearViewportWallpaper() {}
 #endif
 
 };
@@ -459,6 +487,17 @@ protected:
 	std::vector<iTVPLayerManager *> Managers; //!< レイヤマネージャの配列
 	tTVPRect DestRect; //!< 描画先位置
 	tTVPRect ClipRect; //!< クリッピング矩形
+
+#ifdef __GENERIC__
+	//-- ビューポート余白 (背景色 + 壁紙)。基底で保持し、各描画デバイスの
+	//   Show() が ViewportWallpaperGen の変化を見てテクスチャを遅延アップロードする。
+	tjs_uint32 ViewportBgColor;                       //!< 余白背景色
+	tTJSVariant ViewportWallpaper;                    //!< 余白壁紙の Layer/Bitmap オブジェクト (void なら無し)
+	tTVPViewportFit ViewportWallpaperFit;             //!< 壁紙フィット方式
+	double ViewportWpAlignX;                          //!< 壁紙水平配置 0..1
+	double ViewportWpAlignY;                          //!< 壁紙垂直配置 0..1
+	tjs_uint32 ViewportWallpaperGen;                  //!< 壁紙世代カウンタ (変更検出)
+#endif
 
 protected:
 	tTVPDrawDevice(); //!< コンストラクタ
@@ -510,6 +549,31 @@ public:
 	virtual void TJS_INTF_METHOD NotifyLayerResize(iTVPLayerManager * manager);
 	virtual void TJS_INTF_METHOD NotifyLayerImageChange(iTVPLayerManager * manager);
 
+#ifdef __GENERIC__
+//---- ビューポート余白塗り (基底は保持のみ。実描画は各描画デバイスの Show())
+	virtual void SetViewportBackgroundColor(tjs_uint32 color);
+	virtual void SetViewportWallpaper(const tTJSVariant &image,
+		tTVPViewportFit fit, double alignX, double alignY);
+	virtual void ClearViewportWallpaper();
+	// 描画デバイス向けアクセサ
+	tjs_uint32 GetViewportBgColor() const { return ViewportBgColor; }
+	const tTJSVariant & GetViewportWallpaper() const { return ViewportWallpaper; }
+	tTVPViewportFit GetViewportWallpaperFit() const { return ViewportWallpaperFit; }
+	double GetViewportWpAlignX() const { return ViewportWpAlignX; }
+	double GetViewportWpAlignY() const { return ViewportWpAlignY; }
+	tjs_uint32 GetViewportWallpaperGen() const { return ViewportWallpaperGen; }
+
+	//! @brief	保持中の壁紙オブジェクトから画像イメージ情報を取得する。
+	//!			Layer / Bitmap いずれも imageWidth/imageHeight/mainImageBuffer/
+	//!			mainImageBufferPitch プロパティ経由で取得する (内部型に依存しない)。
+	//! @param	w,h		画像サイズ (px)
+	//! @param	pitch	1 ラインのバイト数
+	//! @param	buffer	ARGB8888 (メモリ上 B,G,R,A) のピクセル先頭
+	//! @return	有効な壁紙画像を取得できたら true
+	bool GetViewportWallpaperImage(tjs_int &w, tjs_int &h, tjs_int &pitch,
+		const tjs_uint8 *&buffer) const;
+#endif
+
 //---- ユーザーインターフェース関連
 	// window → drawdevice
 	virtual void TJS_INTF_METHOD OnClick(tjs_int x, tjs_int y);
@@ -531,6 +595,12 @@ public:
 	virtual void TJS_INTF_METHOD OnMultiTouch();
 	virtual void TJS_INTF_METHOD OnDisplayRotate( tjs_int orientation, tjs_int rotate, tjs_int bpp, tjs_int width, tjs_int height );
 	virtual void TJS_INTF_METHOD RecheckInputState();
+
+	//! @brief		(派生 Show() 終端から呼ぶ) Elements ダイアログのオーバーレイ描画
+	//! @note		Layer 合成完了直後・最終 Present 直前のタイミングで派生クラスから呼ばれる。
+	//!				Elements ダイアログがアクティブな場合、tTVPElementsDialogManager 経由で
+	//!				バックバッファ上にダイアログを合成する。
+	virtual void TJS_INTF_METHOD PresentDialogOverlay();
 
 	// layer manager → drawdevice
 	virtual void TJS_INTF_METHOD SetDefaultMouseCursor(iTVPLayerManager * manager);

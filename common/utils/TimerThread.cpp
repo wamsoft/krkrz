@@ -34,11 +34,18 @@
 
 static tTVPTimerThread * TVPTimerThread = nullptr;
 //---------------------------------------------------------------------------
-tTVPTimerThread::tTVPTimerThread() : EventQueue(this,&tTVPTimerThread::Proc)
+tTVPTimerThread::tTVPTimerThread() : tTVPThread("TimerThread")
+#ifdef __WINVER__
+	, EventQueue(this,&tTVPTimerThread::Proc)
+#endif
 {
 	PendingEventsAvailable = false;
 	SetPriority(TVPLimitTimerCapacity ? ttpNormal : ttpHighest);
+#ifdef __WINVER__
 	EventQueue.Allocate();
+#else
+	Application->addEventHandler(this);
+#endif
 	StartThread();
 }
 //---------------------------------------------------------------------------
@@ -47,7 +54,11 @@ tTVPTimerThread::~tTVPTimerThread()
 	Terminate();
 	Event.Set();
 	WaitFor();
+#ifdef __WINVER__
 	EventQueue.Deallocate();
+#else
+	Application->removeEventHandler(this);
+#endif
 }
 //---------------------------------------------------------------------------
 void tTVPTimerThread::Execute()
@@ -127,11 +138,15 @@ void tTVPTimerThread::Execute()
 
 			if(any_triggered)
 			{
-				// triggered; post notification message to the UtilWindow
+				// triggered; post notification message to the main thread
 				if(!PendingEventsAvailable)
 				{
 					PendingEventsAvailable = true;
+#ifdef __WINVER__
 					EventQueue.PostEvent( NativeEvent(TVP_EV_TIMER_THREAD) );
+#else
+					Application->SendAppEvent( TVP_EV_TIMER_THREAD, 0, 0 );
+#endif
 				}
 			}
 
@@ -151,29 +166,42 @@ void tTVPTimerThread::Execute()
 	}
 }
 //---------------------------------------------------------------------------
+// wake メッセージを受けたときの本体処理 (メインスレッド)。
+void tTVPTimerThread::HandleWake()
+{
+	// pending events occur
+	tTJSCriticalSectionHolder holder(TVPTimerCS); // protect the object
+
+	ProcWork.reserve( Pending.size() );
+	ProcWork = Pending;
+	Pending.clear();
+	for( auto i = ProcWork.begin(); i != ProcWork.end(); i++ ) {
+		if( std::find( List.begin(), List.end(), ( *i ) ) != List.end() )
+			(*i)->FirePendingEventsAndClear();	// この呼び出しによってList/Peinding内から削除されるケースがありうるので注意。
+	}
+	ProcWork.clear();
+	PendingEventsAvailable = false;
+}
+//---------------------------------------------------------------------------
+#ifdef __WINVER__
 void tTVPTimerThread::Proc( NativeEvent& ev )
 {
 	// Window procedure of UtilWindow
 	if( ev.Message == TVP_EV_TIMER_THREAD && !GetTerminated())
-	{
-		// pending events occur
-		tTJSCriticalSectionHolder holder(TVPTimerCS); // protect the object
-
-		ProcWork.reserve( Pending.size() );
-		ProcWork = Pending;
-		Pending.clear();
-		for( auto i = ProcWork.begin(); i != ProcWork.end(); i++ ) {
-			if( std::find( List.begin(), List.end(), ( *i ) ) != List.end() )
-				(*i)->FirePendingEventsAndClear();	// この呼び出しによってList/Peinding内から削除されるケースがありうるので注意。
-		}
-		ProcWork.clear();
-		PendingEventsAvailable = false;
-	}
+		HandleWake();
 	else
-	{
 		EventQueue.HandlerDefault(ev);
-	}
 }
+#else
+bool tTVPTimerThread::Dispatch( tjs_int message, tjs_int64 /*wparam*/, tjs_int64 /*lparam*/ )
+{
+	if( message == TVP_EV_TIMER_THREAD && !GetTerminated() ) {
+		HandleWake();
+		return true;
+	}
+	return false;
+}
+#endif
 //---------------------------------------------------------------------------
 void tTVPTimerThread::AddItem(tTVPTimerBase * item)
 {

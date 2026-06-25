@@ -88,9 +88,21 @@ inline tjs_int TJS_sprintf( tjs_char *s, const tjs_char *format, ... ) {
 /*]*/
 #endif
 
-#define TJS_malloc			malloc
-#define TJS_free			free
-#define TJS_realloc			realloc
+// TJS_malloc 系は GlobalAllocStats の Krkrz collector に redirect する
+// (doc/legacy/GlobalAllocationStats.md / common/utils/GlobalAllocStats.h)。
+// 全 TJS2 経路の C-style alloc が globalNew カウンタと統合計測される。
+#ifdef __cplusplus
+extern "C" {
+#endif
+void *TVPKrkrzMalloc(size_t size);
+void *TVPKrkrzRealloc(void *p, size_t size);
+void  TVPKrkrzFree(void *p);
+#ifdef __cplusplus
+}
+#endif
+#define TJS_malloc			TVPKrkrzMalloc
+#define TJS_free			TVPKrkrzFree
+#define TJS_realloc			TVPKrkrzRealloc
 #define TJS_nsprintf		sprintf
 #define TJS_nstrcpy			strcpy
 #define TJS_nstrcat			strcat

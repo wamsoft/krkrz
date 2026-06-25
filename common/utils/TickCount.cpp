@@ -93,6 +93,7 @@ protected:
 } static * TVPWatchThread = NULL;
 //---------------------------------------------------------------------------
 tTVPWatchThread::tTVPWatchThread()
+	: tTVPThread("WatchThread")
 {
 	TVPWatchLastTick = TVPGetRoughTickCount32();
 	SetPriority(ttpNormal);

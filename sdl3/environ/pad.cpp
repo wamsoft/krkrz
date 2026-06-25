@@ -113,5 +113,33 @@ tjs_uint32 SDL3Application::GetPadState(int no)
 	analog_to_key(rightX, rightY, 20, key_state);
 
 	//TVPLOG_DEBUG("GetPadState: {:x}", key_state);
-	return key_state;	
+	return key_state;
+}
+
+// 軸 ID は SDL_GamepadAxis と同値で定義済み (Application.h)。下記 static_assert で
+// 値ズレを起こしたらコンパイル時に検出する。
+static_assert((int)tTVPApplication::TVP_PAD_AXIS_LEFTX         == (int)SDL_GAMEPAD_AXIS_LEFTX,         "");
+static_assert((int)tTVPApplication::TVP_PAD_AXIS_LEFTY         == (int)SDL_GAMEPAD_AXIS_LEFTY,         "");
+static_assert((int)tTVPApplication::TVP_PAD_AXIS_RIGHTX        == (int)SDL_GAMEPAD_AXIS_RIGHTX,        "");
+static_assert((int)tTVPApplication::TVP_PAD_AXIS_RIGHTY        == (int)SDL_GAMEPAD_AXIS_RIGHTY,        "");
+static_assert((int)tTVPApplication::TVP_PAD_AXIS_LEFT_TRIGGER  == (int)SDL_GAMEPAD_AXIS_LEFT_TRIGGER,  "");
+static_assert((int)tTVPApplication::TVP_PAD_AXIS_RIGHT_TRIGGER == (int)SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, "");
+
+float SDL3Application::GetPadAxis(int no, int axisId)
+{
+	if (!gamepad) {
+		return 0.0f;
+	}
+	if (no != 0) {
+		return 0.0f; // 現状は no=0 のメインパッドのみ対応
+	}
+	if (axisId < 0 || axisId >= TVP_PAD_AXIS_COUNT) {
+		return 0.0f;
+	}
+	// SDL_GetGamepadAxis: スティック -32768〜32767、トリガ 0〜32767
+	Sint16 raw = SDL_GetGamepadAxis(gamepad, (SDL_GamepadAxis)axisId);
+	float v = raw / 32767.0f;
+	// raw = -32768 のとき -1.00003... になるので clamp
+	if (v < -1.0f) v = -1.0f;
+	return v;
 }

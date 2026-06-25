@@ -20,6 +20,7 @@
 #include "tjsTypes.h"
 #include "WaveLoopManager.h"
 #include "CharacterSet.h"
+#include "SoundAllocator.h"
 
 #ifdef TVP_IN_LOOP_TUNER
 	#include "WaveReader.h"
@@ -375,18 +376,18 @@ void tTVPWaveLoopManager::Decode(void *dest, tjs_uint samples, tjs_uint &written
 						tjs_int alloc_size =
 							(before_count + after_count) * 
 								Format->BytesPerSample * Format->Channels;
-						CrossFadeSamples = new tjs_uint8[alloc_size];
-						src1 = new tjs_uint8[alloc_size];
-						src2 = new tjs_uint8[alloc_size];
+						CrossFadeSamples = (tjs_uint8*)sound_malloc(alloc_size);
+						src1 = (tjs_uint8*)sound_malloc(alloc_size);
+						src2 = (tjs_uint8*)sound_malloc(alloc_size);
 					}
 					catch(...)
 					{
 						// memory allocation failed. perform normal link.
 						if(CrossFadeSamples)
-							delete [] CrossFadeSamples,
+							sound_free(CrossFadeSamples),
 								CrossFadeSamples = NULL;
-						if(src1) delete [] src1;
-						if(src2) delete [] src2;
+						if(src1) sound_free(src1);
+						if(src2) sound_free(src2);
 						next_event_pos = link.From;
 					}
 					if(CrossFadeSamples)
@@ -411,8 +412,8 @@ void tTVPWaveLoopManager::Decode(void *dest, tjs_uint samples, tjs_uint &written
 						DoCrossFade(CrossFadeSamples + after_offset,
 							src1 + after_offset, src2 + after_offset,
 								after_count, 50, 100);
-						delete [] src1;
-						delete [] src2;
+						sound_free(src1);
+						sound_free(src2);
 						// reset CrossFadePosition and CrossFadeLen
 						CrossFadePosition = 0;
 						CrossFadeLen = before_count + after_count;
@@ -722,7 +723,7 @@ void tTVPWaveLoopManager::DoCrossFade(void *dest, void *src1,
 //---------------------------------------------------------------------------
 void tTVPWaveLoopManager::ClearCrossFadeInformation()
 {
-	if(CrossFadeSamples) delete [] CrossFadeSamples, CrossFadeSamples = NULL;
+	if(CrossFadeSamples) sound_free(CrossFadeSamples), CrossFadeSamples = NULL;
 }
 //---------------------------------------------------------------------------
 bool tTVPWaveLoopManager::GetLabelExpression(const tTVPLabelStringType &label,

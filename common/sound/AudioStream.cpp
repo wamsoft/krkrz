@@ -2,13 +2,14 @@
 #include "MsgIntf.h"
 #include "LogIntf.h"
 #include "SysInitIntf.h"
+#include "SoundAllocator.h"
 #include "AudioStream.h"
 
 #include <memory>
 #include <assert.h>
 #include <algorithm>
-#include <mutex>
-#include <queue>
+#include <atomic>
+#include <cmath>
 
 #define MINIAUDIO_IMPLEMENTATION
 
@@ -16,9 +17,44 @@
 #define MA_USE_STDINT
 #include "miniaudio.h"
 
+//---------------------------------------------------------------------------
+// miniaudio allocation callbacks
+// ma_engine 内部 (resampler / converter / device ring 等) の確保を全て
+// SoundAllocator 経由に流す。これで pool ベース管理 + Sound tag 集計が効く。
+//---------------------------------------------------------------------------
+static void *MAOnMalloc(size_t sz, void * /*pUserData*/)
+{
+	return sound_malloc(sz);
+}
+static void *MAOnRealloc(void *p, size_t sz, void * /*pUserData*/)
+{
+	return sound_realloc(p, sz);
+}
+static void MAOnFree(void *p, void * /*pUserData*/)
+{
+	sound_free(p);
+}
+static const ma_allocation_callbacks &GetMiniAudioAllocationCallbacks()
+{
+	static ma_allocation_callbacks cb = {
+		nullptr,    // pUserData
+		MAOnMalloc, // onMalloc
+		MAOnRealloc,// onRealloc
+		MAOnFree    // onFree
+	};
+	return cb;
+}
+
 tjs_int TVPSoundFrequency = 48000;
 tjs_int TVPSoundChannels = 2;
 static const int VOLUME_MAX = 100000;
+
+// WIN 版 DirectSound 経路 (win32/sound/WaveImpl.cpp::TVPVolumeToDSAttenuate)
+// の知覚カーブを SDL/miniaudio 側で再現するための係数。WIN 版と同じ既定値
+// 3322 で「スライダ 50% ≒ -10 dB ≒ 知覚的に半分」になる。
+// -wsvolfactor オプションで上書き可能 (WIN 版と同じ名前/範囲)。
+// 2000 を指定すると pow の指数が 1.0 になり実質 linear (旧 SDL 動作と等価)。
+static tjs_int TVPVolumeLogFactor = 3322;
 
 //---------------------------------------------------------------------------
 
@@ -46,17 +82,28 @@ static void OnLog(void *pUserData, ma_uint32 level, const char *pMessage)
 
 static ma_engine *gEngine = NULL;
 
-void InitMiniAudio() 
+void InitMiniAudio()
 {
 	if (!gEngine) {
+		// -wsvolfactor を解釈 (WIN 版 WaveImpl.cpp と同じ命名/範囲)。
+		// volume の知覚カーブを linear → log に補正する係数で、既定 3322。
+		{
+			tTJSVariant val;
+			if (TVPGetCommandLine(TJS_W("-wsvolfactor"), &val)) {
+				tjs_int n = (tjs_int)val;
+				if (n > 0 && n < 200000) TVPVolumeLogFactor = n;
+			}
+		}
 		TVPLOG_INFO("Initializing miniaudio engine...");
-    	gEngine = (ma_engine *)malloc(sizeof(ma_engine));
+    	gEngine = (ma_engine *)sound_malloc(sizeof(ma_engine));
     	if (gEngine) {
 			ma_log_callback_init(OnLog, NULL);
 
 			ma_engine_config engineConfig = ma_engine_config_init();
 			engineConfig.channels = TVPSoundChannels; // チャンネル数は2（ステレオ）
 			engineConfig.sampleRate = TVPSoundFrequency; // サンプルレートは48000Hz
+			// miniaudio 内部 alloc を SoundAllocator 経由に流す。
+			engineConfig.allocationCallbacks = GetMiniAudioAllocationCallbacks();
 
 			ma_result result = ma_engine_init(&engineConfig, gEngine);
 			if (result != MA_SUCCESS) {
@@ -73,11 +120,11 @@ ma_engine *GetMiniAudioEngine()
 	return gEngine;
 }
 
-static void DoneMiniAudio() 
+static void DoneMiniAudio()
 {
 	if (gEngine) {
     	ma_engine_uninit(gEngine);
-    	free(gEngine);
+    	sound_free(gEngine);
     	gEngine = NULL;
   	}
 }
@@ -216,6 +263,53 @@ void ReadMiniAudioPcmFrames(void *buffer, int frameCount, TVPAudioSampleType typ
 // ストリーム実装
 // --------------------------------------------------------------------------------
 
+// 1 producer / 1 consumer 用の固定容量ロックフリーリングバッファ。
+// N は 2 のべき乗。コンシューマ側が追い越されない (audio thread 側が常に front から
+// 順に消費し、producer は free 容量を見て push する) ことを呼び出し側が保証する。
+template<typename T, size_t N>
+class TVPSPSCRing {
+	static_assert((N & (N - 1)) == 0, "N must be power of 2");
+	T Buffer[N];
+	std::atomic<size_t> Head{0};	// producer index
+	std::atomic<size_t> Tail{0};	// consumer index
+
+public:
+	TVPSPSCRing() = default;
+
+	bool TryPush(const T& v) {
+		size_t h = Head.load(std::memory_order_relaxed);
+		size_t next = (h + 1) & (N - 1);
+		if (next == Tail.load(std::memory_order_acquire)) return false; // full
+		Buffer[h] = v;
+		Head.store(next, std::memory_order_release);
+		return true;
+	}
+
+	bool TryPop(T& outValue) {
+		size_t t = Tail.load(std::memory_order_relaxed);
+		if (t == Head.load(std::memory_order_acquire)) return false; // empty
+		outValue = Buffer[t];
+		Tail.store((t + 1) & (N - 1), std::memory_order_release);
+		return true;
+	}
+
+	// front を覗くだけ (ポインタは AdvancePop までは有効)
+	T* TryPeek() {
+		size_t t = Tail.load(std::memory_order_relaxed);
+		if (t == Head.load(std::memory_order_acquire)) return nullptr;
+		return &Buffer[t];
+	}
+
+	void AdvancePop() {
+		size_t t = Tail.load(std::memory_order_relaxed);
+		Tail.store((t + 1) & (N - 1), std::memory_order_release);
+	}
+
+	bool IsEmpty() const {
+		return Tail.load(std::memory_order_acquire) == Head.load(std::memory_order_acquire);
+	}
+};
+
 class MiniAudioStream;
 
 struct my_data_source {
@@ -228,39 +322,73 @@ struct my_data_source {
 
 class MiniAudioStream : public iTVPAudioStream {
 
+	// Pending/Consumed の容量。
+	// QueueSoundBuffer 経路は BufferCount=2 で十分だが、movie-player 経路は
+	// HW decoder が起動冒頭に realtime 以上で burst して数百チャンク級まで一時的
+	// に積まれる。取りこぼすと再生せずに release してしまい音が虫食いになるので、
+	// 1 entry ~32B × 1024 = 32KB と十分大きな容量を確保する。N は 2 のべき乗。
+	// 64 だと NX 版で確認したのと同等の overflow が再現する。
+	static const size_t RING_CAPACITY = 1024;
+
+	struct DataBuffer {
+		void *data;
+		size_t size;
+		bool last;
+		void *param;
+		DataBuffer() : data(nullptr), size(0), last(false), param(nullptr) {}
+		DataBuffer(void *data, size_t size, bool last, void *param)
+			: data(data), size(size), last(last), param(param) {}
+	};
+
 public:
 	MiniAudioStream( const tTVPAudioStreamParam& param );
 	virtual ~MiniAudioStream();
 
-	virtual void SetCallback( StreamQueueCallback callback, void* user ) override {
-		CallbackFunc = callback;
-		UserData = user;
+	virtual void SetWakeupHandler( StreamWakeupHandler handler, void* user ) override {
+		// 呼び出しは Stream 開始前 (StartStream の前) に行うこと。
+		// 開始後の差し替えは想定していない (audio thread と非同期になる)。
+		WakeupHandler.store(handler, std::memory_order_release);
+		WakeupUser.store(user, std::memory_order_release);
 	}
 
-	// 再生用データの投入（吉里吉里側から）
+	// 再生用データの投入（吉里吉里側から、典型的には decode thread）
 	virtual void Enqueue( void *data, size_t size, bool last, void *param ) override {
-		std::lock_guard<std::mutex> lock(data_mutex);
-		data_queue.push(DataBuffer(data,size,last,param));
+		// BufferCount=2 設計で滞留は最大 2、容量 8 なのでまず満杯にならないが
+		// 念のため失敗時は consumed 側に直送して欠落を回避する。
+		if (!PendingRing.TryPush(DataBuffer(data, size, last, param))) {
+			static int s_dropCount = 0;
+			++s_dropCount;
+			TVPLOG_WARNING("MiniAudioStream: Enqueue OVERFLOW drop count={} size={}",
+			               s_dropCount, size);
+			ConsumedRing.TryPush(param);
+			NotifyConsumed();
+		}
 	}
 
 	virtual tjs_uint64 GetSamplesPlayed() const override {
 		return ma_sound_get_time_in_pcm_frames(&sound) * SampleRate / TVPSoundFrequency;
 	}
 
+	virtual bool TryPopConsumed( void*& outParam ) override {
+		return ConsumedRing.TryPop(outParam);
+	}
+
+	// 注意: audio thread が停止している (StopStream 後) 状態で呼ぶこと。
 	virtual void ClearQueue() override {
-		std::lock_guard<std::mutex> lock(data_mutex);
-		while (data_queue.size() > 0) {
-			const DataBuffer &data = data_queue.front();
-			if (CallbackFunc) {
-				CallbackFunc( UserData, data.param );
-			}
-			data_queue.pop();
+		while (DataBuffer* front = PendingRing.TryPeek()) {
+			ConsumedRing.TryPush(front->param);
+			PendingRing.AdvancePop();
 		}
-		data_position = 0;
+		ReadPosition = 0;
+		EosReached.store(false, std::memory_order_release);
+		NotifyConsumed();
 	}
 
 	virtual void StartStream() override {
-	    ma_sound_start(&sound);
+		// 再開時は EOS フラグもリセットする。
+		// (ma_sound_start 内部でも ma_sound::atEnd は MA_FALSE に戻されるので両者を揃える)
+		EosReached.store(false, std::memory_order_release);
+		ma_sound_start(&sound);
 	}
 
 	virtual void StopStream() override{ 
@@ -280,9 +408,20 @@ public:
 		if( vol < 0) { vol = 0; }
 		if( AudioVolumeValue != vol ) {
 			AudioVolumeValue = vol;
-			float level = (float)AudioVolumeValue / (float)VOLUME_MAX;
-			if( level < 0.0f ) level = 0.0f;
-			if( level > 1.0f ) level = 1.0f;
+			float level;
+			if (vol <= 0) {
+				level = 0.0f;
+			} else {
+				// WIN 版 DirectSound 経路と等価な perceptual curve に変換する。
+				//   WIN:  TVPVolumeToDSAttenuate(v) = log10(v/100000) * Factor (mB)
+				//         → DS 内部で 10^(att/2000) = (v/100000)^(Factor/2000)
+				//   SDL:  同じ式を直接 linear gain として計算し miniaudio へ渡す。
+				// Factor 既定 3322 でスライダ 50% ≒ -10 dB (知覚的に半分)。
+				float normalized = (float)vol / (float)VOLUME_MAX;
+				level = std::pow(normalized, (float)TVPVolumeLogFactor / 2000.0f);
+				if (level < 0.0f) level = 0.0f;
+				if (level > 1.0f) level = 1.0f;
+			}
             ma_sound_set_volume(&sound, level);
 		}
 	}
@@ -309,47 +448,82 @@ public:
 	virtual tjs_int GetFrequency() const override { return AudioFrequency; }
 
 	// 再生用データの読み出し（再生ライブラリから吸い上げ）
+	// 注意: miniaudio の audio callback スレッドから呼ばれる。
+	// このパスではロック取得・vector 操作・syscall 等は避け、
+	// 完了通知も lock-free ring + 1 wakeup のみに留める。
 	ma_result ReadData(void* pFramesOut, ma_uint64 frameCount, ma_uint64* pFramesRead) {
+		// EOS 確定済み: framesRead=0 で MA_AT_END を返し、miniaudio 側に
+		// ma_sound_at_end を立てさせる。これがないと、last=true 消費 call では
+		// framesRead==frameCount で返ってしまい外側 ma_data_source_read_pcm_frames が
+		// MA_AT_END を握り潰す (totalFramesProcessed>0 → MA_SUCCESS) ため、
+		// ma_sound_at_end() が永久に false のままになり QueueSoundBuffer の status が
+		// ssPlay → ssStop に遷移しなくなる。
+		if (EosReached.load(std::memory_order_acquire)) {
+			if (pFramesRead) *pFramesRead = 0;
+			return MA_AT_END;
+		}
 
-		std::lock_guard<std::mutex> lock(data_mutex);
 		char *dst = (char*)pFramesOut;
 		ma_uint64 size = frameCount * FrameSize;
-		ma_uint64 count = 0;
 		bool last = false;
-		while (!last && size >0 && data_queue.size() > 0) {
-			const DataBuffer &data = data_queue.front();
-			int remain = data.size - data_position;
+		bool didConsume = false;
+
+		while (!last && size > 0) {
+			DataBuffer* front = PendingRing.TryPeek();
+			if (!front) break;
+
+			ma_uint64 remain = front->size - ReadPosition;
 			if (size < remain) {
-				memcpy(dst, (char*)data.data + data_position, size);
+				memcpy(dst, (char*)front->data + ReadPosition, (size_t)size);
 				dst += size;
-				count += (size / FrameSize);
-				data_position += size;
+				ReadPosition += size;
 				size = 0;
 			} else {
-				memcpy(dst, (char*)data.data + data_position, remain);
-				if (data.last) {
-					last = true;
-				}
-				if (CallbackFunc) {
-					CallbackFunc( UserData, data.param );
-				}
-				data_queue.pop();
+				memcpy(dst, (char*)front->data + ReadPosition, (size_t)remain);
+				if (front->last) last = true;
+				void *param = front->param;
+				PendingRing.AdvancePop();
+				ReadPosition = 0;
+				// consumed ring は容量 RING_CAPACITY あり、滞留も BufferCount(=2) 程度なので
+				// 通常は失敗しないが、万一失敗しても再生品質を優先しドロップする。
+				ConsumedRing.TryPush(param);
+				didConsume = true;
 				dst += remain;
-				count += (remain / FrameSize);
-				data_position = 0;
 				size -= remain;
 			}
 		}
-		if (pFramesRead) {
-			*pFramesRead = count;
+
+		if (didConsume) NotifyConsumed();
+
+		// pending が一時的に空 (アンダーラン) になった場合、残りを silence で埋める。
+		// ここで MA_AT_END を返してしまうと miniaudio が ma_sound を auto-stop し、
+		// 以降データを enqueue しても callback が呼ばれなくなる (動画音声のように
+		// producer と consumer のタイミングがずれて瞬間的に空になる経路で致命的)。
+		// 真の EOS は EOS マーカーバッファ (last=true) でのみ MA_AT_END を返す。
+		if (size > 0) {
+			memset(dst, 0, (size_t)size);
 		}
-		//TVPLOG_DEBUG("ReadData: requested frames={}, provided frames={}, last={}", frameCount, count, last);
-		return (last || count == 0) ? MA_AT_END : MA_SUCCESS;
+
+		// last=true バッファを実際に消費した瞬間に EOS フラグを立てる。
+		// この call では framesRead=frameCount + MA_AT_END を返し、続く callback の
+		// ReadData で framesRead=0 + MA_AT_END を返して ma_sound_at_end を確定させる。
+		if (last) {
+			EosReached.store(true, std::memory_order_release);
+		}
+
+		if (pFramesRead) *pFramesRead = frameCount;
+		return last ? MA_AT_END : MA_SUCCESS;
 	}
 
 private:
-	StreamQueueCallback CallbackFunc;
-	void* UserData;
+	void NotifyConsumed() {
+		// audio thread 上で 1 回だけ呼ぶ。handler は Event.Set 等の最小処理に限定される想定。
+		StreamWakeupHandler h = WakeupHandler.load(std::memory_order_acquire);
+		if (h) h(WakeupUser.load(std::memory_order_acquire));
+	}
+
+	std::atomic<StreamWakeupHandler> WakeupHandler;
+	std::atomic<void*> WakeupUser;
 
 	tjs_int SampleRate;
 	tjs_int FrameSize;
@@ -359,17 +533,18 @@ private:
 
     my_data_source data_source;
     ma_sound sound;
-	struct DataBuffer {
-		void *data;
-		size_t size;
-		bool last;
-		void *param;
-		DataBuffer(void *data, size_t size, bool last, void *param) : data(data), size(size), last(last), param(param) {}
-	};
 
-	std::queue<DataBuffer> data_queue;
-	std::mutex data_mutex;
-	off_t data_position;
+	TVPSPSCRing<DataBuffer, RING_CAPACITY> PendingRing;
+	TVPSPSCRing<void*, RING_CAPACITY> ConsumedRing;
+	// audio thread のみがアクセス。front buffer 内の現在位置 (バイト)。
+	ma_uint64 ReadPosition;
+
+	// last=true バッファを消費した瞬間に立つ EOS フラグ。一度立つと、PendingRing の
+	// 内容に関わらず ReadData は (framesRead=0, MA_AT_END) を返し続け、miniaudio の
+	// ma_sound_at_end() が true に転じる契機を作る。
+	// StartStream() / ClearQueue() でリセット。
+	// (movie 経路の単発 underrun と EOS を区別するため必要)
+	std::atomic<bool> EosReached;
 };
 
 // --------------------------------------------------------------------------------
@@ -452,14 +627,15 @@ static ma_data_source_vtable g_my_data_source_vtable =
 // --------------------------------------------------------------------------------
 
 MiniAudioStream::MiniAudioStream(const tTVPAudioStreamParam& param )
-: AudioVolumeValue(VOLUME_MAX)
+: WakeupHandler(nullptr)
+, WakeupUser(nullptr)
+, SampleRate(param.SampleRate)
+, FrameSize(param.BitsPerSample/8 * param.Channels)
+, AudioVolumeValue(VOLUME_MAX)
 , AudioBalanceValue(0)
 , AudioFrequency(param.SampleRate)
-, FrameSize(param.BitsPerSample/8 * param.Channels)
-, SampleRate(param.SampleRate)
-, CallbackFunc(nullptr)
-, UserData(nullptr)
-, data_position(0)
+, ReadPosition(0)
+, EosReached(false)
 {
 	data_source.Format     = ((param.BitsPerSample == 8)? ma_format_u8 : ((param.BitsPerSample == 16)? ma_format_s16 : ma_format_f32));
 	data_source.Channels   = param.Channels;

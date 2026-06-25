@@ -359,6 +359,18 @@ tjs_uint64 TVPLastModifiedFileTime(const ttstr &name)
 }
 
 //---------------------------------------------------------------------------
+// TVPFileSize
+//---------------------------------------------------------------------------
+tjs_uint64 TVPFileSize(const ttstr &name)
+{
+	struct __stat64 stbuf;
+	if(_wstat64( (const wchar_t*)name.c_str(), &stbuf) != 0 ) {
+		return 0;
+	}
+	return static_cast<tjs_uint64>(stbuf.st_size);
+}
+
+//---------------------------------------------------------------------------
 // TVPGetAppPath
 //---------------------------------------------------------------------------
 ttstr TVPGetAppPath()

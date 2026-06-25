@@ -28,6 +28,11 @@ ttstr TVPProjectDir; // project directory (in unified storage name)
 ttstr TVPDataPath; // data directory (in unified storage name)
 //---------------------------------------------------------------------------
 
+// REPL 起動状態フラグ (常にコンパイルされる TU で定義し、 REPL 無効ビルドでも
+// シンボルが存在するようにする)。 REPL.cpp が設定する。
+bool TVPReplActive = false;
+//---------------------------------------------------------------------------
+
 
 
 extern void TVPGL_C_Init();
@@ -168,7 +173,37 @@ static void TVPCauseAtExit()
 //---------------------------------------------------------------------------
 
 
+int TVPGetCommandLineInt(const tjs_char * name, int defaultValue)
+{
+	tTJSVariant value;
+	if(TVPGetCommandLine(name, &value))
+	{
+		if(value.Type() == tvtString)
+		{
+			const tjs_char * str = value.GetString();
+			if(TJS_stricmp(str, TJS_W("yes")) == 0 ||
+				TJS_stricmp(str, TJS_W("on")) == 0 ||
+				TJS_stricmp(str, TJS_W("true")) == 0)
+			{
+				return 1;
+			}
 
+			if(TJS_stricmp(str, TJS_W("no")) == 0 ||
+				TJS_stricmp(str, TJS_W("off")) == 0 ||
+				TJS_stricmp(str, TJS_W("false")) == 0)
+			{
+				return 0;
+			}
+		}
 
-
-
+		try
+		{
+			return value.AsInteger();
+		}
+		catch(...)
+		{
+			return defaultValue;
+		}
+	}
+	return defaultValue;
+}

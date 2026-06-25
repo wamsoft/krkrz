@@ -14,6 +14,7 @@
 #include "tjsInterCodeGen.h"
 #include "tjsConstArrayData.h"
 #include "tjs.h"
+#include "AllocTagScope.h"
 
 namespace TJS
 {
@@ -374,6 +375,9 @@ void tTJSScriptBlock::SetText(tTJSVariant *result, const tjs_char *text,
 // for Bytecode
 void tTJSScriptBlock::ExecuteTopLevel( tTJSVariant *result, iTJSDispatch2 * context )
 {
+	// TJS 実行中の operator new / TJS_malloc を TJS2 tag に振り分け。
+	// thread-local stack なので nested ExecuteTopLevel もそのまま動く。
+	TVPAllocTagScope _alloc_tag_scope("TJS2");
 	try {
 #ifdef TJS_DEBUG_DISASM
 		std::list<tTJSInterCodeContext *>::iterator i = InterCodeContextList.begin();

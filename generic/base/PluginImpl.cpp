@@ -209,7 +209,7 @@ struct tTVPPlugin
 	bool Uninit();
 };
 
-static inline tjs_string ChangeFileExt( const tjs_string& path, const tjs_string& ext ) 
+static inline tjs_string ChangeFileExt( const tjs_string& path, const tjs_string& ext )
 {
 	tjs_string::size_type pos = path.find_last_of( TJS_W('.') );
 	if( pos != tjs_string::npos ) {
@@ -219,24 +219,11 @@ static inline tjs_string ChangeFileExt( const tjs_string& path, const tjs_string
 	}
 };
 
-//---------------------------------------------------------------------------
-tTVPPlugin::tTVPPlugin(const ttstr & name) : Name(name), Instance(nullptr),
-	Holder(nullptr), V2Link(nullptr), V2Unlink(nullptr)
+// プラグイン名をプラットフォーム固有の共有ライブラリ名に変換する。
+// 例: "Foo.dll" → Windows:そのまま / macOS:"libFoo.dylib" / Linux等:"libFoo.so"
+//     "Foo"     → "libFoo" (拡張子は付与しない、既存動作互換)
+static ttstr TVPResolvePluginSoName(const ttstr & name)
 {
-	// First, try to find a statically registered plugin
-	const iTVPStaticPlugin* staticPlugin = TVPFindStaticPlugin(name);
-	if(staticPlugin) {
-		V2Link = staticPlugin->link;
-		V2Unlink = staticPlugin->unlink;
-		
-		// link
-		if(V2Link) {
-			V2Link(TVPGetFunctionExporter());
-		}
-		return;
-	}
-
-	// load shared library
 	ttstr soname = name;
 	tjs_int len = soname.GetLen();
 	bool isDll = len >= 4 &&
@@ -276,6 +263,28 @@ tTVPPlugin::tTVPPlugin(const ttstr & name) : Name(name), Instance(nullptr),
 			soname = TJS_W("lib") + soname;
 		}
 	}
+	return soname;
+}
+
+//---------------------------------------------------------------------------
+tTVPPlugin::tTVPPlugin(const ttstr & name) : Name(name), Instance(nullptr),
+	Holder(nullptr), V2Link(nullptr), V2Unlink(nullptr)
+{
+	// First, try to find a statically registered plugin
+	const iTVPStaticPlugin* staticPlugin = TVPFindStaticPlugin(name);
+	if(staticPlugin) {
+		V2Link = staticPlugin->link;
+		V2Unlink = staticPlugin->unlink;
+
+		// link
+		if(V2Link) {
+			V2Link(TVPGetFunctionExporter());
+		}
+		return;
+	}
+
+	// load shared library
+	ttstr soname = TVPResolvePluginSoName(name);
 
 	ttstr libpath;
 #ifdef ANDROID
@@ -431,6 +440,46 @@ bool TVPUnloadPlugin(const ttstr & name)
 	}
 	TVPThrowExceptionMessage(TVPNotLoadedPlugin, name);
 	return false;
+}
+//---------------------------------------------------------------------------
+bool TVPCanLoadPlugin(const ttstr & name)
+{
+	// 指定名のプラグインがロード可能かを判定する。例外は投げない。
+	// TVPLoadPlugin() と同じ解決順:
+	//   1) 既ロード判定
+	//   2) 静的登録プラグイン
+	//   3) プラットフォーム固有の soname へ変換した上で
+	//      - 非Android: アプリ/プラグインフォルダの実ファイル探索
+	//      - Android : 検索パスが無いので dlopen を試行 (成功時は即解放)
+
+	// 1) 既にロード済みなら true
+	for(tTVPPluginVectorType::iterator i = TVPPluginVector.Vector.begin();
+		i != TVPPluginVector.Vector.end(); i++)
+	{
+		if((*i)->Name == name) return true;
+	}
+
+	// 2) 静的プラグインに含まれていれば true
+	if(TVPFindStaticPlugin(name)) return true;
+
+	// 3) 共有ライブラリとして探索/試行
+	ttstr soname = TVPResolvePluginSoName(name);
+
+#ifdef ANDROID
+	// 検索パスが使えないので実際にロードを試み、成否のみ返す。
+	// 副作用 (.init_array 等) は走るがリンク (V2Link) はしない。
+	void* instance = Application->LoadLibrary(soname.c_str());
+	if(instance) {
+		Application->FreeLibrary(instance);
+		return true;
+	}
+	return false;
+#else
+	tTVPPluginHolder holder(soname);
+	const ttstr & local = holder.GetLocalName();
+	if(local.IsEmpty()) return false;
+	return TVPCheckExistentLocalFile(local);
+#endif
 }
 //---------------------------------------------------------------------------
 void TVPLoadStaticPluigins(void)
@@ -610,6 +659,21 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/unlink)
 }
 TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
 	/*func. name*/unlink)
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/canLink)
+{
+	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
+
+	ttstr name = *param[0];
+
+	bool res = TVPCanLoadPlugin(name);
+
+	if(result) *result = (tjs_int)res;
+
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
+	/*func. name*/canLink)
 //----------------------------------------------------------------------
 TJS_BEGIN_NATIVE_METHOD_DECL(getList)
 {

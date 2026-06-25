@@ -86,43 +86,57 @@ public:
 
 	TJS_METHOD_DEF(void, Release, ());
 
+	// 旧実装は冒頭で `if(LongString) TJSVS_free(LongString)` してから ref を
+	// 読みに行っていたため、ref が自分の LongString を指していると use-after-free。
+	// (tTJSString::operator=(const tjs_char *) → ResetString → SetString と入ってきて
+	//  rhs が自身の c_str() を指すような degenerate な代入で踏める)
+	// alloc/copy を先に走らせて、最後に旧 LongString を解放する形に変更。
+	// TJSVS_malloc が throw した場合も Length / LongString は変更されないので
+	// 強い例外安全性も同時に得られる。
 	TJS_METHOD_DEF(void, SetString, (const tjs_char *ref, tjs_int maxlen = -1))
 	{
-		if(LongString) TJSVS_free(LongString), LongString = NULL;
 		tjs_int len;
 		if(maxlen != -1)
 			len = TJSGetShorterStrLen(ref, maxlen);
 		else
 			len = (tjs_int)TJS_strlen(ref);
 
-		Length = len;
 		if(len>TJS_VS_SHORT_LEN)
 		{
-			LongString = TJSVS_malloc(len+1);
-			TJS_strcpy_maxlen(LongString, ref, len);
+			tjs_char *newLong = TJSVS_malloc(len+1);
+			TJS_strcpy_maxlen(newLong, ref, len);
+			if(LongString) TJSVS_free(LongString);
+			LongString = newLong;
 		}
 		else
 		{
+			// ShortString は struct 内領域なので LongString とは別物。
+			// ref が旧 LongString を指していてもまだ生きている状態でコピーできる。
 			TJS_strcpy_maxlen(ShortString, ref, len);
+			if(LongString) TJSVS_free(LongString), LongString = NULL;
 		}
+		Length = len;
 	}
 
 	TJS_METHOD_DEF(void, SetString, (const tjs_nchar *ref))
 	{
-		if(LongString) TJSVS_free(LongString), LongString = NULL;
+		// alloc-then-free 順に揃える (tjs_char 版と同じ理由 + 強い例外安全性)。
 		tjs_int len = (tjs_int)TJS_narrowtowidelen(ref);
 		if(len == -1) TJSThrowNarrowToWideConversionError();
 
-		Length = len;
 		if(len>TJS_VS_SHORT_LEN)
 		{
-			LongString = TJSVS_malloc(len+1);
-			LongString[TJS_narrowtowide(LongString, ref, len)] = 0;
+			tjs_char *newLong = TJSVS_malloc(len+1);
+			newLong[TJS_narrowtowide(newLong, ref, len)] = 0;
+			if(LongString) TJSVS_free(LongString);
+			LongString = newLong;
 		}
 		else
 		{
 			ShortString[TJS_narrowtowide(ShortString, ref, TJS_VS_SHORT_LEN)] = 0;
+			if(LongString) TJSVS_free(LongString), LongString = NULL;
 		}
+		Length = len;
 	}
 
 	TJS_METHOD_DEF(void, AllocBuffer, (tjs_uint len))
@@ -146,7 +160,10 @@ public:
 
 	TJS_METHOD_DEF(void, ResetString, (const tjs_char *ref))
 	{
-		if(LongString) TJSVS_free(LongString), LongString = NULL;
+		// 旧実装は明示的に LongString を free してから SetString を呼んでいた。
+		// SetString 側で旧 LongString の管理 (self-ref 安全 + alloc 失敗時の roll-back) が
+		// 完結するようになったため、ここでの先行 free は不要 (むしろ self-ref UAF の
+		// 原因だった)。実体的には SetString と同義になるが互換のため残置。
 		SetString(ref);
 	}
 

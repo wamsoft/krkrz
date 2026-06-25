@@ -11,7 +11,6 @@
 #include "tjsCommHead.h"
 
 #include <algorithm>
-#include "miniaudio.h"
 #include "WaveIntf.h"
 #include "EventIntf.h"
 #include "StorageIntf.h"
@@ -94,13 +93,6 @@ tjs_uint8 TVP_GUID_KSDATAFORMAT_SUBTYPE_IEEE_FLOAT[16] =
 #endif
 
 //---------------------------------------------------------------------------
-// PCM サンプルフォーマット変換: miniaudio の PCM conversion API に委譲する。
-// ma_pcm_s16_to_f32 / ma_pcm_f32_to_s16 は internal 実装が scalar 最適化ループで
-// auto-vectorize 前提。dither は不要 (非量子化 bit 増減ではなく単純 scale)。
-//---------------------------------------------------------------------------
-
-
-//---------------------------------------------------------------------------
 // Wave format convertion routines
 //---------------------------------------------------------------------------
 static void TVPConvertFloatPCMTo16bits(tjs_int16 *output, const float *input,
@@ -114,7 +106,16 @@ static void TVPConvertFloatPCMTo16bits(tjs_int16 *output, const float *input,
 	if(!downmix)
 	{
 		tjs_int total = channels * count;
-		ma_pcm_f32_to_s16(output, input, (ma_uint64)total, ma_dither_mode_none);
+		const float *s = input;
+		tjs_int16 *d = output;
+		for(tjs_int i = 0; i < total; ++i)
+		{
+			float v = s[i] * 32767.0f;
+			d[i] =
+				v >  32767.0f ?  (tjs_int16) 32767 :
+				v < -32768.0f ?  (tjs_int16)-32768 :
+				v < 0 ? (tjs_int16)(v - 0.5f) : (tjs_int16)(v + 0.5f);
+		}
 	}
 	else
 	{
@@ -348,7 +349,8 @@ static void TVPConvertIntegerPCMToFloat(float *output, const void *input,
 
 		if(validbits == 16)
 		{
-			ma_pcm_s16_to_f32(output, p, (ma_uint64)total, ma_dither_mode_none);
+			for(tjs_int i = 0; i < total; ++i)
+				output[i] = p[i] * (1.0f / 32768.0f);
 		}
 		else
 		{

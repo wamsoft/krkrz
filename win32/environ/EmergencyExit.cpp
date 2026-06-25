@@ -42,6 +42,7 @@ class tTVPEmergencyExitThread : public tTVPThread
 
 public:
 	tTVPEmergencyExitThread()
+		: tTVPThread("EmergencyExitThread")
 	{
 #ifdef TJS_64BIT_OS
 		// get pam

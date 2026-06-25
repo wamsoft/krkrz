@@ -86,6 +86,7 @@ class tTVPCPUCheckThread : public tTVPThread
 	bool Succeeded;
 public:
 	tTVPCPUCheckThread(DWORD tam)
+		: tTVPThread("CPUCheckThread")
 	{
 		// set thread affinity mask
 		Succeeded = true;

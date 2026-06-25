@@ -541,7 +541,9 @@ void TVPSaveAsPNG(void* formatdata, iTJSBinaryStream* dst, const tTVPBaseBitmap*
 	iTJSBinaryStream *stream = dst;
 
 	try {
-		TVPClearGraphicCache();
+		// 旧実装は冒頭で TVPClearGraphicCache() を呼んでいた (decode 層全消し)。
+		// 過剰なので tTVPGraphicHandlerType::Save 側で対象 path の entry のみ
+		// 駆逐する形に変更済み。
 
 		png_structp png_ptr = png_create_write_struct(PNG_LIBPNG_VER_STRING,NULL,NULL,NULL);
 		if( !png_ptr ) {

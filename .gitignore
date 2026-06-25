@@ -29,8 +29,16 @@ common/msg/text/*.h
 common/msg/text/*.cpp
 common/msg/text/*.rc
 savedata
+# data ディレクトリは (どの階層のものも) ローカルのテスト資材として無視する。
+# ただしルート data/ui 配下のサンプル UI 定義 (Elements ダイアログ / メニュー
+# の JSON) だけはリポジトリ管理する。 親を除外したまま子は再包含できないので、
+# ルート data だけ「ディレクトリは包含・中身は除外・ui だけ再包含」にする。
+# (script/**/data 等ネストした data は broad ルールで引き続き無視される)
 data
-krkrz_libplugin
+!/data/
+/data/*
+!/data/ui/
 vcpkg_installed
 .DS_store
 .krkrz_history
+testdata_viewport/wallpaper_test.png

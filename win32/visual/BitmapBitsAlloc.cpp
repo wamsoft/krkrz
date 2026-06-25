@@ -8,31 +8,68 @@
 
 #include "Application.h"
 #include "BitmapBitsAlloc.h"
+#include "MemoryAllocatorStats.h"
+
+// 各 BitmapBits 系 allocator は L1 軽量カウンタ + L2 サイズヒストグラムを
+// Sized mode で追跡。size は free 時に iTVPMemoryAllocator::free(void*, size_t)
+// 経由で tTVPBitmapBitsAlloc から渡される (record->size + ヘッダ込みの allocbytes)。
+// 旧 free(void*) も残しているが、こちらは size 不明のため current_used が
+// 減らない (= caller 側で必ず size 付きを使うこと)。
 
 class BasicAllocator : public iTVPMemoryAllocator
 {
+	tTVPMemoryAllocatorStatsCollector stats_{
+		tTVPMemoryAllocatorStatsCollector::Mode::Sized};
 public:
 	BasicAllocator() {
 		TVPAddLog( TJS_W("(info) Use malloc for Bitmap") );
 	}
-	void* allocate( size_t size ) { return malloc(size); }	// Windowsでは ::HeapAlloc( _get_heap_handle(), 0, size ); と同じはず
-	void free( void* mem ) { ::free( mem ); }
+	void* allocate( size_t size ) override { return allocate(size, TVPAllocTag::BitmapBits); }
+	void* allocate( size_t size, TVPAllocTag tag ) override {
+		void* p = malloc(size);
+		if (p) stats_.recordAlloc(size, tag);
+		return p;
+	}	// Windowsでは ::HeapAlloc( _get_heap_handle(), 0, size ); と同じはず
+	void free( void* mem ) override { stats_.recordFree(0); ::free( mem ); }
+	void free( void* mem, size_t size ) override {
+		stats_.recordFree(size, TVPAllocTag::BitmapBits);
+		::free( mem );
+	}
+	Stats getStats() const override { return stats_.snapshot(); }
+	TagStats getTagStats(TVPAllocTag tag) const override { return stats_.tagSnapshot(tag); }
+	void resetPeak() override { stats_.resetPeak(); }
 };
 #ifdef WIN32
 class GlobalAllocAllocator : public iTVPMemoryAllocator
 {
+	tTVPMemoryAllocatorStatsCollector stats_{
+		tTVPMemoryAllocatorStatsCollector::Mode::Sized};
 public:
 	GlobalAllocAllocator() {
 		TVPAddLog( TJS_W("(info) Use GlobalAlloc allocater for Bitmap") );
 	}
-	void* allocate( size_t size ) { return GlobalAlloc(GMEM_FIXED,size); }
-	void free( void* mem ) { GlobalFree((HGLOBAL)mem ); }
+	void* allocate( size_t size ) override { return allocate(size, TVPAllocTag::BitmapBits); }
+	void* allocate( size_t size, TVPAllocTag tag ) override {
+		void* p = GlobalAlloc(GMEM_FIXED,size);
+		if (p) stats_.recordAlloc(size, tag);
+		return p;
+	}
+	void free( void* mem ) override { stats_.recordFree(0); GlobalFree((HGLOBAL)mem ); }
+	void free( void* mem, size_t size ) override {
+		stats_.recordFree(size, TVPAllocTag::BitmapBits);
+		GlobalFree((HGLOBAL)mem );
+	}
+	Stats getStats() const override { return stats_.snapshot(); }
+	TagStats getTagStats(TVPAllocTag tag) const override { return stats_.tagSnapshot(tag); }
+	void resetPeak() override { stats_.resetPeak(); }
 };
 class HeapAllocAllocator : public iTVPMemoryAllocator
 {
 	static const DWORD HeapFlag = 0;
 
 	HANDLE HeapHandle;
+	tTVPMemoryAllocatorStatsCollector stats_{
+		tTVPMemoryAllocatorStatsCollector::Mode::Sized};
 public:
 	HeapAllocAllocator() : HeapHandle(NULL) {
 		tTJSVariant val;
@@ -64,7 +101,7 @@ public:
 				if( HeapHandle == NULL ) {
 					size /= 2;
 				}
-			} 
+			}
 		}
 
 		if( HeapHandle ) {
@@ -77,39 +114,64 @@ public:
 		if( HeapHandle ) ::HeapDestroy(HeapHandle);
 		HeapHandle = NULL;
 	}
-	void* allocate( size_t size ) {
+	void* allocate( size_t size ) override { return allocate(size, TVPAllocTag::BitmapBits); }
+	void* allocate( size_t size, TVPAllocTag tag ) override {
 		if( HeapHandle == NULL ) return NULL;
 		void* result = ::HeapAlloc( HeapHandle, HeapFlag, size );
 		if( result == NULL ) {
 			::HeapCompact( HeapHandle, HeapFlag );	// try compact
 			result = ::HeapAlloc( HeapHandle, HeapFlag, size ); // retry
 		}
+		if (result) stats_.recordAlloc(size, tag);
 		return result;
 	}
-	void free( void* mem ) {
+	void free( void* mem ) override {
 		if( HeapHandle ) {
 			BOOL ret = ::HeapFree( HeapHandle, HeapFlag, mem );
 			::HeapCompact( HeapHandle, HeapFlag );
 		}
+		stats_.recordFree(0);
 	}
+	void free( void* mem, size_t size ) override {
+		if( HeapHandle ) {
+			BOOL ret = ::HeapFree( HeapHandle, HeapFlag, mem );
+			::HeapCompact( HeapHandle, HeapFlag );
+		}
+		stats_.recordFree(size, TVPAllocTag::BitmapBits);
+	}
+	Stats getStats() const override { return stats_.snapshot(); }
+	TagStats getTagStats(TVPAllocTag tag) const override { return stats_.tagSnapshot(tag); }
+	void resetPeak() override { stats_.resetPeak(); }
 };
 class ProcessHeapAllocAllocator : public iTVPMemoryAllocator
 {
+	tTVPMemoryAllocatorStatsCollector stats_{
+		tTVPMemoryAllocatorStatsCollector::Mode::Sized};
 public:
 	ProcessHeapAllocAllocator() {
 		TVPAddLog( TJS_W("(info) Use Process HeadAlloc allocater for Bitmap") );
 	}
-	void* allocate( size_t size ) {
+	void* allocate( size_t size ) override { return allocate(size, TVPAllocTag::BitmapBits); }
+	void* allocate( size_t size, TVPAllocTag tag ) override {
 		void* result = ::HeapAlloc( ::GetProcessHeap(), 0, size );
 		if( result == NULL ) {
 			::HeapCompact( ::GetProcessHeap(), 0 );	// try compact
 			result = ::HeapAlloc( ::GetProcessHeap(), 0, size ); // retry
 		}
+		if (result) stats_.recordAlloc(size, tag);
 		return result;
 	}
-	void free( void* mem ) {
+	void free( void* mem ) override {
+		stats_.recordFree(0);
 		::HeapFree(::GetProcessHeap(), 0, mem);
 	}
+	void free( void* mem, size_t size ) override {
+		stats_.recordFree(size, TVPAllocTag::BitmapBits);
+		::HeapFree(::GetProcessHeap(), 0, mem);
+	}
+	Stats getStats() const override { return stats_.snapshot(); }
+	TagStats getTagStats(TVPAllocTag tag) const override { return stats_.tagSnapshot(tag); }
+	void resetPeak() override { stats_.resetPeak(); }
 };
 #endif
 
@@ -159,6 +221,13 @@ void tTVPBitmapBitsAlloc::FreeAllocator() {
 static tTVPAtExit
 	TVPUninitMessageLoad(TVP_ATEXIT_PRI_CLEANUP, tTVPBitmapBitsAlloc::FreeAllocator);
 
+// T4: アプリ終了直前 (CLEANUP より僅かに前) で BitmapAllocator のリーク推定を出す。
+static void TVPDumpBitmapAllocatorLeaks() {
+	TVPDumpAllocatorLeakReport("BitmapAllocator", tTVPBitmapBitsAlloc::GetAllocator());
+}
+static tTVPAtExit
+	TVPDumpBitmapAllocatorLeaksAtExit(TVP_ATEXIT_PRI_CLEANUP - 1, TVPDumpBitmapAllocatorLeaks);
+
 extern void TVPHeapDump();
 void* tTVPBitmapBitsAlloc::Alloc( tjs_uint size, tjs_uint width, tjs_uint height ) {
 	if(size == 0) return NULL;
@@ -168,7 +237,7 @@ void* tTVPBitmapBitsAlloc::Alloc( tjs_uint size, tjs_uint width, tjs_uint height
 	tjs_uint8 * ptrorg, * ptr;
 	tjs_uint allocbytes = 16 + size + sizeof(tTVPLayerBitmapMemoryRecord) + sizeof(tjs_uint32)*2;
 
-	ptr = ptrorg = (tjs_uint8*)Allocator->allocate(allocbytes);
+	ptr = ptrorg = (tjs_uint8*)Allocator->allocate(allocbytes, TVPAllocTag::BitmapBits);
 	if(!ptr) {
 		// Do GC
 		TVPDeliverCompactEvent(TVP_COMPACT_LEVEL_MAX);
@@ -183,7 +252,7 @@ void* tTVPBitmapBitsAlloc::Alloc( tjs_uint size, tjs_uint width, tjs_uint height
 			::HeapCompact( hCrtHeap, 0 );
 		}
 #endif
-		ptr = ptrorg = (tjs_uint8*)Allocator->allocate(allocbytes);
+		ptr = ptrorg = (tjs_uint8*)Allocator->allocate(allocbytes, TVPAllocTag::BitmapBits);
 		if(!ptr) {
 			TVPHeapDump();
 			TVPThrowExceptionMessage(TVPCannotAllocateBitmapBits,
@@ -195,6 +264,13 @@ void* tTVPBitmapBitsAlloc::Alloc( tjs_uint size, tjs_uint width, tjs_uint height
 	ptr += 16 + sizeof(tTVPLayerBitmapMemoryRecord);
 	*reinterpret_cast<tTJSPointerSizedInteger*>(&ptr) >>= 4;
 	*reinterpret_cast<tTJSPointerSizedInteger*>(&ptr) <<= 4;
+
+	// Bitmap の pitch padding (32bpp は bitmap_width = ceil(width,4) に切り上げ
+	// られるため右端に最大 3px の不可視列がある) は decoder (TLG 等) が書き込ま
+	// ない。allocator が再利用ブロックを返した場合、その padding 列に前回画像の
+	// 色が残り、bilinear/affine サンプリング時にエッジゴミとして露見する。
+	// これを防ぐため確保時点で使用領域全体を zero-fill する。
+	memset(ptr, 0, size);
 
 	tTVPLayerBitmapMemoryRecord * record =
 		(tTVPLayerBitmapMemoryRecord*)
@@ -235,7 +311,9 @@ void tTVPBitmapBitsAlloc::Free( void* ptr ) {
 		if(~(*(tjs_uint32*)(bptr + record->size      )) != record->sentinel_backup2)
 			TVPThrowExceptionMessage( TVPLayerBitmapBufferOverrunDetectedCheckYourDrawingCode );
 
-		Allocator->free( record->alloc_ptr );
+		// allocate 時の allocbytes と一致させる (Sized mode 集計用)。
+		size_t allocbytes = 16 + record->size + sizeof(tTVPLayerBitmapMemoryRecord) + sizeof(tjs_uint32)*2;
+		Allocator->free( record->alloc_ptr, allocbytes );
 	}
 }
 

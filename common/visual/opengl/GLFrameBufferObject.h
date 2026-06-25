@@ -18,10 +18,18 @@ protected:
 	// format は GL_RGBA でないと問題が出る GPU があるようなのでそれのみ。
 
 public:
-	GLFrameBufferObject() : texture_id_(0), framebuffer_id_(0), renderbuffer_id_(0), width_(0), height_(0) {}
+	GLFrameBufferObject() : texture_id_(0), glformat_(0), framebuffer_id_(0), renderbuffer_id_(0), pbo_(0), width_(0), height_(0) {}
 	~GLFrameBufferObject() {
 		destory();
 	}
+
+	// GL ハンドル (texture / framebuffer / renderbuffer / pbo) を raw GLuint で
+	// 握っているため、誤コピーすると同じハンドルを二度 glDelete* してしまう。
+	// 明示的に禁止する。
+	GLFrameBufferObject( const GLFrameBufferObject& ) = delete;
+	GLFrameBufferObject& operator=( const GLFrameBufferObject& ) = delete;
+	GLFrameBufferObject( GLFrameBufferObject&& ) = delete;
+	GLFrameBufferObject& operator=( GLFrameBufferObject&& ) = delete;
 	bool create( GLuint w, GLuint h);
 	void destory() {
 		if( texture_id_ != 0 ) {

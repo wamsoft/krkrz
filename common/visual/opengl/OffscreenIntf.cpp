@@ -58,13 +58,21 @@ tjs_int64 tTJSNI_Offscreen::GetVBOHandle() const {
 }
 //---------------------------------------------------------------------------
 void tTJSNI_Offscreen::ExchangeTexture( tTJSNI_Texture* texture ) {
+	// 制約: 寸法・フォーマットが一致していることを要求する。
+	// width/height/format/glformat は両側で同値なので handle のみ swap で済む。
 	if( FrameBuffer.width() == texture->GetMemoryWidth() && FrameBuffer.height() == texture->GetMemoryHeight() && texture->format() == tTVPTextureColorFormat::RGBA) {
-		GLuint oldTex = FrameBuffer.textureId();
-		bool result = FrameBuffer.exchangeTexture( (GLuint)texture->GetNativeHandle() );
+		GLuint oldFboTex = FrameBuffer.textureId();
+		GLuint newFboTex = (GLuint)texture->GetNativeHandle();
+		bool result = FrameBuffer.exchangeTexture( newFboTex );
 		if( !result ) {
 			TVPThrowExceptionMessage( TJS_W( "Cannot exchange texture." ) );
 		} else {
-			texture->Texture.texture_id_ = oldTex;
+			// 所有権の交換:
+			//   旧 FBO 側 attachment (oldFboTex) → Texture が以後管理
+			//   旧 Texture 側 handle (newFboTex) → FBO が以後管理
+			// どちらも将来の destory() で各々 glDeleteTextures される。
+			// pbo は両側そのまま据え置き (upload 用途で texture-independent)。
+			texture->GetTexture()->AdoptTextureId( oldFboTex );
 		}
 	} else {
 		TVPThrowExceptionMessage( TJS_W( "Incompatible texture." ) );

@@ -26,7 +26,16 @@
 
 #include "Application.h"
 #include "tjsDictionary.h"
+#include "BitmapIntf.h"          // TVPCreateBitmapObject (文字列指定時の壁紙生成)
 
+
+//---------------------------------------------------------------------------
+void TVPPostWindowMessage(void *window, tjs_uint32 message, tjs_uint64 wparam, tjs_uint64 lparam)
+{
+	if( Application ) {
+		Application->SendMessage(window, (tjs_int)message, (tjs_int64)wparam, (tjs_int64)lparam);
+	}
+}
 
 //---------------------------------------------------------------------------
 // Mouse Cursor management
@@ -110,6 +119,8 @@ void tTJSNI_Window::ResetDrawDevice()
 		DrawDevice->SetTargetWindow(0, IsMainWindow());
 		UpdateDestRect = true;
 		SetWindowHandleToDrawDevice = true;
+		// 新しい DrawDevice へビューポート余白(色/壁紙)を再 push させる。
+		if (Form) Form->SetViewportRenderDirty();
 	}
 }
 
@@ -119,12 +130,25 @@ void tTJSNI_Window::UpdateContent()
 	if (Form) {
 		if (SetWindowHandleToDrawDevice && DrawDevice) {
 			DrawDevice->SetTargetWindow((HWND)Form->NativeWindowHandle(), IsMainWindow());
+			UpdateWaitVSync();
 			SetWindowHandleToDrawDevice = false;
 		}
 		if (UpdateDestRect) {
 			tTVPRect destRect = Form->CalcDestRect(LayerWidth, LayerHeight);
 			SetDestRectangle(destRect);
 			UpdateDestRect = false;
+		}
+		// ビューポート余白 (背景色 + 壁紙) を DrawDevice へ反映 (変更時のみ)。
+		if (DrawDevice && Form->IsViewportRenderDirty()) {
+			DrawDevice->SetViewportBackgroundColor(Form->GetViewportBgColor());
+			const tTJSVariant &wp = Form->GetViewportWallpaper();
+			if (wp.Type() == tvtObject && wp.AsObjectNoAddRef()) {
+				DrawDevice->SetViewportWallpaper(wp, Form->GetViewportWallpaperFit(),
+					Form->GetViewportWpAlignX(), Form->GetViewportWpAlignY());
+			} else {
+				DrawDevice->ClearViewportWallpaper();
+			}
+			Form->ClearViewportRenderDirty();
 		}
 		if ( DrawDevice ) {
 			// is called from event dispatcher
@@ -384,12 +408,18 @@ void TJS_INTF_METHOD tTJSNI_Window::ResetImeMode()
 	if(Form) Form->ResetImeMode();
 }
 //---------------------------------------------------------------------------
-/*void tTJSNI_Window::RegisterWindowMessageReceiver(tTVPWMRRegMode mode,
+void tTJSNI_Window::RegisterWindowMessageReceiver(tTVPWMRRegMode mode,
 		void * proc, const void *userdata)
 {
 	if(!Form) return;
 	Form->RegisterWindowMessageReceiver(mode, proc, userdata);
-}*/
+}
+//---------------------------------------------------------------------------
+void *tTJSNI_Window::GetNativeHandle()
+{
+	if(!Form) return nullptr;
+	return Form->NativeWindowHandle();
+}
 //---------------------------------------------------------------------------
 void tTJSNI_Window::Close()
 {
@@ -626,6 +656,139 @@ tjs_int tTJSNI_Window::GetInnerHeight() const
 void tTJSNI_Window::SetInnerSize(tjs_int w, tjs_int h)
 {
 	if(Form) Form->SetInnerSize(w, h);
+}
+//---------------------------------------------------------------------------
+// ビューポート (ゲーム画面の表示画角制御)
+//---------------------------------------------------------------------------
+void tTJSNI_Window::SetViewportFit(tjs_int fit)
+{
+	if(!Form) return;
+	tTVPViewportConfig c = Form->GetViewportConfig();
+	c.fit = (tTVPViewportFit)fit;
+	Form->SetViewportConfig(c);
+}
+tjs_int tTJSNI_Window::GetViewportFit() const
+{
+	if(!Form) return vfContain;
+	return (tjs_int)Form->GetViewportConfig().fit;
+}
+void tTJSNI_Window::SetViewportZoom(double scale)
+{
+	if(!Form) return;
+	tTVPViewportConfig c = Form->GetViewportConfig();
+	c.customScale = scale;
+	Form->SetViewportConfig(c);
+}
+double tTJSNI_Window::GetViewportZoom() const
+{
+	if(!Form) return 1.0;
+	return Form->GetViewportConfig().customScale;
+}
+void tTJSNI_Window::SetViewportAlignX(double v)
+{
+	if(!Form) return;
+	tTVPViewportConfig c = Form->GetViewportConfig();
+	c.alignX = v;
+	Form->SetViewportConfig(c);
+}
+double tTJSNI_Window::GetViewportAlignX() const
+{
+	if(!Form) return 0.5;
+	return Form->GetViewportConfig().alignX;
+}
+void tTJSNI_Window::SetViewportAlignY(double v)
+{
+	if(!Form) return;
+	tTVPViewportConfig c = Form->GetViewportConfig();
+	c.alignY = v;
+	Form->SetViewportConfig(c);
+}
+double tTJSNI_Window::GetViewportAlignY() const
+{
+	if(!Form) return 0.5;
+	return Form->GetViewportConfig().alignY;
+}
+void tTJSNI_Window::SetViewportOffsetX(tjs_int v)
+{
+	if(!Form) return;
+	tTVPViewportConfig c = Form->GetViewportConfig();
+	c.offsetX = v;
+	Form->SetViewportConfig(c);
+}
+tjs_int tTJSNI_Window::GetViewportOffsetX() const
+{
+	if(!Form) return 0;
+	return Form->GetViewportConfig().offsetX;
+}
+void tTJSNI_Window::SetViewportOffsetY(tjs_int v)
+{
+	if(!Form) return;
+	tTVPViewportConfig c = Form->GetViewportConfig();
+	c.offsetY = v;
+	Form->SetViewportConfig(c);
+}
+tjs_int tTJSNI_Window::GetViewportOffsetY() const
+{
+	if(!Form) return 0;
+	return Form->GetViewportConfig().offsetY;
+}
+void tTJSNI_Window::SetViewportBgColor(tjs_uint32 color)
+{
+	if(Form) Form->SetViewportBgColor(color);
+}
+tjs_uint32 tTJSNI_Window::GetViewportBgColor() const
+{
+	if(!Form) return 0xff000000;
+	return Form->GetViewportBgColor();
+}
+void tTJSNI_Window::SetViewportWallpaper(const tTJSVariant &image, tjs_int fit,
+	double alignX, double alignY)
+{
+	if(!Form) return;
+
+	if(image.Type() == tvtString) {
+		// 文字列 (storage) 指定: Bitmap オブジェクトを生成してロードし、その
+		// オブジェクトを Variant として保持する (参照保持でイメージは維持される)。
+		ttstr storage(image);
+		if(storage.IsEmpty()) {
+			Form->SetViewportWallpaper(tTJSVariant(), (tTVPViewportFit)fit, alignX, alignY);
+			return;
+		}
+		iTJSDispatch2 *bmp = TVPCreateBitmapObject();
+		try {
+			tTJSVariant nameval(storage);
+			tTJSVariant *args[1] = { &nameval };
+			bmp->FuncCall(0, TJS_W("load"), nullptr, nullptr, 1, args, bmp);
+			tTJSVariant bmpvar(bmp, bmp); // AddRef される
+			Form->SetViewportWallpaper(bmpvar, (tTVPViewportFit)fit, alignX, alignY);
+		} catch(...) {
+			bmp->Release();
+			throw;
+		}
+		bmp->Release();
+		return;
+	}
+
+	if(image.Type() == tvtObject) {
+		iTJSDispatch2 *obj = image.AsObjectNoAddRef();
+		if(obj) {
+			// Layer / Bitmap のみ許可。いずれもDrawDevice 側で imageWidth 等の
+			// プロパティから画像イメージを取得する。
+			bool isLayer  = obj->IsInstanceOf(0, nullptr, nullptr, TJS_W("Layer"),  obj) == TJS_S_TRUE;
+			bool isBitmap = obj->IsInstanceOf(0, nullptr, nullptr, TJS_W("Bitmap"), obj) == TJS_S_TRUE;
+			if(!isLayer && !isBitmap)
+				TVPThrowExceptionMessage(TJS_W("setViewportWallpaper: wallpaper must be a string, Layer or Bitmap"));
+			Form->SetViewportWallpaper(image, (tTVPViewportFit)fit, alignX, alignY);
+			return;
+		}
+	}
+
+	// void / null / 非対応 → クリア。
+	Form->SetViewportWallpaper(tTJSVariant(), (tTVPViewportFit)fit, alignX, alignY);
+}
+void tTJSNI_Window::ClearViewportWallpaper()
+{
+	if(Form) Form->SetViewportWallpaper(tTJSVariant(), vfCover, 0.5, 0.5);
 }
 //---------------------------------------------------------------------------
 void tTJSNI_Window::SetBorderStyle(tTVPBorderStyle st)
@@ -990,6 +1153,32 @@ tTJSNativeClass * TVPCreateNativeClass_Window()
 	static tjs_uint32 TJS_NCM_CLASSID;
 	TJS_NCM_CLASSID = tTJSNC_Window::ClassID;
 //---------------------------------------------------------------------------
+TJS_BEGIN_NATIVE_METHOD_DECL(registerMessageReceiver)
+{
+	TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Window);
+	if(numparams < 3) return TJS_E_BADPARAMCOUNT;
+
+	_this->RegisterWindowMessageReceiver((tTVPWMRRegMode)((tjs_int)*param[0]),
+		reinterpret_cast<void *>((tjs_intptr_t)(tjs_int64)*param[1]),
+		reinterpret_cast<const void *>((tjs_intptr_t)(tjs_int64)*param[2]));
+
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_METHOD_DECL_OUTER(cls, registerMessageReceiver)
+//---------------------------------------------------------------------------
+TJS_BEGIN_NATIVE_METHOD_DECL(postMessage)
+{
+	TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Window);
+	if(numparams < 3) return TJS_E_BADPARAMCOUNT;
+
+	TVPPostWindowMessage(_this->GetNativeHandle(),
+		(tjs_uint32)(tjs_int64)*param[0],
+		(tjs_uint64)(tjs_int64)*param[1],
+		(tjs_uint64)(tjs_int64)*param[2]);
+
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_METHOD_DECL_OUTER(cls, postMessage)
 //---------------------------------------------------------------------------
 TJS_BEGIN_NATIVE_METHOD_DECL(getTouchPoint)
 {
@@ -1098,6 +1287,20 @@ TJS_BEGIN_NATIVE_METHOD_DECL(resetMouseVelocity)
 	return TJS_S_OK;
 }
 TJS_END_NATIVE_METHOD_DECL_OUTER(cls, resetMouseVelocity)
+//---------------------------------------------------------------------------
+TJS_BEGIN_NATIVE_PROP_DECL(HWND)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Window);
+		*result = (tTVInteger)(tjs_intptr_t)_this->GetNativeHandle();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_DENY_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_PROP_DECL_OUTER(cls, HWND)
 //---------------------------------------------------------------------------
 TJS_BEGIN_NATIVE_PROP_DECL(drawDevice)
 {

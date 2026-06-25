@@ -3,6 +3,7 @@
 #include "CharacterSet.h"
 #include "MsgIntf.h"
 #include "LogIntf.h"
+#include "DebugIntf.h"
 #include "VideoOvlIntf.h"
 
 #if !defined(_WIN32)
@@ -11,6 +12,10 @@
 
 #include "app.h"
 #include "OpenGLContext.h"
+
+#ifdef KRKRZ_HAS_ELEMENTS
+#include "elements/ElementsDialogManager.h"
+#endif
 
 #include <stdio.h>
 #include <string>
@@ -206,6 +211,17 @@ SDL3WindowForm::AppEvent(const SDL_Event& event)
 	switch (event.type) {
 		case SDL_EVENT_KEY_DOWN:
 		case SDL_EVENT_KEY_UP: {
+#ifdef KRKRZ_HAS_ELEMENTS
+			// F12 で Elements テストダイアログをトグル (Phase 3 MVP デバッグ用)。
+			// KEY_DOWN でトグル、KEY_UP は KEY_DOWN とペアで Layer に流れない
+			// よう同様に消費する。
+			if (event.key.key == SDLK_F12) {
+				if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat) {
+					TVPShowElementsTestDialog();
+				}
+				return true;
+			}
+#endif
 			int message = (event.type == SDL_EVENT_KEY_UP) ? AM_KEY_UP : AM_KEY_DOWN;
 			int key = TVPTransSDLKeyToVirtualKey(event.key.key);
 			int shift = 0;
@@ -225,6 +241,17 @@ SDL3WindowForm::AppEvent(const SDL_Event& event)
 			SendMessage(message, key, shift);
 			break;
 		}
+#ifdef KRKRZ_HAS_ELEMENTS
+		case SDL_EVENT_TEXT_INPUT:
+			// SDL3 ビルドは通常テキスト入力イベントを扱わないが、 Elements
+			// modal dialog 表示中だけは IME / 物理キー由来のテキストを直接
+			// dialog に流す (DialogManager 経由)。
+			if (tTVPElementsDialogManager::Instance().IsModalActive()) {
+				tTVPElementsDialogManager::Instance().ForwardText(event.text.text);
+				return true;
+			}
+			break;
+#endif
 		case SDL_EVENT_MOUSE_BUTTON_DOWN:
 		case SDL_EVENT_MOUSE_BUTTON_UP: {
 			static int buttonmap[] = {mbLeft, mbMiddle, mbRight, mbX1, mbX2};
@@ -275,7 +302,18 @@ SDL3WindowForm::AppEvent(const SDL_Event& event)
 		}
 		case SDL_EVENT_WINDOW_CLOSE_REQUESTED: {
 			TVPLOG_DEBUG("Window close requested");
+#ifdef KRKRZ_HAS_ELEMENTS
+			// modal dialog 表示中は Close を呼ばない (=閉じる動作をキャンセル)。
+			// ユーザは dialog 側で意図的に close するまで Window を閉じられない。
+			// 非モーダルの常駐 UI だけならウィンドウは閉じてよい。
+			if (tTVPElementsDialogManager::Instance().HasModalInstance()) {
+				TVPAddLog(TJS_W("Window close cancelled: dialog modal active"));
+			} else {
+				Close();
+			}
+#else
 			Close();
+#endif
 			break;
 		}
 		case SDL_EVENT_WINDOW_RESIZED: {

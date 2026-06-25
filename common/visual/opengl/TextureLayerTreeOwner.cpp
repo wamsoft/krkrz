@@ -99,14 +99,16 @@ tTJSNI_TextureLayerTreeOwner::UpdateTexture(int x, int y, int w, int h, std::fun
 }
 
 
-tjs_int tTJSNI_TextureLayerTreeOwner::GetWidth() const 
+tjs_int tTJSNI_TextureLayerTreeOwner::GetWidth() const
 {
-	 return TextureInstance->GetWidth(); 
+	// プライマリレイヤが未確定 / DestroyTexture 後でも width プロパティから
+	// 呼ばれうるため、null deref を回避する。
+	return TextureInstance ? TextureInstance->GetWidth() : 0;
 }
 
-tjs_int tTJSNI_TextureLayerTreeOwner::GetHeight() const 
+tjs_int tTJSNI_TextureLayerTreeOwner::GetHeight() const
 {
-	 return TextureInstance->GetHeight(); 
+	return TextureInstance ? TextureInstance->GetHeight() : 0;
 }
 
 //----------------------------------------------------------------------

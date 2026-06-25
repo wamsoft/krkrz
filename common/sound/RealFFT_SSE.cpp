@@ -52,8 +52,9 @@ static inline void cft1st(int n, float * __restrict a, float * __restrict w)
 {
 	int		j, k1, k2;
 
-	__m128	XMM0, XMM1, XMM2, XMM3, XMM4, XMM5;
-//#pragma warning(disable : 592)
+	// _mm_loadl_pi の high 64bit 保持仕様により、未初期化使用が MSVC RTC で
+	// 落ちるので zero-init する (直後に上書きされるので perf 影響は無視可)。
+	__m128	XMM0{}, XMM1{}, XMM2{}, XMM3{}, XMM4{}, XMM5{};
 	XMM0	 = _mm_loadl_pi(XMM0, (__m64*)(a   ));
 	XMM2	 = _mm_loadl_pi(XMM2, (__m64*)(a+ 2));
 //#pragma warning(default : 592)
@@ -221,12 +222,12 @@ static inline void cftmdl(int n, int l, float * __restrict a, float * __restrict
 {
 	int j, j1, j2, j3, k, k1, k2, m, m2;
 	float wk1r, wk1i, wk2r, wk2i, wk3r, wk3i;
-	__m128	XMM6;
-	__m128	pwk1r, pwk1i, pwk2r, pwk2i, pwk3r, pwk3i;
+	__m128	XMM6{};
+	__m128	pwk1r{}, pwk1i{}, pwk2r{}, pwk2i{}, pwk3r{}, pwk3i{};
 
 	m = l << 2;
 	for (j = 0; j < l; j += 4) {
-		__m128	XMM0, XMM1, XMM2, XMM3, XMM4, XMM5;
+		__m128	XMM0{}, XMM1{}, XMM2{}, XMM3{}, XMM4{}, XMM5{};
 
 		j1 = j	+ l;
 		j2 = j1 + l;
@@ -268,7 +269,7 @@ static inline void cftmdl(int n, int l, float * __restrict a, float * __restrict
 	}
 	XMM6	 = _mm_set1_ps(w[2]);
 	for (j = m; j < l + m; j += 4) {
-		__m128	XMM0, XMM1, XMM2, XMM3, XMM4, XMM5;
+		__m128	XMM0{}, XMM1{}, XMM2{}, XMM3{}, XMM4{}, XMM5{};
 
 		j1 = j	+ l;
 		j2 = j1 + l;
@@ -349,7 +350,7 @@ static inline void cftmdl(int n, int l, float * __restrict a, float * __restrict
 		pwk2i	 = _mm_xor_ps(pwk2i, PM128(PCS_NRNR));
 		pwk3i	 = _mm_xor_ps(pwk3i, PM128(PCS_NRNR));
 		for (j = k; j < l + k; j += 4) {
-			__m128	XMM0, XMM1, XMM2, XMM3, XMM4, XMM5;
+			__m128	XMM0{}, XMM1{}, XMM2{}, XMM3{}, XMM4{}, XMM5{};
 
 			j1 = j	+ l;
 			j2 = j1 + l;
@@ -425,7 +426,7 @@ static inline void cftmdl(int n, int l, float * __restrict a, float * __restrict
 		pwk2r	 = _mm_xor_ps(pwk2r, PM128(PCS_NRNR));
 		pwk3i	 = _mm_xor_ps(pwk3i, PM128(PCS_NRNR));
 		for (j = k + m; j < l + (k + m); j += 4) {
-			__m128	XMM0, XMM1, XMM2, XMM3, XMM4, XMM5;
+			__m128	XMM0{}, XMM1{}, XMM2{}, XMM3{}, XMM4{}, XMM5{};
 
 			j1 = j	+ l;
 			j2 = j1 + l;
@@ -511,15 +512,18 @@ static inline void bitrv2(int n, int * __restrict ip, float * __restrict a)
 	if ((m << 3) == l) {
 		for (k = 0; k < m; k++) {
 			for (j = 0; j < k; j++) {
-				__m128	X0, Y0, X1, Y1;
+				// _mm_loadl_pi(X, ptr) は X の high 64bit を保持する仕様なので、
+				// X が未初期化だと MSVC Debug RTC が「未初期化変数の使用」で
+				// 落ちる。high 側は直後の loadh_pi で上書きされるため実害は
+				// ないが、_mm_setzero_ps で初期化して silence する。
+				__m128 X0 = _mm_setzero_ps(), Y0 = _mm_setzero_ps();
+				__m128 X1 = _mm_setzero_ps(), Y1 = _mm_setzero_ps();
 				j1 = 2 * j + ip[k];
 				k1 = 2 * k + ip[j];
-//#pragma warning(disable : 592)
 				X0	 = _mm_loadl_pi(X0, (__m64*)(a+j1	  ));
 				Y0	 = _mm_loadl_pi(Y0, (__m64*)(a+k1	  ));
 				X1	 = _mm_loadl_pi(X1, (__m64*)(a+j1+m2*2));
 				Y1	 = _mm_loadl_pi(Y1, (__m64*)(a+k1+m2  ));
-//#pragma warning(default : 592)
 				X0	 = _mm_loadh_pi(X0, (__m64*)(a+j1+m2  ));
 				Y0	 = _mm_loadh_pi(Y0, (__m64*)(a+k1+m2*2));
 				X1	 = _mm_loadh_pi(X1, (__m64*)(a+j1+m2*3));
@@ -547,13 +551,12 @@ static inline void bitrv2(int n, int * __restrict ip, float * __restrict a)
 	} else {
 		for (k = 1; k < m; k++) {
 			for (j = 0; j < k; j++) {
-				__m128	X,	Y;
+				// 上記と同じく _mm_loadl_pi の high 64bit 保持仕様への対応
+				__m128 X = _mm_setzero_ps(), Y = _mm_setzero_ps();
 				j1 = 2 * j + ip[k];
 				k1 = 2 * k + ip[j];
-//#pragma warning(disable : 592)
 				X	 = _mm_loadl_pi(X, (__m64*)(a+j1   ));
 				Y	 = _mm_loadl_pi(Y, (__m64*)(a+k1   ));
-//#pragma warning(default : 592)
 				X	 = _mm_loadh_pi(X, (__m64*)(a+j1+m2));
 				Y	 = _mm_loadh_pi(Y, (__m64*)(a+k1+m2));
 				_mm_storel_pi((__m64*)(a+k1	  ), X);
@@ -580,7 +583,7 @@ static inline void cftfsub(int n, float * __restrict a, float * __restrict w)
 	}
 	if ((l << 2) == n) {
 		for (j = 0; j < l; j += 4) {
-			__m128	XMM0, XMM1, XMM2, XMM3, XMM4, XMM5;
+			__m128	XMM0{}, XMM1{}, XMM2{}, XMM3{}, XMM4{}, XMM5{};
 
 			j1 = j	+ l;
 			j2 = j1 + l;
@@ -623,7 +626,7 @@ static inline void cftfsub(int n, float * __restrict a, float * __restrict w)
 	} else {
 		for (j = 0; j < l; j += 8)
 		{
-			__m128	XMM0, XMM1, XMM2, XMM3, XMM4, XMM5;
+			__m128	XMM0{}, XMM1{}, XMM2{}, XMM3{}, XMM4{}, XMM5{};
 			j1 = j + l;
 
 #if	defined(__GNUC__)
@@ -683,7 +686,7 @@ static inline void rftfsub(int n, float * __restrict a, int nc, float * __restri
 	kk	+= ks;
 	for(;j<m;j+=4)
 	{
-		__m128	XMM0, XMM1, XMM2, XMM3, XMM4, XMM5, XMM6;
+		__m128	XMM0{}, XMM1{}, XMM2{}, XMM3{}, XMM4{}, XMM5{}, XMM6{};
 		k	 = n - j;
 		XMM0	 = _mm_load_ss(PFV_0P5);
 		XMM1	 = _mm_load_ss(c+kk	  );

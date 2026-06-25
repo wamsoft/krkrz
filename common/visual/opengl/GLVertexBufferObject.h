@@ -12,11 +12,19 @@ class GLVertexBufferObject {
 	tjs_int size_;
 
 public:
-	GLVertexBufferObject() : vbo_id_(0), target_(0), usage_(GL_STATIC_DRAW) {}
+	GLVertexBufferObject() : vbo_id_(0), target_(0), usage_(GL_STATIC_DRAW), size_(0) {}
 
 	~GLVertexBufferObject() {
 		destory();
 	}
+
+	// GL ハンドルを raw GLuint で握っているため、誤コピー / ムーブで
+	// vbo_id_ が共有されると ~GLVertexBufferObject で同じ ID を二度
+	// glDeleteBuffers してしまう。明示的に禁止する。
+	GLVertexBufferObject( const GLVertexBufferObject& ) = delete;
+	GLVertexBufferObject& operator=( const GLVertexBufferObject& ) = delete;
+	GLVertexBufferObject( GLVertexBufferObject&& ) = delete;
+	GLVertexBufferObject& operator=( GLVertexBufferObject&& ) = delete;
 	void destory() {
 		if( vbo_id_ ) {
 			glDeleteBuffers( 1, &vbo_id_ );
@@ -71,12 +79,21 @@ public:
 		if( vbo_id_ ) {
 			glBindBuffer( target_, vbo_id_ );
 			result = glMapBufferRange( target_, 0, size_, GL_MAP_READ_BIT|GL_MAP_WRITE_BIT );
-			glBindBuffer( target_, 0 );
+			// マップ中もこの VBO を target_ にバインドしたままにする。
+			// 旧実装は即 unbind していたが、glUnmapBuffer は currently bound
+			// buffer を対象に動くため、unmap 時に再度 bind しないと
+			// GL_INVALID_OPERATION で unmap が効かず buffer がマップされたまま残る。
 		}
 		return result;
 	}
 	void unmapBuffer() {
-		glUnmapBuffer( target_ );
+		if( vbo_id_ ) {
+			// mapBuffer 後に他のコードが target_ を上書きしていても安全なように
+			// ここでもう一度 bind しなおしてから unmap する。
+			glBindBuffer( target_, vbo_id_ );
+			glUnmapBuffer( target_ );
+			glBindBuffer( target_, 0 );
+		}
 	}
 	bool isCreated() const { return vbo_id_ != 0; }
 

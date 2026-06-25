@@ -1,0 +1,51 @@
+{
+    /* ダイアログ (Elements) 系サンプル。 これらは別のダイアログ / フローを起動する
+       ため、 常駐メニュー (= manager) を一度閉じてから起動する必要がある。 各 button は
+       close_on_click 無しで onAction だけ発火し、 ホストが「メニューを閉じる → teardown
+       完了を待って起動」する deferred 処理を行う (startup.tjs 側 onContinuous)。 */
+    "size": [480, 420],
+    "background": [30, 30, 40, 248],
+    "locale": "ja-JP",
+    "align": "top_left",
+    "margin": 24,
+    "input": { "arrow_focus_nav": true },
+
+    "transitions": {
+        "back": "<back>",
+        "":     "<back>",
+    },
+
+    "content": {
+        "type": "margin", "padding": 22,
+        "child": {
+            "type": "vtile",
+            "children": [
+                { "type": "hspacer", "width": 436 },
+                { "type": "align_center",
+                  "child": { "type": "label", "text": "ダイアログ (Elements)", "size": 1.3 } },
+                { "type": "vspacer", "height": 16 },
+
+                { "type": "vsize", "height": 42, "child": {
+                    "type": "button", "id": "dlg", "text": "非モーダル (出しっぱなし)",
+                    "initial_focus": true } },
+                { "type": "vspacer", "height": 8 },
+                { "type": "vsize", "height": 42, "child": {
+                    "type": "button", "id": "modal", "text": "独立 Window モーダル" } },
+                { "type": "vspacer", "height": 8 },
+                { "type": "vsize", "height": 42, "child": {
+                    "type": "button", "id": "omodal", "text": "オーバーレイモーダル" } },
+                { "type": "vspacer", "height": 8 },
+                { "type": "vsize", "height": 42, "child": {
+                    "type": "button", "id": "flow", "text": "画面遷移フロー (マニフェスト)" } },
+                { "type": "vspacer", "height": 8 },
+                { "type": "vsize", "height": 42, "child": {
+                    "type": "button", "id": "iflow", "text": "画面遷移フロー (インライン)" } },
+
+                { "type": "vspacer", "height": 14 },
+                { "type": "vsize", "height": 38, "child": {
+                    "type": "button", "id": "back", "text": "← 戻る",
+                    "close_on_click": true } },
+            ],
+        },
+    },
+}

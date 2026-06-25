@@ -555,6 +555,48 @@ bool TVPUnloadPlugin(const ttstr & name)
 	return false;
 }
 //---------------------------------------------------------------------------
+bool TVPCanLoadPlugin(const ttstr & name)
+{
+	// 指定名のプラグインがロード可能かを判定する。例外は投げない。
+	// TVPLoadPlugin() (および tTVPPluginHolder の探索順) と同等の判定を行う:
+	//   1) 既にロード済み
+	//   2) 静的登録プラグイン
+	//   3) TVP ストレージ系で見つかる (アーカイブ含む)
+	//   4) exepath / exepath\system / PluginPath に DLL 実体が存在
+	// 4) は tTVPPluginHolder の non-archive 探索ロジックと同じ。
+	// 3) はアーカイブ展開 (LocalTempStorageHolder) を伴わずに存在判定のみ行う。
+
+	// 1) 既ロード判定
+	for(tTVPPluginVectorType::iterator i = TVPPluginVector.Vector.begin();
+		i != TVPPluginVector.Vector.end(); i++)
+	{
+		if((*i)->Name == name) return true;
+	}
+
+	// 2) 静的プラグインに含まれていれば true
+	if(TVPFindStaticPlugin(name)) return true;
+
+	// 3) TVP ストレージ系に存在するか (アーカイブ等)
+	try {
+		if(!TVPGetPlacedPath(name).IsEmpty()) return true;
+	} catch(...) {
+		// 探索失敗は false 扱いにして次を試す
+	}
+
+	// 4) exepath / system / plugin の実体探索
+	try {
+		ttstr exepath = IncludeTrailingBackslash(ExtractFileDir(ExePath()));
+		if(TVPCheckExistentLocalFile(exepath + name)) return true;
+		if(TVPCheckExistentLocalFile(exepath + TJS_W("system\\") + name)) return true;
+		ttstr pluginpath = ttstr(Application->PluginPath().c_str());
+		if(TVPCheckExistentLocalFile(pluginpath + name)) return true;
+	} catch(...) {
+		// no-op
+	}
+
+	return false;
+}
+//---------------------------------------------------------------------------
 
 
 
@@ -1039,6 +1081,21 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/unlink)
 }
 TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
 	/*func. name*/unlink)
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/canLink)
+{
+	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
+
+	ttstr name = *param[0];
+
+	bool res = TVPCanLoadPlugin(name);
+
+	if(result) *result = (tjs_int)res;
+
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
+	/*func. name*/canLink)
 //----------------------------------------------------------------------
 TJS_BEGIN_NATIVE_METHOD_DECL(getList)
 {

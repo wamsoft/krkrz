@@ -308,6 +308,14 @@ tjs_uint64 TVPLastModifiedFileTime(const ttstr &name)
 }
 
 //---------------------------------------------------------------------------
+// TVPFileSize
+//---------------------------------------------------------------------------
+tjs_uint64 TVPFileSize(const ttstr &name)
+{
+	return LocalFileSystem->FileSize(name.c_str());
+}
+
+//---------------------------------------------------------------------------
 // TVPGetAppPath
 //---------------------------------------------------------------------------
 ttstr TVPGetAppPath()
@@ -758,7 +766,7 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/deleteFile)
 TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
 	/*func. name*/deleteFile)
 
-TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/lastModifiedFileTime)
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/getLastModifiedFileTime)
 {
 	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
 
@@ -777,7 +785,7 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/lastModifiedFileTime)
 	return TJS_S_OK;
 }
 TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
-	/*func. name*/lastModifiedFileTime)
+	/*func. name*/getLastModifiedFileTime)
 
 	//----------------------------------------------------------------------
 

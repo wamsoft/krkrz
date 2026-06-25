@@ -19,7 +19,6 @@
 #include "WindowImpl.h"
 
 #include "Application.h"
-#include "NativeEventQueue.h"
 #include "UserEvent.h"
 
 //---------------------------------------------------------------------------
@@ -105,14 +104,25 @@ bool TVPGetBreathing()
 // sets whether system overall event handling is enabled.
 // this works distinctly from TVPEventDisabled.
 // イベントハンドリングの有効/無効を設定する
+//
+// WINVER は TVPSystemControl 経由でメッセージループ駆動の配信を止めるが、
+// Generic(SDL) は SDL_AppIterate が毎フレーム配信を回す連続ループのため、
+// 専用フラグを持ち Application::DeliverEvents() がこれを見て配信を止める。
+// 共通層 (TVPPostEvent / TVPPostInputEvent) も discardable イベントの
+// post 抑止にこのフラグを参照する (EventIntf.cpp)。
 //---------------------------------------------------------------------------
+static bool TVPSystemEventDisabled = false;
 void TVPSetSystemEventDisabledState(bool en)
 {
+	TVPSystemEventDisabled = en;
+	// 再有効化 (en==false) 時は溜まっていたイベントを掃き出す。
+	// WINVER の SetEventEnabled(true) 直後の TVPDeliverAllEvents() に相当。
+	if(!en) TVPDeliverAllEvents();
 }
 //---------------------------------------------------------------------------
 bool TVPGetSystemEventDisabledState()
 {
-	return false;
+	return TVPSystemEventDisabled;
 }
 //---------------------------------------------------------------------------
 

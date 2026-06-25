@@ -1,6 +1,7 @@
 
 #include "tjsCommHead.h"
 
+#include <cstring>
 #include "WindowForm.h"
 #include "Application.h"
 #include "TickCount.h"
@@ -8,6 +9,7 @@
 #include "MsgImpl.h"
 #include "LogIntf.h"
 #include "VideoOvlIntf.h"
+#include "PluginImpl.h"
 
 // Androidでは変換しない, ssShiftなどで統一的に扱っている。
 tjs_uint32 TVP_TShiftState_To_uint32(TShiftState state) { return (tjs_uint32)state; }
@@ -28,15 +30,19 @@ TTVPWindowForm::TTVPWindowForm( class tTJSNI_Window* ni )
  : LastMouseDownX(0)
  , LastMouseDownY(0)
  , touch_points_(this)
- , EventQueue(this,&TTVPWindowForm::WndProc)
- , TJSNativeInstance(ni) 
+ , TJSNativeInstance(ni)
  , mcs_(mcsVisible)
  , mSurfaceWidth(0)
  , mSurfaceHeight(0)
  , mCursorX(0)
  , mCursorY(0)
+ , mViewportBgColor(0xff000000)
+ , mViewportWallpaperFit(vfCover)
+ , mViewportWpAlignX(0.5)
+ , mViewportWpAlignY(0.5)
+ , mViewportRenderDirty(true)
  {
-	EventQueue.Allocate();
+	Application->addEventHandler(this);
 	Application->AddWindow(this);
 
 	Closing = false;
@@ -45,19 +51,50 @@ TTVPWindowForm::TTVPWindowForm( class tTJSNI_Window* ni )
 }
 
 TTVPWindowForm::~TTVPWindowForm() {
-	EventQueue.Deallocate();
+	// 登録された Window メッセージレシーバーを破棄
+	tjs_int count = WindowMessageReceivers.GetCount();
+	for( tjs_int i = 0; i < count; i++ ) {
+		tTVPMessageReceiverRecord *item = WindowMessageReceivers[i];
+		if( !item ) continue;
+		delete item;
+		WindowMessageReceivers.Remove(i);
+	}
+
+	Application->removeEventHandler(this);
 	Application->DelWindow(this);
 }
 
-void TTVPWindowForm::WndProc(NativeEvent& ev) {
-	switch( ev.Message ) {
+// プラグイン向け WindowMessageReceiver chain への配信。
+// receiver が true (block) を返したら true (= 以降のデフォルト処理をスキップ)。
+bool TTVPWindowForm::DeliverToReceiver( tjs_int message, tjs_int64 wparam, tjs_int64 lparam ) {
+	if( WindowMessageReceivers.GetCount() > 0 ) {
+		tTVPWindowMessage msg;
+		msg.Msg = (tjs_uint32)message;
+		msg.WParam = wparam;
+		msg.LParam = lparam;
+		msg.Result = 0;
+		if( InternalDeliverMessageToReceiver(msg) ) {
+			// Result は SendAppEvent 経由なので呼び出し元には届かない
+			return true;
+		}
+	}
+	return false;
+}
+
+// AppEventInterface: 非同期通知系メッセージの処理 (メインスレッド)。
+// 入力系 (touch/mouse) は SendTouchMessage/SendMouseMessage で同期処理されるため
+// ここには来ない。自分が処理したメッセージなら true を返す。
+bool TTVPWindowForm::Dispatch( tjs_int message, tjs_int64 wparam, tjs_int64 lparam ) {
+	if( DeliverToReceiver( message, wparam, lparam ) ) return true;
+
+	switch( message ) {
 
 	case AM_RESUME:
 		OnResume();
-		break;
+		return true;
 	case AM_PAUSE:
 		OnPause();
-		break;
+		return true;
 
 	case AM_SURFACE_CHANGED:
 		// Surfaceが切り替わった
@@ -65,70 +102,45 @@ void TTVPWindowForm::WndProc(NativeEvent& ev) {
 			TJSNativeInstance->ResetDrawDevice();
 			TJSNativeInstance->Update();
 		}
-		break;
+		return true;
 	case AM_SURFACE_CREATED:
-		break;
+		return true;
 	case AM_SURFACE_DESTORYED:
 		if( TJSNativeInstance ) {
 			TJSNativeInstance->ResetDrawDevice();
 		}
-		break;
+		return true;
 	case AM_SURFACE_PAINT_REQUEST:
 		if( TJSNativeInstance ) {
 			TJSNativeInstance->Update();
 		}
-		break;
+		return true;
 
 	case AM_REQUEST_UPDATE:
 		if( TJSNativeInstance ) {
 			TJSNativeInstance->RequestUpdate();
 		}
-		break;
+		return true;
 
-	case AM_TOUCH_DOWN:
-		OnTouchDown( ev.WParamf0, ev.WParamf1, ev.LParamf0, ev.LParamf0, ev.LParam1, ev.Result );
-		break;
-	case AM_TOUCH_MOVE:
-		OnTouchMove( ev.WParamf0, ev.WParamf1, ev.LParamf0, ev.LParamf0, ev.LParam1, ev.Result );
-		break;
-	case AM_TOUCH_UP:
-		OnTouchUp( ev.WParamf0, ev.WParamf1, ev.LParamf0, ev.LParamf0, ev.LParam1, ev.Result );
-		break;
 	case AM_KEY_DOWN:
-		OnKeyDown( (tjs_int)ev.WParam, (int)ev.LParam );
-		break;
+		OnKeyDown( (tjs_int)wparam, (int)lparam );
+		return true;
 	case AM_KEY_UP:
-		OnKeyUp( (tjs_int)ev.WParam, (int)ev.LParam );
-		break;
-
-	case AM_MOUSE_DOWN:
-		OnMouseDown( ev.WParam0, ev.WParam1, ev.LParam0, ev.LParam1 );
-		break;
-
-	case AM_MOUSE_UP:
-		OnMouseUp( ev.WParam0, ev.WParam1, ev.LParam0, ev.LParam1 );
-		break;
-
-	case AM_MOUSE_MOVE:
-		OnMouseMove( ev.WParam1, ev.LParam0, ev.LParam1 );
-		break;
-
-	case AM_MOUSE_WHEEL:
-		OnMouseWheel( ev.WParam0, ev.WParam1, ev.LParam0, ev.LParam1 );
-		break;
+		OnKeyUp( (tjs_int)wparam, (int)lparam );
+		return true;
 
 	case AM_DISPLAY_ROTATE:
-		OnDisplayRotate( (tjs_int)ev.WParam, (tjs_int)ev.LParam );
-		break;
+		OnDisplayRotate( (tjs_int)wparam, (tjs_int)lparam );
+		return true;
 
 	case AM_DISPLAY_RESIZE:
 		OnResize();
-		break;
+		return true;
 
 	default:
-		EventQueue.HandlerDefault( ev );
 		break;
 	}
+	return false;
 }
 
 void TTVPWindowForm::OnClose()
@@ -281,18 +293,49 @@ void TTVPWindowForm::OnKeyPress( tjs_int vk, int repeat, bool prevkeystate, bool
 tTVPRect
 TTVPWindowForm::CalcDestRect(int w, int h)
 {
-    int sw = mSurfaceWidth;
-    int sh = mSurfaceHeight;
-    if (sw > 0 && sh > 0 && w > 0 && h > 0) {
-        double scale = std::min((double)sw/w, (double)sh/h);
-        int nw = (int)(w * scale);
-        int nh = (int)(h * scale);
-        int offx = (sw-nw)/2;
-        int offy = (sh-nh)/2;
-        TVPLOG_VERBOSE("screen size:{},{} scale:{} dest:{},{},{},{}", sw, sh, scale, offx, offy, nw, nh);
-        return tTVPRect(offx,offy,offx+nw,offy+nh);
+    // 外側 surface (mSurfaceWidth/Height = innerWidth/innerHeight) 内へ
+    // 内側ゲーム (w,h = プライマリレイヤ) を mViewport の指定で配置・スケール。
+    tTVPRect r = TVPCalcViewportDestRect(mViewport, mSurfaceWidth, mSurfaceHeight, w, h);
+    TVPLOG_VERBOSE("viewport surface:{},{} layer:{},{} dest:{},{},{},{}",
+        mSurfaceWidth, mSurfaceHeight, w, h, r.left, r.top, r.right, r.bottom);
+    return r;
+}
+
+//---------------------------------------------------------------------------
+void TTVPWindowForm::NotifyViewportDestRectChanged()
+{
+    // 配置/スケールが変わったので DestRect を再計算させる。
+    if (TJSNativeInstance) TJSNativeInstance->SetUpdateDestRect();
+}
+
+//---------------------------------------------------------------------------
+void TTVPWindowForm::SetViewportConfig(const tTVPViewportConfig &cfg)
+{
+    mViewport = cfg;
+    NotifyViewportDestRectChanged();
+}
+
+//---------------------------------------------------------------------------
+void TTVPWindowForm::SetViewportBgColor(tjs_uint32 color)
+{
+    mViewportBgColor = color;
+    mViewportRenderDirty = true;
+}
+
+//---------------------------------------------------------------------------
+void TTVPWindowForm::SetViewportWallpaper(const tTJSVariant &image,
+    tTVPViewportFit fit, double alignX, double alignY)
+{
+    // tTJSVariant がオブジェクト参照を保持するのでイメージデータは維持される。
+    if (image.Type() == tvtObject && image.AsObjectNoAddRef()) {
+        mViewportWallpaper = image;
+    } else {
+        mViewportWallpaper.Clear();
     }
-    return tTVPRect(0,0,1,1);
+    mViewportWallpaperFit = fit;
+    mViewportWpAlignX = alignX;
+    mViewportWpAlignY = alignY;
+    mViewportRenderDirty = true;
 }
 
 void 
@@ -564,32 +607,90 @@ void TTVPWindowForm::OnDisplayRotate( tjs_int orientation, tjs_int density )
 /**
  * システムからのイベント処理
  */
-void TTVPWindowForm::SendMessage( tjs_int message, tjs_int64 wparam, tjs_int64 lparam ) 
+void TTVPWindowForm::SendMessage( tjs_int message, tjs_int64 wparam, tjs_int64 lparam )
 {
-	// Main Windowが存在する場合はそのWindowへ送る
-	NativeEvent ev(message,wparam,lparam);
-	PostEvent(ev);
+	// 非同期通知系。Application 経由でメインスレッドの Dispatch に配送される。
+	Application->SendAppEvent( message, wparam, lparam );
 }
 
-void TTVPWindowForm::SendTouchMessage( tjs_int type, float x, float y, float c, int id, tjs_uint64 tick ) 
+void TTVPWindowForm::SendTouchMessage( tjs_int type, float x, float y, float c, int id, tjs_uint64 tick )
 {
-	NativeEvent ev;
-	ev.Message = type;
-	ev.WParamf0 = x;
-	ev.WParamf1 = y;
-	ev.LParamf0 = c;
-	ev.LParam1 = id;
-	ev.Result = tick;
-	PostEvent(ev);
+	// 入力系は同期処理 (発行元はメインスレッド)。tick を含む 3 値を欠落なく渡せる。
+	// receiver chain には旧 NativeEvent と同じ packing (WParamf0/f1, LParamf0/LParam1) で見せる。
+	tjs_uint32 xb, yb, cb;
+	memcpy(&xb, &x, 4); memcpy(&yb, &y, 4); memcpy(&cb, &c, 4);
+	tjs_int64 wparam = (tjs_int64)xb | ((tjs_int64)yb << 32);
+	tjs_int64 lparam = (tjs_int64)cb | ((tjs_int64)(tjs_uint32)id << 32);
+	if( DeliverToReceiver( type, wparam, lparam ) ) return;
+	switch( type ) {
+	case AM_TOUCH_DOWN: OnTouchDown( x, y, c, c, id, tick ); break;
+	case AM_TOUCH_MOVE: OnTouchMove( x, y, c, c, id, tick ); break;
+	case AM_TOUCH_UP:   OnTouchUp( x, y, c, c, id, tick ); break;
+	default: break;
+	}
 }
 
 void TTVPWindowForm::SendMouseMessage( tjs_int type, int button, int shift, int x, int y)
 {
-	NativeEvent ev;
-	ev.Message = type;
-	ev.WParam0 = button;
-	ev.WParam1 = shift;
-	ev.LParam0 = x;
-	ev.LParam1 = y;
-	PostEvent(ev);
+	// 入力系は同期処理。receiver chain には旧 packing (WParam0/1, LParam0/1) で見せる。
+	tjs_int64 wparam = (tjs_int64)(tjs_uint32)button | ((tjs_int64)(tjs_uint32)shift << 32);
+	tjs_int64 lparam = (tjs_int64)(tjs_uint32)x | ((tjs_int64)(tjs_uint32)y << 32);
+	if( DeliverToReceiver( type, wparam, lparam ) ) return;
+	switch( type ) {
+	case AM_MOUSE_DOWN:  OnMouseDown( button, shift, x, y ); break;
+	case AM_MOUSE_UP:    OnMouseUp( button, shift, x, y ); break;
+	case AM_MOUSE_MOVE:  OnMouseMove( shift, x, y ); break;
+	case AM_MOUSE_WHEEL: OnMouseWheel( button, shift, x, y ); break;
+	default: break;
+	}
+}
+
+//---------------------------------------------------------------------------
+// プラグイン向け Window メッセージレシーバー API 実装
+//---------------------------------------------------------------------------
+bool TTVPWindowForm::InternalDeliverMessageToReceiver(tTVPWindowMessage &msg) {
+	if( !TJSNativeInstance ) return false;
+	if( TVPPluginUnloadedAtSystemExit ) return false;
+
+	tObjectListSafeLockHolder<tTVPMessageReceiverRecord> holder(WindowMessageReceivers);
+	tjs_int count = WindowMessageReceivers.GetSafeLockedObjectCount();
+
+	bool block = false;
+	for( tjs_int i = 0; i < count; i++ ) {
+		tTVPMessageReceiverRecord *item = WindowMessageReceivers.GetSafeLockedObjectAt(i);
+		if(!item) continue;
+		bool b = item->Deliver(&msg);
+		block = block || b;
+	}
+	return block;
+}
+
+void TTVPWindowForm::RegisterWindowMessageReceiver(tTVPWMRRegMode mode, void *proc, const void *userdata) {
+	if( mode == wrmRegister ) {
+		// 既に登録済みかチェック
+		tjs_int count = WindowMessageReceivers.GetCount();
+		tjs_int i;
+		for( i = 0; i < count; i++ ) {
+			tTVPMessageReceiverRecord *item = WindowMessageReceivers[i];
+			if( !item ) continue;
+			if( (void*)item->Proc == proc ) break; // already registered
+		}
+		if( i == count ) {
+			tTVPMessageReceiverRecord *item = new tTVPMessageReceiverRecord();
+			item->Proc = (tTVPWindowMessageReceiver)proc;
+			item->UserData = userdata;
+			WindowMessageReceivers.Add(item);
+		}
+	} else if( mode == wrmUnregister ) {
+		tjs_int count = WindowMessageReceivers.GetCount();
+		for( tjs_int i = 0; i < count; i++ ) {
+			tTVPMessageReceiverRecord *item = WindowMessageReceivers[i];
+			if( !item ) continue;
+			if( (void*)item->Proc == proc ) {
+				WindowMessageReceivers.Remove(i);
+				delete item;
+			}
+		}
+		WindowMessageReceivers.Compact();
+	}
 }

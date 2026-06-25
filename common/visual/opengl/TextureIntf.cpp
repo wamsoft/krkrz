@@ -104,7 +104,10 @@ tjs_error TJS_INTF_METHOD tTJSNI_Texture::Construct(tjs_int numparams, tTJSVaria
 					if( param[1]->Type() == tvtString ) {
 						ttstr filename = *param[1];
 						std::unique_ptr<tTVPBaseBitmap> bitmap( new tTVPBaseBitmap( TVPGetInitialBitmap() ) );
-						TVPLoadGraphic( bitmap.get(), filename, clNone, 0, 0, glmNormalRGBA, nullptr, nullptr, true );
+						// C: glmNormal で BGRA bitmap として load。
+						//    GLTexture::createMipmapTexture が BGRA_EXT/swizzle で
+						//    対応するため、TLG/PNG/JPEG 末尾の RB swap が消える。
+						TVPLoadGraphic( bitmap.get(), filename, clNone, 0, 0, glmNormal, nullptr, nullptr, true );
 						tTVPBBStretchType type = stFastAreaAvg;
 						if( numparams >= 3 && param[2]->Type() != tvtVoid )
 							type = (tTVPBBStretchType)(tjs_int)*param[2];
@@ -365,7 +368,10 @@ tjs_error tTJSNI_Texture::LoadMipmapTexture( const tTVPBaseBitmap* bitmap, class
 			tjs_uint32* buffer = buffers.back().get();
 			for( tjs_int y = 0; y < sh; y++ ) {
 				tjs_uint32* sl = (tjs_uint32*)dstBmp->GetScanLine( sh - y - 1 );
-				memcpy( &buffer[sw*y], sl, pitch );
+				// この mipmap level の pitch は spitch (sw*4)。
+				// pitch (元 bitmap の w*4) を使うと sw < w 時に
+				// 行ごとに (w-sw)*4 byte ぶん dst overrun + src 側 over-read になる。
+				memcpy( &buffer[sw*y], sl, spitch );
 			}
 			mipmap.emplace_back( GLTextreImageSet( sw, sh, buffer ) );
 			// バッファにコピーされたのでBitmapは不要、ここで削除してしまう

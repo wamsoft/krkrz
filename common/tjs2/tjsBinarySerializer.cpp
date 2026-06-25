@@ -268,79 +268,114 @@ tTJSVariant* tTJSBinarySerializer::ReadBasicType( const tjs_uint8* buff, const t
 tTJSVariant* tTJSBinarySerializer::ReadArray( const tjs_uint8* buff, const tjs_uint size, const tjs_uint count, tjs_uint& index ) {
 	if( index > size ) return NULL;
 
+	// CreateArray は AddRef 済 (refcount=1) で返る。ReadBasicType / InsertArray が
+	// 不正データで例外を投げると旧実装は array と中間 value をリークしていた。
 	tTJSArrayObject* array = CreateArray( count );
-	for( tjs_uint i = 0; i < count; i++ ) {
-		tTJSVariant* value = ReadBasicType( buff, size, index );
-		InsertArray( array, i, value );
-		delete value;
+	try {
+		for( tjs_uint i = 0; i < count; i++ ) {
+			tTJSVariant* value = ReadBasicType( buff, size, index );
+			try {
+				InsertArray( array, i, value );
+			} catch(...) {
+				delete value;
+				throw;
+			}
+			delete value;
+		}
+		tTJSVariant* ret = new tTJSVariant( array, array );
+		array->Release();
+		return ret;
+	} catch(...) {
+		array->Release();
+		throw;
 	}
-	tTJSVariant* ret = new tTJSVariant( array, array );
-	array->Release();
-	return ret;
 }
 tTJSVariant* tTJSBinarySerializer::ReadDictionary( const tjs_uint8* buff, const tjs_uint size, const tjs_uint count, tjs_uint& index ) {
 	if( index > size ) return NULL;
 
+	// CreateDictionary は AddRef 済で返る。ReadString / ReadBasicType / AddDictionary が
+	// 不正データで TJS_eTJSError を投げると旧実装は dic, name (AddRef 済), value を漏らす。
 	tTJSDictionaryObject* dic = CreateDictionary( count );
-	for( tjs_uint i = 0; i < count; i++ ) {
-		tjs_uint8 type = buff[index];
-		index++;
-		// 最初に文字を読む
-		tTJSVariantString* name = NULL;
-		switch( type ) {
-		case TYPE_STRING8: {
-			if( (index+sizeof(tjs_uint8)) > size ) TJS_eTJSError( TJSReadError );
-			tjs_uint8 len = buff[index]; index++;
-			if( (index+(len*sizeof(tjs_char))) > size ) TJS_eTJSError( TJSReadError );
-			name = ReadString( buff, len, index );
-			break;
-		}
-		case TYPE_STRING16: {
-			if( (index+sizeof(tjs_uint16)) > size ) TJS_eTJSError( TJSReadError );
-			tjs_uint16 len = Read16( buff, index );
-			if( (index+(len*sizeof(tjs_char))) > size ) TJS_eTJSError( TJSReadError );
-			name = ReadString( buff, len, index );
-			break;
-		}
-		case TYPE_STRING32: {
-			if( (index+sizeof(tjs_uint32)) > size ) TJS_eTJSError( TJSReadError );
-			tjs_uint32 len = Read32( buff, index );
-			if( (index+(len*sizeof(tjs_char))) > size ) TJS_eTJSError( TJSReadError );
-			name = ReadString( buff, len, index );
-			break;
-		}
-		default:
-			if( type >= TYPE_FIX_STRING_MIN && type <= TYPE_FIX_STRING_MAX ) {
-				tjs_int len = type - TYPE_FIX_STRING_MIN;
-				if( (len*sizeof(tjs_char)+index) > size ) TJS_eTJSError( TJSReadError );
-				name = ReadString( buff, len, index );
-			} else { // Dictionary形式の場合、最初に文字列がこないといけない
-				 TJS_eTJSError( TJSReadError );
+	try {
+		for( tjs_uint i = 0; i < count; i++ ) {
+			tjs_uint8 type = buff[index];
+			index++;
+			// 最初に文字を読む
+			tTJSVariantString* name = NULL;
+			try {
+				switch( type ) {
+				case TYPE_STRING8: {
+					if( (index+sizeof(tjs_uint8)) > size ) TJS_eTJSError( TJSReadError );
+					tjs_uint8 len = buff[index]; index++;
+					if( (index+(len*sizeof(tjs_char))) > size ) TJS_eTJSError( TJSReadError );
+					name = ReadString( buff, len, index );
+					break;
+				}
+				case TYPE_STRING16: {
+					if( (index+sizeof(tjs_uint16)) > size ) TJS_eTJSError( TJSReadError );
+					tjs_uint16 len = Read16( buff, index );
+					if( (index+(len*sizeof(tjs_char))) > size ) TJS_eTJSError( TJSReadError );
+					name = ReadString( buff, len, index );
+					break;
+				}
+				case TYPE_STRING32: {
+					if( (index+sizeof(tjs_uint32)) > size ) TJS_eTJSError( TJSReadError );
+					tjs_uint32 len = Read32( buff, index );
+					if( (index+(len*sizeof(tjs_char))) > size ) TJS_eTJSError( TJSReadError );
+					name = ReadString( buff, len, index );
+					break;
+				}
+				default:
+					if( type >= TYPE_FIX_STRING_MIN && type <= TYPE_FIX_STRING_MAX ) {
+						tjs_int len = type - TYPE_FIX_STRING_MIN;
+						if( (len*sizeof(tjs_char)+index) > size ) TJS_eTJSError( TJSReadError );
+						name = ReadString( buff, len, index );
+					} else { // Dictionary形式の場合、最初に文字列がこないといけない
+						 TJS_eTJSError( TJSReadError );
+					}
+					break;
+				}
+				// 次に要素を読む
+				tTJSVariant* value = ReadBasicType( buff, size, index );
+				try {
+					AddDictionary( dic, name, value );
+				} catch(...) {
+					delete value;
+					throw;
+				}
+				delete value;
+			} catch(...) {
+				if( name ) name->Release();
+				throw;
 			}
-			break;
+			if( name ) name->Release();
 		}
-		// 次に要素を読む
-		tTJSVariant* value = ReadBasicType( buff, size, index );
-		AddDictionary( dic, name, value );
-		delete value;
-		if( name ) name->Release();
+		tTJSVariant* ret = new tTJSVariant( dic, dic );
+		dic->Release();
+		return ret;
+	} catch(...) {
+		dic->Release();
+		throw;
 	}
-	tTJSVariant* ret = new tTJSVariant( dic, dic );
-	dic->Release();
-	return ret;
 }
 tTJSVariant* tTJSBinarySerializer::Read( iTJSBinaryStream* stream )
 {
 	tjs_uint64 pos = stream->GetPosition();
 	tjs_uint size = (tjs_uint)( stream->GetSize() - pos );
+	// 旧実装は stream->Read サイズ不一致や ReadBasicType throw で buffstart を漏らしていた。
 	tjs_uint8* buffstart = new tjs_uint8[size];
-	if( size != stream->Read( buffstart, size ) ) {
-		TJS_eTJSError( TJSReadError );
+	try {
+		if( size != stream->Read( buffstart, size ) ) {
+			TJS_eTJSError( TJSReadError );
+		}
+		tjs_uint index = 0;
+		tTJSVariant* ret = ReadBasicType( buffstart, size, index );
+		delete[] buffstart;
+		return ret;
+	} catch(...) {
+		delete[] buffstart;
+		throw;
 	}
-	tjs_uint index = 0;
-	tTJSVariant* ret = ReadBasicType( buffstart, size, index );
-	delete[] buffstart;
-	return ret;
 }
 
 } // namespace

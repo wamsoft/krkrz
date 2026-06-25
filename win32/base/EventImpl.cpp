@@ -158,7 +158,7 @@ public:
 
 //---------------------------------------------------------------------------
 tTVPContinuousHandlerCallLimitThread::tTVPContinuousHandlerCallLimitThread()
-	 : EventQueue(this,&tTVPContinuousHandlerCallLimitThread::WndProc)
+	 : tTVPThread("ContinuousHandlerCallLimit"), EventQueue(this,&tTVPContinuousHandlerCallLimitThread::WndProc)
 {
 	NextEventTick = 0;
 	Interval = (1<<TVP_SUBMILLI_FRAC_BITS)*1000/60; // default 60Hz

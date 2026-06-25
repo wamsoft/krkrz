@@ -641,11 +641,13 @@ public:
 	// for Byte code
 	void SetCodeObject( tTJSInterCodeContext* parent, tTJSInterCodeContext* setter, tTJSInterCodeContext* getter, tTJSInterCodeContext* superclass ) {
 		Parent = parent;
+		if( parent ) parent->AddRef();
 		PropSetter = setter;
 		if( setter ) setter->AddRef();
 		PropGetter = getter;
 		if( getter ) getter->AddRef();
 		SuperClassGetter = superclass;
+		if( superclass ) superclass->AddRef();
 	}
 	
 	tTJSInterCodeContext( tTJSScriptBlock *block, const tjs_char *name, tTJSContextType type,

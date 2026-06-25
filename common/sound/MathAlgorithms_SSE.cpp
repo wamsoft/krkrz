@@ -73,7 +73,7 @@ _ALIGN16(const tjs_uint32) TVP_V_I32_1[4] = { 1, 1, 1, 1 };
 void DeinterleaveApplyingWindow_sse(float * __restrict dest[], const float * __restrict src,
 					float * __restrict win, int numch, size_t destofs, size_t len)
 {
-	size_t n;
+	size_t n = 0;  // len < 8 で SSE ループ skip 時に tail ループが未初期化 n を読むのを回避
 	switch(numch)
 	{
 	case 1: // mono
@@ -186,7 +186,7 @@ void DeinterleaveApplyingWindow_sse(float * __restrict dest[], const float * __r
 void  InterleaveOverlappingWindow_sse(float * __restrict dest, const float * __restrict const * __restrict src,
 					float * __restrict win, int numch, size_t srcofs, size_t len)
 {
-	size_t n;
+	size_t n = 0;  // len < 8 で SSE ループ skip 時に tail ループが未初期化 n を読むのを回避
 	switch(numch)
 	{
 	case 1: // mono

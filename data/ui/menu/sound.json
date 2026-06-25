@@ -1,0 +1,46 @@
+{
+    /* サウンド系サンプル。 BGM は「出しっぱなし」系: 再生開始後メニューを閉じても
+       鳴り続け、 再度開いて BGM を選ぶと停止する。 速度は PhaseVocoder。 */
+    "size": [460, 360],
+    "background": [30, 26, 40, 248],
+    "locale": "ja-JP",
+    "align": "top_left",
+    "margin": 24,
+    "input": { "arrow_focus_nav": true },
+
+    "transitions": {
+        "back": "<back>",
+        "":     "<back>",
+    },
+
+    "content": {
+        "type": "margin", "padding": 22,
+        "child": {
+            "type": "vtile",
+            "children": [
+                { "type": "hspacer", "width": 416 },
+                { "type": "align_center",
+                  "child": { "type": "label", "text": "サウンド", "size": 1.3 } },
+                { "type": "vspacer", "height": 16 },
+
+                { "type": "vsize", "height": 42, "child": {
+                    "type": "button", "id": "bgm", "text": "BGM 再生 / 停止",
+                    "initial_focus": true } },
+                { "type": "vspacer", "height": 8 },
+                { "type": "vsize", "height": 42, "child": {
+                    "type": "button", "id": "se", "text": "SE 再生" } },
+                { "type": "vspacer", "height": 8 },
+                { "type": "vsize", "height": 42, "child": {
+                    "type": "button", "id": "spd_up", "text": "再生速度 + 0.1" } },
+                { "type": "vspacer", "height": 8 },
+                { "type": "vsize", "height": 42, "child": {
+                    "type": "button", "id": "spd_dn", "text": "再生速度 - 0.1" } },
+
+                { "type": "vspacer", "height": 14 },
+                { "type": "vsize", "height": 38, "child": {
+                    "type": "button", "id": "back", "text": "← 戻る",
+                    "close_on_click": true } },
+            ],
+        },
+    },
+}

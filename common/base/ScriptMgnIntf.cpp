@@ -63,6 +63,16 @@
 
 #include "BitmapDrawDevice.h"
 
+#ifdef KRKRZ_HAS_ELEMENTS
+#include "elements/DialogIntf.h"
+#endif
+// Agent クラス (エージェント駆動制御 API)。 REPL 機構の一部なので
+// KRKRZ_REPL=OFF (= KRKRZ_USE_REPL 未定義) では完全に除外される。
+// 実装は sdl3/environ/AgentControlIntf.cpp。 include パス非依存のため前方宣言。
+#if defined(KRKRZ_HAS_ELEMENTS) && defined(KRKRZ_USE_REPL)
+extern tTJSNativeClass* TVPCreateNativeClass_Agent();
+#endif
+
 //---------------------------------------------------------------------------
 // global variables
 //---------------------------------------------------------------------------
@@ -218,6 +228,13 @@ void TVPInitScriptEngine()
 	REGISTER_OBJECT(Bitmap, TVPCreateNativeClass_Bitmap());
 	REGISTER_OBJECT(ImageFunction, TVPCreateNativeClass_ImageFunction());
 	REGISTER_OBJECT(BitmapLayerTreeOwner, TVPCreateNativeClass_BitmapLayerTreeOwner());
+
+#ifdef KRKRZ_HAS_ELEMENTS
+	REGISTER_OBJECT(Dialog, TVPCreateNativeClass_Dialog());
+#endif
+#if defined(KRKRZ_HAS_ELEMENTS) && defined(KRKRZ_USE_REPL)
+	REGISTER_OBJECT(Agent, TVPCreateNativeClass_Agent());
+#endif
 
 #ifdef TVP_USE_OPENGL
 	REGISTER_OBJECT(Canvas, TVPCreateNativeClass_Canvas());
@@ -608,10 +625,33 @@ void TVPDumpScriptEngine()
 
 
 //---------------------------------------------------------------------------
+// -nostartup: 起動スクリプト (startup.tjs) の自動実行を抑止するか。
+// REPL (-repl) と組み合わせて「起動スクリプト無しで立ち上げ、 REPL から明示的に
+// スクリプトを呼んで初めて処理を開始する」エージェント駆動用途に使う。
+//---------------------------------------------------------------------------
+bool TVPIsStartupScriptDisabled()
+{
+	tTJSVariant val;
+	if (!TVPGetCommandLine(TJS_W("-nostartup"), &val)) return false;
+	ttstr s(val);
+	// 値なし (-nostartup 単体) も有効。 明示的に no/off/false/0 のときだけ無効。
+	if (s == TJS_W("no") || s == TJS_W("off") ||
+	    s == TJS_W("false") || s == TJS_W("0"))
+		return false;
+	return true;
+}
+
+//---------------------------------------------------------------------------
 // TVPExecuteStartupScript
 //---------------------------------------------------------------------------
 void TVPExecuteStartupScript()
 {
+	if (TVPIsStartupScriptDisabled()) {
+		TVPAddImportantLog(TJS_W("startup script disabled by -nostartup; "
+			"waiting for explicit script invocation (e.g. via REPL)"));
+		return;
+	}
+
 	// execute "startup.tjs"
 	try
 	{
@@ -849,6 +889,15 @@ void TVPBeforeProcessUnhandledException()
 //---------------------------------------------------------------------------
 void TVPShowScriptException(eTJS &e)
 {
+	if(TVPReplActive)
+	{
+		// REPL 駆動中: イベント停止 / ネイティブダイアログ / 即終了を行わず、
+		// ログ (= REPL コンソール) に出すだけでアプリを生かす。 修正して再 eval
+		// できるようにするため。
+		TVPAddImportantLog(ttstr(TVPScriptExceptionRaised) + TJS_W("\n") + e.GetMessage());
+		return;
+	}
+
 	TVPSetSystemEventDisabledState(true);
 	TVPOnError();
 
@@ -863,6 +912,15 @@ void TVPShowScriptException(eTJS &e)
 //---------------------------------------------------------------------------
 void TVPShowScriptException(eTJSScriptError &e)
 {
+	if(TVPReplActive)
+	{
+		// REPL 駆動中: 即終了せずログ (= REPL コンソール) に例外 + trace を出す。
+		TVPAddImportantLog(ttstr(TVPScriptExceptionRaised) + TJS_W("\n") + e.GetMessage());
+		if(e.GetTrace().GetLen() != 0)
+			TVPAddImportantLog(ttstr(TJS_W("trace : ")) + e.GetTrace());
+		return;
+	}
+
 	TVPSetSystemEventDisabledState(true);
 	TVPOnError();
 
@@ -942,7 +1000,10 @@ void TVPInitializeStartupScript()
 	TVPStartObjectHashMap();
 
 	TVPExecuteStartupScript();
-	if(TVPTerminateOnNoWindowStartup && TVPGetWindowCount() == 0 ) {
+	// -nostartup のときは window が作られないのが正常なので、 no-window 即終了を
+	// 抑止する (REPL からスクリプトを呼んで初めて window が立つ想定)。
+	if(TVPTerminateOnNoWindowStartup && !TVPIsStartupScriptDisabled()
+	   && TVPGetWindowCount() == 0 ) {
 		// no window is created and main window is invisible
 		Application->Terminate();
 	}
