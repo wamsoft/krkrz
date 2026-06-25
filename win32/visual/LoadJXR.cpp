@@ -91,12 +91,7 @@ void TVPLoadJXR(void* formatdata, void *callbackdata, tTVPGraphicSizeCallback si
 				hr = frame->GetPixelFormat(&pixelFormat);
 				hr = frame->GetSize(&width, &height);
 				const UINT stride = GetStride(width, 32);
-#ifdef _DEBUG
 				std::vector<tjs_uint8> buff(stride*height*sizeof(tjs_uint8));
-#else
-				std::vector<tjs_uint8> buff;
-				buff.reserve(stride*height*sizeof(tjs_uint8));
-#endif
 				sizecallback(callbackdata, width, height);
 				WICRect rect = {0, 0, static_cast<INT>(width), static_cast<INT>(height) };
 				if( !IsEqualGUID( pixelFormat, GUID_WICPixelFormat32bppBGRA) ) {
@@ -105,9 +100,9 @@ void TVPLoadJXR(void* formatdata, void *callbackdata, tTVPGraphicSizeCallback si
 					hr = wicFactory.CoCreateInstance( CLSID_WICImagingFactory );
 					wicFactory->CreateFormatConverter(&converter);
 					converter->Initialize(frame, GUID_WICPixelFormat32bppBGRA,WICBitmapDitherTypeNone, NULL, 0.0f, WICBitmapPaletteTypeCustom);
-					hr = converter->CopyPixels( &rect, stride, stride*height, (BYTE*)&buff[0] );
+					hr = converter->CopyPixels( &rect, stride, stride*height, (BYTE*)buff.data() );
 				} else {
-					hr = frame->CopyPixels( &rect, stride, stride*height, (BYTE*)&buff[0] );
+					hr = frame->CopyPixels( &rect, stride, stride*height, (BYTE*)buff.data() );
 				}
 				int offset = 0;
 				if( mode == glmNormal ) {
@@ -233,16 +228,11 @@ void TVPSaveAsJXR(void* formatdata, iTJSBinaryStream* dst, const class tTVPBaseB
 			const UINT stride = width * sizeof(tjs_uint32);
 			const UINT buffersize = stride * height;
 			if( SUCCEEDED(hr) ) {
-#ifdef _DEBUG
 				std::vector<tjs_uint8> buff(buffersize);
-#else
-				std::vector<tjs_uint8> buff;
-				buff.reserve(buffersize);
-#endif
 				for( UINT i = 0; i < height; i++ ) {
 					memcpy( &buff[i*stride], image->GetScanLine(i), stride );
 				}
-				hr = frame->WritePixels( height, stride, buffersize, &buff[0] );
+				hr = frame->WritePixels( height, stride, buffersize, buff.data() );
 			}
 			if( SUCCEEDED(hr) ) hr = frame->Commit();
 			if( SUCCEEDED(hr) ) hr = encoder->Commit();
@@ -537,17 +527,12 @@ void TVPLoadJXR(void* formatdata, void *callbackdata, tTVPGraphicSizeCallback si
 		sizecallback(callbackdata, width, height);
 		const tjs_uint32 stride = GetStride( (tjs_uint32)width, (tjs_uint32)32 );
 		PKRect rect = {0, 0, width, height};
-#ifdef _DEBUG
 		std::vector<tjs_uint8> buff(stride*height*sizeof(tjs_uint8));
-#else
-		std::vector<tjs_uint8> buff;
-		buff.reserve(stride*height*sizeof(tjs_uint8));
-#endif
 		// rect で1ラインずつ指定してデコードする方法はjxrlibではうまくいかない様子
 		int offset = 0;
 		if( !IsEqualGUID( srcFormat, GUID_PKPixelFormat32bppPBGRA ) ) {
 			if( IsEqualGUID( srcFormat, GUID_PKPixelFormat24bppRGB ) ) {
-				pDecoder->Copy( pDecoder, &rect, (U8*)&buff[0], stride );
+				pDecoder->Copy( pDecoder, &rect, (U8*)buff.data(), stride );
 				for( int i = 0; i < height; i++) {
 					void *scanline = scanlinecallback(callbackdata, i);
 					tjs_uint8* d = (tjs_uint8*)scanline;
@@ -570,11 +555,11 @@ void TVPLoadJXR(void* formatdata, void *callbackdata, tTVPGraphicSizeCallback si
 			Converter はどうもおかしいので使わない。
 			SAFE_CALL( pCodecFactory->CreateFormatConverter(&pConverter) );
 			SAFE_CALL( pConverter->Initialize(pConverter, pDecoder, NULL, GUID_PKPixelFormat32bppPBGRA) );
-			pConverter->Copy( pConverter, &rect, (U8*)&buff[0], width*sizeof(int));
+			pConverter->Copy( pConverter, &rect, (U8*)buff.data(), width*sizeof(int));
 			*/
 		} else {
 			// アルファチャンネルが入っている時メモリリークしている(jxrlib直した)
-			pDecoder->Copy( pDecoder, &rect, (U8*)&buff[0], stride );
+			pDecoder->Copy( pDecoder, &rect, (U8*)buff.data(), stride );
 			for( int i = 0; i < height; i++) {
 				void *scanline = scanlinecallback(callbackdata, i);
 				memcpy( scanline, &buff[offset], width*sizeof(tjs_uint32));
@@ -709,16 +694,11 @@ void TVPSaveAsJXR(void* formatdata, iTJSBinaryStream* dst, const class tTVPBaseB
 		//Float rX = 98.0, rY = 98.0;
 		//pEncoder->SetResolution(pEncoder, rX, rY);
 		
-#ifdef _DEBUG
 		std::vector<tjs_uint8> buff(buffersize);
-#else
-		std::vector<tjs_uint8> buff;
-		buff.reserve(buffersize);
-#endif
 		for( UINT i = 0; i < height; i++ ) {
 			memcpy( &buff[i*stride], image->GetScanLine(i), stride );
 		}
-		pEncoder->WritePixels( pEncoder, height, &buff[0], stride );
+		pEncoder->WritePixels( pEncoder, height, buff.data(), stride );
 
 		pEncoder->Release(&pEncoder);
 		if( pStream ) free( pStream );
