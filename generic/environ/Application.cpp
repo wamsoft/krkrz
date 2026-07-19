@@ -389,6 +389,8 @@ bool tTVPApplication::DispatchAppEvent( tjs_int message, tjs_int64 wparam, tjs_i
 	switch( message ) {
 	case AM_STARTUP_SCRIPT:
 		TVPInitializeStartupScript();
+		// 初回スクリプトロード完了をホストへ通知 (ローディング表示の終了等)
+		OnStartupScriptDone();
 		return true;
 	default:
 		break;

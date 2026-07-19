@@ -202,6 +202,12 @@ public:
 	// addEventHandler 済みの全ハンドラへ配る。いずれかが処理したら true。
 	bool DispatchAppEvent( tjs_int message, tjs_int64 wparam, tjs_int64 lparam );
 
+	// 起動スクリプト (AM_STARTUP_SCRIPT → TVPInitializeStartupScript) の実行が
+	// 完了した直後に呼ばれる。ホスト側のローディング/スプラッシュ表示を
+	// 「初回スクリプトロード完了」まで維持して閉じる用途 (wasm は HTML
+	// オーバーレイ、nx 等は splash)。既定は何もしない
+	virtual void OnStartupScriptDone() {}
+
 	void addEventHandler( AppEventInterface* handler );
 	void removeEventHandler( AppEventInterface* handler );
 

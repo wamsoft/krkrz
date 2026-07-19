@@ -100,13 +100,45 @@ SDL3Application::~SDL3Application()
 	}
 }
 
+#ifdef __EMSCRIPTEN__
+// 起動スクリプト完了時のホスト連携。ページ側が開始待ち (オーディオゲート =
+// autoplay ブロック時のクリック待ち等) を要求していれば JSPI でここで待つ。
+// この時点はシナリオイベント配信前 (= 最初の発音より前) なので、待ちの後に
+// 進行を再開すれば AudioContext は running の状態で最初の音から鳴る。
+// 待ちの解決後にローディングオーバーレイの終了フックを呼ぶ。
+EM_ASYNC_JS(void, krkrz_host_startup_done, (), {
+	if (typeof globalThis.krkrzWaitBeforeStart === 'function') {
+		try { await globalThis.krkrzWaitBeforeStart(); } catch (e) {}
+	}
+	if (typeof globalThis.krkrzOnStartupScriptDone === 'function') {
+		try { globalThis.krkrzOnStartupScriptDone(); } catch (e) {}
+	}
+});
+#endif
+
+// 起動スクリプト (AM_STARTUP_SCRIPT) 実行完了。ホスト側のローディング表示を
+// 「初回スクリプトロード完了」で終了させるための通知
+void
+SDL3Application::OnStartupScriptDone()
+{
+#ifdef USE_SPLASHWINDOW
+	// 通常は最初の Window 生成時に破棄済みだが、Window を作らない構成でも
+	// スクリプト完了で必ず閉じる
+	DestroySplashWindow();
+#endif
+#ifdef __EMSCRIPTEN__
+	// ページ側の開始待ち (あれば) + ローディング終了フック (krkrz_web web/pre.js)
+	krkrz_host_startup_done();
+#endif
+}
+
 // アプリ処理用の WindowForm 実装を返す
 TTVPWindowForm *
 SDL3Application::CreateWindowForm(class tTJSNI_Window *win)
 {
-#ifdef USE_SPLASHWINDOW
-	DestroySplashWindow();
-#endif
+	// splash はここ (最初の Window 生成) では閉じない。Window 生成は起動
+	// スクリプトの途中で、そこから描画開始までブランクが出るため、
+	// OnStartupScriptDone (起動スクリプト完了 ≒ メイン描画開始) まで維持する
 	TTVPWindowForm *form = new SDL3WindowForm(win);
 	return form;
 }

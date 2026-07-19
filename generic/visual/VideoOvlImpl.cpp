@@ -105,6 +105,10 @@ tTJSNI_VideoOverlay::CheckUpdate()
 void
 tTJSNI_VideoOverlay::Update()
 {
+	// デコーダスレッドを持たない実装 (wasm <video>) のフレーム引き取り。
+	// 通常実装では no-op
+	if (mPlayer) mPlayer->Pump();
+
 	if (Mode == vomLayer && updateSurface) {
 
 		tTJSCriticalSectionHolder cs(surfaceLock);
@@ -169,12 +173,17 @@ void tTJSNI_VideoOverlay::Open(const ttstr &name)
 	if (!mPlayer) {
 		movieStream->Release();
 	}
+#elif defined(__EMSCRIPTEN__)
+	// wasm: 正規化ストレージ名のまま渡す (web:// 等は localname を持たない。
+	// URL 解決/ストレージ読みは WebMoviePlayer 側で行う)
+	mPlayer = TVPCreateMoviePlayer(path.c_str());
 #else
 	// ファイルパス直接指定で開く
 	TVPGetLocalName(path);
 	mPlayer = TVPCreateMoviePlayer(path.c_str());
 #endif
 	if (mPlayer) {
+		mPlayer->SetLayerMode(Mode == vomLayer);
 		mPlayer->SetOnVideoDecoded([this](int w, int h, iTVPMoviePlayer::DestUpdater updater) {
 			if (Mode == vomMixer) {
 				// Mixer mode, update the window directly
@@ -252,6 +261,10 @@ void tTJSNI_VideoOverlay::Play() {
 	if (mPlayer) {
 		mPlayer->Play();
 		Window->AddVideoOverlay(this);
+		// フレームコールバックが来ない実装 (wasm mixer = DOM 表示) でも
+		// Status を Play にして CheckUpdate の終了検知を有効化する。
+		// SetStatusAsync は変化時のみ発火するので通常実装では実害なし
+		SetStatusAsync( tTVPVideoOverlayStatus::Play );
 	}
 }
 //---------------------------------------------------------------------------
@@ -328,7 +341,8 @@ void tTJSNI_VideoOverlay::SetVisible(bool b) {
 		if( Layer1 != NULL ) Layer1->SetVisible( Visible );
 		if( Layer2 != NULL ) Layer2->SetVisible( Visible );
 	} else {
-		// XXX mPlayer の表示状態制御
+		// 自前表示を持つ実装 (wasm <video>) の表示制御。通常実装では no-op
+		if( mPlayer ) mPlayer->SetOverlayVisible( Visible );
 	}
 }
 //---------------------------------------------------------------------------

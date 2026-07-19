@@ -616,7 +616,11 @@ endif()
 
 # KRKRZ_USE_MOVIE=OFF のとき VideoOverlay 実装をスタブ化する
 # (movie-player 非依存。TVPCreateMoviePlayer は常に nullptr を返す)
-if(KRKRZ_USE_MOVIE)
+# wasm は movie-player を移植せず、ブラウザネイティブ <video> 実装を使う
+# (KRKRZ_USE_MOVIE と無関係に常時有効。外部依存なし)
+if(EMSCRIPTEN)
+	set(KRKRZ_SRC_MOVIE sdl3/base/WebMoviePlayer.cpp)
+elseif(KRKRZ_USE_MOVIE)
 	set(KRKRZ_SRC_MOVIE generic/app/movie.cpp)
 else()
 	set(KRKRZ_SRC_MOVIE generic/app/movie_null.cpp)

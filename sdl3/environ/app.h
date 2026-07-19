@@ -81,6 +81,10 @@ public:
 	void CreateSplashWindow(const char *imagePath);
 	void DestroySplashWindow();
 #endif
+
+	// 起動スクリプト実行完了通知 (tTVPApplication)。splash が残っていれば
+	// 閉じ、wasm ではページ側フック (krkrzOnStartupScriptDone) を呼ぶ
+	virtual void OnStartupScriptDone() override;
 	// SDL3 Kirikiri Storage関連
 	SDL_Storage* GetKirikiriStorage();
 

@@ -179,7 +179,7 @@ struct tTJSArraySortCompare_StringDescending
 	bool operator () (const tTJSVariant &lhs, const tTJSVariant &rhs) const
 	{
 		if(lhs.Type() == tvtString && rhs.Type() == tvtString)
-			return lhs > rhs;
+			return (lhs > rhs).operator bool(); // implicit conversion picks the object-closure path and throws; convert explicitly like StringAscending
 		return (ttstr)lhs > (ttstr)rhs;
 	}
 };

@@ -548,9 +548,43 @@ EM_ASYNC_JS(void, krkrz_jspi_wait_frame, (), {
 	await new Promise(function (resolve) { requestAnimationFrame(resolve); });
 });
 
+#ifdef KRKRZ_EMSCRIPTEN_PERSISTENT_PATH
+//---------------------------------------------------------------------------
+// セーブデータ永続化 (IDBFS) のマウント + 復元。
+//
+// SDL の SDL_EMSCRIPTEN_PERSISTENT_PATH 機構は SDL_RunApp の中で IDBFS を
+// マウントするが、wasm は自前 main() で SDL_AppInit を直接呼ぶため
+// SDL_RunApp を通らず、マウントが行われない (= /persist が素の MEMFS になり
+// セーブが毎回消える)。同等の処理をここで行う: IDBFS を autoPersist 付きで
+// マウントし、IndexedDB からの復元 (syncfs(true)) を JSPI で待ってから
+// エンジンを開始する。以後の書き込みは autoPersist が自動で IndexedDB へ
+// 書き戻す。SDL_GetPrefPath はこの配下を返す (SDL は同オプション付きビルド)。
+// -lidbfs.js のリンクが前提。
+//---------------------------------------------------------------------------
+EM_ASYNC_JS(void, krkrz_mount_persistent_js, (const char *cpath), {
+	var path = UTF8ToString(cpath);
+	try {
+		try { FS.mkdir(path); } catch (e) { /* 既存 */ }
+		FS.mount(IDBFS, { autoPersist: true }, path);
+		await new Promise(function (resolve) {
+			FS.syncfs(true, function (err) {
+				if (err) console.warn('krkrz: IDBFS restore failed:', err);
+				resolve();
+			});
+		});
+	} catch (e) {
+		console.error('krkrz: persistent storage mount failed:', e);
+	}
+});
+#endif
+
 int main(int argc, char *argv[])
 {
 	void *appstate = nullptr;
+#ifdef KRKRZ_EMSCRIPTEN_PERSISTENT_PATH
+	// セーブデータ (user://) の復元完了を待ってからエンジンを開始する
+	krkrz_mount_persistent_js(KRKRZ_EMSCRIPTEN_PERSISTENT_PATH);
+#endif
 	if (SDL_AppInit(&appstate, argc, argv) != SDL_APP_CONTINUE) {
 		SDL_AppQuit(appstate, SDL_APP_SUCCESS);
 		return 0;

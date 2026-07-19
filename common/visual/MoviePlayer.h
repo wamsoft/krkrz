@@ -45,6 +45,23 @@ public:
   virtual void SetVolume(float volume) = 0;
   virtual float Volume() const = 0;
 
+  // --------------------------------------------------------------------
+  // 以下は自前の表示手段/メインループ駆動を持つ実装 (wasm の <video> DOM
+  // オーバレイ等) 向けのオプショナルフック。通常のデコーダ実装は
+  // デフォルト (no-op) のままでよい。
+
+  // open 直後にモードが通知される。layer=true ならフレームを
+  // OnVideoDecoded で供給し、自前表示 (DOM オーバレイ等) は行わない
+  virtual void SetLayerMode(bool layer) {}
+
+  // メインスレッドから毎フレーム呼ばれる。デコーダスレッドを持たない
+  // 実装がフレーム引き渡し (OnVideoDecoded 呼び出し) を行う場所
+  virtual void Pump() {}
+
+  // 非 layer モードの表示制御 (VideoOverlay.visible)。自前表示を
+  // 持つ実装のみ意味を持つ
+  virtual void SetOverlayVisible(bool visible) {}
+
 };
 
 extern iTVPMoviePlayer*TVPCreateMoviePlayer(const tjs_char *filename);

@@ -49,8 +49,22 @@
 //---------------------------------------------------------------------------
 EM_ASYNC_JS(int, krkrz_web_fetch, (const char* curl, int use_cache, void** out_ptr, int* out_len), {
 	var url = UTF8ToString(curl);
-	// OPFS はフラットなファイル名空間。URL をサニタイズしてキー化する。
-	var key = url.replace(/[^A-Za-z0-9._-]/g, '_');
+	// ページ側ローディング表示の進捗カウンタ (取得ファイル数。OPFS ヒット含む)
+	globalThis.__krkrzWebFetchCount = (globalThis.__krkrzWebFetchCount || 0) + 1;
+	// OPFS はフラットなファイル名空間。キーは SHA-256(url) の先頭 40hex +
+	// 可読サフィックス (サニタイズ済み末尾 32 文字)。
+	// 旧方式の「非英数を '_' に置換」だけでは日本語ファイル名同士が同一キーに
+	// 潰れて衝突し (例: faceimage/ジョー.pimg と 非常食.pimg)、キャッシュが
+	// 別ファイルの内容を返す実害があった。pre.js 側 (prefetch/バージョン移行)
+	// と同一規約であること。
+	var key;
+	{
+		var d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(url));
+		var h = Array.from(new Uint8Array(d)).map(function(b) {
+			return b.toString(16).padStart(2, '0');
+		}).join('');
+		key = h.slice(0, 40) + '_' + url.replace(/[^A-Za-z0-9._-]/g, '_').slice(-32);
+	}
 	try {
 		var ab = null;
 		var root = null;
@@ -77,6 +91,8 @@ EM_ASYNC_JS(int, krkrz_web_fetch, (const char* curl, int use_cache, void** out_p
 			}
 		}
 		var u8 = new Uint8Array(ab);
+		// ページ側ローディング表示の進捗 (累積ロードバイト数。OPFS ヒット含む)
+		globalThis.__krkrzWebFetchBytes = (globalThis.__krkrzWebFetchBytes || 0) + u8.length;
 		var p = _malloc(u8.length || 1);
 		HEAPU8.set(u8, p);
 		HEAPU32[out_ptr >>> 2] = p;
@@ -177,7 +193,12 @@ class tTVPHttpStorageMedia : public iTVPStorageMedia
 		return ttstr(ws.c_str());
 	}
 
-	// name ("./scenario/bg.png" 等) を fetch URL へ変換
+	// name ("./scenario/bg.png" 等) を fetch URL へ変換。
+	// パス部は ASCII のみ小文字化する: autopath 経由のアクセスはマニフェスト
+	// (小文字) 由来で既に小文字、直接パス指定は原ケースのままなので、ここで
+	// 揃えないと同一ファイルが別 URL (=別 OPFS キー) になる。配信サーバは
+	// 小文字リクエストを実ファイルへ解決できること (同梱 serve.py は
+	// 一覧対応表で解決する。Windows 系サーバは元々 case-insensitive)。
 	std::string ToUrl(const ttstr &name) {
 		EnsureBase();
 		std::string path;
@@ -185,6 +206,8 @@ class tTVPHttpStorageMedia : public iTVPStorageMedia
 		// 先頭の "./" を除去
 		if (path.size() >= 2 && path[0] == '.' && path[1] == '/')
 			path = path.substr(2);
+		// ASCII 小文字化 (UTF-8 マルチバイトは 0x80 以上なので影響しない)
+		for (auto &c : path) if (c >= 'A' && c <= 'Z') c += 32;
 		return BaseURL + path;
 	}
 
@@ -259,6 +282,29 @@ public:
 
 	virtual void TJS_INTF_METHOD GetLocallyAccessibleName(ttstr &name) override { name.Clear(); }
 
+	// 正規化ストレージ名 ("web://./foo" / "webnc://./foo") を HTTP URL へ変換。
+	// web/webnc 以外は false。WebMoviePlayer が <video> の src 解決に使う
+	// (fetch/OPFS を通さず、ブラウザにストリーミングさせるため)。
+	static bool ResolveUrl(const ttstr &fullname, std::string &url) {
+		std::string n;
+		TVPUtf16ToUtf8(n, fullname.c_str());
+		Self *inst = nullptr;
+		std::string rest;
+		if (n.compare(0, 6, "web://") == 0) {
+			inst = InstanceCache; rest = n.substr(6);
+		} else if (n.compare(0, 8, "webnc://") == 0) {
+			inst = InstanceNoCache; rest = n.substr(8);
+		}
+		if (!inst) return false;
+		inst->EnsureBase();
+		if (rest.size() >= 2 && rest[0] == '.' && rest[1] == '/')
+			rest = rest.substr(2);
+		// ToUrl と同じ規約 (ASCII 小文字化)。<video> の src も小文字 URL に揃える
+		for (auto &c : rest) if (c >= 'A' && c <= 'Z') c += 32;
+		url = inst->BaseURL + rest;
+		return true;
+	}
+
 	static void Load() {
 		if (!InstanceCache) {
 			InstanceCache = new Self(TJS_W("web"), /*useCache=*/true);
@@ -290,5 +336,13 @@ tTVPAtStart AtStart(TVP_ATSTART_PRI_PREPARE, tTVPHttpStorageMedia::Load);
 tTVPAtExit  AtExit(TVP_ATEXIT_PRI_PREPARE, tTVPHttpStorageMedia::Unload);
 
 } // anonymous
+
+//---------------------------------------------------------------------------
+// WebMoviePlayer.cpp から使う URL 解決ヘルパ (宣言は利用側で extern)
+//---------------------------------------------------------------------------
+bool TVPGetWebStorageURL(const ttstr &name, std::string &url)
+{
+	return tTVPHttpStorageMedia::ResolveUrl(name, url);
+}
 
 #endif // __EMSCRIPTEN__
