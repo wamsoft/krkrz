@@ -16,6 +16,10 @@
 	#include <sys/utsname.h>
 #endif
 
+#ifdef __EMSCRIPTEN__
+	#include <emscripten.h>
+#endif
+
 static const char *GetOSVersion()
 {
 	static thread_local char osVersionBuffer[256] = {};
@@ -60,8 +64,16 @@ SDL3Application::SDL3Application()
 	_language = "ja";
 	_country = "jp";
 
-	// SDL規定
+#ifdef __EMSCRIPTEN__
+	// wasm: リソースは wasm に埋め込まず、krkrz_web 側が preload バンドルで
+	// MEMFS /resource に upfront 配置する (NX の file://basepath/resource と同発想)。
+	// file:// で同期読みするため、最初期の config.cf 読み (charset 決定) も安全。
+	// 案件別 charset は /resource/config.cf で切り替わる。
+	_ResourcePath = TJS_W("file://./resource/");
+#else
+	// SDL規定 (デスクトップ等は resource:// メディア = OS resource/埋め込み)
 	_ResourcePath = TJS_W("resource://./");
+#endif
 
 	// platform 
 	TVPUtf8ToUtf16(_platformName, SDL_GetPlatform());
@@ -188,6 +200,39 @@ SDL3Application::MessageDlg(const tjs_string& string, const tjs_string& caption,
 	}
 	SDL_ShowSimpleMessageBox(flags, cap_utf8.c_str(), str_utf8.c_str(), parent);
 }
+
+#ifdef __EMSCRIPTEN__
+// wasm 版の未処理スクリプト例外ハンドラ。
+// - ネイティブモーダル (SDL_ShowMessageBox) は使わない (メインスレッドブロックで
+//   オーディオが途切れ、TVPTerminateSync でアプリごと固まるため)
+// - JS 側 (web/pre.js の globalThis.krkrzOnScriptError) に本文と trace を渡し、
+//   HTML オーバーレイ表示・音停止・リロード誘導を委ねる
+// - false を返して呼び出し側 (TVPShowScriptException) の TVPTerminateSync を抑止
+//   (アプリは終了せず、イベント無効状態のまま待機する)
+bool
+SDL3Application::OnUnhandledScriptException(const tjs_string& message, const tjs_string& trace, int dlgType)
+{
+	std::string msg_utf8, trace_utf8;
+	TVPUtf16ToUtf8(msg_utf8, message);
+	TVPUtf16ToUtf8(trace_utf8, trace);
+
+	// メインスレッド (ブラウザ UI スレッド) 上で JS ハンドラを呼ぶ。
+	// 未定義時 (シェル未対応) はブラウザ標準の alert にフォールバックする。
+	MAIN_THREAD_EM_ASM({
+		var msg = UTF8ToString($0);
+		var trace = UTF8ToString($1);
+		try {
+			if (typeof globalThis.krkrzOnScriptError === 'function') {
+				globalThis.krkrzOnScriptError(msg, trace);
+			} else if (typeof window !== 'undefined') {
+				console.error('krkrz script exception:\n' + msg + '\n' + trace);
+			}
+		} catch (e) { console.error(e); }
+	}, msg_utf8.c_str(), trace_utf8.c_str());
+
+	return false; // アプリを終了させない
+}
+#endif // __EMSCRIPTEN__
 
 // 解像度情報
 tjs_int 

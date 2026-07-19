@@ -227,6 +227,15 @@ public:
 	static inline int MessageDlg( const tjs_string& string, const tjs_string& caption, int type, int button ) {
 		return ::MessageBox( nullptr, (const wchar_t*)string.c_str(), (const wchar_t*)caption.c_str(), type|button  );
 	}
+
+	// 未処理スクリプト例外時の表示と後処理 (WINVER デスクトップ既定: ダイアログ +
+	// 終了)。generic 版 (Application.h) と同シグネチャで、TVPShowScriptException
+	// が Application-> 経由で呼ぶ。REPL 動作時は共通コード側で別分岐となり本メソッド
+	// は呼ばれない。
+	bool OnUnhandledScriptException( const tjs_string& message, const tjs_string& trace, int dlgType ) {
+		MessageDlg( message, GetTitle(), dlgType, 0 /*MB_OK*/ );
+		return true; // 終了する
+	}
 	void Terminate() {
 		::PostQuitMessage(0);
 	}

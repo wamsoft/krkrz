@@ -782,6 +782,13 @@ tTVPWaveDecoder *  TVPCreateWaveDecoder(const ttstr & storagename)
 	// throws an exception when the decodable decoder is not found.
 	if(!TVPWaveDecoderManagerAvail) return NULL;
 
+	// ストレージが存在しない場合は「フォーマット不明」ではなく「開けない」を
+	// 報告する。各デコーダの Create は判定失敗も例外も nullptr 返しに畳んで
+	// 次のデコーダへ委ねる作りのため、ここで検査しないと存在しないファイルまで
+	// TVPUnknownWaveFormat になってしまう
+	if(!TVPIsExistentStorage(storagename))
+		TVPThrowExceptionMessage(TVPCannotOpenStorage, storagename);
+
 	ttstr ext(TVPExtractStorageExt(storagename));
 	ext.ToLowerCase();
 

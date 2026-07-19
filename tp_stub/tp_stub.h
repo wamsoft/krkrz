@@ -5902,6 +5902,11 @@ struct tTVPWindowMessage
 typedef bool (__stdcall * tTVPWindowMessageReceiver)
 	(void *userdata, tTVPWindowMessage *Message);
 
+// プラグインが自由に使用できるユーザメッセージ基点。Generic 版と名前・値(0x8000)を
+// 揃え、プラグインが #ifdef 無しで TVP_WM_USER+n を使えるようにする。
+// WIN では Win32 の WM_APP (アプリケーション私用メッセージ基点 = 0x8000) と同一。
+#define TVP_WM_USER WM_APP
+
 #define TVP_WM_DETACH (WM_USER+106)  // before re-generating the window
 #define TVP_WM_ATTACH (WM_USER+107)  // after re-generating the window
 #define TVP_WM_FULLSCREEN_CHANGING (WM_USER+108)  // before full-screen or window changing

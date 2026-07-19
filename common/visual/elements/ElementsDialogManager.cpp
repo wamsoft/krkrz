@@ -252,15 +252,54 @@ struct tTVPElementsDialogManager::Impl
 		return sx >= r.x && sx < (r.x + r.w) && sy >= r.y && sy < (r.y + r.h);
 	}
 
+	// このプラットフォームがオンスクリーンキーボード (Android / iOS 等) を持つか。
+	// true の場合、 SDL_StartTextInput はソフトキーボードを画面に出す。 そのため
+	// 「ダイアログを開いた瞬間に無条件で開始」ではなく、 テキスト欄に focus が
+	// 入ったときだけ開始する focus 駆動に切り替える。 デスクトップ (false) は物理
+	// キーボードなので従来どおり開いた時点で開始してよい (ポップアップは出ない)。
+	static bool PlatformUsesScreenKeyboard()
+	{
+		return SDL_HasScreenKeyboardSupport();
+	}
+
+	// focus 駆動でソフトキーボードを出している最中か (portable のみ使用)。
+	bool ime_focus_active = false;
+
 	// テキスト入力受信の開始/停止 (ウィンドウ単位なので参照カウント的に扱う)。
 	void StartTextInputIfNeeded()
 	{
+		// portable はここでは開始しない。 UpdateFocusDrivenTextInput() が
+		// テキスト欄への focus を検出して開始/停止する。
+		if (PlatformUsesScreenKeyboard()) return;
 		if (auto* w = GetMainSDLWindow()) SDL_StartTextInput(w);
 	}
 	void StopTextInputIfNoInstances()
 	{
 		if (instances.empty()) {
 			if (auto* w = GetMainSDLWindow()) SDL_StopTextInput(w);
+			ime_focus_active = false;
+		}
+	}
+
+	// portable 用: 最前面フォーカスインスタンスのテキスト欄 focus 状態に追従して
+	// ソフトキーボードを出し入れする。 PaintOverlay 末尾から毎フレーム呼ぶ。
+	// デスクトップでは no-op (開いた時点で開始済み・ポップアップも無い)。
+	void UpdateFocusDrivenTextInput()
+	{
+		if (!PlatformUsesScreenKeyboard()) return;
+		auto* w = GetMainSDLWindow();
+		if (!w) return;
+
+		Instance* owner = TopmostKeyboardFocus();
+		bool want = owner && owner->active && owner->session &&
+		            owner->session->focus_consumes_text();
+
+		if (want && !ime_focus_active) {
+			SDL_StartTextInput(w);        // テキスト欄に focus → IME 表示
+			ime_focus_active = true;
+		} else if (!want && ime_focus_active) {
+			SDL_StopTextInput(w);         // focus が外れた / ダイアログ閉じ → IME 非表示
+			ime_focus_active = false;
 		}
 	}
 
@@ -306,6 +345,7 @@ struct tTVPElementsDialogManager::Impl
 		}
 		instances.clear();
 		if (auto* w = GetMainSDLWindow()) SDL_StopTextInput(w);
+		ime_focus_active = false;
 	}
 
 	// === session / フロー (Instance 単位) ===
@@ -988,6 +1028,9 @@ void tTVPElementsDialogManager::PaintOverlay(iTVPDrawDevice* device)
 		if (!inst->active || !inst->session) continue;
 		_impl->RenderInstance(*inst, device, renderer);
 	}
+
+	// 3) portable: テキスト欄への focus 状態に追従してソフトキーボードを出し入れ。
+	_impl->UpdateFocusDrivenTextInput();
 }
 
 //---------------------------------------------------------------------------

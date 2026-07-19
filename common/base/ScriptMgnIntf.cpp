@@ -905,7 +905,11 @@ void TVPShowScriptException(eTJS &e)
 	{
 		ttstr errstr = (ttstr(TVPScriptExceptionRaised) + TJS_W("\n") + e.GetMessage());
 		TVPAddLog(ttstr(TVPScriptExceptionRaised) + TJS_W("\n") + e.GetMessage());
-		Application->MessageDlg( errstr.AsStdString(), Application->GetTitle(), mtError, mbOK );
+
+		// 未処理例外の表示・後処理はプラットフォーム別ポリシーに委譲する。
+		// false が返ったら (wasm/コンソール等) アプリを終了させず継続する。
+		if(!Application->OnUnhandledScriptException( errstr.AsStdString(), ttstr().AsStdString(), mtError ))
+			return;
 		TVPTerminateSync(1);
 	}
 }
@@ -930,7 +934,11 @@ void TVPShowScriptException(eTJSScriptError &e)
 		TVPAddLog(ttstr(TVPScriptExceptionRaised) + TJS_W("\n") + e.GetMessage());
 		if(e.GetTrace().GetLen() != 0)
 			TVPAddLog(ttstr(TJS_W("trace : ")) + e.GetTrace());
-		Application->MessageDlg( errstr.AsStdString(), Application->GetTitle(), mtStop, mbOK );
+
+		// 未処理例外の表示・後処理はプラットフォーム別ポリシーに委譲する。
+		// false が返ったら (wasm/コンソール等) アプリを終了させず継続する。
+		if(!Application->OnUnhandledScriptException( errstr.AsStdString(), e.GetTrace().AsStdString(), mtStop ))
+			return;
 
 #ifdef TVP_ENABLE_EXECUTE_AT_EXCEPTION
 		const tjs_char* scriptName = e.GetBlockNoAddRef()->GetName();

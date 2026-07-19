@@ -400,7 +400,9 @@ void tTJSNI_Canvas::Clear( tjs_uint32 color ) {
 	tTVPARGB<tjs_uint32> c;
 	c = color;
 	glClearColor( c.r/255.0f, c.g/255.0f, c.b/255.0f, c.a/255.0f );
-	glClear( GL_COLOR_BUFFER_BIT );
+	// renderTarget (Offscreen) は BeginDrawing のステンシルクリアを通らないため
+	// ここでも合わせてクリアしておく
+	glClear( GL_COLOR_BUFFER_BIT | GL_STENCIL_BUFFER_BIT );
 }
 //----------------------------------------------------------------------
 void tTJSNI_Canvas::Fill( tjs_int width, tjs_int height, tjs_uint32 colors[4], tTJSNI_ShaderProgram* shader ) {

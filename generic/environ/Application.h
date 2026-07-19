@@ -329,6 +329,18 @@ public:
 	// for exception showing
 	virtual void MessageDlg( const tjs_string& string, const tjs_string& caption, int type, int button ) = 0;
 
+	// 未処理スクリプト例外の表示と後処理を行う (プラットフォーム別ポリシー)。
+	//   message : 表示用エラー本文 / trace : スタックトレース / dlgType : ダイアログ種別
+	//   戻り値  : true  = 呼び出し側 (TVPShowScriptException) が既定の後処理
+	//                     (exceptionexe 等 + TVPTerminateSync) を続行する
+	//             false = このメソッドが表示・後処理を担い、アプリは終了しない
+	// 既定はデスクトップ挙動: MessageDlg を出して終了 (true) を返す。
+	// SDL3Application (wasm) や コンソール版はこれを override して独自挙動にする。
+	virtual bool OnUnhandledScriptException( const tjs_string& message, const tjs_string& trace, int dlgType ) {
+		MessageDlg( message, GetTitle(), dlgType, 0 /*mbOK*/ );
+		return true;
+	}
+
 	// 終了開始
 	virtual void Terminate(int code=0) = 0; //< 終了要求
 	virtual void Exit(int code) = 0; //< 強制終了処理（そのままシステム終了）

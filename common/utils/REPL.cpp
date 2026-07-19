@@ -16,6 +16,7 @@
 #include "REPL.h"
 #include "ReplMainQueue.h"
 #include "ReplFileChannel.h"
+#include "ReplSocketChannel.h"
 #include "ScriptMgnIntf.h"
 #include "SysInitIntf.h"
 #include "DebugIntf.h"
@@ -549,14 +550,17 @@ bool tTVPReplThread::IsCompleteStatement(const std::string& script)
 
 static tTVPReplThread *TVPScriptREPL = nullptr;
 static tTVPReplFileChannel *TVPReplFileChan = nullptr;
+static tTVPReplSocketChannel *TVPReplSocketChan = nullptr;
 
 void TVPCreateREPL()
 {
-	// console REPL (-repl) と file channel (-replfile) は独立に起動できる。
-	// どちらか一方でも有効ならメインスレッド実行キューを使うので Reset する。
+	// console REPL (-repl) / file channel (-replfile) / socket channel
+	// (-replsocket または env KRKRZ_REPL_SOCKET) は独立に起動できる。
+	// いずれか有効ならメインスレッド実行キューを使うので Reset する。
 	bool wantConsole = (TVPScriptREPL == nullptr) && tTVPReplThread::ShouldStartREPL();
 	bool wantFile    = (TVPReplFileChan == nullptr) && tTVPReplFileChannel::ShouldStart();
-	if (!wantConsole && !wantFile) return;
+	bool wantSocket  = (TVPReplSocketChan == nullptr) && tTVPReplSocketChannel::ShouldStart();
+	if (!wantConsole && !wantFile && !wantSocket) return;
 
 	TVPReplMainQueue::Reset();
 
@@ -566,6 +570,9 @@ void TVPCreateREPL()
 	}
 	if (wantFile) {
 		TVPReplFileChan = new tTVPReplFileChannel();
+	}
+	if (wantSocket) {
+		TVPReplSocketChan = new tTVPReplSocketChannel();
 	}
 
 	// 例外で即終了しない / inform・MessageDlg を REPL コンソールへ流すための
@@ -577,6 +584,10 @@ void TVPDestroyREPL()
 {
 	// 先にキューを shutdown して、 ブロック中の worker / channel を起こす。
 	TVPReplMainQueue::Shutdown();
+	if (TVPReplSocketChan) {
+		delete TVPReplSocketChan;
+		TVPReplSocketChan = nullptr;
+	}
 	if (TVPReplFileChan) {
 		delete TVPReplFileChan;
 		TVPReplFileChan = nullptr;

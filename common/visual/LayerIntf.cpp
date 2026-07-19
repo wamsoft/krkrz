@@ -9585,7 +9585,7 @@ TJS_BEGIN_NATIVE_PROP_DECL(mainImageBuffer)
 	TJS_BEGIN_NATIVE_PROP_GETTER
 	{
 		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_BaseLayer);;
-		*result = reinterpret_cast<tjs_intptr_t>(_this->GetMainImagePixelBuffer());
+		*result = static_cast<tTVInteger>(reinterpret_cast<tjs_intptr_t>(_this->GetMainImagePixelBuffer()));
 		return TJS_S_OK;
 	}
 	TJS_END_NATIVE_PROP_GETTER
@@ -9599,7 +9599,7 @@ TJS_BEGIN_NATIVE_PROP_DECL(mainImageBufferForWrite)
 	TJS_BEGIN_NATIVE_PROP_GETTER
 	{
 		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_BaseLayer);;
-		*result = reinterpret_cast<tjs_intptr_t>(_this->GetMainImagePixelBufferForWrite());
+		*result = static_cast<tTVInteger>(reinterpret_cast<tjs_intptr_t>(_this->GetMainImagePixelBufferForWrite()));
 		return TJS_S_OK;
 	}
 	TJS_END_NATIVE_PROP_GETTER
@@ -9627,7 +9627,7 @@ TJS_BEGIN_NATIVE_PROP_DECL(provinceImageBuffer)
 	TJS_BEGIN_NATIVE_PROP_GETTER
 	{
 		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_BaseLayer);;
-		*result = reinterpret_cast<tjs_intptr_t>(_this->GetProvinceImagePixelBuffer());
+		*result = static_cast<tTVInteger>(reinterpret_cast<tjs_intptr_t>(_this->GetProvinceImagePixelBuffer()));
 		return TJS_S_OK;
 	}
 	TJS_END_NATIVE_PROP_GETTER
@@ -9641,7 +9641,7 @@ TJS_BEGIN_NATIVE_PROP_DECL(provinceImageBufferForWrite)
 	TJS_BEGIN_NATIVE_PROP_GETTER
 	{
 		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_BaseLayer);;
-		*result = reinterpret_cast<tjs_intptr_t>(_this->GetProvinceImagePixelBufferForWrite());
+		*result = static_cast<tTVInteger>(reinterpret_cast<tjs_intptr_t>(_this->GetProvinceImagePixelBufferForWrite()));
 		return TJS_S_OK;
 	}
 	TJS_END_NATIVE_PROP_GETTER

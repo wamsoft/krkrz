@@ -180,6 +180,10 @@ list(APPEND KRKRZ_SRC
 	common/utils/ReplMainQueue.h
 	common/utils/ReplFileChannel.cpp
 	common/utils/ReplFileChannel.h
+	# abstract unix socket チャネル (Android/Linux)。CLI 引数の無い Android から
+	# adb 経由で REPL を叩く。-replsocket=<name> か env KRKRZ_REPL_SOCKET で有効化。
+	common/utils/ReplSocketChannel.cpp
+	common/utils/ReplSocketChannel.h
 	# 画面キャプチャ要求の受け渡し (overlay 込み実画面 → PNG)。
 	# Elements 非依存の純粋な REPL 機能であり、 DrawDevice の Show フック
 	# (SDLDrawDevice / SDLOGLDrawDevice / 共通の OGLDrawDevice) が
@@ -352,11 +356,15 @@ common/sound/RealFFT_NEON.cpp
 # アーキテクチャ自動判定
 # ----------------------------------------------------------------------------
 string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" _krkrz_arch_lc)
+# Emscripten toolchain は CMAKE_SYSTEM_PROCESSOR=x86 を名乗るが、wasm に
+# x86 SIMD intrinsics は無いので除外する (C リファレンス実装へフォールバック)
+if (NOT EMSCRIPTEN)
 if (_krkrz_arch_lc MATCHES "^(x86_64|amd64|x64|i[3-6]86|x86)$")
     set(KRKRZ_TARGET_X86 TRUE)
 endif()
 if (_krkrz_arch_lc MATCHES "^(aarch64|arm64|armv[0-9]|arm)")
     set(KRKRZ_TARGET_ARM TRUE)
+endif()
 endif()
 unset(_krkrz_arch_lc)
 
@@ -606,31 +614,62 @@ if (KRKRZ_SDL3_SPLASHWINDOW)
 	)
 endif()
 
+# KRKRZ_USE_MOVIE=OFF のとき VideoOverlay 実装をスタブ化する
+# (movie-player 非依存。TVPCreateMoviePlayer は常に nullptr を返す)
+if(KRKRZ_USE_MOVIE)
+	set(KRKRZ_SRC_MOVIE generic/app/movie.cpp)
+else()
+	set(KRKRZ_SRC_MOVIE generic/app/movie_null.cpp)
+endif()
+
 if(WIN32)
 	list(APPEND KRKRZ_SRC_SDL3
 		sdl3/environ/stdapp.cpp
-		generic/app/movie.cpp
+		${KRKRZ_SRC_MOVIE}
 		generic/app/winres.cpp
 		win32/utils/ThreadImpl.cpp
 	)
 elseif(APPLE)
 	list(APPEND KRKRZ_SRC_SDL3
 		sdl3/environ/stdapp.cpp
-		generic/app/movie.cpp
+		${KRKRZ_SRC_MOVIE}
 		sdl3/base/resource.cpp
 		sdl3/utils/ThreadImpl.cpp
 	)
 elseif(ANDROID)
 	list(APPEND KRKRZ_SRC_SDL3
 		sdl3/environ/stdapp.cpp
-		generic/app/movie.cpp
+		${KRKRZ_SRC_MOVIE}
 		generic/app/andres.cpp
 		sdl3/utils/ThreadImpl.cpp
+	)
+elseif(EMSCRIPTEN)
+	# wasm: リソースは既定で外部 (MEMFS /resource へ preload、file:// 読み)。
+	# その場合 resource:// メディア (objres.cpp = resource_table 消費側) は不要。
+	# KRKRZ_EMSCRIPTEN_EMBED_RESOURCE=ON のときのみ埋め込み版 objres.cpp を使う
+	# (resource_table は CMakeLists.txt の Bin2C 生成物が提供)。
+	list(APPEND KRKRZ_SRC_SDL3
+		sdl3/environ/stdapp.cpp
+		${KRKRZ_SRC_MOVIE}
+		sdl3/utils/ThreadImpl.cpp
+	)
+	if(KRKRZ_EMSCRIPTEN_EMBED_RESOURCE)
+		list(APPEND KRKRZ_SRC_SDL3 generic/app/objres.cpp)
+	endif()
+	# devtools コンソールから TJS を評価する REPL ブリッジ (MASTER では除外)
+	if(NOT MASTER)
+		list(APPEND KRKRZ_SRC_SDL3
+			common/utils/ReplWasmBridge.cpp
+		)
+	endif()
+	# web:// ストレージメディア (fetch でバラファイルをオンデマンド取得)
+	list(APPEND KRKRZ_SRC_SDL3
+		sdl3/base/HttpStorageMedia.cpp
 	)
 elseif(UNIX)
 	list(APPEND KRKRZ_SRC_SDL3
 		sdl3/environ/stdapp.cpp
-		generic/app/movie.cpp
+		${KRKRZ_SRC_MOVIE}
 		generic/app/objres.cpp
 		sdl3/utils/ThreadImpl.cpp
 	)

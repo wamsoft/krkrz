@@ -510,12 +510,18 @@ void TVPLoadPlugin(const ttstr & name)
 			// linking plugin while other plugin is linking, is prohibited
 			// by data security reason.
 
+	// 静的プラグインは "wucmt" / "wucmt.dll" 等の表記ゆれで二重 link され
+	// ないよう、静的登録名をキーに正規化して重複チェック・登録する
+	ttstr key = name;
+	if(const iTVPStaticPlugin* staticPlugin = TVPFindStaticPlugin(name))
+		key = staticPlugin->name;
+
 	// check whether the same plugin was already loaded
 	tTVPPluginVectorType::iterator i;
 	for(i = TVPPluginVector.Vector.begin();
 		i != TVPPluginVector.Vector.end(); i++)
 	{
-		if((*i)->Name == name) return;
+		if((*i)->Name == key) return;
 	}
 
 	tTVPPlugin * p;
@@ -523,7 +529,7 @@ void TVPLoadPlugin(const ttstr & name)
 	try
 	{
 		TVPPluginLoading = true;
-		p = new tTVPPlugin(name, &TVPPluginVector.StorageProvider);
+		p = new tTVPPlugin(key, &TVPPluginVector.StorageProvider);
 		TVPPluginLoading = false;
 	}
 	catch(...)
@@ -539,11 +545,16 @@ bool TVPUnloadPlugin(const ttstr & name)
 {
 	// unload plugin
 
+	// 静的プラグインは登録名をキーに正規化する (TVPLoadPlugin と対称)
+	ttstr key = name;
+	if(const iTVPStaticPlugin* staticPlugin = TVPFindStaticPlugin(name))
+		key = staticPlugin->name;
+
 	tTVPPluginVectorType::iterator i;
 	for(i = TVPPluginVector.Vector.begin();
 		i != TVPPluginVector.Vector.end(); i++)
 	{
-		if((*i)->Name == name)
+		if((*i)->Name == key)
 		{
 			if(!(*i)->Uninit()) return false;
 			delete *i;

@@ -26,12 +26,17 @@ bool GLFrameBufferObject::create( GLuint w, GLuint h) {
 	glGenFramebuffers( 1, &framebuffer_id_ );
 	glBindFramebuffer( GL_FRAMEBUFFER, framebuffer_id_ );
 
-	/*
+	// ステンシル付きレンダーバッファ。
+	// ステンシルマスク描画 (Emote 等のクリップ) を Offscreen 上でも有効にする。
+	// D24S8 を DEPTH/STENCIL に個別アタッチする形は ES3 と
+	// ES2 + OES_packed_depth_stencil の双方で有効。
+	// 組めない環境では下の completeness チェック後にステンシル無しへ落とす。
 	glGenRenderbuffers( 1, &renderbuffer_id_ );
 	glBindRenderbuffer( GL_RENDERBUFFER, renderbuffer_id_ );
-	glRenderbufferStorage( GL_RENDERBUFFER, GL_STENCIL_INDEX8, w, h );
+	glRenderbufferStorage( GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, w, h );
+	glFramebufferRenderbuffer( GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, renderbuffer_id_ );
 	glFramebufferRenderbuffer( GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_RENDERBUFFER, renderbuffer_id_ );
-	*/
+	glBindRenderbuffer( GL_RENDERBUFFER, 0 );
 
 	glGenTextures( 1, &texture_id_ );
 	glBindTexture( GL_TEXTURE_2D, texture_id_ );
@@ -44,6 +49,18 @@ bool GLFrameBufferObject::create( GLuint w, GLuint h) {
 	glFramebufferTexture2D( GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture_id_, 0 );
 
 	GLenum status = glCheckFramebufferStatus( GL_FRAMEBUFFER );
+	if( status != GL_FRAMEBUFFER_COMPLETE && renderbuffer_id_ != 0 ) {
+		// ステンシル付きで組めない環境ではステンシル無しで再試行する
+		// (この場合ステンシルマスク描画は Offscreen 上で機能しない)。
+		glFramebufferRenderbuffer( GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, 0 );
+		glFramebufferRenderbuffer( GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_RENDERBUFFER, 0 );
+		glDeleteRenderbuffers( 1, &renderbuffer_id_ );
+		renderbuffer_id_ = 0;
+		status = glCheckFramebufferStatus( GL_FRAMEBUFFER );
+		if( status == GL_FRAMEBUFFER_COMPLETE ) {
+			TVPAddLog( TJS_W("Offscreen framebuffer created without stencil buffer (stencil attachment unsupported).") );
+		}
+	}
 	switch( status ) {
 	case GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT:
 		TVPAddLog( TJS_W("Not all framebuffer attachment points are framebuffer attachment complete.") );

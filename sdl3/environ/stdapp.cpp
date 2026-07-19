@@ -105,7 +105,15 @@ bool MySDL3Application::InitPath()
 
 	// 引数でプロジェクトパスを明示指定
 	std::string projectPath;
-	if (_nargs.size() > 1) {
+	if (_nargs.size() > 1 &&
+	    (_nargs[1].rfind(TJS_W("web://"), 0) == 0 || _nargs[1].rfind(TJS_W("webnc://"), 0) == 0)) {
+		// web:// / webnc:// メディアをプロジェクトパスに指定 (wasm のオンデマンド
+		// バラファイル配信)。fetch ベースのメディアなのでローカル filesystem 処理は
+		// せず、そのままプロジェクトパスとする。末尾は "/" を保証する。
+		tjs_string proj = _nargs[1];
+		if (!proj.empty() && proj.back() != TJS_W('/')) proj += TJS_W('/');
+		TVPUtf16ToUtf8(projectPath, proj);
+	} else if (_nargs.size() > 1) {
 		std::filesystem::path p(_nargs[1].c_str());
 		// C++20 以降 std::filesystem::path::u8string() は std::u8string を返すため
 		// std::string にそのまま代入・連結できない。バイト列は UTF-8 のまま

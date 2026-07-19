@@ -121,6 +121,14 @@ public:
 	// for exception showing
 	virtual void MessageDlg(const tjs_string& string, const tjs_string& caption, int type, int button) override;
 
+#ifdef __EMSCRIPTEN__
+	// wasm: ネイティブモーダルダイアログ (SDL_ShowMessageBox) はメインスレッドを
+	// ブロックして音がぶつれ、TVPTerminateSync でアプリごと固まるため使わない。
+	// HTML オーバーレイにエラーを出し、音を止めてアプリは終了させない (継続)。
+	// 実際の UI とリロードは JS 側 (web/pre.js の krkrzOnScriptError) が担う。
+	virtual bool OnUnhandledScriptException(const tjs_string& message, const tjs_string& trace, int dlgType) override;
+#endif
+
 	virtual bool GetAsyncKeyState(tjs_uint keycode, bool getcurrent) override;
 
 	virtual tjs_uint32 GetPadState(int no) override;

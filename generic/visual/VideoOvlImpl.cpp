@@ -20,6 +20,7 @@
 #include "LayerBitmapIntf.h"
 #include "MsgImpl.h"
 #include "LogIntf.h"
+#ifdef KRKRZ_MOVIE_STREAM
 #include "IMoviePlayer.h"
 
 //---------------------------------------------------------------------------
@@ -50,6 +51,7 @@ public:
 		return (size_t)const_cast<iTJSBinaryStream*>(mStream)->GetSize();
 	}
 };
+#endif // KRKRZ_MOVIE_STREAM
 
 //---------------------------------------------------------------------------
 // tTJSNI_VideoOverlay

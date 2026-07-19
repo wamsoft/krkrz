@@ -20,8 +20,24 @@
 #include "elements/ElementsUserConfig.h"
 #endif
 
+// wasm (Emscripten) では SDL_MAIN_USE_CALLBACKS を使わない。
+// この方式は内部で emscripten_set_main_loop を使うが、そのコールバックは JSPI で
+// promising されないため、モーダルダイアログの同期待機ループ (SDLElementsModalRunner
+// の PumpModalLoop) から JSPI で「メインスレッドを返しつつ待つ」ことができない
+// (SuspendError になる)。代わりに、自動で promising される自前 main() の while
+// ループで SDL_AppInit/AppEvent/AppIterate/AppQuit を駆動する (下方 __EMSCRIPTEN__
+// ブロック)。これによりモーダルのネストループからも JSPI 待機が成立する。
+#ifndef __EMSCRIPTEN__
 #define SDL_MAIN_USE_CALLBACKS
 #include <SDL3/SDL_main.h>
+#else
+#include <SDL3/SDL_init.h>   // SDL_AppResult / SDL_App* コールバック型
+#include <SDL3/SDL_events.h>
+#include <emscripten.h>
+#endif
+
+#include <algorithm>
+#include <vector>
 
 // 最後に押されたパッドをメインパッドにする
 // 0: 無効 (旧挙動: 最初に認識されたパッドを保持、それが切断されない限り別パッドに
@@ -35,8 +51,43 @@
 #endif
 
 SDL_Joystick *joystick = NULL;
-SDL_Gamepad *gamepad = NULL;
+SDL_Gamepad *gamepad = NULL;   // 現在のメイン (アクティブ) パッド。GetPadState 等が読む
 int gamepad_count = 0;
+
+// 接続中に「開いている」全ゲームパッド。SDL はここに登録 (= SDL_OpenGamepad) した
+// パッドのボタンイベントしか生成しないため、「最後に押したパッドをメインにする」
+// には全機を開いたまま保持する必要がある (アクティブ機だけを開くと他機のボタンが
+// イベント化されず切り替わらない)。
+static std::vector<SDL_Gamepad *> g_open_gamepads;
+
+// メイン (アクティブ) パッドを差し替え、TJS 側へ変更通知する。gp==NULL でクリア。
+static void SetActiveGamepad(SDL_Gamepad *gp)
+{
+    gamepad = gp;
+    tjs_string name;
+    if (gp) TVPUtf8ToUtf16(name, SDL_GetGamepadName(gp));
+    TVPFireOnJoypadChange(0, gp ? name.c_str() : TJS_W(""));
+}
+
+// which のパッドを (未オープンなら) 開いて g_open_gamepads に登録し、ハンドルを返す。
+// 既に開いていれば同じハンドルを返す (再オープンによる refcount 増加を避ける)。
+static SDL_Gamepad *EnsureGamepadOpen(SDL_JoystickID which)
+{
+    SDL_Gamepad *gp = SDL_GetGamepadFromID(which);
+    if (!gp) {
+        gp = SDL_OpenGamepad(which);
+        if (!gp) {
+            SDL_Log("Failed to open gamepad ID %u: %s",
+                    (unsigned int) which, SDL_GetError());
+            return nullptr;
+        }
+    }
+    if (std::find(g_open_gamepads.begin(), g_open_gamepads.end(), gp)
+            == g_open_gamepads.end()) {
+        g_open_gamepads.push_back(gp);
+    }
+    return gp;
+}
 
 tjs_string SDL3Application::GetJoypadType(int no)
 {
@@ -206,26 +257,36 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event)
     
     case SDL_EVENT_GAMEPAD_ADDED:
         /* this event is sent for each hotplugged stick, but also each already-connected joystick during SDL_Init(). */
-        if (gamepad == NULL) {  /* we don't have a stick yet and one was added, open it! */
-            gamepad = SDL_OpenGamepad(event->gdevice.which);
-            if (!gamepad) {
-                SDL_Log("Failed to open gamepad ID %u: %s", (unsigned int) event->gdevice.which, SDL_GetError());
-            } else {
-                tjs_string name;
-                TVPUtf8ToUtf16(name, SDL_GetGamepadName(gamepad));
-                TVPFireOnJoypadChange(0, name.c_str());
+        // 全ゲームパッドを開いたまま保持する (開いていないパッドは SDL がボタン
+        // イベントを生成せず、「最後に押したパッドへ切替」が効かないため)。
+        {
+            SDL_Gamepad *gp = EnsureGamepadOpen(event->gdevice.which);
+            // まだメインが無ければ、最初に来たものをメインにする。
+            if (gp && gamepad == NULL) {
+                SetActiveGamepad(gp);
             }
-        } else {
-            SDL_Log("Gamepad already opened, ignoring additional add event for ID %u", (unsigned int) event->gdevice.which);
         }
         ShowGamepadInfo("added"); // Show connected gamepads info
         break;
 
     case SDL_EVENT_GAMEPAD_REMOVED:
-        if (gamepad && (SDL_GetGamepadID(gamepad) == event->gdevice.which)) {
-            SDL_CloseGamepad(gamepad);  /* our joystick was unplugged. */
-            gamepad = NULL;
-            TVPFireOnJoypadChange(0, TJS_W(""));
+        {
+            SDL_JoystickID which = event->gdevice.which;
+            bool was_active = (gamepad && SDL_GetGamepadID(gamepad) == which);
+            // 保持リストから該当ハンドルを探して除去 + クローズ (SDL の削除後 ID
+            // 検索に頼らず、開済みハンドルの instance id を突き合わせる)。
+            for (auto it = g_open_gamepads.begin(); it != g_open_gamepads.end(); ++it) {
+                if (SDL_GetGamepadID(*it) == which) {
+                    SDL_CloseGamepad(*it);
+                    g_open_gamepads.erase(it);
+                    break;
+                }
+            }
+            // メインが抜かれたら、残っている開済みパッドへフォールバック (無ければ null)。
+            if (was_active) {
+                SetActiveGamepad(g_open_gamepads.empty() ? nullptr
+                                                         : g_open_gamepads.front());
+            }
         }
         ShowGamepadInfo("removed"); // Show connected gamepads info
         break;
@@ -234,22 +295,19 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event)
 
     case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
     case SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN:
-        // 最後にボタンを押したパッドをメインパッドにする処理
-        if (!gamepad || (gamepad && (SDL_GetGamepadID(gamepad) != event->gbutton.which))) {
-            auto newgamepad = SDL_OpenGamepad(event->gdevice.which);
-            if (newgamepad) {
-                if (gamepad) {
-                    SDL_CloseGamepad(gamepad);
+        // 最後にボタン / タッチパッドを押したパッドをメインにする。全機を開いた
+        // まま保持しているので、既存ハンドルへ「差し替えるだけ」でよい (旧実装の
+        // ように旧メインを Close しない — 閉じると以後そのパッドのイベントが
+        // 来なくなり、押しても戻れなくなる)。button / touchpad どちらの共用体
+        // メンバも which は同一オフセットなので gbutton.which で読める。
+        {
+            SDL_JoystickID which = event->gbutton.which;
+            if (!gamepad || SDL_GetGamepadID(gamepad) != which) {
+                SDL_Gamepad *gp = EnsureGamepadOpen(which);
+                if (gp) {
+                    SetActiveGamepad(gp);
+                    SDL_Log("change main gamepad ID %u", (unsigned int) which);
                 }
-                gamepad = newgamepad;
-                SDL_Log("change main gamepad ID %u", (unsigned int) event->gdevice.which);
-                // TJS 側に「メインパッドが切り替わった」を通知 (ADDED / REMOVED と
-                // 同経路)。これがないとパッド種別表示が古いままになる。
-                tjs_string name;
-                TVPUtf8ToUtf16(name, SDL_GetGamepadName(gamepad));
-                TVPFireOnJoypadChange(0, name.c_str());
-            } else {
-                SDL_Log("Failed to open gamepad ID %u: %s", (unsigned int) event->gdevice.which, SDL_GetError());
             }
         }
         break;
@@ -476,3 +534,44 @@ SDL_AppResult SDL_AppIterate(void *appstate)
     }
     return SDL_APP_CONTINUE;
 }
+
+#ifdef __EMSCRIPTEN__
+//---------------------------------------------------------------------------
+// wasm 専用メインループ
+//
+// JSPI import。requestAnimationFrame を await して次フレームまでメインスタックを
+// suspend する。呼ぶ側 (main -> SDL_AppIterate / PumpModalLoop) は promising な
+// main() 配下にあるため、深いネストからでも suspend が伝播する。
+// SDLElementsModalRunner の PumpModalLoop からも同じ関数を呼ぶ (extern 宣言)。
+//---------------------------------------------------------------------------
+EM_ASYNC_JS(void, krkrz_jspi_wait_frame, (), {
+	await new Promise(function (resolve) { requestAnimationFrame(resolve); });
+});
+
+int main(int argc, char *argv[])
+{
+	void *appstate = nullptr;
+	if (SDL_AppInit(&appstate, argc, argv) != SDL_APP_CONTINUE) {
+		SDL_AppQuit(appstate, SDL_APP_SUCCESS);
+		return 0;
+	}
+
+	SDL_AppResult rc = SDL_APP_CONTINUE;
+	while (rc == SDL_APP_CONTINUE) {
+		SDL_Event ev;
+		while (SDL_PollEvent(&ev)) {
+			rc = SDL_AppEvent(appstate, &ev);
+			if (rc != SDL_APP_CONTINUE) break;
+		}
+		if (rc == SDL_APP_CONTINUE) {
+			rc = SDL_AppIterate(appstate);
+		}
+		// 次フレームまで JSPI で待機 (メインスレッドをブラウザに返す)。
+		// promising な main() 配下なので suspend が成立する。
+		krkrz_jspi_wait_frame();
+	}
+
+	SDL_AppQuit(appstate, rc);
+	return 0;
+}
+#endif // __EMSCRIPTEN__

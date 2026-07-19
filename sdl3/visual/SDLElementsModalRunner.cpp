@@ -19,6 +19,12 @@
 
 #include <string>
 
+#ifdef __EMSCRIPTEN__
+// wasm メインループ (sdl3/environ/main.cpp) が定義する JSPI import。
+// requestAnimationFrame を await して次フレームまでメインスタックを suspend する。
+extern "C" void krkrz_jspi_wait_frame();
+#endif
+
 //---------------------------------------------------------------------------
 // 内部: elements_modal::result → tTVPElementsModalResult への変換
 //---------------------------------------------------------------------------
@@ -132,7 +138,15 @@ void PumpModalLoop(SDL3Application* app, tTVPElementsDialogManager& mgr,
 		app->SendPadEvent();
 		if (!app->IsInBackground()) app->RequestUpdate();
 		app->Dispatch();
+#ifdef __EMSCRIPTEN__
+		// wasm: SDL_Delay でメインスレッドをブロックするとブラウザのイベント
+		// ループが止まる (描画・入力・オーディオが凍る)。JSPI で次フレームまで
+		// メインスタックを suspend し、ブラウザに制御を返す。このネストループは
+		// promising な main() (sdl3/environ/main.cpp) 配下なので suspend が成立する。
+		krkrz_jspi_wait_frame();
+#else
 		SDL_Delay(8);
+#endif
 	}
 
 	// "close_on_click" / フロー <exit> で finish した場合は mgr が結果を

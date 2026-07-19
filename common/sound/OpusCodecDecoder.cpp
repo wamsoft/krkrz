@@ -763,9 +763,12 @@ public:
 tTVPWaveDecoder *tTVPWDC_Opus::Create(const ttstr &storagename, const ttstr &extension)
 {
 	if (extension != TJS_W(".opus")) return nullptr;
+	// ストリームオープンの失敗 (ファイルが無い等) は「このデコーダで扱えない」
+	// ではないので握りつぶさず伝播させる。catch で畳むのはフォーマット判定
+	// まわりの失敗のみ
+	std::unique_ptr<iTJSBinaryStream> stream(TVPCreateStream(storagename));
+	if (!stream) return nullptr;
 	try {
-		std::unique_ptr<iTJSBinaryStream> stream(TVPCreateStream(storagename));
-		if (!stream) return nullptr;
 		std::unique_ptr<tTVPWD_Opus> dec(new tTVPWD_Opus(std::move(stream)));
 		if (!dec->CheckFormat()) return nullptr;
 		return dec.release();

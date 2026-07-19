@@ -452,7 +452,7 @@ TJS_BEGIN_NATIVE_PROP_DECL(buffer)
 	{
 		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Bitmap);
 		if( _this->IsLoading() ) TVPThrowExceptionMessage(TVPCurrentlyAsyncLoadBitmap);
-		*result = reinterpret_cast<tjs_intptr_t>(_this->GetPixelBuffer());
+		*result = static_cast<tTVInteger>(reinterpret_cast<tjs_intptr_t>(_this->GetPixelBuffer()));
 		return TJS_S_OK;
 	}
 	TJS_END_NATIVE_PROP_GETTER
@@ -467,7 +467,7 @@ TJS_BEGIN_NATIVE_PROP_DECL(bufferForWrite)
 	{
 		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Bitmap);
 		if( _this->IsLoading() ) TVPThrowExceptionMessage(TVPCurrentlyAsyncLoadBitmap);
-		*result = reinterpret_cast<tjs_intptr_t>(_this->GetPixelBufferForWrite());
+		*result = static_cast<tTVInteger>(reinterpret_cast<tjs_intptr_t>(_this->GetPixelBufferForWrite()));
 		return TJS_S_OK;
 	}
 	TJS_END_NATIVE_PROP_GETTER
@@ -533,7 +533,7 @@ TJS_BEGIN_NATIVE_PROP_DECL(mainImageBuffer)
 	{
 		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Bitmap);
 		if( _this->IsLoading() ) TVPThrowExceptionMessage(TVPCurrentlyAsyncLoadBitmap);
-		*result = reinterpret_cast<tjs_intptr_t>(_this->GetPixelBuffer());
+		*result = static_cast<tTVInteger>(reinterpret_cast<tjs_intptr_t>(_this->GetPixelBuffer()));
 		return TJS_S_OK;
 	}
 	TJS_END_NATIVE_PROP_GETTER
@@ -548,7 +548,7 @@ TJS_BEGIN_NATIVE_PROP_DECL(mainImageBufferForWrite)
 	{
 		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Bitmap);
 		if( _this->IsLoading() ) TVPThrowExceptionMessage(TVPCurrentlyAsyncLoadBitmap);
-		*result = reinterpret_cast<tjs_intptr_t>(_this->GetPixelBufferForWrite());
+		*result = static_cast<tTVInteger>(reinterpret_cast<tjs_intptr_t>(_this->GetPixelBufferForWrite()));
 		return TJS_S_OK;
 	}
 	TJS_END_NATIVE_PROP_GETTER

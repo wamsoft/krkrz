@@ -237,19 +237,21 @@ tTVPWaveDecoder * tTVPWDC_Vorbis::Create(const ttstr & storagename, const ttstr 
 {
 	if(extension != TJS_W(".ogg")) return nullptr;
 
+	// ストリームオープンの失敗 (ファイルが無い等) は「このデコーダで扱えない」
+	// ではないので握りつぶさず伝播させる。catch で畳むのはフォーマット判定
+	// まわりの失敗のみ
+	std::unique_ptr<iTJSBinaryStream> stream( TVPCreateStream(storagename) );
+	if( !stream ) return nullptr;
+
 	try {
-		std::unique_ptr<iTJSBinaryStream> stream( TVPCreateStream(storagename) );
-		if( stream ) {
-			std::unique_ptr<tTVPWD_Vorbis> decoder( new tTVPWD_Vorbis( std::move(stream) ) );
-			if( decoder->CheckFormat() == false ) {
-				return nullptr;
-			}
-			return decoder.release();
+		std::unique_ptr<tTVPWD_Vorbis> decoder( new tTVPWD_Vorbis( std::move(stream) ) );
+		if( decoder->CheckFormat() == false ) {
+			return nullptr;
 		}
+		return decoder.release();
 	} catch(...) {
 		return nullptr;
 	}
-	return nullptr;
 }
 //---------------------------------------------------------------------------
 tTVPWDC_Vorbis VorbisDecoderCreator;

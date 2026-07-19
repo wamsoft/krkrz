@@ -639,9 +639,9 @@ public:
 	//---------------------------------------------------------------------------
 	// Generic版用拡張メソッド
 	//---------------------------------------------------------------------------
-	virtual void TJS_INTF_METHOD UpdateVideo(int w, int h, std::function<void(char *dest, int pitch)> updator){};
-	virtual void TJS_INTF_METHOD ClearVideo(){}
-	virtual void TJS_INTF_METHOD SetWaitVSync(bool enable) {}
+	virtual void UpdateVideo(int w, int h, std::function<void(char *dest, int pitch)> updator){};
+	virtual void ClearVideo(){}
+	virtual void SetWaitVSync(bool enable) {}
 #endif
 
 // ほかのメソッドについては実装しない

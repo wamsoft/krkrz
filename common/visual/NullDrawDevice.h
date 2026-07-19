@@ -68,9 +68,9 @@ public:
 	bool TJS_INTF_METHOD WaitForVBlank( tjs_int* in_vblank, tjs_int* delayed ) override { return false; }
 
 #ifdef __GENERIC__	
-	virtual void TJS_INTF_METHOD UpdateVideo(int w, int h, std::function<void(char *dest, int pitch)> updator) override {};
-	virtual void TJS_INTF_METHOD ClearVideo() override {}
-	virtual void TJS_INTF_METHOD SetWaitVSync(bool enable) override {}
+	virtual void UpdateVideo(int w, int h, std::function<void(char *dest, int pitch)> updator) override {};
+	virtual void ClearVideo() override {}
+	virtual void SetWaitVSync(bool enable) override {}
 #endif
 
 };

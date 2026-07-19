@@ -5,7 +5,7 @@
 #include <string>
 #include <algorithm>
 
-#if defined ( __clang__ ) && defined( ANDROID ) || defined(NN_NINTENDO_SDK)
+#if defined ( __clang__ ) && defined( ANDROID ) || defined(NN_NINTENDO_SDK) || defined(__EMSCRIPTEN__)
 #else
 #include <iostream>
 #include <locale>
@@ -13,7 +13,7 @@
 
 struct equal_char_ignorecase {
 	inline bool operator()(char x, char y) const {
-#if defined ( __clang__ ) && defined( ANDROID ) || defined(NN_NINTENDO_SDK) || defined(__APPLE__)
+#if defined ( __clang__ ) && defined( ANDROID ) || defined(NN_NINTENDO_SDK) || defined(__APPLE__) || defined(__EMSCRIPTEN__)
 		return std::tolower(x) == std::tolower(y);
 #else
 		std::locale loc;
@@ -28,7 +28,7 @@ inline bool icomp( const std::string& x, const std::string& y ) {
 
 struct equal_wchar_ignorecase {
 	inline bool operator()(tjs_char x, tjs_char y) const {
-#if defined ( __clang__ ) && defined( ANDROID ) || defined(NN_NINTENDO_SDK) || defined(__APPLE__)
+#if defined ( __clang__ ) && defined( ANDROID ) || defined(NN_NINTENDO_SDK) || defined(__APPLE__) || defined(__EMSCRIPTEN__)
 		tjs_char x2 = x;
 		if( x2 >= u'A' && x2 <= u'Z' ) {
 			x2 = x2 + (u'a' - u'A');

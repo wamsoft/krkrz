@@ -62,12 +62,12 @@ constexpr uint32_t kMagicRaw  = 0x4D454D31u; // "1MEM"  (32-bit short)
 constexpr uint32_t kMagicPool = 0x4D454D32u; // "2MEM"
 
 struct Header {
-	size_t   size;     // 8
+	uint64_t size;     // 8 (size_t だと 32bit 環境で 4 byte になり 16 byte 前提が崩れる)
 	uint32_t magic;    // 4
 	uint16_t tag;      // 2 (TVPAllocTag as raw uint16)
 	uint16_t pad;      // 2 (alignment, unused)
 };
-// MSVC x64 / Linux x86_64 共通で size_t = 8 byte なので Header = 16 byte。
+// size を明示 64bit にしているため 32bit / 64bit いずれの環境でも Header = 16 byte。
 // __STDCPP_DEFAULT_NEW_ALIGNMENT__ (典型 8 or 16) を満たすため 16 倍数を確認。
 static_assert(sizeof(Header) == 16, "Header must be exactly 16 bytes");
 static_assert(sizeof(Header) % 16 == 0, "Header must be 16-byte aligned");
@@ -265,7 +265,7 @@ inline void do_free(Collector &c, void *p) {
 	// post-init モード: header magic で経路を識別。
 	Header *h = reinterpret_cast<Header *>(static_cast<char *>(p) - sizeof(Header));
 	if (h->magic == kMagicPool) {
-		size_t size = h->size;
+		size_t size = static_cast<size_t>(h->size);
 		uint16_t tag = h->tag;
 		c.recordFree(size, tag);
 		// pool は bindPool 後 unbind しない前提。
@@ -278,7 +278,7 @@ inline void do_free(Collector &c, void *p) {
 		return;
 	}
 	if (h->magic == kMagicRaw) {
-		c.recordFree(h->size, h->tag);
+		c.recordFree(static_cast<size_t>(h->size), h->tag);
 		std::free(h);
 		return;
 	}
@@ -313,7 +313,7 @@ inline void *do_realloc(Collector &c, void *p, size_t size) {
 		// → std::free に流れて整合する。
 		return std::realloc(p, size);
 	}
-	size_t old_size = oldH->size;
+	size_t old_size = static_cast<size_t>(oldH->size);
 	void *q = do_malloc(c, size);
 	if (!q) return nullptr; // 元の p は触らずそのまま (標準準拠)
 	std::memcpy(q, p, old_size < size ? old_size : size);

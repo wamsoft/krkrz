@@ -1,0 +1,89 @@
+// ビューポート (ゲーム画面表示画角制御) 動作確認用テストデータ。
+// 外側 surface = 1280x720、内側ゲーム (primaryLayer) = 640x400。
+// REPL/エージェントから gWin.viewportFit 等を操作して captureScreen で確認する。
+
+var gWin;
+
+class ViewportTestWindow extends Window {
+	var primaryLayer;
+	var GW = 640, GH = 400;    // 内側ゲームサイズ
+	var SW = 1280, SH = 720;   // 外側 surface サイズ
+
+	function ViewportTestWindow() {
+		super.Window();
+		caption = "Viewport Test (game 640x400 in window 1280x720)";
+		setInnerSize(SW, SH);
+
+		// ゲーム本体 (内側 640x400) — primaryLayer を surface と別サイズにする。
+		primaryLayer = new Layer(this, null);
+		primaryLayer.setSize(GW, GH);
+		primaryLayer.type = ltOpaque;
+		drawGame();
+		add(primaryLayer);
+
+		// 余白の背景色 (ゲーム外周)。
+		viewportBgColor = 0xff203060;  // 暗い青
+		viewportFit = "contain";       // 既定
+
+		visible = true;
+	}
+
+	function drawGame() {
+		with (primaryLayer) {
+			.fillRect(0, 0, GW, GH, 0xff101820);
+			// 外枠 (赤)
+			.fillRect(0, 0, GW, 4, 0xffff4040);
+			.fillRect(0, GH - 4, GW, 4, 0xffff4040);
+			.fillRect(0, 0, 4, GH, 0xffff4040);
+			.fillRect(GW - 4, 0, 4, GH, 0xffff4040);
+			// 中央十字 (縦=緑, 横=青)
+			.fillRect((GW \ 2) - 1, 0, 3, GH, 0xff40ff40);
+			.fillRect(0, (GH \ 2) - 1, GW, 3, 0xff4040ff);
+			// 四隅マーカー
+			.fillRect(8, 8, 48, 48, 0xffffff00);          // 左上 黄
+			.fillRect(GW - 56, 8, 48, 48, 0xff00ffff);    // 右上 シアン
+			.fillRect(8, GH - 56, 48, 48, 0xffff00ff);    // 左下 マゼンタ
+			.fillRect(GW - 56, GH - 56, 48, 48, 0xffffffff); // 右下 白
+		}
+	}
+
+	// 壁紙 PNG を生成してビューポート余白へ設定する。
+	function makeAndSetWallpaper() {
+		var w = 256, h = 256;
+		// primaryLayer の子として作る (parentless 2 枚目は不可)。一時的な描画用。
+		var wp = new Layer(this, primaryLayer);
+		wp.setSize(w, h);
+		wp.type = ltOpaque;
+		// 斜めグラデーション風の市松 + ライン。
+		for (var y = 0; y < h; y += 32) {
+			for (var x = 0; x < w; x += 32) {
+				var c = (((x \ 32) + (y \ 32)) & 1) ? 0xff404060 : 0xff202840;
+				wp.fillRect(x, y, 32, 32, c);
+			}
+		}
+		wp.fillRect(0, h \ 2 - 2, w, 4, 0xff8080a0);
+		wp.fillRect(w \ 2 - 2, 0, 4, h, 0xff8080a0);
+		var path = "wallpaper_test.png";
+		wp.saveLayerImage(path, "png");
+		invalidate wp;
+		setViewportWallpaper(path, "cover", 0.5, 0.5);
+	}
+
+	function onKeyDown(key, shift) {
+		// 手動確認用: 数字キーで fit 切替、W で壁紙、C で壁紙クリア。
+		switch (key) {
+		case 0x31: viewportFit = "contain"; break;  // 1
+		case 0x32: viewportFit = "cover";   break;  // 2
+		case 0x33: viewportFit = "fill";    break;  // 3
+		case 0x34: viewportFit = "none";    break;  // 4
+		case 0x35: viewportFit = "integer"; break;  // 5
+		case 0x36: viewportFit = "custom"; viewportZoom = 1.8; break; // 6
+		case 0x57: makeAndSetWallpaper(); break;    // W
+		case 0x43: clearViewportWallpaper(); break; // C
+		}
+		// 再描画を促す
+		primaryLayer.update(0, 0, GW, GH);
+	}
+}
+
+gWin = new ViewportTestWindow();
