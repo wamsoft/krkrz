@@ -1,0 +1,123 @@
+// -*- mode:tjs2 -*-
+// ======================================================================
+//  layer_basic シーン (LayerBasicScene) — 合成モードと不透明度
+// ======================================================================
+
+class LayerBasicScene extends DemoScene
+{
+    var samples;
+    var src;
+    var opacity = 190;
+    var COLS = 3, CELL_W = 280, CELL_H = 166, MARGIN = 20, TOP = 20, LABEL_H = 24;
+    var pendingDraw = false;
+
+    function LayerBasicScene() { super.DemoScene("合成モードと不透明度"); }
+
+    function create()
+    {
+        samples = [
+            %[ mode:omOpaque,         name:"omOpaque (不透明)" ],
+            %[ mode:omAlpha,          name:"omAlpha (アルファ)" ],
+            %[ mode:omAdditive,       name:"omAdditive (加算)" ],
+            %[ mode:omSubtractive,    name:"omSubtractive (減算)" ],
+            %[ mode:omMultiplicative, name:"omMultiplicative (乗算)" ],
+            %[ mode:omScreen,         name:"omScreen (スクリーン)" ],
+            %[ mode:omDodge,          name:"omDodge (覆い焼き)" ],
+            %[ mode:omDarken,         name:"omDarken (比較暗)" ],
+            %[ mode:omLighten,        name:"omLighten (比較明)" ]
+        ];
+        src = new Layer(window, stage);
+        src.setSize(CELL_W, CELL_H);
+        src.visible = false;
+        window.add(src);
+        drawSprite(src);
+
+        redraw();
+        setInfo("パネルで不透明度 (opacity) を変更すると全サンプルに反映");
+        showPanelDict(panelDict());
+    }
+
+    function drawSprite(lay)
+    {
+        var w = lay.width, h = lay.height, strips = 64, sw = w / strips;
+        for (var s = 0; s < strips; s++) {
+            var x = (s * sw) \ 1, x2 = ((s + 1) * sw) \ 1;
+            var hue = s / strips;
+            lay.fillRect(x, 0, x2 - x, h / 2 \ 1, hsv(hue, 1.0));
+            lay.fillRect(x, h / 2 \ 1, x2 - x, h - (h / 2 \ 1), hsv(hue, 0.5));
+        }
+    }
+
+    function redraw()
+    {
+        stage.fillRect(0, 0, 1280, 720, 0xff14161c);
+        for (var i = 0; i < samples.count; i++) {
+            var col = i % COLS, row = i / COLS \ 1;
+            var x = MARGIN + col * (CELL_W + MARGIN);
+            var y = TOP + row * (CELL_H + LABEL_H + MARGIN);
+            drawCellBg(x, y, CELL_W, CELL_H);
+            stage.operateRect(x, y, src, 0, 0, CELL_W, CELL_H, samples[i].mode, opacity);
+            stage.fillRect(x, y + CELL_H + 2, CELL_W, 20, 0xff222835);
+            stage.font.height = 17;
+            stage.drawText(x + 6, y + CELL_H + 3, samples[i].name, 0xffffff, 255);
+        }
+        stage.update();
+    }
+
+    function drawCellBg(ox, oy, w, h)
+    {
+        for (var yy = 0; yy < h; yy += 2) {
+            var t = yy / h;
+            var r = (40 + 120 * t) \ 1, g = (90 + 60 * (1 - t)) \ 1, b = (140 + 80 * t) \ 1;
+            stage.fillRect(ox, oy + yy, w, 2, 0xff000000 | (r << 16) | (g << 8) | b);
+        }
+        stage.fillRect(ox, oy, w, 26, 0xff101018);
+        stage.fillRect(ox, oy + h - 26, w, 26, 0xffe8e8f0);
+    }
+
+    function panelDict()
+    {
+        return %[
+            size : [280, 180], background : [26, 30, 40, 236], locale : "ja-JP",
+            align : "top_right", margin : 16,
+            content : %[ type : "margin", padding : 14, child : %[ type : "vtile", children : [
+                %[ type : "hspacer", width : 248 ],
+                %[ type : "align_center", child : %[ type : "label", text : "合成サンプル設定", size_scale : 1.2 ] ],
+                %[ type : "vspacer", height : 12 ],
+                %[ type : "label", text : "不透明度 (opacity 0〜255)" ],
+                %[ type : "slider_with_range", id : "op", min : 0, max : 255, initial : opacity ],
+                %[ type : "vspacer", height : 10 ],
+                %[ type : "label", text : "9 種の合成モード (operateRect) を比較", color : [150, 180, 220, 255] ]
+            ] ] ]
+        ];
+    }
+
+    function onPanelAction(id, payload)
+    {
+        if (id == "op") { opacity = Math.floor(payload + 0.5); pendingDraw = true; }
+    }
+
+    function onDemoFrame(tick) { if (pendingDraw) { pendingDraw = false; redraw(); } }
+
+    function onDemoTest() { dm(@"@demotest:layer_basic modes=${samples.count} opacity=${opacity}"); }
+
+    // 明るい HSV → ARGB 不透明。vscale で明度スケール。
+    function hsv(h, vscale)
+    {
+        if (vscale === void) vscale = 1.0;
+        h = (h - (Math.floor(h))) * 6.0;
+        var i = Math.floor(h), f = h - i;
+        var vmax = (255 * vscale) \ 1, vmin = (60 * vscale) \ 1;
+        var v = vmax, p = vmin, q = (vmax * (1 - f) + vmin * f) \ 1, t = (vmin * (1 - f) + vmax * f) \ 1;
+        var r, g, b;
+        switch (i % 6) {
+        case 0: r = v; g = t; b = p; break;
+        case 1: r = q; g = v; b = p; break;
+        case 2: r = p; g = v; b = t; break;
+        case 3: r = p; g = q; b = v; break;
+        case 4: r = t; g = p; b = v; break;
+        default: r = v; g = p; b = q; break;
+        }
+        return 0xff000000 | (r << 16) | (g << 8) | b;
+    }
+}

@@ -1,0 +1,107 @@
+// -*- mode:tjs2 -*-
+// ======================================================================
+//  text_font シーン (TextFontScene) — フォントと文字描画
+// ======================================================================
+
+class TextFontScene extends DemoScene
+{
+    var faceList = [];
+    var sample = "あいうAgqQ 漢字 0123 ()!?";
+
+    function TextFontScene() { super.DemoScene("フォントと文字描画"); }
+
+    function create()
+    {
+        try { faceList = stage.font.getList(0); } catch (e) { faceList = []; }
+        draw();
+        setInfo("フォント / 文字描画の一覧");
+    }
+
+    function head(x, y, text)
+    {
+        resetFont();
+        stage.font.height = 18;
+        stage.drawText(x, y, "■ " + text, 0x8fb8e8, 255);
+    }
+
+    function draw()
+    {
+        var s = stage;
+        s.fillRect(0, 0, 1280, 720, 0xff181c24);
+
+        head(24, 16, "サイズ (font.height)");
+        var sizes = [ 14, 20, 28, 40 ];
+        var yy = 40;
+        for (var i = 0; i < sizes.count; i++) {
+            resetFont(); s.font.height = sizes[i];
+            s.drawText(30, yy, sizes[i] + "px : " + sample, 0xe8ecf4, 255);
+            yy += sizes[i] + 8;
+        }
+
+        head(24, 210, "装飾 (bold / italic / underline / strikeout)");
+        resetFont(); s.font.height = 26;
+        s.drawText(30, 234, "通常 Normal", 0xe8ecf4, 255);
+        resetFont(); s.font.height = 26; s.font.bold = true;
+        s.drawText(260, 234, "太字 Bold", 0xffd870, 255);
+        resetFont(); s.font.height = 26; s.font.italic = true;
+        s.drawText(470, 234, "斜体 Italic", 0x90e0ff, 255);
+        resetFont(); s.font.height = 26; s.font.underline = true;
+        s.drawText(700, 234, "下線 Under", 0xa0f0a0, 255);
+        resetFont(); s.font.height = 26; s.font.strikeout = true;
+        s.drawText(920, 234, "取消線 Strike", 0xf0a0c0, 255);
+        resetFont(); s.font.height = 26; s.font.bold = true; s.font.italic = true; s.font.underline = true;
+        s.drawText(30, 272, "組み合わせ Bold+Italic+Under", 0xffe0a0, 255);
+
+        head(24, 320, "アンチエイリアス (drawText の aa 引数)");
+        resetFont(); s.font.height = 40;
+        s.drawText(30, 344, "aa=true 滑らか", 0xe8ecf4, 255, true);
+        s.drawText(400, 344, "aa=false ギザギザ", 0xe8ecf4, 255, false);
+
+        head(24, 410, "影 (shadow)");
+        resetFont(); s.font.height = 40;
+        s.drawText(30, 434, "影つき文字 Shadow", 0xffffff, 255, true, 255, 0x000000, 3, 3, 3);
+        s.drawText(430, 434, "ぼかし影 Blur", 0xffe060, 255, true, 200, 0x402000, 6, 2, 2);
+
+        head(24, 500, "文字幅計測 (getTextWidth) — 枠が実際の幅");
+        resetFont(); s.font.height = 32;
+        var t = "measure この文字列の幅";
+        var w = s.font.getTextWidth(t);
+        var h = s.font.getTextHeight(t);
+        s.fillRect(30, 524, w, h, 0xff2a3550);
+        s.drawText(30, 524, t, 0xffffff, 255);
+        resetFont(); s.font.height = 15;
+        s.drawText(30, 524 + h + 4, @"getTextWidth=${w}  getTextHeight=${h}", 0x9fb0c8, 255);
+
+        head(660, 500, "drawText の色は 0xRRGGBB (24bit)");
+        resetFont(); s.font.height = 22;
+        s.drawText(666, 524, "0xffffff (正) → 白", 0xffffff, 255);
+        s.drawText(666, 552, "0xffffffff (誤) → システムカラー扱い", 0xffffff, 255);
+        s.fillRect(666, 580, 420, 26, 0xff30506f);
+        s.drawText(672, 581, "  ← これは 0xffffffff 指定 (黒化)", 0xffffffff, 255);
+
+        head(660, 16, @"フォント一覧 (Font.getList) — ${faceList.count} 件");
+        resetFont(); s.font.height = 20;
+        var shown = faceList.count < 14 ? faceList.count : 14;
+        for (var i = 0; i < shown; i++) {
+            resetFont();
+            s.font.height = 22;
+            try { s.font.face = faceList[i]; } catch (e) {}
+            s.drawText(666, 42 + i * 30, faceList[i] + " : サンプル Abc 123", 0xd8e0ee, 255);
+        }
+        if (faceList.count == 0) {
+            resetFont(); s.font.height = 20;
+            s.drawText(666, 44, "(この環境ではフォント列挙が使えません)", 0xc0a0a0, 255);
+        }
+        s.update();
+    }
+
+    function resetFont()
+    {
+        var f = stage.font;
+        f.face = "";
+        f.bold = false; f.italic = false; f.underline = false; f.strikeout = false;
+        f.angle = 0;
+    }
+
+    function onDemoTest() { dm(@"@demotest:text_font faces=${faceList.count}"); }
+}

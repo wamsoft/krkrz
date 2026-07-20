@@ -55,6 +55,10 @@ protected:
 	void CancelEvents() override;
 	bool AreEventsInQueue();
 
+	// onTimer ハンドラの連続例外ガード ([[EventIntf.h]] 参照)。
+	// 上限到達で enabled=false + キュー破棄して WARNING を出す。
+	tTVPRepeatedExceptionGuard ExceptionGuard;
+
 public:
 	tTJSVariantClosure GetActionOwnerNoAddRef() const { return ActionOwner; }
 	ttstr & GetActionName() { return ActionName; }
@@ -64,6 +68,12 @@ public:
 
 	tTVPAsyncTriggerMode GetMode() const { return Mode; }
 	void SetMode(tTVPAsyncTriggerMode mode) { Mode = mode; }
+
+	// onTimer 正常終了 / 例外の記録。例外が上限に達したらタイマーを停止する。
+	void OnTimerActionSucceeded() { ExceptionGuard.OnSuccess(); }
+	void OnTimerActionFailed();
+	// enabled=true の明示再設定でガードをリセットして再開できるようにする
+	void ResetExceptionGuard() { ExceptionGuard.Reset(); }
 };
 //---------------------------------------------------------------------------
 

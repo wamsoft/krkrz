@@ -11,6 +11,8 @@
 #include "ThreadIntf.h"
 #include "ComplexRect.h"
 #include "EventIntf.h"
+#include "DebugIntf.h"   // TVPAddImportantLog
+#include "ScriptMgnIntf.h"   // TVPScriptExceptionShownCount
 #include "WindowImpl.h"
 
 // フォーム参照用
@@ -234,10 +236,25 @@ void TJS_INTF_METHOD tTVPOGLDrawDevice::Show()
 		CanvasInstance->SetSurfaceSize(SurfaceWidth, SurfaceHeight);
 		CanvasInstance->BeginDrawing();
 		try {
-			if( Self )
+			// onDraw ハンドラが毎フレーム例外を投げ続けるのを防ぐガード。
+			// TVPPostEvent(IMMEDIATE) は例外を内部で表示して飲み込むため、
+			// TVPScriptExceptionShownCount の前後差分でハンドラの失敗を検知
+			// する。連続例外が上限 (-eventexceptionlimit) に達したら発火を
+			// 停止する (画面クリア等の描画サイクル自体は継続、
+			// drawDevice.resumeOnDraw() で再開)。
+			if( Self && !OnDrawDisabled )
 			{
 				static ttstr eventname( TJS_W( "onDraw" ) );
+				tjs_uint64 shown = TVPScriptExceptionShownCount;
 				TVPPostEvent( Self, Self, eventname, 0, TVP_EPT_IMMEDIATE, 0, nullptr );
+				if( TVPScriptExceptionShownCount != shown ) {
+					if( OnDrawExceptionGuard.OnException() ) {
+						OnDrawDisabled = true;
+						TVPAddImportantLog( TJS_W("OGLDrawDevice: onDraw suspended after repeated exceptions. Call drawDevice.resumeOnDraw() to resume.") );
+					}
+				} else {
+					OnDrawExceptionGuard.OnSuccess();
+				}
 			}
 		} catch( ... ) {
 			CanvasInstance->EndDrawing();
@@ -786,6 +803,16 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/createCanvas)
 	return TJS_S_OK;
 }
 TJS_END_NATIVE_METHOD_DECL(/*func. name*/createCanvas)
+//----------------------------------------------------------------------
+// resumeOnDraw()
+//   連続例外で自動停止した onDraw の発火を再開する。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/resumeOnDraw)
+{
+	TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_OGLDrawDevice);
+	_this->GetDevice()->ResumeOnDraw();
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_METHOD_DECL(/*func. name*/resumeOnDraw)
 
 //----------------------------------------------------------------------
 

@@ -30,7 +30,9 @@ public:
 	GLFrameBufferObject& operator=( const GLFrameBufferObject& ) = delete;
 	GLFrameBufferObject( GLFrameBufferObject&& ) = delete;
 	GLFrameBufferObject& operator=( GLFrameBufferObject&& ) = delete;
-	bool create( GLuint w, GLuint h);
+	// with_pbo=false で読み戻し用 PBO の確保を省略する (ポストエフェクトの
+	// 中間バッファ等、glReadPixels しない用途のメモリ節約)。
+	bool create( GLuint w, GLuint h, bool with_pbo = true );
 	void destory() {
 		if( texture_id_ != 0 ) {
 			glDeleteTextures( 1, &texture_id_ );

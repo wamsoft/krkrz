@@ -1,0 +1,25 @@
+// -*- mode:tjs2 -*-
+// ======================================================================
+//  gl_canvas — OpenGL / Canvas 基礎デモ (単体起動)
+//  実体は scene.tjs の GLCanvasScene。まとめ切替版は gallery を参照。
+//  操作: ←→ / 1〜5 = ページ  E = エフェクト切替  SPACE = 一時停止  ESC = 終了
+// ======================================================================
+
+var demolibPath = void;
+{
+    var cands = ["../demolib/", "../core/demolib/", "../../src/core/data/demolib/"];
+    for (var i = 0; i < cands.count; i++) {
+        if (Storages.isExistentStorage(cands[i] + "demo_common.tjs")) { demolibPath = cands[i]; break; }
+    }
+}
+if (demolibPath === void) { System.inform("demolib が見つかりません"); System.exit(1); }
+Scripts.execStorage(demolibPath + "demo_common.tjs");
+
+// -genassets: 資材再生成 (scene を読まずに終了)
+if (System.getArgument("-genassets") !== void) {
+    Storages.addAutoPath("image/");
+    Scripts.execStorage("gen_assets.tjs");
+}
+
+Scripts.execStorage("scene.tjs");
+runDemoShell([ new GLCanvasScene() ], "gl_canvas — OpenGL / Canvas 基礎");

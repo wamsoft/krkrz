@@ -1,0 +1,225 @@
+// -*- mode:tjs2 -*-
+// ======================================================================
+//  input シーン (InputScene) — 入力イベントの可視化
+// ======================================================================
+
+class InputScene extends DemoScene
+{
+    var vkname;
+    var kb, ms, pad;
+    var lastKey = -1, lastShift = 0, keyIsDown = false;
+    var keyLog = [];
+    var mx = 0, my = 0, mShift = 0;
+    var btnL = false, btnM = false, btnR = false;
+    var wheelAccum = 0;
+    var trail = [];
+    var hasPad = false;
+
+    var KB_X = 24, KB_Y = 20, KB_W = 560, KB_H = 400;
+    var MS_X = 616, MS_Y = 20, MS_W = 640, MS_H = 500;
+
+    function InputScene() { super.DemoScene("入力の可視化"); }
+
+    function create()
+    {
+        buildKeyNames();
+        kb = new Layer(window, stage); kb.setSize(KB_W, KB_H); kb.setPos(KB_X, KB_Y); kb.visible = true; window.add(kb);
+        ms = new Layer(window, stage); ms.setSize(MS_W, MS_H); ms.setPos(MS_X, MS_Y); ms.visible = true; window.add(ms);
+        pad = new Layer(window, stage); pad.setSize(KB_W, 240); pad.setPos(KB_X, KB_Y + KB_H + 16); pad.visible = true; window.add(pad);
+        try { hasPad = System.hasJoypad(0); } catch (e) { hasPad = false; }
+        drawKb(); drawMs(); drawPad();
+        setInfo("キー / マウス / パッドを操作して可視化を確認");
+    }
+
+    function buildKeyNames()
+    {
+        vkname = %[];
+        var m = vkname;
+        m[0x08]="BACK"; m[0x09]="TAB"; m[0x0D]="RETURN"; m[0x10]="SHIFT";
+        m[0x11]="CONTROL"; m[0x12]="MENU/ALT"; m[0x14]="CAPITAL"; m[0x1B]="ESCAPE";
+        m[0x20]="SPACE"; m[0x21]="PRIOR"; m[0x22]="NEXT"; m[0x23]="END"; m[0x24]="HOME";
+        m[0x25]="LEFT"; m[0x26]="UP"; m[0x27]="RIGHT"; m[0x28]="DOWN";
+        m[0x2D]="INSERT"; m[0x2E]="DELETE";
+        for (var c = 0x30; c <= 0x39; c++) m[c] = "" + (c - 0x30);
+        for (var c = 0x41; c <= 0x5A; c++) m[c] = $(c);
+        m[0x5B]="LWIN"; m[0x5C]="RWIN";
+        for (var i = 0; i <= 9; i++) m[0x60 + i] = "NUMPAD" + i;
+        m[0x6A]="MULTIPLY"; m[0x6B]="ADD"; m[0x6D]="SUBTRACT"; m[0x6E]="DECIMAL"; m[0x6F]="DIVIDE";
+        for (var i = 1; i <= 12; i++) m[0x70 + (i - 1)] = "F" + i;
+        m[0xA0]="LSHIFT"; m[0xA1]="RSHIFT"; m[0xA2]="LCONTROL"; m[0xA3]="RCONTROL";
+        m[0xBA]="OEM_1(;)"; m[0xBB]="OEM_PLUS(=)"; m[0xBC]="OEM_COMMA(,)";
+        m[0xBD]="OEM_MINUS(-)"; m[0xBE]="OEM_PERIOD(.)"; m[0xBF]="OEM_2(/)";
+        m[0xC0]="OEM_3(`)"; m[0xDB]="OEM_4([)"; m[0xDC]="OEM_5(\\)";
+        m[0xDD]="OEM_6(])"; m[0xDE]="OEM_7(')";
+    }
+    function keyName(code)
+    {
+        if (typeof vkname[code] == "String") return vkname[code];
+        return "0x" + ("%02X".sprintf(code));
+    }
+    function clamp01(v) { if (v < 0) return 0; if (v > 1) return 1; return v; }
+    function shiftFlags(s)
+    {
+        var f = [];
+        if (s & ssShift) f.add("Shift");
+        if (s & ssCtrl)  f.add("Ctrl");
+        if (s & ssAlt)   f.add("Alt");
+        if (s & ssRepeat) f.add("Repeat");
+        return f.count ? f.join(" + ") : "(なし)";
+    }
+
+    function drawKb()
+    {
+        kb.fillRect(0, 0, KB_W, KB_H, 0xff1a1e28);
+        kb.fillRect(0, 0, KB_W, 34, 0xff28324a);
+        kb.font.height = 20;
+        kb.drawText(14, 7, "キーボード (onKeyDown / onKeyUp)", 0x9fc0e8, 255);
+        kb.font.height = 22;
+        kb.drawText(20, 50, "現在のキー:", 0x90a0b8, 255);
+        kb.font.height = 60;
+        var col = keyIsDown ? 0xffe080 : 0x505868;
+        var disp = lastKey < 0 ? "—" : keyName(lastKey);
+        kb.drawText(24, 78, disp, col, 255, true, 0, 0x000000, 0, 2, 2);
+        kb.font.height = 20;
+        if (lastKey >= 0)
+            kb.drawText(26, 152, @"VK コード: 0x${"%02X".sprintf(lastKey)} (${lastKey})   ${keyIsDown ? "DOWN" : "UP"}", 0xc8d0e0, 255);
+        kb.font.height = 20;
+        kb.drawText(20, 190, "修飾キー: " + shiftFlags(lastShift), 0xa0d0a0, 255);
+        kb.font.height = 18;
+        kb.drawText(20, 226, "履歴 (新しい順):", 0x90a0b8, 255);
+        kb.font.height = 18;
+        for (var i = 0; i < keyLog.count; i++) kb.drawText(30, 250 + i * 22, keyLog[i], 0xb0c0d8, 255);
+        kb.update();
+    }
+
+    function drawMs()
+    {
+        ms.fillRect(0, 0, MS_W, MS_H, 0xff141824);
+        ms.fillRect(0, 0, MS_W, 34, 0xff28324a);
+        ms.font.height = 20;
+        ms.drawText(14, 7, "マウス (onMouseDown/Up/Move/Wheel)", 0x9fc0e8, 255);
+        for (var i = 0; i < trail.count; i++) {
+            var p = trail[i];
+            ms.fillRect(p[0] - 2, p[1] - 2, 4, 4, 0xff40a0ff);
+        }
+        var lx = mx - MS_X, ly = my - MS_Y;
+        if (lx >= 0 && lx < MS_W && ly >= 40 && ly < MS_H) {
+            ms.fillRect(lx, 40, 1, MS_H - 40, 0xff405060);
+            ms.fillRect(0, ly, MS_W, 1, 0xff405060);
+            var cc = (btnL || btnR || btnM) ? 0xffff6060 : 0xff60ff90;
+            ms.fillRect(lx - 6, ly - 6, 12, 12, cc);
+        }
+        ms.font.height = 20;
+        ms.drawText(16, MS_H - 96, @"座標: (${mx}, ${my})", 0xc8d0e0, 255);
+        drawBtn(ms, 16,  MS_H - 60, "L", btnL);
+        drawBtn(ms, 90,  MS_H - 60, "M", btnM);
+        drawBtn(ms, 164, MS_H - 60, "R", btnR);
+        ms.font.height = 20;
+        ms.drawText(240, MS_H - 54, @"ホイール累積: ${wheelAccum}", 0xe0c090, 255);
+        ms.update();
+    }
+
+    function drawBtn(lay, x, y, label, on)
+    {
+        lay.fillRect(x, y, 64, 40, on ? 0xff3060c0 : 0xff2a303c);
+        lay.font.height = 24;
+        lay.drawText(x + 24, y + 7, label, on ? 0xffffff : 0x7a8498, 255);
+    }
+
+    function drawPad()
+    {
+        pad.fillRect(0, 0, pad.width, pad.height, 0xff181c26);
+        pad.fillRect(0, 0, pad.width, 34, 0xff28324a);
+        pad.font.height = 20;
+        pad.drawText(14, 7, "ゲームパッド (System.padAxis*)", 0x9fc0e8, 255);
+        if (!hasPad) {
+            pad.font.height = 18;
+            pad.drawText(20, 60, "パッド未接続 (接続すると軸を表示)", 0x90a0a0, 255);
+            pad.update();
+            return;
+        }
+        var lx = 0.0, ly = 0.0, rx = 0.0, ry = 0.0, lt = 0.0, rt = 0.0;
+        try {
+            lx = System.padAxisLeftX; ly = System.padAxisLeftY;
+            rx = System.padAxisRightX; ry = System.padAxisRightY;
+            lt = System.padAxisLeftTrigger; rt = System.padAxisRightTrigger;
+        } catch (e) {}
+        drawStick(pad, 90, 150, "L stick", lx, ly);
+        drawStick(pad, 280, 150, "R stick", rx, ry);
+        pad.font.height = 16;
+        pad.drawText(400, 70, "L trig", 0x90a0b8, 255);
+        pad.fillRect(400, 90, 120, 14, 0xff2a303c);
+        pad.fillRect(400, 90, (120 * clamp01(lt)) \ 1, 14, 0xff60a0ff);
+        pad.drawText(400, 120, "R trig", 0x90a0b8, 255);
+        pad.fillRect(400, 140, 120, 14, 0xff2a303c);
+        pad.fillRect(400, 140, (120 * clamp01(rt)) \ 1, 14, 0xff60a0ff);
+        pad.update();
+    }
+
+    function drawStick(lay, cx, cy, label, ax, ay)
+    {
+        var R = 54;
+        lay.fillRect(cx - R, cy - R, R * 2, R * 2, 0xff20242e);
+        lay.fillRect(cx - R, cy, R * 2, 1, 0xff3a4456);
+        lay.fillRect(cx, cy - R, 1, R * 2, 0xff3a4456);
+        var cax = ax < -1 ? -1 : (ax > 1 ? 1 : ax);
+        var cay = ay < -1 ? -1 : (ay > 1 ? 1 : ay);
+        var kx = cx + (cax * R) \ 1, ky = cy + (cay * R) \ 1;
+        lay.fillRect(kx - 7, ky - 7, 14, 14, 0xff70ff90);
+        lay.font.height = 16;
+        lay.drawText(cx - R, cy + R + 4, label + " (" + "%.2f".sprintf(ax) + ", " + "%.2f".sprintf(ay) + ")", 0xb0c0d8, 255);
+    }
+
+    function pushLog(s) { keyLog.insert(0, s); while (keyLog.count > 6) keyLog.erase(keyLog.count - 1); }
+
+    function onKeyDown(key, shift)
+    {
+        lastKey = key; lastShift = shift; keyIsDown = true;
+        pushLog(@"DOWN ${keyName(key)} (0x${"%02X".sprintf(key)})" + ((shift & ssRepeat) ? " [repeat]" : ""));
+        drawKb();
+    }
+    function onKeyUp(key, shift)
+    {
+        lastKey = key; lastShift = shift; keyIsDown = false;
+        pushLog(@"UP   ${keyName(key)} (0x${"%02X".sprintf(key)})");
+        drawKb();
+    }
+    function onMouseDown(x, y, button, shift)
+    {
+        mx = x; my = y; mShift = shift;
+        if (button == mbLeft) btnL = true;
+        else if (button == mbRight) btnR = true;
+        else if (button == mbMiddle) btnM = true;
+        trail = [];
+        drawMs();
+    }
+    function onMouseUp(x, y, button, shift)
+    {
+        mx = x; my = y;
+        if (button == mbLeft) btnL = false;
+        else if (button == mbRight) btnR = false;
+        else if (button == mbMiddle) btnM = false;
+        drawMs();
+    }
+    function onMouseMove(x, y, shift)
+    {
+        mx = x; my = y; mShift = shift;
+        if (btnL || btnR || btnM) {
+            trail.add([x - MS_X, y - MS_Y]);
+            while (trail.count > 80) trail.erase(0);
+        }
+        drawMs();
+    }
+    function onMouseWheel(shift, delta, x, y) { wheelAccum += delta / 120; drawMs(); }
+
+    function onDemoFrame(tick) { if (hasPad) drawPad(); }
+
+    function onDemoTest()
+    {
+        try {
+            window.postInputEvent("onKeyDown", %[ key:VK_A, shift:ssShift ]);
+            window.postInputEvent("onKeyUp",   %[ key:VK_A, shift:ssShift ]);
+        } catch (e) {}
+        dm(@"@demotest:input lastKey=${lastKey} log=${keyLog.count} pad=${hasPad ? 1 : 0}");
+    }
+}

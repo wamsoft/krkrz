@@ -1,0 +1,139 @@
+// -*- mode:tjs2 -*-
+// ======================================================================
+//  timer_async シーン (TimerAsyncScene)
+// ======================================================================
+
+class TimerAsyncScene extends DemoScene
+{
+    var view;
+    var timers = [];
+    var intervals = [ 150, 350, 700, 1500 ];
+    var counts = [ 0, 0, 0, 0 ];
+    var lastFire = [ 0, 0, 0, 0 ];
+    var at;
+    var triggerCount = 0;
+    var fireCount = 0;
+
+    function TimerAsyncScene() { super.DemoScene("タイマーと非同期"); }
+
+    function create()
+    {
+        enableFps();
+        view = new Layer(window, stage);
+        view.setSize(1280, 640);
+        view.setPos(0, 0);
+        view.visible = true;
+        window.add(view);
+
+        var now = System.getTickCount();
+        for (var i = 0; i < intervals.count; i++) lastFire[i] = now;
+
+        makeTimer(0, "onT0"); makeTimer(1, "onT1");
+        makeTimer(2, "onT2"); makeTimer(3, "onT3");
+
+        at = new AsyncTrigger(this, "onAsyncFire");
+        try { at.cached = true; } catch (e) {}
+
+        setInfo("パネルで AsyncTrigger を発火 (5回同時は合流で onFire 1回)");
+        showPanelDict(panelDict());
+    }
+
+    function makeTimer(i, method)
+    {
+        var t = new Timer(this, method);
+        t.interval = intervals[i];
+        t.enabled = true;
+        timers.add(t);
+    }
+
+    // シーン終了時にタイマー/トリガを停止・破棄 (stage 以下のレイヤは shell が破棄)
+    function onExit()
+    {
+        for (var i = 0; i < timers.count; i++) { timers[i].enabled = false; invalidate timers[i]; }
+        timers = [];
+        if (at !== void) { invalidate at; at = void; }
+    }
+
+    function fired(i) { counts[i]++; lastFire[i] = System.getTickCount(); }
+    function onT0() { fired(0); }
+    function onT1() { fired(1); }
+    function onT2() { fired(2); }
+    function onT3() { fired(3); }
+    function onAsyncFire() { fireCount++; }
+
+    function onDemoFrame(tick)
+    {
+        var s = view;
+        s.fillRect(0, 0, s.width, s.height, 0xff161a22);
+
+        s.font.height = 20;
+        s.drawText(24, 16, "■ Timer — 異なる周期の複数タイマー", 0x8fb8e8, 255);
+        var now = System.getTickCount();
+        for (var i = 0; i < intervals.count; i++) {
+            var y = 50 + i * 64;
+            s.font.height = 20;
+            s.drawText(30, y + 8, intervals[i] + " ms", 0xd8e0ee, 255);
+            var since = now - lastFire[i];
+            var lit = since < 220 ? (220 - since) * 255 / 220 : 0;
+            var g = (60 + lit * 0.7) \ 1;
+            s.fillRect(130, y, 40, 40, 0xff000000 | (g << 16) | ((60 + lit) \ 1 << 8) | 70);
+            var frac = (now - lastFire[i]) / intervals[i];
+            if (frac > 1.0) frac = 1.0;
+            s.fillRect(190, y + 12, 700, 16, 0xff2a303c);
+            s.fillRect(190, y + 12, (700 * frac) \ 1, 16, 0xff4a80d0);
+            s.font.height = 20;
+            s.drawText(910, y + 8, "回数 " + counts[i], 0xffe090, 255);
+        }
+
+        s.font.height = 20;
+        s.drawText(24, 330, "■ 連続ハンドラ (onContinuous / getTickCount) — 毎フレーム", 0x8fb8e8, 255);
+        var t = (now % 2000) / 2000.0;
+        var tri = t < 0.5 ? t * 2 : (1 - t) * 2;
+        s.fillRect(30, 366, 860, 20, 0xff2a303c);
+        s.fillRect(30 + (836 * tri) \ 1, 362, 24, 28, 0xff70ff90);
+        s.font.height = 16;
+        s.drawText(30, 396, "getTickCount=" + now + " ms  (2 秒で往復するマーカー)", 0x9fb0c8, 255);
+
+        s.font.height = 20;
+        s.drawText(24, 440, "■ AsyncTrigger (cached=true) — 同一フレームの複数 trigger は合流", 0x8fb8e8, 255);
+        s.font.height = 22;
+        s.drawText(40, 474, "trigger() 呼び出し回数: " + triggerCount, 0xd8e0ee, 255);
+        s.drawText(40, 506, "onFire 発火回数: " + fireCount, 0xffe090, 255);
+        s.font.height = 16;
+        s.drawText(40, 540, "「5回同時」を押すと trigger は +5 でも onFire は +1 (合流) になる", 0x9fb0c8, 255);
+
+        s.update();
+    }
+
+    function panelDict()
+    {
+        return %[
+            size : [300, 210], background : [26, 30, 40, 236], locale : "ja-JP",
+            align : "top_right", margin : 16,
+            content : %[ type : "margin", padding : 14, child : %[ type : "vtile", children : [
+                %[ type : "hspacer", width : 268 ],
+                %[ type : "align_center", child : %[ type : "label", text : "AsyncTrigger", size_scale : 1.2 ] ],
+                %[ type : "vspacer", height : 10 ],
+                %[ type : "button", id : "one",   text : "trigger() 1回" ],
+                %[ type : "vspacer", height : 6 ],
+                %[ type : "button", id : "five",  text : "trigger() 5回 (同時)" ],
+                %[ type : "vspacer", height : 6 ],
+                %[ type : "button", id : "reset", text : "カウンタリセット" ]
+            ] ] ]
+        ];
+    }
+
+    function onPanelAction(id, payload)
+    {
+        switch (id) {
+        case "one":  triggerCount += 1; at.trigger(); break;
+        case "five": triggerCount += 5; for (var i = 0; i < 5; i++) at.trigger(); break;
+        case "reset": triggerCount = 0; fireCount = 0; break;
+        }
+    }
+
+    function onDemoTest()
+    {
+        dm(@"@demotest:timer_async timers=${timers.count} counts=[${counts[0]},${counts[1]},${counts[2]},${counts[3]}]");
+    }
+}

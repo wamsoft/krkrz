@@ -1,0 +1,90 @@
+// -*- mode:tjs2 -*-
+// ======================================================================
+//  elements_gallery 用アトラス画像ジェネレータ
+// ----------------------------------------------------------------------
+//  image/atlas_ui.png (256x200, アルファ付き) を生成する。
+//  実行方法 (umbrella ルートから):
+//    krkrz64.exe src/core/data/elements_gallery -genassets
+//  (startup.tjs が本スクリプトを exec して終了する)
+//
+//  アトラス配置 (pages.tjs の atlas ページと対応):
+//    button  : (0,  0,120,36) normal / (0, 40,120,36) hilite / (0, 80,120,36) pressed
+//    toggle  : (128, 0,56,28) off_n  / (128,32,56,28) off_h
+//              (128,64,56,28) on_n   / (128,96,56,28) on_h
+//    progress: (0,120,160,16) track  / (0,140,160,16) fill
+//    image   : (192,128,64,64) 飾りアイコン
+// ======================================================================
+
+var AW = 256, AH = 200;
+
+var genWin = new Window();
+genWin.setInnerSize(320, 240);
+var genBase = new Layer(genWin, null);
+genBase.setSize(320, 240);
+genBase.visible = true;
+
+var atlas = new Layer(genWin, genBase);
+atlas.setSize(AW, AH);
+atlas.type = ltAlpha;
+atlas.fillRect(0, 0, AW, AH, 0x00000000);
+
+// --- button 3 状態 ------------------------------------------------------
+function drawButton(y, cFill, cEdge, cGlyph, pressed)
+{
+    var x = 0, w = 120, h = 36;
+    atlas.fillRect(x, y, w, h, cEdge);                    // 枠
+    atlas.fillRect(x + 2, y + 2, w - 4, h - 4, cFill);    // 面
+    atlas.font.height = 20;
+    var t = "▶ PUSH";
+    var tw = atlas.font.getTextWidth(t);
+    var oy = pressed ? 2 : 0;
+    atlas.drawText(x + (w - tw) \ 2, y + 7 + oy, t, cGlyph, 255);
+}
+drawButton( 0, 0xff2d4266, 0xff64a0ff, 0xffffff, false);   // normal
+drawButton(40, 0xff3d5c8e, 0xff8ec0ff, 0xffffff, false);   // hilite
+drawButton(80, 0xff1c2a44, 0xff4a78b8, 0xc0d0e8, true);    // pressed
+
+// --- toggle 4 状態 (off_n / off_h / on_n / on_h) -------------------------
+function drawToggle(y, on, hilite)
+{
+    var x = 128, w = 56, h = 28;
+    var edge = hilite ? 0xff8ec0ff : 0xff4a5a74;
+    var fill = on ? (hilite ? 0xff3f7ad0 : 0xff2f5ea8)
+                  : (hilite ? 0xff3a4456 : 0xff2a303c);
+    atlas.fillRect(x, y, w, h, edge);
+    atlas.fillRect(x + 2, y + 2, w - 4, h - 4, fill);
+    // ノブ (●)
+    atlas.font.height = 26;
+    var knobX = on ? x + w - 26 : x + 2;
+    atlas.drawText(knobX, y, "●", on ? 0xffffff : 0x9aa4b8, 255);
+}
+drawToggle( 0, false, false);
+drawToggle(32, false, true);
+drawToggle(64, true,  false);
+drawToggle(96, true,  true);
+
+// --- progress track / fill ----------------------------------------------
+atlas.fillRect(0, 120, 160, 16, 0xff1a2030);              // track (枠ごと)
+atlas.fillRect(1, 121, 158, 14, 0xff232c40);
+for (var i = 0; i < 160; i++) {                            // fill (横グラデ)
+    var g = 140 + (80 * i / 160) \ 1;
+    atlas.fillRect(i, 140, 1, 16, 0xff000000 | (60 << 16) | (g << 8) | 80);
+}
+
+// --- 飾りアイコン 64x64 ---------------------------------------------------
+{
+    var x = 192, y = 128;
+    atlas.fillRect(x, y, 64, 64, 0xff20283a);
+    atlas.fillRect(x + 2, y + 2, 60, 60, 0xff2a3652);
+    atlas.font.height = 44;
+    var tw = atlas.font.getTextWidth("★");
+    atlas.drawText(x + (64 - tw) \ 2, y + 8, "★", 0xffd870, 255);
+    atlas.font.height = 12;
+    tw = atlas.font.getTextWidth("ATLAS");
+    atlas.drawText(x + (64 - tw) \ 2, y + 48, "ATLAS", 0x9fc0e8, 255);
+}
+
+// --- 保存して終了 ----------------------------------------------------------
+atlas.saveLayerImage("image/atlas_ui.png", "png");
+Debug.message("@genassets:saved image/atlas_ui.png (" + AW + "x" + AH + ")");
+System.exit(0);

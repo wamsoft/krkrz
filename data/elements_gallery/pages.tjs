@@ -1,0 +1,226 @@
+// -*- mode:tjs2 -*-
+// ======================================================================
+//  elements_gallery ページ定義
+// ----------------------------------------------------------------------
+//  各ページ:
+//    id       … ページ識別子 (ログ用)
+//    label    … 切替ピッカーに表示する名前
+//    srcLines … ページ定義の TJS Dictionary ソース。「行の配列」で持ち、
+//               画面右のソースパネルにそのまま表示し、join("\n") を
+//               Scripts.eval してレイアウトとしても使う
+//               (= 表示されるソースと実際のレイアウトが常に一致する)。
+//
+//  ページ定義 (eval 結果) の形式:
+//    %[ content : <レイアウト要素>,
+//       vars    : <トップレベル vars (任意)>,
+//       atlases : <トップレベル atlases (任意)> ]
+//  content はダイアログの本文にそのまま埋め込まれ、vars / atlases は
+//  ダイアログ定義のトップレベルへマージされる。
+//
+//  記述ルール:
+//    - 行は ' ' (シングルクォート) で括る (中に "..." を書けるように)
+//    - 配列の末尾カンマ禁止 (TJS では void 要素が増える)
+//    - ソース中に TJS 式 (Storages.getFullPath 等) を書いてもよい
+//      (eval 時に解決される。コピー先でもそのまま動く)
+// ======================================================================
+
+var GALLERY_PAGES = [
+    // ------------------------------------------------------------ 基本
+    %[ id : "basic", label : "基本",
+       srcLines : [
+        '%[ content : %[ type : "margin", padding : [ 8, 16, 8, 8 ],',
+        '   child : %[ type : "vtile", children : [',
+        '     %[ type : "label", text : "label — テキスト表示" ],',
+        '     %[ type : "label", text : "label (色 / サイズ指定)",',
+        '        color : [ 120, 200, 255, 255 ], size_scale : 1.2 ],',
+        '     %[ type : "vspacer", height : 12 ],',
+        '     %[ type : "button", id : "btn_hello", text : "button — 押すと onAction(id)" ],',
+        '     %[ type : "vspacer", height : 8 ],',
+        '     %[ type : "toggle_button", id : "tgl", text : "toggle_button", value : true ],',
+        '     %[ type : "vspacer", height : 8 ],',
+        '     %[ type : "check_box", id : "chk", text : "check_box" ],',
+        '     %[ type : "vspacer", height : 8 ],',
+        '     %[ type : "htile", children : [',
+        '       %[ type : "radio_button", id : "radio_a", text : "radio A", selected : true ],',
+        '       %[ type : "hspacer", width : 16 ],',
+        '       %[ type : "radio_button", id : "radio_b", text : "radio B" ]',
+        '     ] ],',
+        '     %[ type : "vspacer", height : 8 ],',
+        '     %[ type : "htile", children : [',
+        '       %[ type : "label", text : "slide_switch" ],',
+        '       %[ type : "hspacer", width : 12 ],',
+        '       %[ type : "slide_switch", id : "sw" ]',
+        '     ] ]',
+        '   ] ]',
+        '] ]'
+       ] ],
+
+    // ------------------------------------------------------------ 値入力
+    %[ id : "value", label : "値入力",
+       srcLines : [
+        '%[ content : %[ type : "margin", padding : [ 8, 16, 8, 8 ],',
+        '   child : %[ type : "vtile", children : [',
+        '     %[ type : "label", text : "slider — payload は 0.0〜1.0" ],',
+        '     %[ type : "slider", id : "sld", initial : 0.3 ],',
+        '     %[ type : "vspacer", height : 14 ],',
+        '     %[ type : "label", text : "slider_with_range — min〜max の実値" ],',
+        '     %[ type : "slider_with_range", id : "sldr",',
+        '        min : 0, max : 100, initial : 25 ],',
+        '     %[ type : "vspacer", height : 14 ],',
+        '     %[ type : "label", text : "input_box — テキスト入力 (IME 対応)" ],',
+        '     %[ type : "input_box", id : "inp", placeholder : "ここに入力" ]',
+        '   ] ]',
+        '] ]'
+       ] ],
+
+    // ------------------------------------------------------------ 選択
+    %[ id : "choice", label : "選択",
+       srcLines : [
+        '%[ content : %[ type : "margin", padding : [ 8, 16, 8, 8 ],',
+        '   child : %[ type : "vtile", children : [',
+        '     %[ type : "label", text : "cycle_picker — payload は選択 index" ],',
+        '     %[ type : "cycle_picker", id : "cyc",',
+        '        options : [ "りんご", "みかん", "ぶどう" ], initial : 0 ],',
+        '     %[ type : "vspacer", height : 12 ],',
+        '     %[ type : "label", text : "framed_cycle_picker — ◀▶ ボタン付き" ],',
+        '     %[ type : "framed_cycle_picker", id : "fcyc",',
+        '        options : [ "低", "中", "高" ], initial : 1 ],',
+        '     %[ type : "vspacer", height : 12 ],',
+        '     %[ type : "label", text : "segmented_picker — 排他ボタン列" ],',
+        '     %[ type : "segmented_picker", id : "seg",',
+        '        options : [ "A", "B", "C", "D" ], initial : 0 ],',
+        '     %[ type : "vspacer", height : 12 ],',
+        '     %[ type : "label", text : "selection_menu — ドロップダウン" ],',
+        '     %[ type : "selection_menu", id : "sel",',
+        '        options : [ "項目 1", "項目 2", "項目 3" ], initial : 0 ]',
+        '   ] ]',
+        '] ]'
+       ] ],
+
+    // ------------------------------------------------------------ レイアウト
+    %[ id : "layout", label : "レイアウト",
+       srcLines : [
+        '%[ content : %[ type : "margin", padding : [ 8, 16, 8, 8 ],',
+        '   child : %[ type : "vtile", children : [',
+        '     %[ type : "group", title : "group — 枠 + タイトル (中は htile)",',
+        '        child : %[ type : "margin", padding : [ 10, 26, 10, 10 ],',
+        '          child : %[ type : "htile", children : [',
+        '            %[ type : "button", id : "g1", text : "1/3" ],',
+        '            %[ type : "hspacer", width : 8 ],',
+        '            %[ type : "button", id : "g2", text : "2/3" ],',
+        '            %[ type : "hspacer", width : 8 ],',
+        '            %[ type : "button", id : "g3", text : "3/3" ]',
+        '          ] ] ] ],',
+        '     %[ type : "vspacer", height : 10 ],',
+        '     %[ type : "labeled_row", label : "labeled_row", label_width : 140,',
+        '        child : %[ type : "slider", id : "lr_sld", initial : 0.5 ] ],',
+        '     %[ type : "vspacer", height : 10 ],',
+        '     %[ type : "label", text : "scroller — スクロール領域 (vsize で高さ固定)" ],',
+        '     %[ type : "vsize", height : 110, child : %[ type : "scroller",',
+        '        child : %[ type : "vtile", children : [',
+        '          %[ type : "button", id : "s1", text : "スクロール項目 1" ],',
+        '          %[ type : "button", id : "s2", text : "スクロール項目 2" ],',
+        '          %[ type : "button", id : "s3", text : "スクロール項目 3" ],',
+        '          %[ type : "button", id : "s4", text : "スクロール項目 4" ],',
+        '          %[ type : "button", id : "s5", text : "スクロール項目 5" ],',
+        '          %[ type : "button", id : "s6", text : "スクロール項目 6" ]',
+        '        ] ] ] ],',
+        '     %[ type : "vspacer", height : 10 ],',
+        '     %[ type : "label", text : "tab_view — タブ (切替は内部処理、onAction なし)" ],',
+        '     %[ type : "tab_view", initial : 0, tabs : [',
+        '       %[ label : "タブ 1", child : %[ type : "margin", padding : 8,',
+        '          child : %[ type : "label", text : "ページ 1 の内容" ] ] ],',
+        '       %[ label : "タブ 2", child : %[ type : "margin", padding : 8,',
+        '          child : %[ type : "button", id : "t2b", text : "ページ 2 のボタン" ] ] ]',
+        '     ] ]',
+        '   ] ]',
+        '] ]'
+       ] ],
+
+    // ------------------------------------------------------------ atlas
+    %[ id : "atlas", label : "atlas",
+       srcLines : [
+        '// atlases: 名前 → 画像。画像は自動検索パス上の名前で指定 (TJS 式も可)',
+        '%[ atlases : %[ ui : "atlas_ui.png" ],',
+        '   content : %[ type : "margin", padding : [ 8, 16, 8, 8 ],',
+        '   child : %[ type : "vtile", children : [',
+        '     // ※ atlas 系はそのままだと親の幅いっぱいに引き伸ばされるので、',
+        '     //    align_center + hsize で実寸に固定して置くのが基本',
+        '     %[ type : "label", text : "atlas_image — アトラスの矩形を表示" ],',
+        '     %[ type : "align_center", child : %[ type : "hsize", width : 64,',
+        '        child : %[ type : "atlas_image", atlas : "ui",',
+        '                   rect : [ 192, 128, 64, 64 ] ] ] ],',
+        '     %[ type : "vspacer", height : 10 ],',
+        '     %[ type : "label", text : "atlas_button — normal/hilite/pressed の 3 状態" ],',
+        '     %[ type : "align_center", child : %[ type : "hsize", width : 120,',
+        '        child : %[ type : "atlas_button", id : "abtn", atlas : "ui",',
+        '           frames : [ [ 0, 0, 120, 36 ], [ 0, 40, 120, 36 ],',
+        '                      [ 0, 80, 120, 36 ] ] ] ] ],',
+        '     %[ type : "vspacer", height : 10 ],',
+        '     %[ type : "label", text : "atlas_toggle — off/on × normal/hilite" ],',
+        '     %[ type : "align_center", child : %[ type : "hsize", width : 56,',
+        '        child : %[ type : "atlas_toggle", id : "atgl", atlas : "ui",',
+        '           frames : [ [ 128, 0, 56, 28 ], [ 128, 32, 56, 28 ],',
+        '                      [ 128, 64, 56, 28 ], [ 128, 96, 56, 28 ] ] ] ] ],',
+        '     %[ type : "vspacer", height : 10 ],',
+        '     %[ type : "label", text : "atlas_progress — track + fill" ],',
+        '     %[ type : "align_center", child : %[ type : "hsize", width : 160,',
+        '        child : %[ type : "atlas_progress", id : "aprg", atlas : "ui",',
+        '           value : 0.6, track : [ 0, 120, 160, 16 ],',
+        '           fill : [ 0, 140, 160, 16 ] ] ] ]',
+        '   ] ]',
+        '] ]'
+       ] ],
+
+    // ------------------------------------------------------------ アニメ
+    %[ id : "anim", label : "アニメ",
+       srcLines : [
+        '// animate: 要素の出現/フォーカス時に移動・拡縮・回転・フェード',
+        '%[ content : %[ type : "margin", padding : [ 8, 16, 8, 8 ],',
+        '   child : %[ type : "vtile", children : [',
+        '     %[ type : "label", text : "on:enter — 表示時に発火 (ページを開き直すと再生)" ],',
+        '     %[ type : "button", id : "an_slide", text : "move — 左からスライドイン",',
+        '        animate : %[ type : "move", from : [ -240, 0 ], to : [ 0, 0 ],',
+        '                     duration_ms : 600, easing : "out_cubic" ] ],',
+        '     %[ type : "vspacer", height : 8 ],',
+        '     %[ type : "button", id : "an_fade", text : "fade — フェードイン",',
+        '        animate : %[ type : "fade", from : 0, to : 100, duration_ms : 900 ] ],',
+        '     %[ type : "vspacer", height : 8 ],',
+        '     %[ type : "label", text : "scale + rotate の同時掛け (配列指定)",',
+        '        animate : [ %[ type : "scale", from : 0.2, to : 1.0, duration_ms : 700 ],',
+        '                    %[ type : "rotate", from : -180, to : 0, duration_ms : 700 ] ] ],',
+        '     %[ type : "vspacer", height : 14 ],',
+        '     %[ type : "label", text : "on:focus — フォーカスで発火" ],',
+        '     %[ type : "button", id : "an_pulse", text : "focus で pulse (yoyo ×3)",',
+        '        animate : %[ type : "scale", from : 1.0, to : 1.08, duration_ms : 240,',
+        '                     yoyo : true, loops : 3, on : "focus" ] ]',
+        '   ] ]',
+        '] ]'
+       ] ],
+
+    // ------------------------------------------------------------ テーマ/vars
+    %[ id : "vars", label : "vars",
+       srcLines : [
+        '// vars: 名前付き変数。focus した widget の vars_on_focus が書き込み、',
+        '// label の text_var が読む (メニューの説明欄などに使う)',
+        '%[ vars : %[ desc : "(ボタンにフォーカスすると説明が出ます)" ],',
+        '   content : %[ type : "margin", padding : [ 8, 16, 8, 8 ],',
+        '   child : %[ type : "vtile", children : [',
+        '     %[ type : "label", text : "vars_on_focus + text_var" ],',
+        '     %[ type : "vspacer", height : 8 ],',
+        '     %[ type : "button", id : "vbtn1", text : "はじまりの村",',
+        '        vars_on_focus : %[ desc : "説明: 冒険が始まる静かな村。宿屋と道具屋がある" ] ],',
+        '     %[ type : "vspacer", height : 6 ],',
+        '     %[ type : "button", id : "vbtn2", text : "迷いの森",',
+        '        vars_on_focus : %[ desc : "説明: 一度入ると出られない森。地図が必要" ] ],',
+        '     %[ type : "vspacer", height : 6 ],',
+        '     %[ type : "button", id : "vbtn3", text : "魔王城",',
+        '        vars_on_focus : %[ desc : "説明: 最終決戦の地。引き返せない" ] ],',
+        '     %[ type : "vspacer", height : 12 ],',
+        '     %[ type : "group", title : "説明欄 (text_var で自動更新)",',
+        '        child : %[ type : "margin", padding : [ 10, 26, 10, 10 ],',
+        '          child : %[ type : "label", text_var : "desc" ] ] ]',
+        '   ] ]',
+        '] ]'
+       ] ]
+];

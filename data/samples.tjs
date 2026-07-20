@@ -1,0 +1,49 @@
+// ----------------------------------------------------------------------
+//  コア機能デモ定義リスト (src/core/data)
+//
+//  umbrella (krkrz_dev) の data/startup.tjs サンプルランチャがこのリストを
+//  マージして表示する。Web (krkrz_web) ではこのフォルダが core/ として
+//  合成されるため、ランチャからは core/samples.tjs として読まれる。
+//
+//  path  : このフォルダ直下のデモフォルダ名。"." はこのフォルダ自身
+//          (直下の startup.tjs) を指す。
+//  title : 一覧に表示する名前
+//  desc  : 一行説明
+//
+//  ランチャは startup.tjs が実在するエントリだけを表示する。
+// ----------------------------------------------------------------------
+[
+    %[ path : "gallery",
+       title : "★ コアデモ ギャラリー (再起動なし切替)",
+       desc : "sysinfo/フォント/画像処理/合成モード/入力/タイマー を 1 プロセスで切替 (PgUp/PgDn)" ],
+    %[ path : ".",
+       title : "コア機能テスト (レガシー)",
+       desc : "入力・サウンド (PhaseVocoder)・セーブ・ビデオ・Elements UI 等の一括動作確認 (順次個別デモへ分割予定)" ],
+    %[ path : "sysinfo",
+       title : "システム情報",
+       desc : "System/Storages の情報表示。demolib (デモ共通ヘルパ) の動作確認を兼ねる" ],
+    %[ path : "elements_gallery",
+       title : "Elements ギャラリー",
+       desc : "Elements ウィジェットを実物 + 定義ソース + イベントログで確認できるカタログ" ],
+    %[ path : "gl_canvas",
+       title : "OpenGL / Canvas 基礎",
+       desc : "OGLDrawDevice + Canvas: テクスチャ/Matrix32/シェーダ/Offscreen/エフェクト/マスク" ],
+    %[ path : "gl_particles",
+       title : "GPU パーティクル",
+       desc : "VertexBuffer + シェーダで数万粒子をステートレス描画。エミッタ/ブレンド切替・FPS 表示" ],
+    %[ path : "layer_basic",
+       title : "合成モードと不透明度",
+       desc : "operateRect で 9 種の合成モード (加算/乗算/スクリーン/覆い焼き 等) を比較" ],
+    %[ path : "input",
+       title : "入力の可視化",
+       desc : "キーボード/マウス/ゲームパッドの入力イベントをリアルタイム表示" ],
+    %[ path : "image_ops",
+       title : "画像処理",
+       desc : "グレースケール/ガンマ/反転/ぼかし/アフィン/色掛けを before-after で比較" ],
+    %[ path : "text_font",
+       title : "フォントと文字描画",
+       desc : "サイズ/装飾/アンチエイリアス/影/文字幅計測/フォント一覧" ],
+    %[ path : "timer_async",
+       title : "タイマーと非同期",
+       desc : "Timer 周期・連続ハンドラ・AsyncTrigger の合流をタイミング可視化" ]
+]

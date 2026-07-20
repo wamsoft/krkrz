@@ -1,0 +1,27 @@
+// -*- mode:tjs2 -*-
+// ======================================================================
+//  sysinfo — システム情報表示デモ (単体起動)
+// ----------------------------------------------------------------------
+//  実体はシーン (scene.tjs の SysInfoScene)。ここでは demolib を読み込み、
+//  そのシーン 1 個だけで DemoShell を起動する。複数デモをまとめて再起動なし
+//  で切り替える版は gallery デモを参照。
+//
+//  操作: P = パネル再表示 / F = FPS / ESC = 終了
+// ======================================================================
+
+// --- demolib 読み込み --------------------------------------------------
+var demolibPath = void;
+{
+    var cands = ["../demolib/", "../core/demolib/", "../../src/core/data/demolib/"];
+    for (var i = 0; i < cands.count; i++) {
+        if (Storages.isExistentStorage(cands[i] + "demo_common.tjs")) { demolibPath = cands[i]; break; }
+    }
+}
+if (demolibPath === void) {
+    System.inform("demolib/demo_common.tjs が見つかりません。\nリポジトリ配置のまま実行してください。");
+    System.exit(1);
+}
+Scripts.execStorage(demolibPath + "demo_common.tjs");
+Scripts.execStorage("scene.tjs");
+
+runDemoShell([ new SysInfoScene() ], "sysinfo — システム情報");

@@ -202,6 +202,10 @@ common/visual/opengl/OGLViewportBackground.h
 common/visual/opengl/CanvasIntf.cpp
 common/visual/opengl/GLTexture.cpp
 common/visual/opengl/GLFrameBufferObject.cpp
+common/visual/opengl/GLEffect.cpp
+common/visual/opengl/GLEffect.h
+common/visual/opengl/GLClip.cpp
+common/visual/opengl/GLClip.h
 common/visual/opengl/GLShaderUtil.cpp
 common/visual/opengl/Matrix32Intf.cpp
 common/visual/opengl/Matrix44Intf.cpp
@@ -527,6 +531,8 @@ if (KRKRZ_USE_ELEMENTS)
 		common/visual/elements/DialogIntf.h
 		common/visual/elements/StoragesResourceLoader.cpp
 		common/visual/elements/StoragesResourceLoader.h
+		common/visual/elements/VariantJsonUtil.cpp
+		common/visual/elements/VariantJsonUtil.h
 	)
 	# OpenGL ES 直接版 DrawDevice (tTVPOGLDrawDevice / tTVPSDLOGLDrawDevice) 共用の
 	# dialog overlay レンダラ。GL ヘッダを include するため OpenGL ビルド時のみ。

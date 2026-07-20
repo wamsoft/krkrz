@@ -13,6 +13,7 @@
 | `Dialog.showModalJson(json)` | modalOverlayTest (VK_O) | overlay + ブロッキング (ゲーム画面の上に nested ループ) |
 | `Dialog.showFlow(manifest)` / `showFlowScreens(dict, entry)` | — | overlay + ブロッキング 複数画面フロー (navigator)。 `onScreen` / `onScreenLeave` 発火 |
 | `Dialog.startFlow(manifest)` / `startFlowScreens(dict, entry)` | startup.tjs ジャンルメニュー | overlay + **非ブロッキング** 常駐フロー。 出しっぱなしで背景動作と併存。 `dlg.active` / `close()` で制御 |
+| `Dialog.showDict(dict)` / `showModalDict(dict [, title, w, h])` | — | 上記 showJson / showModalJson の **TJS Dictionary 版** (後述「TJS Dictionary レイアウト」) |
 
 独立 window 経路 (E) は krkrz 非依存ライブラリ [`external/elements/external/elements_modal/`](../external/elements/external/elements_modal/README.md) の `run_modal` をそのまま呼び出す。 overlay 経路 (D / O) は krkrz の DrawDevice にぶら下がる `tTVPElementsDialogManager` がライブラリの `overlay_session` を駆動する。
 
@@ -216,6 +217,47 @@ JSON / JSONC (コメント + 末尾カンマ) 対応。 要素タイプ・属性
   ```
 
 `force: true` の shortcut は input_box 編集中でも反応する (リスト内編集中の save 押下を許容するケース等)。
+
+## TJS Dictionary レイアウト (showDict / showModalDict)
+
+JSON 文字列の代わりに TJS の Dictionary / Array でレイアウトを直接書ける。
+`common/visual/elements/VariantJsonUtil.cpp` の `TVPVariantToJsonUtf8()` が
+Dictionary → JSON テキストに変換して既存の JSON 経路へそのまま流す
+(elements_modal 側の入口は JSON のまま)。
+
+```tjs
+var dlg = new Dialog();
+dlg.showDict(%[
+    size: [360, 220], background: [30, 30, 60, 245],
+    content: %[ type: "vtile", children: [
+        %[ type: "label", text: "タイトル", size_scale: 1.3 ],
+        %[ type: "vsize", height: 38,
+           child: %[ type: "button", id: "ok", text: "OK", close_on_click: true ] ],
+    ] ],
+]);
+// モーダルも同様 (引数仕様は showModalJson と同じ):
+//   dlg.showModalDict(dict);                    // overlay
+//   dlg.showModalDict(dict, "Title", 560, 700); // 独立 window
+```
+
+- **`showFlowScreens` / `startFlowScreens` の画面マップ値も Dictionary 可**
+  (JSON 文字列と混在できる)。
+- **`Dialog.dictToJson(value)`** で変換結果の JSON 文字列を取得できる
+  (デバッグ / JSON 資材の書き出し用)。
+- 対応型: void→null / Integer / Real / String / Dictionary / Array。 Octet・
+  それ以外のオブジェクト (関数等)・循環参照・非有限 Real は TJS 例外。
+
+### TJS 側の言語制約 2 点
+
+- **bool が書けない**: TJS2 に boolean 型はなく `true` は整数 1 なので、
+  `close_on_click: true` は JSON の `1` (number) になる。 このため
+  elements_modal の bool フィールド読み取り (`json_layout.cpp` の
+  `bool_field` / `truthy_field`) は **number の 0 / 非 0 も真偽値として受け
+  付ける** (JSON 文字列で書く場合は従来どおり true/false 推奨)。
+- **空文字キーが書けない**: TJS Dictionary は `""` キーを保持できないため、
+  navigator の既定遷移 `"": "<exit>"` は Dictionary 形式では書けない。
+  未定義 action のフォールバック (entry なら exit / 子画面なら pop) で足りる
+  ケースが大半。 明示したい画面だけ JSON 文字列で書いて混在させればよい。
 
 ## TJS Dialog の使い分け
 

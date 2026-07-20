@@ -887,8 +887,15 @@ void TVPBeforeProcessUnhandledException()
 	errors.
 */
 //---------------------------------------------------------------------------
+// 表示 (=補足されなかったスクリプト例外) の累計カウンタ。
+// TVPPostEvent(TVP_EPT_IMMEDIATE) は内部で例外を表示して飲み込むため、
+// 呼び出し側からは失敗を検知できない。毎フレーム系の発火元 (onDraw 等) が
+// 発火前後の差分で「ハンドラが例外を投げたか」を知るために使う。
+tjs_uint64 TVPScriptExceptionShownCount = 0;
+//---------------------------------------------------------------------------
 void TVPShowScriptException(eTJS &e)
 {
+	TVPScriptExceptionShownCount++;
 	if(TVPReplActive)
 	{
 		// REPL 駆動中: イベント停止 / ネイティブダイアログ / 即終了を行わず、
@@ -916,6 +923,7 @@ void TVPShowScriptException(eTJS &e)
 //---------------------------------------------------------------------------
 void TVPShowScriptException(eTJSScriptError &e)
 {
+	TVPScriptExceptionShownCount++;
 	if(TVPReplActive)
 	{
 		// REPL 駆動中: 即終了せずログ (= REPL コンソール) に例外 + trace を出す。

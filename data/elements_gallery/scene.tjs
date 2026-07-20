@@ -1,0 +1,191 @@
+// -*- mode:tjs2 -*-
+// ======================================================================
+//  elements_gallery シーン (ElementsGalleryScene)
+//  Elements (Dialog) の主要ウィジェットを「実物 + 定義ソース + イベントログ」
+//  の 3 点セットで確認するカタログ。単体起動は startup.tjs、束ね起動は
+//  data/ ランチャ。ページ定義は pages.tjs (global GALLERY_PAGES)。
+// ======================================================================
+
+class ElementsGalleryScene extends DemoScene
+{
+    var currentPage = 0;
+    var pendingPage;      // ピッカー操作の遅延反映
+    var srcLayer;         // 右: ソースパネル
+    var srcScroll = 0;
+    var logLayer;         // 下: イベントログ
+    var logLines = [];
+    var actionCount = 0;
+    var panelShown = false;
+
+    var SRC_X = 704, SRC_W = 568, SRC_H = 572, LOG_H = 88;
+
+    function ElementsGalleryScene() { super.DemoScene("Elements ギャラリー"); }
+
+    function create()
+    {
+        // ページ定義 (GALLERY_PAGES) 読み込み。単体=project 直下、hub=配下。
+        if (typeof global.GALLERY_PAGES == "undefined") {
+            var cands = ["pages.tjs"];
+            if (typeof global.demolibPath == "String")
+                cands.add(global.demolibPath + "../elements_gallery/pages.tjs");
+            for (var i = 0; i < cands.count; i++) {
+                if (Storages.isExistentStorage(cands[i])) { Scripts.execStorage(cands[i]); break; }
+            }
+        }
+        // atlas 資材 (atlas_ui.png) を自動検索パスへ。atlas は名前で参照するので
+        // 画像フォルダ自体を登録する。単体=project 直下の image/、束ね起動では
+        // elements_gallery/image/ を登録して同じ名前で解決できるようにする。
+        Storages.addAutoPath("image/");
+        if (typeof global.demolibPath == "String")
+            Storages.addAutoPath(global.demolibPath + "../elements_gallery/image/");
+
+        if (typeof global.GALLERY_PAGES == "undefined") {
+            stage.font.height = 26;
+            stage.drawText(40, 40, "pages.tjs が読み込めませんでした", 0xd0a0a0, 255);
+            stage.update();
+            setInfo("pages.tjs 読み込み失敗");
+            return;
+        }
+        dm(@"elements_gallery: ${GALLERY_PAGES.count} page(s)");
+
+        // 右: ソースパネル
+        srcLayer = new Layer(window, stage);
+        srcLayer.setSize(SRC_W, SRC_H); srcLayer.setPos(SRC_X, 8); srcLayer.visible = true;
+        window.add(srcLayer);
+        // 下: イベントログ
+        logLayer = new Layer(window, stage);
+        logLayer.setSize(stage.width, LOG_H);
+        logLayer.setPos(0, stage.height - 44 - LOG_H); logLayer.visible = true;
+        window.add(logLayer);
+
+        setInfo("ページ切替: 上部ピッカー   ホイール: ソーススクロール");
+        drawSource();
+        drawLog();
+
+        if (!hasElements()) {
+            stage.font.height = 28;
+            stage.drawText(40, 40, "この環境では Elements Dialog が利用できません", 0xd0a0a0, 255);
+            stage.drawText(40, 80, "SDL3 ビルド + KRKRZ_USE_ELEMENTS=ON でお試しください", 0x9aa4b8, 255);
+            stage.update();
+        }
+        showGallery();
+    }
+
+    // --- ギャラリーダイアログ -------------------------------------------
+    function pageLayout(i) { return Scripts.eval(GALLERY_PAGES[i].srcLines.join("\n")); }
+
+    function buildGalleryDict()
+    {
+        var opts = [];
+        for (var i = 0; i < GALLERY_PAGES.count; i++) opts.add(GALLERY_PAGES[i].label);
+        var page = pageLayout(currentPage);
+        var dict = %[
+            size : [684, 580], background : [28, 30, 40, 240], locale : "ja-JP",
+            align : "top_left", margin : 10, input : %[ arrow_focus_nav : true ],
+            content : %[
+                type : "margin", padding : 12,
+                child : %[ type : "vtile", children : [
+                    %[ type : "hspacer", width : 644 ],
+                    %[ type : "align_center",
+                       child : %[ type : "label", text : "Elements ギャラリー", size_scale : 1.4 ] ],
+                    %[ type : "vspacer", height : 8 ],
+                    %[ type : "segmented_picker", id : "page", options : opts, initial : currentPage ],
+                    %[ type : "vspacer", height : 10 ],
+                    page.content
+                ] ]
+            ]
+        ];
+        if (page.vars !== void) dict.vars = page.vars;
+        if (page.atlases !== void) dict.atlases = page.atlases;
+        return dict;
+    }
+
+    function showGallery() { panelShown = showPanelDict(buildGalleryDict()); }
+
+    // --- イベント処理 ---------------------------------------------------
+    function fmtPayload(p)
+    {
+        switch (typeof p) {
+        case "void":   return "(void)";
+        case "String": return "\"" + p + "\"";
+        case "Real":   return "%.3f".sprintf(p);
+        default:       return "" + p;
+        }
+    }
+
+    function onPanelAction(id, payload)
+    {
+        actionCount++;
+        logAction(@"onAction( id:\"${id}\", payload:${fmtPayload(payload)} )");
+        if (id == "page") {
+            var i = Math.floor(+payload);
+            if (i >= 0 && i < GALLERY_PAGES.count && i != currentPage) pendingPage = i;
+        }
+    }
+
+    function onDemoFrame(tick)
+    {
+        if (pendingPage !== void) {
+            currentPage = pendingPage; pendingPage = void; srcScroll = 0;
+            showGallery(); drawSource();
+        }
+    }
+
+    // --- ソースパネル ---------------------------------------------------
+    function drawSource()
+    {
+        var lay = srcLayer;
+        lay.fillRect(0, 0, SRC_W, SRC_H, 0xff1a1d26);
+        lay.fillRect(0, 0, SRC_W, 34, 0xff242938);
+        var page = GALLERY_PAGES[currentPage];
+        lay.font.height = 19;
+        lay.drawText(12, 7, @"定義ソース [${page.label}] — そのまま写して使えます", 0x9fc0e8, 255);
+        lay.font.height = 16;
+        var lineH = 19;
+        var maxLines = ((SRC_H - 42) / lineH) \ 1;
+        var lines = page.srcLines;
+        if (srcScroll > lines.count - maxLines) srcScroll = lines.count - maxLines;
+        if (srcScroll < 0) srcScroll = 0;
+        for (var i = 0; i < maxLines; i++) {
+            var li = srcScroll + i;
+            if (li >= lines.count) break;
+            lay.drawText(14, 40 + i * lineH, lines[li], 0xc0c8d8, 255);
+        }
+        if (lines.count > maxLines) {
+            lay.font.height = 14;
+            lay.drawText(SRC_W - 120, 10, @"${srcScroll + 1}〜 / ${lines.count} 行", 0x60708c, 255);
+        }
+        lay.update();
+    }
+
+    // --- イベントログ ---------------------------------------------------
+    function logAction(text)
+    {
+        dm("gallery " + text);
+        logLines.add("%4d".sprintf(actionCount) + "  " + text);
+        while (logLines.count > 3) logLines.erase(0);
+        drawLog();
+    }
+
+    function drawLog()
+    {
+        var lay = logLayer;
+        lay.fillRect(0, 0, lay.width, LOG_H, 0xff10141c);
+        lay.fillRect(0, 0, lay.width, 2, 0xff2c3444);
+        lay.font.height = 16;
+        lay.drawText(12, 6, "イベントログ (onAction)", 0x8fa8d0, 255);
+        lay.font.height = 17;
+        for (var i = 0; i < logLines.count; i++)
+            lay.drawText(24, 26 + i * 20, logLines[i], 0xd8e0a0, 255);
+        lay.update();
+    }
+
+    // --- 入力 -----------------------------------------------------------
+    function onMouseWheel(shift, delta, x, y) { srcScroll -= (delta / 120); drawSource(); }
+
+    // --- -demotest 検証出力 ---------------------------------------------
+    function onDemoTest()
+    {
+        dm(@"@demotest:gallery pages=${GALLERY_PAGES.count} panel=${panelShown ? 1 : 0} page=${currentPage} actions=${actionCount}");
+    }
+}

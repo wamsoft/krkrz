@@ -1,0 +1,259 @@
+// -*- mode:tjs2 -*-
+// ======================================================================
+//  gl_particles シーン (GLParticlesScene) — ステートレス GPU パーティクル
+// ======================================================================
+
+var GLP_PARTICLE_VS =
+    "attribute vec2 a_origin;\n"
+  + "attribute vec2 a_vel;\n"
+  + "attribute float a_birth;\n"
+  + "attribute float a_seed;\n"
+  + "uniform vec2 u_screen;\n"
+  + "uniform float u_time;\n"
+  + "uniform float u_life;\n"
+  + "uniform float u_gravity;\n"
+  + "uniform float u_psize;\n"
+  + "varying float v_age;\n"
+  + "varying float v_seed;\n"
+  + "void main() {\n"
+  + "  float age = mod(u_time + a_birth, u_life);\n"
+  + "  vec2 pos = a_origin + a_vel * age + vec2(0.0, 0.5 * u_gravity * age * age);\n"
+  + "  mat4 ortho = mat4(\n"
+  + "    vec4( 2.0 / u_screen.x, 0.0, 0.0, 0.0),\n"
+  + "    vec4( 0.0, -2.0 / u_screen.y, 0.0, 0.0),\n"
+  + "    vec4( 0.0, 0.0, -1.0, 0.0),\n"
+  + "    vec4( -1.0, 1.0, 0.0, 1.0) );\n"
+  + "  gl_Position = ortho * vec4(pos, 0.0, 1.0);\n"
+  + "  float lifeRatio = age / u_life;\n"
+  + "  gl_PointSize = u_psize * (0.4 + a_seed * 0.6) * (1.0 - lifeRatio * 0.7);\n"
+  + "  v_age = lifeRatio;\n"
+  + "  v_seed = a_seed;\n"
+  + "}\n";
+var GLP_PARTICLE_FS =
+    "precision mediump float;\n"
+  + "varying float v_age;\n"
+  + "varying float v_seed;\n"
+  + "vec3 hsv(float h) {\n"
+  + "  vec3 c = abs(mod(h * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0;\n"
+  + "  return clamp(c, 0.0, 1.0);\n"
+  + "}\n"
+  + "void main() {\n"
+  + "  vec2 d = gl_PointCoord - vec2(0.5);\n"
+  + "  float r = length(d);\n"
+  + "  if (r > 0.5) discard;\n"
+  + "  float soft = smoothstep(0.5, 0.1, r);\n"
+  + "  float fade = 1.0 - v_age;\n"
+  + "  vec3 col = hsv(fract(v_seed + v_age * 0.3));\n"
+  + "  gl_FragColor = vec4(col * soft, soft * fade);\n"
+  + "}\n";
+
+//----------------------------------------------------------------------
+// OGL 描画デバイス (owner = シーン)
+//----------------------------------------------------------------------
+class ParticleDevice extends global.Window.OGLDrawDevice
+{
+    var owner;
+    var shader, vbuf, binders;
+    var count = 0;
+    var ready = false;
+
+    function ParticleDevice(o) { super.OGLDrawDevice(); owner = o; }
+
+    function onInit()
+    {
+        createCanvas();
+        try { shader = new ShaderProgram(GLP_PARTICLE_VS, GLP_PARTICLE_FS, false, false); }
+        catch (e) { dm("particle shader compile failed: " + e.message); }
+        rebuild();
+        ready = true;
+    }
+
+    function buildData(count, emitter)
+    {
+        var W = owner.W, H = owner.H, life = owner.life;
+        var rng = new Math.RandomGenerator(); rng.randomize();
+        var data = []; data.count = count * 6;
+        var cx = W / 2, cy = H * 0.62;
+        for (var i = 0; i < count; i++) {
+            var ox = cx, oy = cy, vx, vy, sp, ang;
+            switch (emitter) {
+            case 0:
+                ang = -Math.PI / 2 + (rng.random() - 0.5) * 1.1;
+                sp  = 220 + rng.random() * 260;
+                vx = Math.cos(ang) * sp; vy = Math.sin(ang) * sp;
+                break;
+            case 1:
+                ang = rng.random() * Math.PI * 2;
+                sp  = 120 + rng.random() * 320;
+                oy = cy - 60;
+                vx = Math.cos(ang) * sp; vy = Math.sin(ang) * sp;
+                break;
+            default:
+                ox = cx + (rng.random() - 0.5) * W * 0.8;
+                oy = H + 20;
+                vx = (rng.random() - 0.5) * 40;
+                vy = -(120 + rng.random() * 160);
+                break;
+            }
+            var b = i * 6;
+            data[b + 0] = ox;  data[b + 1] = oy;
+            data[b + 2] = vx;  data[b + 3] = vy;
+            data[b + 4] = rng.random() * life;
+            data[b + 5] = rng.random();
+        }
+        return data;
+    }
+
+    function rebuild()
+    {
+        count = owner.countOptions[owner.countIndex];
+        var data = buildData(count, owner.emitter);
+        vbuf = new VertexBuffer(data, VertexBuffer.dtFloat, VertexBuffer.utStatic);
+        var stride = 24;
+        binders = %[
+            origin : new VertexBinder(vbuf, stride, 2, 0),
+            vel    : new VertexBinder(vbuf, stride, 2, 8),
+            birth  : new VertexBinder(vbuf, stride, 1, 16),
+            seed   : new VertexBinder(vbuf, stride, 1, 20)
+        ];
+        dm(@"particles rebuilt: count=${count} emitter=${owner.emitter}");
+    }
+
+    function onDraw()
+    {
+        if (!ready || shader === void || vbuf === void) return;
+        canvas.renderTarget = void;
+        canvas.clear(0xff05070d);
+        canvas.blendMode = (owner.blends[owner.blendIndex].mode == "add") ? bmAdd : bmAlpha;
+        shader.a_origin = binders.origin;
+        shader.a_vel    = binders.vel;
+        shader.a_birth  = binders.birth;
+        shader.a_seed   = binders.seed;
+        shader.u_screen = [canvas.width, canvas.height];
+        shader.u_time   = owner.animTime;
+        shader.u_life   = owner.life;
+        shader.u_gravity = owner.emitter == 1 ? 40.0 : 260.0;
+        shader.u_psize  = 22.0;
+        canvas.drawMesh(shader, count, VertexBuffer.ptPoints);
+        shader.a_origin = void; shader.a_vel = void; shader.a_birth = void; shader.a_seed = void;
+        canvas.blendMode = bmAlpha;
+        canvas.matrix.reset();
+        if (this.texture) canvas.drawTexture(this.texture);
+    }
+}
+
+//----------------------------------------------------------------------
+// シーン
+//----------------------------------------------------------------------
+class GLParticlesScene extends DemoScene
+{
+    var W = 1280, H = 720, life = 3.0;
+    var countOptions = [ 2000, 8000, 20000, 50000 ];
+    var emitters = [ "噴水 (fountain)", "放射 (radial)", "上昇 (rising)" ];
+    var blends = [ %[ name:"加算 (bmAdd)", mode:"add" ], %[ name:"通常 (bmAlpha)", mode:"alpha" ] ];
+    var countIndex = 2, emitter = 0, blendIndex = 0, paused = false;
+    var animTime = 0.0, lastTick = 0;
+    var fps = 0.0, fpsFrames = 0, fpsTick = 0;
+    var dev;
+
+    function GLParticlesScene() { super.DemoScene("GPU パーティクル"); }
+
+    function create()
+    {
+        if (typeof global.Window.OGLDrawDevice == "undefined") {
+            stage.font.height = 26;
+            stage.drawText(40, 40, "この環境では OGLDrawDevice が使えません", 0xd0a0a0, 255);
+            stage.update();
+            setInfo("OGLDrawDevice 非対応");
+            return;
+        }
+        lastTick = System.getTickCount(); fpsTick = lastTick;
+        dev = new ParticleDevice(this);
+        enableGL(dev);
+        drawHud();
+        setInfo("パネルで 粒子数/エミッタ/ブレンド 変更   B: ブレンド   G: エミッタ   SPACE: 停止");
+        showPanelDict(panelDict());
+    }
+
+    function requestRebuild() { if (dev !== void && dev.ready) dev.rebuild(); }
+
+    function onDemoFrame(tick)
+    {
+        var now = System.getTickCount();
+        var dt = (now - lastTick) / 1000.0;
+        lastTick = now;
+        if (!paused) animTime += dt;
+        fpsFrames++;
+        if (now - fpsTick >= 500) {
+            fps = fpsFrames * 1000.0 / (now - fpsTick);
+            fpsFrames = 0; fpsTick = now;
+            drawHud();
+        }
+    }
+
+    function drawHud()
+    {
+        var s = stage;
+        s.fillRect(0, 0, W, H, 0x00000000);
+        s.fillRect(0, 0, 520, 92, 0x90000000);
+        s.font.height = 30;
+        s.drawText(24, 12, "GPU パーティクル", 0xffffff, 255, true, 0, 0x000000, 0, 2, 2);
+        s.font.height = 19;
+        s.drawText(26, 52, @"粒子数 ${countOptions[countIndex]}   ${emitters[emitter]}   ${blends[blendIndex].name}", 0xaac0e8, 255);
+        s.fillRect(W - 190, 0, 190, 66, 0x90000000);
+        s.font.height = 22;
+        s.drawText(W - 176, 8, "FPS", 0x90a0c0, 255);
+        s.font.height = 34;
+        s.drawText(W - 120, 18, "%.1f".sprintf(fps), 0x80ff90, 255, true, 0, 0x000000, 0, 1, 1);
+        s.update();
+    }
+
+    function panelDict()
+    {
+        var countOpts = [];
+        for (var i = 0; i < countOptions.count; i++) countOpts.add("" + countOptions[i]);
+        return %[
+            size : [300, 250], background : [26, 30, 40, 236], locale : "ja-JP",
+            align : "top_right", margin : 12,
+            content : %[ type : "margin", padding : 14, child : %[ type : "vtile", children : [
+                %[ type : "hspacer", width : 268 ],
+                %[ type : "align_center", child : %[ type : "label", text : "パーティクル設定", size_scale : 1.2 ] ],
+                %[ type : "vspacer", height : 10 ],
+                %[ type : "labeled_row", label : "粒子数", label_width : 70,
+                   child : %[ type : "cycle_picker", id : "count", options : countOpts, initial : countIndex ] ],
+                %[ type : "vspacer", height : 8 ],
+                %[ type : "labeled_row", label : "エミッタ", label_width : 70,
+                   child : %[ type : "cycle_picker", id : "emit", options : emitters, initial : emitter ] ],
+                %[ type : "vspacer", height : 8 ],
+                %[ type : "labeled_row", label : "ブレンド", label_width : 70,
+                   child : %[ type : "cycle_picker", id : "blend", options : [ blends[0].name, blends[1].name ], initial : blendIndex ] ],
+                %[ type : "vspacer", height : 10 ],
+                %[ type : "toggle_button", id : "pause", text : "一時停止", value : false ]
+            ] ] ]
+        ];
+    }
+
+    function onPanelAction(id, payload)
+    {
+        switch (id) {
+        case "count": countIndex = Math.floor(+payload); requestRebuild(); drawHud(); break;
+        case "emit":  emitter    = Math.floor(+payload); requestRebuild(); drawHud(); break;
+        case "blend": blendIndex = Math.floor(+payload); drawHud(); break;
+        case "pause": paused = (payload == true || payload == 1); break;
+        }
+    }
+
+    function onKeyDown(key, shift)
+    {
+        switch (key) {
+        case VK_SPACE: paused = !paused; drawHud(); break;
+        case VK_B: blendIndex = (blendIndex + 1) % blends.count; drawHud(); break;
+        case VK_G: emitter = (emitter + 1) % emitters.count; requestRebuild(); drawHud(); break;
+        }
+    }
+
+    function onDemoTest()
+    {
+        dm(@"@demotest:gl_particles count=${countOptions[countIndex]} fps=${"%.1f".sprintf(fps)} ready=${dev !== void && dev.ready ? 1 : 0}");
+    }
+}

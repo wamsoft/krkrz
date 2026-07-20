@@ -1,0 +1,19 @@
+// -*- mode:tjs2 -*-
+// ======================================================================
+//  gl_particles — GPU パーティクル デモ (単体起動)
+//  実体は scene.tjs の GLParticlesScene。まとめ切替版は gallery を参照。
+//  操作: パネル / B=ブレンド / G=エミッタ / SPACE=停止 / ESC=終了
+// ======================================================================
+
+var demolibPath = void;
+{
+    var cands = ["../demolib/", "../core/demolib/", "../../src/core/data/demolib/"];
+    for (var i = 0; i < cands.count; i++) {
+        if (Storages.isExistentStorage(cands[i] + "demo_common.tjs")) { demolibPath = cands[i]; break; }
+    }
+}
+if (demolibPath === void) { System.inform("demolib が見つかりません"); System.exit(1); }
+Scripts.execStorage(demolibPath + "demo_common.tjs");
+Scripts.execStorage("scene.tjs");
+
+runDemoShell([ new GLParticlesScene() ], "gl_particles — GPU パーティクル");

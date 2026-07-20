@@ -1,0 +1,113 @@
+// -*- mode:tjs2 -*-
+// ======================================================================
+//  sysinfo シーン (SysInfoScene) — System / Storages 情報表示
+//  単体起動は startup.tjs、束ね起動は gallery から本ファイルを exec して使う。
+// ======================================================================
+
+class SysInfoScene extends DemoScene
+{
+    var props;
+    var shownCount = 0;
+
+    function SysInfoScene() { super.DemoScene("システム情報"); }
+
+    function create()
+    {
+        props = [
+            "versionString", "buildVariantName", "platformName", "osName",
+            "isGeneric", "exeBits", "osBits", "processorNum", "touchDevice",
+            "openGLESVersion", "drawThreadNum", "graphicCacheLimit",
+            "exeName", "exePath", "dataPath", "appDataPath", "personalPath",
+            "savedGamesPath", "screenWidth", "screenHeight",
+            "desktopLeft", "desktopTop", "desktopWidth", "desktopHeight"
+        ];
+        enableFps();
+        drawInfo();
+        setInfo("P: パネル再表示   F: FPS 表示   (demolib 動作確認デモ)");
+        showPanel();
+    }
+
+    function propLine(name)
+    {
+        var v;
+        try {
+            if (typeof System[name] == "undefined") return name + " = (未定義)";
+            v = System[name];
+        } catch (e) {
+            return name + " = (取得不可)";
+        }
+        if (v === void) return name + " = (void)";
+        shownCount++;
+        return name + " = " + v;
+    }
+
+    function drawInfo()
+    {
+        var lay = stage;
+        var w = lay.width, h = lay.height;
+        shownCount = 0;
+        lay.fillRect(0, 0, w, h, 0xff14161c);
+        lay.fillRect(0, 0, w, 74, 0xff1f2530);
+        lay.fillRect(0, 74, w, 2, 0xff3a4456);
+        lay.font.height = 36;
+        lay.drawText(32, 18, "システム情報 (System / Storages)", 0xffffff, 255, true, 0, 0x000000, 0, 2, 2);
+
+        lay.font.height = 19;
+        var top = 96, lineH = 24;
+        var perCol = ((h - top - 120) / lineH) \ 1;
+        for (var i = 0; i < props.count; i++) {
+            var col = i \ perCol;
+            var row = i % perCol;
+            lay.drawText(32 + col * 620, top + row * lineH, propLine(props[i]), 0xc8d0e0, 255);
+        }
+
+        var sy = top + (props.count > perCol ? perCol : props.count) * lineH + 18;
+        if (sy < h - 160) {
+            lay.font.height = 19;
+            var lines = [];
+            try { lines.add("Storages.getFullPath(\"startup.tjs\") = " + Storages.getFullPath("startup.tjs")); } catch (e) {}
+            try { lines.add("Elements Dialog = " + (hasElements() ? "利用可能" : "利用不可 (WINVER ビルド等)")); } catch (e) {}
+            for (var i = 0; i < lines.count; i++)
+                lay.drawText(32, sy + i * lineH, lines[i], 0x9ab890, 255);
+        }
+        lay.update();
+    }
+
+    function panelDict()
+    {
+        return %[
+            size : [300, 180], background : [30, 32, 42, 236], locale : "ja-JP",
+            align : "top_right", margin : 56,
+            content : %[ type : "margin", padding : 14, child : %[ type : "vtile", children : [
+                %[ type : "hspacer", width : 268 ],
+                %[ type : "align_center", child : %[ type : "label", text : "sysinfo パネル", size_scale : 1.3 ] ],
+                %[ type : "vspacer", height : 10 ],
+                %[ type : "button", id : "redraw", text : "情報を再取得" ],
+                %[ type : "vspacer", height : 6 ],
+                %[ type : "button", id : "close", text : "パネルを閉じる" ]
+            ] ] ]
+        ];
+    }
+    function showPanel() { showPanelDict(panelDict()); }
+
+    function onPanelAction(id, payload)
+    {
+        switch (id) {
+        case "redraw": drawInfo();   break;
+        case "close":  closePanel(); break;
+        }
+    }
+
+    function onKeyDown(key, shift)
+    {
+        switch (key) {
+        case VK_P: showPanel();  break;
+        case VK_F: enableFps();  break;
+        }
+    }
+
+    function onDemoTest()
+    {
+        dm(@"@demotest:sysinfo props=${shownCount}/${props.count} elements=${hasElements() ? 1 : 0}");
+    }
+}

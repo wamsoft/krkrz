@@ -12,6 +12,7 @@
 #include "CharacterSet.h"
 #include "tjsDictionary.h"   // TJSCreateDictionaryObject
 #include "StoragesResourceLoader.h"   // TVPRegisterElementsFont(Dir)
+#include "VariantJsonUtil.h" // TVPVariantToJsonUtf8 (showDict / showModalDict)
 
 // Phase 6c モーダル: 独立 SDL_Window 経由のブロッキング実行 (SDL3 ビルド専用)。
 // DialogIntf.cpp 自体が KRKRZ_SRC_ELEMENTS → KRKRZ_SRC_SDL3 にしか含まれない
@@ -74,19 +75,31 @@ void tTJSNI_Dialog::OnScreenLeave(const ttstr& name, const ttstr& action)
 	TVPPostEvent(Owner, Owner, eventname, 0, TVP_EPT_IMMEDIATE, 2, args);
 }
 
-bool tTJSNI_Dialog::ShowFile(const ttstr& path)
+bool tTJSNI_Dialog::ShowFile(const ttstr& path, bool grabFocus)
 {
 	auto& mgr = tTVPElementsDialogManager::Instance();
-	return mgr.ShowFromJsonFile(path, this);
+	// 非モーダルオーバーレイ。grabFocus=false なら未フォーカスで表示し、
+	// 未処理キーをホストへ通す (wants_focus = modal || grabFocus のため modal も false に)。
+	return mgr.ShowFromJsonFile(path, this, nullptr, /*modal=*/grabFocus, grabFocus);
 }
 
-bool tTJSNI_Dialog::ShowJson(const ttstr& json_utf16)
+bool tTJSNI_Dialog::ShowJson(const ttstr& json_utf16, bool grabFocus)
 {
 	std::string utf8;
 	tjs_string ts(json_utf16.c_str());
 	TVPUtf16ToUtf8(utf8, ts);
 	auto& mgr = tTVPElementsDialogManager::Instance();
-	return mgr.ShowFromJsonString(utf8, this);
+	return mgr.ShowFromJsonString(utf8, this, nullptr, /*modal=*/grabFocus, grabFocus);
+}
+
+bool tTJSNI_Dialog::ShowDict(iTJSDispatch2* dict, bool grabFocus)
+{
+	if (!dict) return false;
+	std::string utf8;
+	tTJSVariant v(dict, dict);
+	TVPVariantToJsonUtf8(v, utf8);
+	auto& mgr = tTVPElementsDialogManager::Instance();
+	return mgr.ShowFromJsonString(utf8, this, nullptr, /*modal=*/grabFocus, grabFocus);
 }
 
 void tTJSNI_Dialog::Close()
@@ -211,6 +224,35 @@ iTJSDispatch2* tTJSNI_Dialog::ShowModalOverlayFile(const ttstr& path)
 	return BuildModalResultDict(mr);
 }
 
+iTJSDispatch2* tTJSNI_Dialog::ShowModalDict(iTJSDispatch2* dict,
+	const ttstr& title, int width, int height)
+{
+	if (!dict) return nullptr;
+	std::string utf8;
+	tTJSVariant v(dict, dict);
+	TVPVariantToJsonUtf8(v, utf8);
+
+	tTVPElementsModalResult mr;
+	if (!TVPRunElementsModalWindow(utf8, title, width, height, this, mr)) {
+		return nullptr;
+	}
+	return BuildModalResultDict(mr);
+}
+
+iTJSDispatch2* tTJSNI_Dialog::ShowModalOverlayDict(iTJSDispatch2* dict)
+{
+	if (!dict) return nullptr;
+	std::string utf8;
+	tTJSVariant v(dict, dict);
+	TVPVariantToJsonUtf8(v, utf8);
+
+	tTVPElementsModalResult mr;
+	if (!TVPRunElementsModalOverlay(utf8, this, mr)) {
+		return nullptr;
+	}
+	return BuildModalResultDict(mr);
+}
+
 //---------------------------------------------------------------------------
 // navigator フロー (複数画面遷移)
 //---------------------------------------------------------------------------
@@ -225,9 +267,10 @@ iTJSDispatch2* tTJSNI_Dialog::ShowFlow(const ttstr& manifest_path)
 
 namespace {
 
-// TJS Dictionary (画面名 → JSON 文字列) を std::map<utf8,utf8> に変換する
+// TJS Dictionary (画面名 → レイアウト) を std::map<utf8,utf8> に変換する
 // EnumMembers コールバック。 param[0]=メンバ名, param[1]=flags, param[2]=値。
-// 値が文字列でないメンバは無視する。
+// 値は JSON 文字列、 または Dictionary / Array (内部で JSON 化、 混在可)。
+// どちらでもないメンバは無視する。
 struct ScreenEnumCaller : public tTJSDispatch
 {
 	std::map<std::string, std::string> screens;
@@ -244,10 +287,14 @@ struct ScreenEnumCaller : public tTJSDispatch
 			return TJS_S_OK;
 		}
 		ttstr key = *param[0];
-		ttstr val = *param[2];   // JSON 文字列として読む
 		std::string k, v;
 		{ tjs_string ts(key.c_str()); TVPUtf16ToUtf8(k, ts); }
-		{ tjs_string ts(val.c_str()); TVPUtf16ToUtf8(v, ts); }
+		if (param[2]->Type() == tvtObject) {
+			TVPVariantToJsonUtf8(*param[2], v);   // Dictionary / Array レイアウト
+		} else if (param[2]->Type() == tvtString) {
+			ttstr val = *param[2];   // JSON 文字列として読む
+			tjs_string ts(val.c_str()); TVPUtf16ToUtf8(v, ts);
+		}
 		if (!k.empty() && !v.empty()) screens.emplace(std::move(k), std::move(v));
 		if (result) *result = (tjs_int)1;
 		return TJS_S_OK;
@@ -329,7 +376,8 @@ tTJSNC_Dialog::tTJSNC_Dialog() : inherited(TJS_W("Dialog"))
 		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Dialog);
 		if (numparams < 1) return TJS_E_BADPARAMCOUNT;
 		ttstr path(*param[0]);
-		bool ok = _this->ShowFile(path);
+		bool grabFocus = (numparams >= 2 && param[1]->Type() != tvtVoid) ? (bool)(tjs_int)*param[1] : true;
+		bool ok = _this->ShowFile(path, grabFocus);
 		if (result) *result = ok;
 		return TJS_S_OK;
 	}
@@ -340,7 +388,8 @@ tTJSNC_Dialog::tTJSNC_Dialog() : inherited(TJS_W("Dialog"))
 		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Dialog);
 		if (numparams < 1) return TJS_E_BADPARAMCOUNT;
 		ttstr json(*param[0]);
-		bool ok = _this->ShowJson(json);
+		bool grabFocus = (numparams >= 2 && param[1]->Type() != tvtVoid) ? (bool)(tjs_int)*param[1] : true;
+		bool ok = _this->ShowJson(json, grabFocus);
 		if (result) *result = ok;
 		return TJS_S_OK;
 	}
@@ -404,6 +453,65 @@ tTJSNC_Dialog::tTJSNC_Dialog() : inherited(TJS_W("Dialog"))
 	}
 	TJS_END_NATIVE_METHOD_DECL(/*func. name*/showModalFile)
 	//---------------------------------------------------------------------------
+	// showDict(dict)
+	//   showJson の Dictionary 版。 レイアウトを TJS の Dictionary / Array で
+	//   直接書ける (内部で JSON 文字列へ変換して同じ経路に流す)。 変換不能な
+	//   値 (octet / Dictionary・Array 以外のオブジェクト / 循環参照) は例外。
+	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/showDict)
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Dialog);
+		if (numparams < 1) return TJS_E_BADPARAMCOUNT;
+		if (param[0]->Type() != tvtObject) return TJS_E_INVALIDPARAM;
+		bool grabFocus = (numparams >= 2 && param[1]->Type() != tvtVoid) ? (bool)(tjs_int)*param[1] : true;
+		bool ok = _this->ShowDict(param[0]->AsObjectNoAddRef(), grabFocus);
+		if (result) *result = ok;
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_METHOD_DECL(/*func. name*/showDict)
+	//---------------------------------------------------------------------------
+	// showModalDict(dict [, title [, width [, height]]])
+	//   showModalJson の Dictionary 版。 引数 1 個で overlay、 2 個以上で
+	//   独立 SDL_Window。 戻り値仕様も showModalJson と同じ。
+	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/showModalDict)
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Dialog);
+		if (numparams < 1) return TJS_E_BADPARAMCOUNT;
+		if (param[0]->Type() != tvtObject) return TJS_E_INVALIDPARAM;
+		iTJSDispatch2* dict_in = param[0]->AsObjectNoAddRef();
+		iTJSDispatch2* dict;
+		if (numparams >= 2) {
+			ttstr title = ttstr(*param[1]);
+			int width   = (numparams >= 3) ? static_cast<int>((tjs_int)*param[2]) : 800;
+			int height  = (numparams >= 4) ? static_cast<int>((tjs_int)*param[3]) : 600;
+			dict = _this->ShowModalDict(dict_in, title, width, height);
+		} else {
+			dict = _this->ShowModalOverlayDict(dict_in);
+		}
+		if (!dict) return TJS_E_FAIL;
+		if (result) *result = tTJSVariant(dict, dict);
+		dict->Release();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_METHOD_DECL(/*func. name*/showModalDict)
+	//---------------------------------------------------------------------------
+	// dictToJson(value)
+	//   showDict 等が内部で使う Dictionary/Array → JSON 変換をそのまま呼び出す
+	//   ユーティリティ。 変換結果の JSON 文字列を返す (デバッグ / JSON 資材の
+	//   書き出し用)。
+	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/dictToJson)
+	{
+		if (numparams < 1) return TJS_E_BADPARAMCOUNT;
+		std::string utf8;
+		TVPVariantToJsonUtf8(*param[0], utf8);
+		if (result) {
+			tjs_string ws;
+			TVPUtf8ToUtf16(ws, utf8);
+			*result = ttstr(ws.c_str());
+		}
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_METHOD_DECL(/*func. name*/dictToJson)
+	//---------------------------------------------------------------------------
 	// showFlow(manifestPath)
 	//   app.jsonc マニフェスト (storage パス) 駆動の複数画面フローをオーバーレイ
 	//   でブロッキング実行。 フロー終了まで block し、 最後に閉じた画面の
@@ -423,8 +531,9 @@ tTJSNC_Dialog::tTJSNC_Dialog() : inherited(TJS_W("Dialog"))
 	TJS_END_NATIVE_METHOD_DECL(/*func. name*/showFlow)
 	//---------------------------------------------------------------------------
 	// showFlowScreens(screensDict, entry)
-	//   ファイル I/O を介さないインライン版。 screensDict は画面名 → JSON 文字列
-	//   の Dictionary、 entry は起点画面名。 その他は showFlow と同じ。
+	//   ファイル I/O を介さないインライン版。 screensDict は画面名 → レイアウト
+	//   (JSON 文字列 or Dictionary、 混在可) の Dictionary、 entry は起点画面名。
+	//   その他は showFlow と同じ。
 	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/showFlowScreens)
 	{
 		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Dialog);

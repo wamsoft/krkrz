@@ -59,7 +59,12 @@ GLTexture::create( GLuint w, GLuint h, const GLvoid* bits, tTVPTextureColorForma
     if (bits) {
         if (pbo_) {
             glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo_);
-            GLubyte *texPixels = (GLubyte *)glMapBufferRange(GL_PIXEL_UNPACK_BUFFER, 0, size, GL_MAP_WRITE_BIT);
+            // GL_MAP_INVALIDATE_BUFFER_BIT を付ける (UpdateTexture 側と同じ)。
+            // WebGL2 (Emscripten の GLES3 エミュレーション) は buffer mapping が無く、
+            // GL_MAP_WRITE_BIT 単独だと「INVALIDATE_BUFFER/RANGE を含めよ」の警告と共に
+            // map 書き込みが反映されず、PBO が空のまま glTexSubImage2D され、
+            // PNG 由来テクスチャが全透明になる。全域を書き換えるので orphan で問題ない。
+            GLubyte *texPixels = (GLubyte *)glMapBufferRange(GL_PIXEL_UNPACK_BUFFER, 0, size, GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
             if (texPixels) {
                 memcpy(texPixels, bits, size);
                 glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER);

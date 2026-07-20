@@ -1,0 +1,58 @@
+// -*- mode:tjs2 -*-
+// ======================================================================
+//  gallery — コアデモ一括ギャラリー (再起動なしでシーン切替)
+// ----------------------------------------------------------------------
+//  各デモをシーン (DemoScene) として分離し、1 つの DemoShell に束ねて
+//  再起動なしで切り替えられるようにしたもの。各デモの scene.tjs を読み込み、
+//  シーン配列を runDemoShell に渡す。
+//
+//  操作: PgUp/PgDn または画面下部バーの ◀ ▶ でシーン切替、ESC = 終了。
+//        各シーン固有のキー/パネル操作はそのシーンに届く。
+// ======================================================================
+
+// --- demolib 読み込み --------------------------------------------------
+var demolibPath = void;
+{
+    var cands = ["../demolib/", "../core/demolib/", "../../src/core/data/demolib/"];
+    for (var i = 0; i < cands.count; i++) {
+        if (Storages.isExistentStorage(cands[i] + "demo_common.tjs")) { demolibPath = cands[i]; break; }
+    }
+}
+if (demolibPath === void) { System.inform("demolib が見つかりません"); System.exit(1); }
+Scripts.execStorage(demolibPath + "demo_common.tjs");
+
+// --- 各デモのシーン定義を読み込む --------------------------------------
+// gallery の親 (= src/core/data) からの相対で各デモの scene.tjs を exec。
+// core 単体配置と Web 合成後 (core/) のどちらでも動くよう、demolibPath と
+// 同じ階層基準 (親ディレクトリ) で解決する。
+var sceneBase = demolibPath + "../";   // demolib の親 = src/core/data 相当
+
+var scenes = [];
+function tryScene(file, ctor)
+{
+    var path = sceneBase + file;
+    if (!Storages.isExistentStorage(path)) { dm(@"scene skip (not found): ${path}"); return; }
+    try {
+        Scripts.execStorage(path);
+        scenes.add(ctor());
+    } catch (e) {
+        dm(@"scene load failed: ${file}: ${e.message}");
+    }
+}
+
+// ctor は「そのシーン class を new する関数」(class 名は各 scene.tjs 定義)
+tryScene("sysinfo/scene.tjs",      function() { return new SysInfoScene(); });
+tryScene("text_font/scene.tjs",    function() { return new TextFontScene(); });
+tryScene("image_ops/scene.tjs",    function() { return new ImageOpsScene(); });
+tryScene("layer_basic/scene.tjs",  function() { return new LayerBasicScene(); });
+tryScene("input/scene.tjs",        function() { return new InputScene(); });
+tryScene("timer_async/scene.tjs",  function() { return new TimerAsyncScene(); });
+tryScene("gl_canvas/scene.tjs",    function() { return new GLCanvasScene(); });
+tryScene("gl_particles/scene.tjs", function() { return new GLParticlesScene(); });
+tryScene("elements_gallery/scene.tjs", function() { return new ElementsGalleryScene(); });
+
+dm(@"gallery: ${scenes.count} scene(s)");
+if (scenes.count == 0) { System.inform("シーンが読み込めませんでした"); System.exit(1); }
+
+// hub 型: メニュー ⇄ 各デモを ESC / クリックで行き来する
+runDemoHub(scenes, "krkrz コアデモ ギャラリー");

@@ -1,0 +1,122 @@
+// -*- mode:tjs2 -*-
+// ======================================================================
+//  image_ops シーン (ImageOpsScene) — 画像処理 (Bitmap 演算)
+// ======================================================================
+
+class ImageOpsScene extends DemoScene
+{
+    var CW = 300, CH = 170, MG = 18, TOP = 24, LABEL = 22;
+    var ops;
+    var src;
+    var cells = [];
+
+    function ImageOpsScene() { super.DemoScene("画像処理"); }
+
+    function create()
+    {
+        ops = [
+            %[ name:"元画像 (copyRect)",     op:function(l) { } ],
+            %[ name:"doGrayScale",           op:function(l) { l.doGrayScale(); } ],
+            %[ name:"adjustGamma 2.0 (明)",  op:function(l) { l.adjustGamma(2.0,0,255, 2.0,0,255, 2.0,0,255); } ],
+            %[ name:"adjustGamma 0.45 (暗)", op:function(l) { l.adjustGamma(0.45,0,255, 0.45,0,255, 0.45,0,255); } ],
+            %[ name:"flipLR (左右反転)",     op:function(l) { l.flipLR(); } ],
+            %[ name:"flipUD (上下反転)",     op:function(l) { l.flipUD(); } ],
+            %[ name:"doBoxBlur(5,5)",        op:function(l) { l.doBoxBlur(5,5); } ],
+            %[ name:"affineCopy (回転)",     op:"affine" ],
+            %[ name:"colorRect (色掛け)",    op:function(l) { l.colorRect(0,0,l.width,l.height, 0xff30a0, 110); } ]
+        ];
+
+        src = new Layer(window, stage);
+        src.setSize(CW, CH);
+        src.visible = false;
+        window.add(src);
+
+        for (var i = 0; i < ops.count; i++) {
+            var col = i % 3, row = i / 3 \ 1;
+            var x = MG + col * (CW + MG);
+            var y = TOP + row * (CH + LABEL + MG);
+            var c = new Layer(window, stage);
+            c.setSize(CW, CH);
+            c.setPos(x, y);
+            c.visible = true;
+            window.add(c);
+            cells.add(c);
+        }
+        buildSource();
+        applyAll();
+        drawLabels();
+        setInfo("R: ソース再生成   (左上が元画像、他は各処理の結果)");
+    }
+
+    function buildSource()
+    {
+        var w = CW, h = CH;
+        for (var yy = 0; yy < h; yy += 2) {
+            var t = yy / h;
+            var r = (60 + 160 * t) \ 1, g = (140 * (1 - t) + 40) \ 1, b = (200 - 120 * t) \ 1;
+            src.fillRect(0, yy, w, 2, 0xff000000 | (r << 16) | (g << 8) | b);
+        }
+        var rng = new Math.RandomGenerator();
+        rng.randomize();
+        var cols = [ 0xffffe040, 0xff40e0ff, 0xffff6080, 0xff80ff80 ];
+        for (var i = 0; i < 4; i++) {
+            var cx = 40 + (rng.random() * (w - 80)) \ 1;
+            var cy = 40 + (rng.random() * (h - 80)) \ 1;
+            fillCircle(src, cx, cy, 22, cols[i]);
+        }
+        src.fillRect(0, 0, w, 8, 0xffffffff);
+        src.fillRect(0, 0, 8, h, 0xffffffff);
+        src.font.height = 54;
+        src.drawText(16, 40, "IMG", 0xffffff, 255, true, 0, 0x102030, 0, 2, 2);
+    }
+
+    function fillCircle(lay, cx, cy, r, col)
+    {
+        for (var dy = -r; dy <= r; dy++) {
+            var hw = Math.sqrt(r * r - dy * dy) \ 1;
+            lay.fillRect(cx - hw, cy + dy, hw * 2, 1, col);
+        }
+    }
+
+    function applyAll()
+    {
+        for (var i = 0; i < ops.count; i++) {
+            var c = cells[i];
+            if (ops[i].op == "affine") {
+                c.fillRect(0, 0, CW, CH, 0xff101014);
+                var rad = 25 * Math.PI / 180, sc = 0.8;
+                var cs = Math.cos(rad) * sc, sn = Math.sin(rad) * sc;
+                var ox = CW / 2, oy = CH / 2, hw = CW / 2, hh = CH / 2;
+                var tlx = ox + (-hw) * cs - (-hh) * sn, tly = oy + (-hw) * sn + (-hh) * cs;
+                var trx = ox + ( hw) * cs - (-hh) * sn, try_ = oy + ( hw) * sn + (-hh) * cs;
+                var blx = ox + (-hw) * cs - ( hh) * sn, bly = oy + (-hw) * sn + ( hh) * cs;
+                c.affineCopy(src, 0, 0, CW, CH, false,
+                             tlx, tly, trx, try_, blx, bly, stNearest, true);
+            } else {
+                c.copyRect(0, 0, src, 0, 0, CW, CH);
+                ops[i].op(c);
+            }
+            c.update();
+        }
+    }
+
+    // ラベルは不透明な stage に直接 (下地バー + 白文字で確実にコントラスト確保)
+    function drawLabels()
+    {
+        stage.font.height = 17;
+        for (var i = 0; i < ops.count; i++) {
+            var col = i % 3, row = i / 3 \ 1;
+            var x = MG + col * (CW + MG);
+            var y = TOP + row * (CH + LABEL + MG) + CH + 1;
+            stage.fillRect(x, y, CW, LABEL - 2, 0xff222835);
+            stage.drawText(x + 6, y + 1, ops[i].name, 0xffffff, 255);
+        }
+        stage.update();
+    }
+
+    function regenerate() { buildSource(); applyAll(); }
+
+    function onKeyDown(key, shift) { if (key == VK_R) regenerate(); }
+
+    function onDemoTest() { dm(@"@demotest:image_ops cells=${cells.count}"); }
+}

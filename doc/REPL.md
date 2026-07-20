@@ -109,6 +109,27 @@ krkrz64 data/ -replfile=/tmp/krkrzchan
 `Agent.click(255,80)` で遷移 → `Agent.captureScreen("cap.png")` → PNG を読んで
 目視確認。
 
+## 毎フレーム系イベントの連続例外ガード
+
+REPL 駆動中は例外で終了しないため、onDraw / Timer のような繰り返し発火する
+ハンドラが例外を投げ続けると同じ例外が延々とログに流れる。これを止めるため、
+発火元ごとに連続例外カウンタを持ち、上限に達したら発火元を自動停止する
+(`common/base/EventIntf.h` の `tTVPRepeatedExceptionGuard`)。
+
+- 上限: `-eventexceptionlimit=N` (既定 10、`0` で無効 = 従来挙動)
+- **Timer**: 連続 N 回で `enabled=false` + キュー破棄 + WARNING。
+  `enabled = true` の再設定でガードがリセットされ再開できる
+- **OGLDrawDevice.onDraw**: 連続 N 回で発火停止 + WARNING
+  (描画サイクル自体は継続し画面はクリアされ続ける)。
+  `drawDevice.resumeOnDraw()` で再開
+- **continuous handler**: 従来から例外 1 回で自動除去 (変更なし)。
+  黙って消えていたのを WARNING ログを出すように変更
+
+なお `TVPPostEvent(TVP_EPT_IMMEDIATE)` は例外を内部で表示して飲み込むため、
+発火側では `TVPScriptExceptionShownCount` (`ScriptMgnIntf.h`) の前後差分で
+ハンドラの失敗を検知している。同様の周期イベントにガードを足す場合も
+この方式を使うこと。
+
 ## 結果表示
 
 評価結果は `TVPPrettyPrint(variant, depth, compact)` (`DebugIntf.h` 公開、

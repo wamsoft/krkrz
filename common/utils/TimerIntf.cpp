@@ -13,6 +13,7 @@
 #include "TimerIntf.h"
 #include "EventIntf.h"
 #include "SysInitIntf.h"
+#include "DebugIntf.h"
 
 
 #define TVP_DEFAULT_TIMER_CAPACITY 6
@@ -121,6 +122,21 @@ void tTJSNI_Timer::CancelEvents()
 	}
 }
 //---------------------------------------------------------------------------
+void tTJSNI_Timer::OnTimerActionFailed()
+{
+	if( ExceptionGuard.OnException() ) {
+		// 連続例外が上限に達した: タイマーを止め、キュー済み onTimer も破棄する
+		SetEnabled(false);
+		CancelEvents();
+		ttstr msg( TJS_W("Timer: disabled after repeated exceptions in onTimer") );
+		if( !ActionName.IsEmpty() ) {
+			msg += TJS_W(" (action: ") + ActionName + TJS_W(")");
+		}
+		msg += TJS_W(". Set enabled=true to resume.");
+		TVPAddImportantLog( msg );
+	}
+}
+//---------------------------------------------------------------------------
 bool tTJSNI_Timer::AreEventsInQueue()
 {
 	// are events in event queue ?
@@ -172,10 +188,22 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/onTimer)
 	if(obj.Object)
 	{
 		ttstr & actionname = _this->GetActionName();
-		TVP_ACTION_INVOKE_BEGIN(0, "onTimer", objthis);
-		TVP_ACTION_INVOKE_END_NAME(obj,
-			actionname.IsEmpty() ? NULL :actionname.c_str(),
-			actionname.IsEmpty() ? NULL :actionname.GetHint());
+		// ハンドラが毎周期例外を投げ続けるのを防ぐガード。連続例外が上限
+		// (-eventexceptionlimit) に達したらタイマーを止める (例外自体は
+		// 従来どおり上へ伝播させる)。
+		try
+		{
+			TVP_ACTION_INVOKE_BEGIN(0, "onTimer", objthis);
+			TVP_ACTION_INVOKE_END_NAME(obj,
+				actionname.IsEmpty() ? NULL :actionname.c_str(),
+				actionname.IsEmpty() ? NULL :actionname.GetHint());
+		}
+		catch(...)
+		{
+			_this->OnTimerActionFailed();
+			throw;
+		}
+		_this->OnTimerActionSucceeded();
 	}
 
 	return TJS_S_OK;
@@ -227,6 +255,8 @@ TJS_BEGIN_NATIVE_PROP_DECL(enabled)
 	TJS_BEGIN_NATIVE_PROP_SETTER
 	{
 		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Timer);
+		// 連続例外による自動停止後も、enabled=true の明示再設定で再開できる
+		if( (bool)(tjs_int)*param ) _this->ResetExceptionGuard();
 		_this->SetEnabled(*param);
 		return TJS_S_OK;
 	}

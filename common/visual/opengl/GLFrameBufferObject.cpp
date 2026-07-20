@@ -8,7 +8,7 @@
 #include <memory>
 
 
-bool GLFrameBufferObject::create( GLuint w, GLuint h) {
+bool GLFrameBufferObject::create( GLuint w, GLuint h, bool with_pbo ) {
 	destory();
 
     int pixel_size = 4;
@@ -88,11 +88,13 @@ bool GLFrameBufferObject::create( GLuint w, GLuint h) {
 	glBindFramebuffer( GL_FRAMEBUFFER, fb );
 
 	// PBO を作成 (成功時のみ)
-	int size = w * h * pixel_size;
-	glGenBuffers(1, &pbo_);
-	glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo_);
-	glBufferData(GL_PIXEL_UNPACK_BUFFER, size, 0, GL_DYNAMIC_DRAW);
-	glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+	if( with_pbo ) {
+		int size = w * h * pixel_size;
+		glGenBuffers(1, &pbo_);
+		glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo_);
+		glBufferData(GL_PIXEL_UNPACK_BUFFER, size, 0, GL_DYNAMIC_DRAW);
+		glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+	}
 
     glBindTexture( GL_TEXTURE_2D, 0 );
 

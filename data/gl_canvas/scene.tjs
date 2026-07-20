@@ -1,0 +1,246 @@
+// -*- mode:tjs2 -*-
+// ======================================================================
+//  gl_canvas シーン (GLCanvasScene) — OpenGL / Canvas 基礎
+//  GL シーン: drawDevice を OGLDrawDevice 派生に差し替え、レイヤツリー
+//  (this.texture = HUD) を GL 描画の上に合成する。shell の enableGL /
+//  GL モード復帰で単体・束ね起動どちらでも動く。
+// ======================================================================
+
+// 波打ちシェーダ (グローバル名は衝突回避のため接頭辞付き)
+var GLC_WAVE_VS =
+    "attribute vec2 a_pos;\n"
+  + "attribute vec2 a_texCoord;\n"
+  + "uniform mat4 a_modelMat4;\n"
+  + "uniform vec2 a_size;\n"
+  + "varying vec2 v_texCoord;\n"
+  + "void main() {\n"
+  + "  mat4 ortho = mat4(\n"
+  + "    vec4( 2.0 / a_size.x, 0.0, 0.0, 0.0),\n"
+  + "    vec4( 0.0, -2.0 / a_size.y, 0.0, 0.0),\n"
+  + "    vec4( 0.0, 0.0, -1.0, 0.0),\n"
+  + "    vec4( -1.0, 1.0, 0.0, 1.0) );\n"
+  + "  gl_Position = ortho * a_modelMat4 * vec4(a_pos, 0.0, 1.0);\n"
+  + "  v_texCoord = a_texCoord;\n"
+  + "}\n";
+var GLC_WAVE_FS =
+    "precision mediump float;\n"
+  + "uniform sampler2D s_tex0;\n"
+  + "uniform float u_time;\n"
+  + "uniform float u_amp;\n"
+  + "varying vec2 v_texCoord;\n"
+  + "void main() {\n"
+  + "  vec2 uv = v_texCoord;\n"
+  + "  uv.x += sin(uv.y * 18.0 + u_time * 3.0) * u_amp;\n"
+  + "  uv.y += cos(uv.x * 18.0 + u_time * 2.0) * u_amp;\n"
+  + "  gl_FragColor = texture2D(s_tex0, uv);\n"
+  + "}\n";
+
+//----------------------------------------------------------------------
+// OGL 描画デバイス (owner = シーン)
+//----------------------------------------------------------------------
+class GLCanvasDevice extends global.Window.OGLDrawDevice
+{
+    var owner;
+    var card, mask, waveShader, screen;
+    var ready = false;
+
+    function GLCanvasDevice(o) { super.OGLDrawDevice(); owner = o; }
+
+    function onInit()
+    {
+        createCanvas();
+        card = new Texture("testcard.png");
+        mask = new Texture("mask.png");
+        try { waveShader = new ShaderProgram(GLC_WAVE_VS, GLC_WAVE_FS, false, false); }
+        catch (e) { dm("shader compile failed: " + e.message); }
+        ready = true;
+        dm(@"GLCanvasDevice ready: card=${card.width}x${card.height}");
+    }
+
+    function ensureScreen()
+    {
+        if (screen === void || screen.width != canvas.width || screen.height != canvas.height)
+            screen = new Offscreen(canvas.width, canvas.height);
+    }
+
+    function drawCardCentered(cv, deg, scale)
+    {
+        cv.matrix.reset();
+        cv.matrix.translate(canvas.width / 2, canvas.height / 2);
+        cv.matrix.rotate(deg);
+        cv.matrix.scale(scale, scale);
+        cv.matrix.translate(-card.width / 2, -card.height / 2);
+        cv.drawTexture(card);
+    }
+
+    function onDraw()
+    {
+        if (!ready) return;
+        var t = owner.animTime;
+        var page = owner.pages[owner.page].id;
+
+        canvas.renderTarget = void;
+        canvas.clear(0xff10131a);
+        canvas.blendMode = bmAlpha;
+        canvas.defaultShader.a_opacity = 1.0;
+
+        switch (page) {
+        case "matrix":
+            drawCardCentered(canvas, t * 40, 1.4 + Math.sin(t * 1.3) * 0.5);
+            break;
+        case "shader":
+            if (waveShader !== void) {
+                waveShader.u_time = t;
+                waveShader.u_amp = 0.03 + Math.sin(t) * 0.02;
+                canvas.matrix.reset();
+                canvas.matrix.translate(canvas.width / 2 - card.width, canvas.height / 2 - card.height);
+                canvas.matrix.scale(2.0, 2.0);
+                canvas.drawTexture(card, waveShader);
+            } else drawCardCentered(canvas, 0, 2.0);
+            break;
+        case "rtt":
+            ensureScreen();
+            canvas.renderTarget = screen;
+            canvas.clear(0xff05202a);
+            for (var i = 0; i < 5; i++) {
+                canvas.save();
+                canvas.matrix.reset();
+                canvas.matrix.translate(canvas.width * (i + 0.5) / 5, canvas.height / 2);
+                canvas.matrix.rotate(t * 60 + i * 30);
+                canvas.matrix.scale(0.4, 0.4);
+                canvas.matrix.translate(-card.width / 2, -card.height / 2);
+                canvas.drawTexture(card);
+                canvas.restore();
+            }
+            canvas.renderTarget = void;
+            canvas.matrix.reset();
+            canvas.matrix.translate(canvas.width / 2, canvas.height / 2);
+            canvas.matrix.rotate(Math.sin(t) * 4);
+            canvas.matrix.translate(-canvas.width / 2, -canvas.height / 2);
+            canvas.blendMode = bmOpaque;
+            canvas.drawTexture(screen);
+            canvas.blendMode = bmAlpha;
+            break;
+        case "effect":
+            var eff = owner.effects[owner.effectIndex];
+            canvas.beginEffect();
+                drawCardCentered(canvas, t * 20, 2.0);
+            canvas.endEffect(eff.cmds);
+            canvas.save();
+            canvas.matrix.reset();
+            canvas.matrix.translate(canvas.width - card.width * 0.6 - 20, 20);
+            canvas.matrix.scale(0.55, 0.55);
+            canvas.drawTexture(card);
+            canvas.restore();
+            break;
+        case "mask":
+            canvas.beginMaskClip();
+                drawCardCentered(canvas, t * 15, 2.2);
+            var mx = (canvas.width - mask.width) / 2 + Math.sin(t) * 180;
+            var my = (canvas.height - mask.height) / 2 + Math.cos(t * 1.3) * 90;
+            canvas.endMaskClip(mask, mx \ 1, my \ 1);
+            break;
+        }
+
+        // HUD (レイヤツリー = this.texture) を GL の上に合成
+        canvas.renderTarget = void;
+        canvas.matrix.reset();
+        canvas.blendMode = bmAlpha;
+        if (this.texture) canvas.drawTexture(this.texture);
+    }
+}
+
+//----------------------------------------------------------------------
+// シーン
+//----------------------------------------------------------------------
+class GLCanvasScene extends DemoScene
+{
+    var pages, effects;
+    var page = 0, effectIndex = 0, paused = false, animTime = 0.0, lastTick = 0;
+    var dev;
+
+    function GLCanvasScene() { super.DemoScene("OpenGL / Canvas 基礎"); }
+
+    function create()
+    {
+        pages = [
+            %[ id:"matrix", title:"1. drawTexture + Matrix32", desc:"テクスチャをアフィン変換 (回転・拡縮・平行移動)" ],
+            %[ id:"shader", title:"2. カスタムシェーダ (ShaderProgram)", desc:"フラグメントシェーダで波打ち。u_time/u_amp を時間更新" ],
+            %[ id:"rtt",    title:"3. Offscreen (RTT)", desc:"オフスクリーンに描いてから画面へ (2 パス)" ],
+            %[ id:"effect", title:"4. ポストエフェクト", desc:"beginEffect/endEffect のコマンド (E で切替)" ],
+            %[ id:"mask",   title:"5. マスククリップ", desc:"beginMaskClip/endMaskClip。円形アルファでくり抜き" ]
+        ];
+        effects = [
+            %[ name:"grayscale",      cmds:[ %[ cmd:"grayscale" ] ] ],
+            %[ name:"gamma 1.8",      cmds:[ %[ cmd:"gamma", value:1.8 ] ] ],
+            %[ name:"light",          cmds:[ %[ cmd:"light", brightness:40, contrast:40 ] ] ],
+            %[ name:"colorize",       cmds:[ %[ cmd:"colorize", hue:150, sat:200, blend:0.7 ] ] ],
+            %[ name:"gaussianBlur 6", cmds:[ %[ cmd:"gaussianBlur", radius:6 ] ] ],
+            %[ name:"gray + gamma",   cmds:[ %[ cmd:"grayscale" ], %[ cmd:"gamma", value:1.5 ] ] ]
+        ];
+
+        // 資材の検索パス (単体起動 = image/、束ね起動 = デモフォルダ配下)
+        Storages.addAutoPath("image/");
+        if (typeof global.demolibPath == "String")
+            Storages.addAutoPath(global.demolibPath + "../gl_canvas/image/");
+
+        if (typeof global.Window.OGLDrawDevice == "undefined") {
+            stage.font.height = 26;
+            stage.drawText(40, 40, "この環境では OGLDrawDevice が使えません", 0xd0a0a0, 255);
+            stage.update();
+            setInfo("OGLDrawDevice 非対応");
+            return;
+        }
+        lastTick = System.getTickCount();
+        dev = new GLCanvasDevice(this);
+        enableGL(dev);          // drawDevice 差替 + ツリー透過
+        drawHud();
+        setInfo("←→ / 1〜5: ページ   E: エフェクト切替   SPACE: 一時停止");
+    }
+
+    // GL モードの stage (ltAlpha) に HUD を描く。透明部は GL が透けて見える。
+    function drawHud()
+    {
+        var s = stage;
+        s.fillRect(0, 0, 1280, 720, 0x00000000);
+        var p = pages[page];
+        s.fillRect(0, 0, 1280, 92, 0xa0000000);
+        s.font.height = 32;
+        s.drawText(28, 14, p.title, 0xffffff, 255, true, 0, 0x000000, 0, 2, 2);
+        s.font.height = 20;
+        var d = p.desc;
+        if (page == 3) d += "   [現在: " + effects[effectIndex].name + "]";
+        s.drawText(30, 56, d, 0xaac0e8, 255);
+        s.font.height = 18;
+        s.drawText(1280 - 130, 20, @"${page + 1} / ${pages.count}" + (paused ? "  ‖" : ""), 0x90a0c0, 255);
+        s.update();
+    }
+
+    function setPage(i) { page = (i + pages.count) % pages.count; drawHud(); }
+
+    function onDemoFrame(tick)
+    {
+        var now = System.getTickCount();
+        var dt = (now - lastTick) / 1000.0;
+        lastTick = now;
+        if (!paused) animTime += dt;
+    }
+
+    function onKeyDown(key, shift)
+    {
+        switch (key) {
+        case VK_LEFT:  setPage(page - 1); break;
+        case VK_RIGHT: setPage(page + 1); break;
+        case VK_SPACE: paused = !paused; drawHud(); break;
+        case VK_E:     effectIndex = (effectIndex + 1) % effects.count; drawHud(); break;
+        case VK_1: case VK_2: case VK_3: case VK_4: case VK_5:
+            setPage(key - VK_1); break;
+        }
+    }
+
+    function onDemoFrameTest() {}
+    function onDemoTest()
+    {
+        dm(@"@demotest:gl_canvas page=${page} ready=${dev !== void && dev.ready ? 1 : 0}");
+    }
+}

@@ -39,8 +39,13 @@ public:
 	void OnScreenLeave(const ttstr& name, const ttstr& action) override;
 
 	// TJS から呼ばれる
-	bool ShowFile(const ttstr& path);
-	bool ShowJson(const ttstr& json_utf16);
+	bool ShowFile(const ttstr& path, bool grabFocus = true);
+	bool ShowJson(const ttstr& json_utf16, bool grabFocus = true);
+	// ShowJson の Dictionary 版: TJS の Dictionary / Array で書いたレイアウトを
+	// JSON 文字列へ変換して同じ経路に流す (elements_modal 側は JSON のまま)。
+	// grabFocus=false のときはキーボードフォーカスを取らず、未処理キーは
+	// ホスト (Window) へ通る (常駐 HUD / 独自ホットキー併用向け)。
+	bool ShowDict(iTJSDispatch2* dict, bool grabFocus = true);
 	void Close();
 
 	// Phase 6c: 独立 SDL_Window 経由のブロッキングモーダル。
@@ -56,10 +61,17 @@ public:
 	iTJSDispatch2* ShowModalOverlayJson(const ttstr& json_utf16);
 	iTJSDispatch2* ShowModalOverlayFile(const ttstr& path);
 
+	// ShowModal(Overlay)Json の Dictionary 版。 戻り値仕様は同じ。
+	iTJSDispatch2* ShowModalDict(iTJSDispatch2* dict,
+		const ttstr& title, int width, int height);
+	iTJSDispatch2* ShowModalOverlayDict(iTJSDispatch2* dict);
+
 	// navigator フロー (複数画面遷移) をオーバーレイでブロッキング実行。
 	// 戻り値は最後に閉じた画面の `%[ action, values ]` (ShowModal* と同形式)。
 	// ShowFlow:        app.jsonc マニフェスト (storage パス) 駆動。
-	// ShowFlowScreens: 画面名→JSON文字列の TJS Dictionary + 起点画面名。
+	// ShowFlowScreens: 画面名→レイアウトの TJS Dictionary + 起点画面名。
+	//                  レイアウト値は JSON 文字列 / Dictionary のどちらでも可
+	//                  (Dictionary は内部で JSON 化、 混在も可)。
 	iTJSDispatch2* ShowFlow(const ttstr& manifest_path);
 	iTJSDispatch2* ShowFlowScreens(iTJSDispatch2* screens_dict,
 		const ttstr& entry);

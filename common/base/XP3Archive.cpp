@@ -62,39 +62,49 @@ static iTJSBinaryStream * TVPGetCachedArchiveHandle(void * pointer, const ttstr 
 		return TVPCreateStream(name);
 	}
 
-	tTJSCriticalSectionHolder cs_holder(TVPArchiveHandleCacheCS);
-
-	if(!TVPArchiveHandleCacheInit)
+	// プール検索・初期化だけを TVPArchiveHandleCacheCS 下で行う。
+	// cache miss 時の TVPCreateStream は CS を解放してから呼ぶこと (下記)。
+	// TVPCreateStream は TVPCreateStreamCS を取るため、ここで CS を握ったまま
+	// 呼ぶと「storage 経路: TVPCreateStreamCS→ArchiveHandleCacheCS」と
+	// 「ここ: ArchiveHandleCacheCS→TVPCreateStreamCS」で逆順ロックになり
+	// ABBA デッドロックする (image loader / storage cache thread / 主スレッドが
+	// XP3 を同時アクセスする起動時・動画後に多発)。
 	{
-		// initialize the pool
-		TVPArchiveHandleCachePool =
-			new tTVPArchiveHandleCacheItem[TVP_MAX_ARCHIVE_HANDLE_CACHE];
+		tTJSCriticalSectionHolder cs_holder(TVPArchiveHandleCacheCS);
+
+		if(!TVPArchiveHandleCacheInit)
+		{
+			// initialize the pool
+			TVPArchiveHandleCachePool =
+				new tTVPArchiveHandleCacheItem[TVP_MAX_ARCHIVE_HANDLE_CACHE];
+			for(tjs_int i =0; i < TVP_MAX_ARCHIVE_HANDLE_CACHE; i++)
+			{
+				TVPArchiveHandleCachePool[i].Pointer = NULL;
+				TVPArchiveHandleCachePool[i].Stream = NULL;
+				TVPArchiveHandleCachePool[i].Age = 0;
+			}
+			TVPArchiveHandleCacheInit = true;
+		}
+
+		// linear search wiil be enough here because the
+		// TVP_MAX_ARCHIVE_HANDLE_CACHE is relatively small
 		for(tjs_int i =0; i < TVP_MAX_ARCHIVE_HANDLE_CACHE; i++)
 		{
-			TVPArchiveHandleCachePool[i].Pointer = NULL;
-			TVPArchiveHandleCachePool[i].Stream = NULL;
-			TVPArchiveHandleCachePool[i].Age = 0;
-		}
-		TVPArchiveHandleCacheInit = true;
-	}
-
-	// linear search wiil be enough here because the 
-	// TVP_MAX_ARCHIVE_HANDLE_CACHE is relatively small
-	for(tjs_int i =0; i < TVP_MAX_ARCHIVE_HANDLE_CACHE; i++)
-	{
-		tTVPArchiveHandleCacheItem *item =
-			TVPArchiveHandleCachePool + i;
-		if(item->Stream && item->Pointer == pointer)
-		{
-			// found in the pool
-			iTJSBinaryStream * stream = item->Stream;
-			item->Stream = NULL;
-			return stream;
+			tTVPArchiveHandleCacheItem *item =
+				TVPArchiveHandleCachePool + i;
+			if(item->Stream && item->Pointer == pointer)
+			{
+				// found in the pool
+				iTJSBinaryStream * stream = item->Stream;
+				item->Stream = NULL;
+				return stream;
+			}
 		}
 	}
 
 	// not found in the pool
 	// simply create a stream and return it
+	// (CS 解放後に呼ぶ — 上記コメント参照)
 	return TVPCreateStream(name);
 }
 //---------------------------------------------------------------------------

@@ -14,6 +14,7 @@
 #include "SysInitIntf.h"
 #include "EventIntf.h"
 #include "WindowIntf.h"
+#include "DebugIntf.h"
 #include "tjsDictionary.h"
 #include "MsgIntf.h"
 #include "ScriptMgnIntf.h"
@@ -21,6 +22,38 @@
 #include "AllocTagScope.h"
 
 
+
+
+//---------------------------------------------------------------------------
+// 毎フレーム/周期イベントの連続例外ガード (EventIntf.h 参照)
+//---------------------------------------------------------------------------
+tjs_int TVPGetEventExceptionLimit()
+{
+	// -eventexceptionlimit=N (既定 10、0 で無効)
+	static tjs_int limit = -1;
+	if( limit < 0 ) {
+		limit = 10;
+		tTJSVariant val;
+		if( TVPGetCommandLine(TJS_W("-eventexceptionlimit"), &val) ) {
+			limit = (tjs_int)val;
+			if( limit < 0 ) limit = 0;
+		}
+	}
+	return limit;
+}
+//---------------------------------------------------------------------------
+bool tTVPRepeatedExceptionGuard::OnException()
+{
+	tjs_int limit = TVPGetEventExceptionLimit();
+	if( limit <= 0 ) return false;
+	Consecutive++;
+	if( Consecutive >= limit ) {
+		Consecutive = 0;
+		return true;
+	}
+	return false;
+}
+//---------------------------------------------------------------------------
 
 
 //---------------------------------------------------------------------------
@@ -1004,6 +1037,9 @@ static void _TVPDeliverContinuousEvent() // internal
 				catch(...)
 				{
 					// failed
+					// (従来から例外を投げた continuous handler は自動除去される。
+					//  黙って消えると原因を追いにくいので明示的にログを残す)
+					TVPAddImportantLog( TJS_W("Continuous handler removed because it threw an exception.") );
 					TVPContinuousHandlerVector[i].Release();
 					TVPContinuousHandlerVector[i].Object =
 					TVPContinuousHandlerVector[i].ObjThis = NULL;

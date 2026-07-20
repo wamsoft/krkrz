@@ -58,6 +58,10 @@ TJS_EXP_FUNC_DEF(void, TVPCreateMessageMapFile, (const ttstr &filename));
 //---------------------------------------------------------------------------
 extern void TVPShowScriptException(eTJS &e);
 extern void TVPShowScriptException(eTJSScriptError &e);
+// 表示 (=補足されなかったスクリプト例外) の累計カウンタ。
+// TVPPostEvent(TVP_EPT_IMMEDIATE) は例外を内部で表示して飲み込むため、
+// 毎フレーム系の発火元は発火前後の差分でハンドラの失敗を検知する。
+extern tjs_uint64 TVPScriptExceptionShownCount;
 //---------------------------------------------------------------------------
 
 

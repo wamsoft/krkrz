@@ -1,0 +1,86 @@
+// -*- mode:tjs2 -*-
+// ======================================================================
+//  gl_canvas 用テクスチャ生成
+// ----------------------------------------------------------------------
+//  image/testcard.png … 256x256 のカラフルなテストカード (drawTexture 用)
+//  image/mask.png      … 256x256 の円形アルファマスク (マスククリップ用)
+//  実行: krkrz64.exe src/core/data/gl_canvas -genassets
+// ======================================================================
+
+var W = 256, H = 256;
+var gwin = new Window();
+gwin.setInnerSize(300, 300);
+var gbase = new Layer(gwin, null);
+gbase.setSize(300, 300);
+gbase.visible = true;
+
+// --- testcard.png -------------------------------------------------------
+var card = new Layer(gwin, gbase);
+card.setSize(W, H);
+card.type = ltOpaque;
+// 斜めグラデ背景
+for (var y = 0; y < H; y++) {
+    for (var x = 0; x < W; x += 4) {
+        var r = (x * 255 / W) \ 1;
+        var g = (y * 255 / H) \ 1;
+        var b = ((W - x) * 255 / W) \ 1;
+        card.fillRect(x, y, 4, 1, 0xff000000 | (r << 16) | (g << 8) | b);
+    }
+}
+// 市松のオーバーレイ (四隅の向き確認用)
+for (var yy = 0; yy < H; yy += 32) {
+    for (var xx = 0; xx < W; xx += 32) {
+        if (((xx \ 32) + (yy \ 32)) & 1)
+            card.fillRect(xx, yy, 32, 32, 0x30ffffff);
+    }
+}
+// 枠と方向マーク
+card.fillRect(0, 0, W, 4, 0xffffffff);
+card.fillRect(0, 0, 4, H, 0xffffffff);
+card.fillRect(0, H - 4, W, 4, 0xff000000);
+card.fillRect(W - 4, 0, 4, H, 0xff000000);
+card.font.height = 40;
+card.drawText(20, 16, "TOP-LEFT", 0xffffff, 255, true, 0, 0x000000, 0, 2, 2);
+card.font.height = 80;
+var tw = card.font.getTextWidth("krkrz");
+card.drawText((W - tw) \ 2, 96, "krkrz", 0xffffe0, 255, true, 0, 0x203040, 0, 3, 3);
+card.saveLayerImage("image/testcard.png", "png");
+
+// --- mask.png (円形アルファ) --------------------------------------------
+var mask = new Layer(gwin, gbase);
+mask.setSize(W, H);
+mask.type = ltAlpha;
+mask.fillRect(0, 0, W, H, 0x00000000);
+// 行スパン方式: 完全不透明のコアは 1 スパンで塗り、外周 20px のソフト境界
+// だけ画素単位で塗る (画面全画素ループは遅いので避ける)。
+var cx = W / 2, cy = H / 2, rad = 118, soft = 20;
+for (var y = 0; y < H; y++) {
+    var dy = y - cy;
+    var dy2 = dy * dy;
+    if (dy2 >= rad * rad) continue;
+    // コア (d < rad-soft) の x 範囲を 1 スパンで
+    var rc = rad - soft;
+    if (dy2 < rc * rc) {
+        var hx = Math.sqrt(rc * rc - dy2) \ 1;
+        mask.fillRect((cx - hx) \ 1, y, hx * 2, 1, 0xffffffff);
+    }
+    // ソフトリング (rc <= d < rad) を左右それぞれ画素単位で
+    var hxOuter = Math.sqrt(rad * rad - dy2) \ 1;
+    var hxInner = dy2 < rc * rc ? (Math.sqrt(rc * rc - dy2) \ 1) : -1;
+    for (var side = 0; side < 2; side++) {
+        for (var k = 0; k <= soft + 1; k++) {
+            var x = side == 0 ? (cx - hxOuter + k) \ 1 : (cx + hxOuter - k) \ 1;
+            var dx = x - cx;
+            var d = Math.sqrt(dx * dx + dy2);
+            if (d >= rc && d < rad) {
+                var a = ((rad - d) * 255 / soft) \ 1;
+                if (a > 255) a = 255;
+                if (a > 0) mask.fillRect(x, y, 1, 1, (a << 24) | 0xffffff);
+            }
+        }
+    }
+}
+mask.saveLayerImage("image/mask.png", "png");
+
+Debug.message("@genassets:saved image/testcard.png, image/mask.png");
+System.exit(0);

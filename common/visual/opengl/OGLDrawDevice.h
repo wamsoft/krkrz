@@ -5,6 +5,7 @@
 #include "OpenGLHeader.h"
 #include "TextureUpdateRect.h"
 #include "GLTexture.h"
+#include "EventIntf.h"   // tTVPRepeatedExceptionGuard
 #ifdef __GENERIC__
 #include "OGLViewportBackground.h"
 #endif
@@ -72,8 +73,15 @@ class tTVPOGLDrawDevice : public tTVPDrawDevice
 	class tTJSNI_Canvas* CanvasInstance;
 	void SetCanvasObject(const tTJSVariant & val);
 
+	// onDraw ハンドラの連続例外ガード (EventIntf.h 参照)。
+	// 上限到達で onDraw の発火を停止して WARNING を出す (画面クリアは継続)。
+	// resumeOnDraw() (TJS) で再開。
+	tTVPRepeatedExceptionGuard OnDrawExceptionGuard;
+	bool OnDrawDisabled = false;
+
 public:
 	void RequestCreateCanvas();
+	void ResumeOnDraw() { OnDrawDisabled = false; OnDrawExceptionGuard.Reset(); }
 	const tTJSVariant & GetCanvasObject() const { return CanvasObject; }
 	const tTJSVariant & GetWindowObject() const { return WindowObject; }
 	const tTJSVariant & GetTextureObject() const { return TextureObject; }

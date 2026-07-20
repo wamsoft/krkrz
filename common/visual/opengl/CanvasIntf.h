@@ -12,6 +12,8 @@
 #include "tjsHashSearch.h"
 #include "ComplexRect.h"
 #include "GLVertexBufferObject.h"
+#include "GLEffect.h"
+#include "GLClip.h"
 #include <vector>
 #include <memory>
 
@@ -94,6 +96,23 @@ public:
 	const tTJSVariant& GetDefaultFillShader() const { return DefaultFillShaderObject; }
 
 private:
+	// ポストエフェクト / 画像クリップ (gles プラグイン GLESAdaptor 由来の機構)
+	GLFboPool EffectFboPool;
+	GLEffectContext EffectCtx;
+	GLClipContext ClipCtx;
+	std::vector<GLuint> EffectTargetStack;                 // begin 時の退避ターゲット (FBO id)
+	std::vector<GLFrameBufferObject*> EffectCaptureStack;  // 捕捉中の中間 FBO
+	float EffectSeed = 0.0f;                               // noise 用シード (endEffect 毎に更新)
+	bool StencilClipEnabled = false;
+	GLint EffectScissorBox[4];                             // 合成時 scissor (GL 座標系、下記の戻り値バッファ)
+
+	// enableClipRect 時の clipRect を GL 座標系 scissor 矩形にして返す (無効なら nullptr)
+	const GLint* CurrentScissorBox();
+	// begin/end の取りこぼしを解放する (EndDrawing 時の後始末)
+	void UnwindEffects();
+	// 合成パスが触った scissor 状態を Canvas の状態機械へ再同期する
+	void RestoreClipState();
+
 	void ApplyBlendMode();
 	void ApplyClipRect();
 	void DisableClipRect();
@@ -151,6 +170,24 @@ public:
 	void Save();
 	// 状態を元に戻す
 	void Restore();
+
+	// ポストエフェクト: begin〜end で囲んだ描画を中間 FBO に捕捉し、コマンド
+	// 配列の画像加工チェーンを GPU 上で適用してから blendMode で合成する。
+	// コマンド仕様は gles プラグイン (GLESAdaptor.beginEffect/endEffect) 互換。
+	// ネスト可。
+	void BeginEffect();
+	void EndEffect( const tTJSVariant & commands );
+
+	// マスククリップ: begin〜end で囲んだ描画を捕捉し、マスク画像の α を
+	// 乗算しながら合成する (マスク矩形の外側は α=0)。mask=nullptr で素通し。
+	void BeginMaskClip();
+	void EndMaskClip( const class iTVPTextureInfoIntrface* mask, float x, float y );
+
+	// ステンシルクリップ: マスク α が閾値以上の領域をステンシルへ書き込み、
+	// 以降の描画をその領域内に切り抜く。単純テクスチャ描画専用
+	// (自前でステンシルを使う描画とは競合する)。
+	void BeginStencilClip( const class iTVPTextureInfoIntrface* mask, float x, float y, tjs_int threshold );
+	void EndStencilClip();
 
 	// prop
 	void SetClearColor(tjs_uint32 color) { ClearColor = color; }

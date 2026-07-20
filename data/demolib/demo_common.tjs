@@ -1,0 +1,789 @@
+// -*- mode:tjs2 -*-
+// ======================================================================
+//  demolib/demo_common.tjs — krkrz デモ共通ヘルパ
+// ----------------------------------------------------------------------
+//  各デモの startup.tjs 冒頭から Scripts.execStorage で global に読み込んで
+//  使う。読み込みブロック (場所の探索込み) は readme.txt を参照。
+//
+//  提供するもの:
+//    dm(x)               … Debug.message ラッパ
+//    nf(x)               … 実数を JSON 妥当な固定小数文字列へ ("%.3f")
+//    tryPlugin(dll)      … canLink ガード付き Plugins.link (成否を返す)
+//    hasElements()       … Elements Dialog クラスが利用可能か
+//    class DemoPanel     … onAction を owner.onPanelAction へ中継する Dialog
+//                          (Elements が無い環境では定義されない)
+//    class DemoWindow    … デモ用ウィンドウ基底クラス
+//      - stage                 デモが描画するフルスクリーンレイヤ (primary の
+//                              フルサイズ opaque 子レイヤ)。primary へ直接
+//                              描画すると現行エンジンの既知の描画問題
+//                              (drawText 崩れ / primary 直下 ltAlpha の合成
+//                              異常) を踏むため、描画は必ず stage 以下で行う
+//      - primary               本来の primary レイヤ (背景のみ、直接描かない)
+//      - setInfo(text)         下部の説明帯 (操作説明等)
+//      - enableFps()           右上に FPS 表示 (continuous 駆動)
+//      - showPanelJson(json)   Elements パネル表示。DrawDevice の renderer
+//                              登録前 (起動直後の数フレーム) は showJson が
+//                              false を返すため、成功するまで自動リトライする
+//      - showPanelDict(dict)   同上の Dictionary レイアウト版 (%[ ] で直接
+//                              レイアウトを書ける。Dialog.dictToJson 使用)
+//      - closePanel()
+//      - onPanelAction(id, payload)  パネル操作フック (override して使う)
+//      - onDemoFrame(tick)     毎フレームフック (override して使う)
+//      - onDemoTest()          -demotest 終了直前フック (override して使う)
+//
+//  ヘッドレス自動テスト:
+//    krkrz64.exe <demo_dir> -demotest
+//    で起動すると、DemoWindow が 60 フレーム描画後に onDemoTest() を呼び、
+//    "@demotest:ok" を出力して System.exit(0) する。デモ側は追加実装不要。
+//    デモ固有の検証結果を足す場合も "@demotest:" プレフィクスで出力する。
+// ======================================================================
+
+var DEMOLIB_VERSION = 1;
+
+function dm(x) { Debug.message(x); }
+
+// 実数を JSON 妥当かつ整った文字列へ整形する。
+// TJS の既定 (""+実数) は 0.0 を "+0.0" と先頭 + 付きで返し JSON 不正になる、
+// かつ "5.000000000000000" と冗長なため sprintf で固定小数にする。
+function nf(x) { return "%.3f".sprintf(x); }
+
+// canLink ガード付き plugin link。無い環境では false を返すだけで落ちない。
+function tryPlugin(dll)
+{
+    try {
+        if (Plugins.canLink(dll)) {
+            Plugins.link(dll);
+            dm(@"plugin linked: ${dll}");
+            return true;
+        }
+        dm(@"plugin not found (skip): ${dll}");
+    } catch (e) {
+        dm(@"plugin link failed: ${dll} : ${e.message}");
+    }
+    return false;
+}
+
+// Elements Dialog (SDL3 ビルド + KRKRZ_USE_ELEMENTS=ON) が使えるか
+function hasElements() { return typeof global.Dialog != "undefined"; }
+
+//----------------------------------------------------------------------
+// DemoPanel: onAction を owner (DemoWindow) の onPanelAction へ中継する
+// だけの Dialog。Dialog クラスが無い環境で demolib 自体の読み込みが失敗
+// しないよう、Scripts.eval で条件付き定義する。
+//----------------------------------------------------------------------
+if (hasElements()) {
+    Scripts.eval(
+        "class DemoPanel extends Dialog"
+        + "{"
+        + "    var owner;"
+        + "    function DemoPanel(o) { super.Dialog(); owner = o; }"
+        + "    function onAction(id, payload) { owner.onPanelAction(id, payload); }"
+        + "}",
+        "demo_common.tjs(DemoPanel)");
+}
+
+//----------------------------------------------------------------------
+// DemoWindow: デモ用ウィンドウ基底クラス
+//----------------------------------------------------------------------
+class DemoWindow extends Window
+{
+    var primary;          // 本来の primary レイヤ (背景のみ、直接描かない)
+    var stage;            // デモが描画するフルスクリーンレイヤ (opaque 子レイヤ)
+    var infoBar;          // 下部の説明帯 (setInfo で生成、stage の子)
+    var fpsLayer;         // FPS 表示 (enableFps で生成、stage の子)
+    var panel;            // Elements パネル (DemoPanel)
+
+    var _pendingPanelJson;   // showJson リトライ待ちの JSON
+    var _fpsEnabled = false;
+    var _fpsFrames = 0;
+    var _fpsTick = 0;
+    var _autoTestFrames;     // -demotest 時の残フレーム数 (void なら無効)
+
+    function DemoWindow(title, width = 1280, height = 720)
+    {
+        super.Window();
+        caption = title;
+        setInnerSize(width, height);
+
+        primary = new Layer(this, null);
+        primary.setSize(width, height);
+        primary.fillRect(0, 0, width, height, 0xff000000);
+        primary.visible = true;
+        add(primary);
+
+        // 描画用フルサイズ子レイヤ。primary へ直接描くとエンジンの既知の
+        // 描画問題を踏むため、デモの描画は全て stage (とその子) で行う。
+        stage = new Layer(this, primary);
+        stage.setSize(width, height);
+        stage.fillRect(0, 0, width, height, 0xff14161c);
+        stage.visible = true;
+        add(stage);
+
+        if (System.getArgument("-demotest") !== void) _autoTestFrames = 60;
+
+        System.addContinuousHandler(onDemoContinuous);
+    }
+
+    function finalize()
+    {
+        System.removeContinuousHandler(onDemoContinuous);
+        closePanel();
+        super.finalize(...);
+    }
+
+    // --- 毎フレーム -----------------------------------------------------
+    function onDemoContinuous()
+    {
+        var tick = System.getTickCount();
+
+        // Elements パネルの表示リトライ (DrawDevice renderer 登録待ち)
+        if (_pendingPanelJson !== void && hasElements()) {
+            if (_tryShowPanel(_pendingPanelJson)) _pendingPanelJson = void;
+        }
+
+        // FPS 計測 (1 秒ごとに表示更新)
+        if (_fpsEnabled) {
+            _fpsFrames++;
+            if (tick - _fpsTick >= 1000) {
+                _updateFps(_fpsFrames * 1000.0 / (tick - _fpsTick));
+                _fpsFrames = 0;
+                _fpsTick = tick;
+            }
+        }
+
+        // ヘッドレス自動テスト (-demotest): 描画が数十フレーム回ったら終了
+        if (_autoTestFrames !== void) {
+            _autoTestFrames--;
+            if (_autoTestFrames <= 0) {
+                _autoTestFrames = void;
+                onDemoTest();
+                dm("@demotest:ok");
+                System.exit(0);
+            }
+        }
+
+        onDemoFrame(tick);
+    }
+
+    function onDemoFrame(tick) {}   // 派生クラス用: 毎フレーム処理
+    function onDemoTest() {}        // 派生クラス用: -demotest 終了前の検証出力
+
+    // --- FPS 表示 (右上) ------------------------------------------------
+    function enableFps()
+    {
+        _fpsEnabled = true;
+        _fpsFrames = 0;
+        _fpsTick = System.getTickCount();
+        if (fpsLayer === void) {
+            fpsLayer = new Layer(this, stage);
+            fpsLayer.setSize(150, 34);
+            fpsLayer.setPos(stage.width - 158, 8);
+            fpsLayer.type = ltAlpha;
+            fpsLayer.absolute = 1000000;
+            fpsLayer.visible = true;
+            add(fpsLayer);
+        }
+        _updateFps(0);
+    }
+    function _updateFps(fps)
+    {
+        if (fpsLayer === void) return;
+        fpsLayer.fillRect(0, 0, fpsLayer.width, fpsLayer.height, 0x80000000);
+        fpsLayer.font.height = 20;
+        fpsLayer.drawText(10, 6, "FPS: " + "%.1f".sprintf(fps), 0x80ff80, 255);
+        fpsLayer.update();
+    }
+
+    // --- 下部の説明帯 ---------------------------------------------------
+    function setInfo(text)
+    {
+        if (infoBar === void) {
+            infoBar = new Layer(this, stage);
+            infoBar.setSize(stage.width, 44);
+            infoBar.setPos(0, stage.height - 44);
+            infoBar.type = ltAlpha;
+            infoBar.absolute = 999999;
+            infoBar.visible = true;
+            add(infoBar);
+        }
+        infoBar.fillRect(0, 0, infoBar.width, infoBar.height, 0xa0000000);
+        infoBar.font.height = 20;
+        infoBar.drawText(14, 11, text, 0xffe080, 255);
+        infoBar.update();
+    }
+
+    // --- Elements パネル ------------------------------------------------
+    // 表示に成功したら true。renderer 未登録などで失敗した場合は false を
+    // 返しつつ onDemoContinuous で成功するまで自動リトライする。
+    function showPanelJson(json)
+    {
+        if (!hasElements()) {
+            dm("Elements Dialog が利用できないためパネルをスキップします");
+            return false;
+        }
+        if (_tryShowPanel(json)) { _pendingPanelJson = void; return true; }
+        _pendingPanelJson = json;
+        return false;
+    }
+    // Dictionary レイアウト版 (Dialog.showDict 対応ビルドが必要)。
+    // Dialog.dictToJson で JSON 化して showPanelJson のリトライ機構に乗せる。
+    function showPanelDict(dict)
+    {
+        if (!hasElements()) {
+            dm("Elements Dialog が利用できないためパネルをスキップします");
+            return false;
+        }
+        if (typeof global.Dialog.dictToJson == "undefined") {
+            dm("Dialog.dictToJson が無い (古いビルド) ためパネルをスキップします");
+            return false;
+        }
+        return showPanelJson(global.Dialog.dictToJson(dict));
+    }
+    function _tryShowPanel(json)
+    {
+        closePanel();
+        panel = new global.DemoPanel(this);
+        var ok = panel.showJson(json);
+        if (!ok) { invalidate panel; panel = void; }
+        return ok;
+    }
+    function closePanel()
+    {
+        if (panel !== void) { invalidate panel; panel = void; }
+    }
+    function onPanelAction(id, payload) {}  // 派生クラス用: パネル操作
+}
+
+// ======================================================================
+//  シーン切替フレームワーク (DemoScene + DemoShell)
+// ----------------------------------------------------------------------
+//  再起動なしで複数デモを 1 プロセス内で切り替えるための仕組み。
+//
+//    DemoShell (Window)   … ベースを共有する 1 枚の Window。primary / 情報 +
+//                           ナビの下部バー / FPS / 連続ハンドラ / 入力を一元
+//                           管理し、シーン一覧を切り替える。
+//    DemoScene            … 1 デモ = 1 シーン。shell から stage (シーン専用の
+//                           全画面 opaque レイヤ) を与えられ、そこへ描画する。
+//                           切替時に shell が stage subtree を invalidate する
+//                           のでレイヤの後始末は不要 (タイマ等は onExit で停止)。
+//
+//  シーンが使えるメンバ (DemoWindow とほぼ同じ):
+//    window   … DemoShell (Layer 生成は new Layer(window, stage) と書く)
+//    stage    … 描画先の全画面 opaque レイヤ
+//    setInfo(text) / enableFps() / showPanelJson(json) / showPanelDict(dict) /
+//    closePanel()
+//  override して使うフック:
+//    create()               … シーン開始時 (旧 DemoWindow のコンストラクタ本体)
+//    onExit()               … シーン終了時 (タイマ停止・drawDevice 復帰など)
+//    onDemoFrame(tick) / onPanelAction(id,payload) / onDemoTest()
+//    onKeyDown/onKeyUp/onMouseDown/onMouseUp/onMouseMove/onMouseWheel
+//
+//  起動:
+//    runDemoShell(scenes [, title])   scenes = DemoScene インスタンスの配列
+//  1 個だけ渡せば従来の単体デモ相当 (ナビ非表示)、複数渡すと切替可能。
+// ======================================================================
+
+class DemoScene
+{
+    var window;      // DemoShell (Layer owner)
+    var stage;       // 描画先 (shell が用意する全画面 opaque レイヤ)
+    var sceneTitle = "scene";
+    var _fps = false;
+
+    function DemoScene(title) { if (title !== void) sceneTitle = title; }
+
+    // shell が切替時に呼ぶ内部バインド (override 不要)
+    function _bind(shell, stageLayer) { window = shell; stage = stageLayer; }
+
+    // --- override して使うフック ---
+    function create() {}                    // シーン開始 (UI 構築・描画)
+    function onExit() {}                     // シーン終了 (タイマ停止等)
+    function onDemoFrame(tick) {}
+    function onPanelAction(id, payload) {}
+    function onDemoTest() {}
+    function onKeyDown(key, shift) {}
+    function onKeyUp(key, shift) {}
+    function onMouseDown(x, y, button, shift) {}
+    function onMouseUp(x, y, button, shift) {}
+    function onMouseMove(x, y, shift) {}
+    function onMouseWheel(shift, delta, x, y) {}
+
+    // --- shell へ委譲するヘルパ (DemoWindow と同じ使い勝手) ---
+    function setInfo(text)        { window.shellSetInfo(text); }
+    function enableFps()          { _fps = true; window.shellEnableFps(); }
+    function showPanelJson(json)  { return window.shellShowPanel(this, json); }
+    function showPanelDict(dict)
+    {
+        if (!hasElements()) { dm("Elements 無しのためパネルをスキップ"); return false; }
+        if (typeof global.Dialog.dictToJson == "undefined") { dm("Dialog.dictToJson 無し"); return false; }
+        return window.shellShowPanel(this, global.Dialog.dictToJson(dict));
+    }
+    function closePanel()         { window.shellClosePanel(); }
+    // GL シーン用: OGLDrawDevice 派生を drawDevice に設定し、ツリーを透過にする。
+    // device の onDraw は GL 描画後に this.texture (レイヤツリー) を合成すること。
+    function enableGL(device)     { window.enableGLMode(device); }
+}
+
+// ======================================================================
+//  MenuScene — hub (デモ一覧) シーン。shell.scenes の [1..] を一覧表示し、
+//  選択 (↑↓ + Enter / クリック) で window.switchTo(選択 index) する。
+//  各デモからは ESC / 下部バーの「← メニュー」で戻る (shell が hub 復帰)。
+// ======================================================================
+class MenuScene extends DemoScene
+{
+    var cursor = 0;
+    var topIndex = 0;          // 先頭に表示している項目 index (スクロール量)
+    var itemTop = 150, itemH = 52, catText;
+    var viewBottom = 674;      // 一覧の下端 (下部バー H-BAR_H=680 の手前)
+
+    function MenuScene(caption) { super.DemoScene("メニュー"); catText = caption; }
+
+    function itemCount() { return window.scenes.count - 1; }   // 自分 (index 0) を除く
+    function maxVisible() { return ((viewBottom - itemTop) / itemH) \ 1; }
+
+    function create()
+    {
+        setInfo("↑↓: 選択   Enter / クリック: 起動   ホイール: スクロール   ESC: 終了");
+        ensureVisible();
+        draw();
+    }
+
+    // カーソルが表示範囲に入るよう topIndex を調整
+    function ensureVisible()
+    {
+        var vis = maxVisible();
+        var n = itemCount();
+        if (cursor < topIndex) topIndex = cursor;
+        else if (cursor >= topIndex + vis) topIndex = cursor - vis + 1;
+        var maxTop = n - vis; if (maxTop < 0) maxTop = 0;
+        if (topIndex > maxTop) topIndex = maxTop;
+        if (topIndex < 0) topIndex = 0;
+    }
+
+    function draw()
+    {
+        var s = stage;
+        s.fillRect(0, 0, 1280, 720, 0xff14161c);
+        s.fillRect(0, 0, 1280, 110, 0xff1f2530);
+        s.fillRect(0, 110, 1280, 2, 0xff3a4456);
+        s.font.height = 44;
+        s.drawText(44, 26, (catText !== void) ? catText : "krkrz デモ", 0xffffff, 255, true, 0, 0x000000, 0, 2, 2);
+        s.font.height = 20;
+        s.drawText(48, 80, "デモを選んで起動してください", 0x9aa4b8, 255);
+
+        var n = itemCount();
+        var vis = maxVisible();
+        var last = topIndex + vis; if (last > n) last = n;
+        for (var i = topIndex; i < last; i++) {
+            var sc = window.scenes[i + 1];
+            var y = itemTop + (i - topIndex) * itemH;
+            var sel = (i == cursor);
+            s.fillRect(40, y, 1200, itemH - 8, sel ? 0xff2d4266 : 0xff1c212c);
+            if (sel) s.fillRect(40, y, 6, itemH - 8, 0xff64a0ff);
+            s.font.height = 26;
+            s.drawText(72, y + 8, (i + 1) + ". " + sc.sceneTitle, sel ? 0xffffff : 0xc8d0e0, 255);
+        }
+
+        // スクロールバー + 件数表示 (項目が入りきらないときのみ)
+        if (n > vis) {
+            var trackX = 1246, trackY = itemTop, trackH = vis * itemH - 8;
+            s.fillRect(trackX, trackY, 6, trackH, 0xff1c212c);
+            var thumbH = trackH * vis / n; if (thumbH < 24) thumbH = 24;
+            var denom = n - vis;
+            var thumbY = trackY + (denom > 0 ? (trackH - thumbH) * topIndex / denom : 0);
+            s.fillRect(trackX, thumbY \ 1, 6, thumbH \ 1, 0xff4a5a74);
+            s.font.height = 16;
+            s.drawText(1120, 84, @"${cursor + 1} / ${n}", 0x9aa4b8, 255);
+        }
+        s.update();
+    }
+
+    function move(d)
+    {
+        var n = itemCount(); if (n <= 0) return;
+        cursor = (cursor + d + n) % n;
+        ensureVisible();
+        draw();
+    }
+
+    function scroll(d)
+    {
+        var n = itemCount(); var vis = maxVisible();
+        if (n <= vis) return;
+        topIndex += d;
+        var maxTop = n - vis; if (maxTop < 0) maxTop = 0;
+        if (topIndex > maxTop) topIndex = maxTop;
+        if (topIndex < 0) topIndex = 0;
+        draw();
+    }
+
+    function onKeyDown(key, shift)
+    {
+        switch (key) {
+        case VK_UP:     move(-1); break;
+        case VK_DOWN:   move(1);  break;
+        case VK_PRIOR:  move(-maxVisible()); break;
+        case VK_NEXT:   move(maxVisible());  break;
+        case VK_RETURN:
+        case VK_SPACE:  window.switchTo(cursor + 1); break;
+        }
+    }
+
+    function onMouseWheel(shift, delta, x, y) { scroll(-(delta / 120) \ 1); }
+
+    function onMouseDown(x, y, button, shift)
+    {
+        if (y < itemTop || y >= viewBottom) return;
+        var row = (y - itemTop) / itemH \ 1;
+        var i = topIndex + row;
+        if (i >= 0 && i < itemCount()) { cursor = i; draw(); window.switchTo(i + 1); }
+    }
+
+    function onDemoTest() { dm(@"@demotest:menu items=${itemCount()}"); }
+}
+
+class DemoShell extends Window
+{
+    var primary;
+    var base;          // 永続の全画面 opaque コンテナ (bar/fps とシーン stage の親)
+    var stage;         // 現在のシーンの描画レイヤ (base の子、切替で作り直す)
+    var scenes;
+    var index = -1;
+    var scene;         // 現在のシーンインスタンス
+
+    var bar;           // 下部バー (情報 + ナビ)
+    var fpsLayer;
+    var _fpsOn = false;
+    var _fpsFrames = 0; var _fpsTick = 0;
+
+    var panel;                 // 現在シーンの Elements パネル
+    var _pendingPanelJson;     // showJson リトライ待ち
+    var _panelOwner;           // パネルの onAction 転送先 (= 現在シーン)
+
+    var infoText = "";
+    var lastTick;
+    var _autoTest;             // -demotest 残フレーム
+    var _autoTested;           // demotest 済みシーンの記録
+
+    var W = 1280, H = 720, BAR_H = 40;
+    var NAV_L, NAV_R;          // ナビ ◀ ▶ のクリック領域 (x範囲)
+    var NAV_MENU;              // 「← メニュー」ボタンのクリック領域 (x範囲)
+    var _glMode = false;       // GL シーン中 (ツリーを透過にして GL を見せる)
+    var hub = false;           // hub モード (scenes[0]=メニュー、ESC でそこへ戻る)
+    var _escDown = false;      // ESC のエッジ検出用 (Elements がイベントを奪うため
+                               // getKeyState でポーリングして hub 復帰を検出する)
+
+    function DemoShell(sceneList, title, hubMode)
+    {
+        super.Window();
+        scenes = sceneList;
+        hub = (hubMode === true);
+        caption = (title !== void) ? title : "krkrz デモ";
+        setInnerSize(W, H);
+
+        buildTree();
+
+        lastTick = System.getTickCount();
+        _fpsTick = lastTick;
+        if (System.getArgument("-demotest") !== void) { _autoTest = 40; _autoTested = %[]; }
+
+        System.addContinuousHandler(onShellCont);
+        switchTo(0);
+    }
+
+    function finalize()
+    {
+        System.removeContinuousHandler(onShellCont);
+        if (scene !== void) scene.onExit();
+        shellClosePanel();
+        super.finalize(...);
+    }
+
+    // primary → base (永続の全画面 opaque コンテナ) → {bar/fps, シーン stage} を
+    // まるごと (再)構築。GL シーンは drawDevice を差し替え type をトグルするため、
+    // GL 終了後は非全画面レイヤの描画が壊れる。ツリーを丸ごと作り直して確実に
+    // リセットする (stage は switchTo が別途作る)。
+    function buildTree()
+    {
+        if (bar !== void) { invalidate bar; bar = void; }
+        if (fpsLayer !== void) { invalidate fpsLayer; fpsLayer = void; }
+        if (stage !== void) { invalidate stage; stage = void; }
+        if (base !== void) { invalidate base; base = void; }
+        if (primary !== void) { invalidate primary; primary = void; }
+
+        primary = new Layer(this, null);
+        primary.setSize(W, H);
+        primary.fillRect(0, 0, W, H, 0xff000000);
+        primary.visible = true;
+        add(primary);
+
+        base = new Layer(this, primary);
+        base.setSize(W, H);
+        base.fillRect(0, 0, W, H, 0xff000000);
+        base.visible = true;
+        add(base);
+
+        createChrome();
+    }
+
+    // 下部バー (情報+ナビ) と FPS を (再)生成。base の子・absolute 大で stage の前面。
+    function createChrome()
+    {
+        if (bar !== void) { invalidate bar; bar = void; }
+        if (fpsLayer !== void) { invalidate fpsLayer; fpsLayer = void; }
+        bar = new Layer(this, base);
+        bar.setSize(W, BAR_H);
+        bar.setPos(0, H - BAR_H);
+        bar.absolute = 1000000;
+        bar.visible = true;
+        add(bar);
+        fpsLayer = new Layer(this, base);
+        fpsLayer.setSize(150, 34);
+        fpsLayer.setPos(W - 158, 8);
+        fpsLayer.absolute = 1000001;
+        fpsLayer.visible = true;
+        add(fpsLayer);
+    }
+
+    // --- シーン切替 ------------------------------------------------------
+    function switchTo(i)
+    {
+        if (scenes.count == 0) return;
+        i = (i + scenes.count) % scenes.count;
+        // 旧シーンの後始末
+        var wasGL = _glMode;
+        if (scene !== void) {
+            scene.onExit();
+            shellClosePanel();
+            if (stage !== void) { invalidate stage; stage = void; }
+        }
+        // GL モードだった場合: 既定 DrawDevice を新規生成して戻し、ツリーの
+        // 透過を opaque へ復帰する (差し替えた GL デバイスは再利用できないため
+        // Window.DefaultDrawDevice を new する)。
+        if (wasGL) {
+            // 既定 DrawDevice を再生成し、ツリーを丸ごと作り直して GL 由来の
+            // 描画異常をリセットする。
+            try { drawDevice = new global.Window.DefaultDrawDevice(); } catch (e) { dm("drawDevice 復帰失敗: " + e.message); }
+            buildTree();
+            _glMode = false;
+        }
+        index = i;
+        scene = scenes[i];
+        _fpsOn = false; fpsLayer.fillRect(0, 0, fpsLayer.width, fpsLayer.height, 0x00000000); fpsLayer.update();
+
+        // 新しいシーン stage (base の子、全画面)。absolute を小さくして bar/fps の
+        // 背面に置く。type は明示設定しない (設定すると drawText が化けるため)。
+        stage = new Layer(this, base);
+        stage.setSize(W, H);
+        stage.absolute = 10;
+        stage.fillRect(0, 0, W, H, 0xff14161c);
+        stage.visible = true;
+        add(stage);
+
+        infoText = "";
+        scene._bind(this, stage);
+        scene.create();
+        drawBar();
+    }
+
+    function next() { switchTo(index + 1); }
+    function prev() { switchTo(index - 1); }
+
+    // --- 下部バー描画 (情報 + ナビ) --------------------------------------
+    function drawBar()
+    {
+        bar.fillRect(0, 0, W, BAR_H, 0xd0000000);
+        bar.fillRect(0, 0, W, 2, 0xff2c3444);
+        NAV_MENU = void;
+        // hub モードでデモ表示中は「← メニュー」ボタンを左端に置く
+        if (hub && index != 0) {
+            bar.fillRect(10, 6, 150, 28, 0xff2d4266);
+            bar.font.height = 18;
+            bar.drawText(20, 10, "← メニュー (ESC)", 0xffffff, 255);
+            NAV_MENU = [ 10, 160 ];
+            bar.font.height = 18;
+            bar.drawText(178, 11, infoText, 0xffe080, 255);
+        } else {
+            bar.font.height = 19;
+            bar.drawText(16, 11, infoText, 0xffe080, 255);
+        }
+        if (!hub && scenes.count > 1) {
+            // 右側にナビ: ◀  [i/N name]  ▶
+            var label = @"${index + 1}/${scenes.count}  ${scene.sceneTitle}";
+            bar.font.height = 19;
+            var lw = bar.font.getTextWidth(label);
+            var rx = W - 16;
+            // ▶
+            NAV_R = [ rx - 28, rx ];
+            bar.fillRect(rx - 28, 6, 28, 28, 0xff2d4266);
+            bar.drawText(rx - 22, 10, "▶", 0xffffff, 255);
+            // ラベル
+            bar.drawText(rx - 40 - lw, 11, label, 0xc8d0e0, 255);
+            // ◀
+            var lxr = rx - 40 - lw - 8;
+            NAV_L = [ lxr - 28, lxr ];
+            bar.fillRect(lxr - 28, 6, 28, 28, 0xff2d4266);
+            bar.drawText(lxr - 22, 10, "◀", 0xffffff, 255);
+            bar.font.height = 14;
+            bar.drawText(rx - 40 - lw - 44 - 150, 13, "PgUp/PgDn 切替", 0x8090a8, 255);
+        }
+        bar.update();
+    }
+
+    function shellSetInfo(text) { infoText = text; drawBar(); }
+
+    // --- GL シーン用: drawDevice を差し替え、レイヤツリーを透過にして GL を
+    //     見せる。GL の onDraw は最後に this.texture (ツリー) を合成する前提。
+    //     primary/base/stage を ltAlpha + 透明クリアにし、bar/fps (opaque) と
+    //     stage 上の HUD だけが GL の上に重なる。switchTo で opaque に復帰する。
+    function enableGLMode(device)
+    {
+        drawDevice = device;
+        _glMode = true;
+        primary.type = ltAlpha; primary.fillRect(0, 0, W, H, 0x00000000);
+        base.type = ltAlpha;    base.fillRect(0, 0, W, H, 0x00000000);
+        stage.type = ltAlpha;   stage.fillRect(0, 0, W, H, 0x00000000);
+    }
+
+    // --- FPS -------------------------------------------------------------
+    function shellEnableFps() { _fpsOn = true; _fpsFrames = 0; _fpsTick = System.getTickCount(); }
+    function _drawFps(fps)
+    {
+        fpsLayer.fillRect(0, 0, fpsLayer.width, fpsLayer.height, 0x80000000);
+        fpsLayer.font.height = 20;
+        fpsLayer.drawText(10, 6, "FPS: " + "%.1f".sprintf(fps), 0x80ff80, 255);
+        fpsLayer.update();
+    }
+
+    // --- Elements パネル (現在シーン用) ----------------------------------
+    function shellShowPanel(owner, json)
+    {
+        if (!hasElements()) { dm("Elements 無しのためパネルをスキップ"); return false; }
+        _panelOwner = owner;
+        if (_tryPanel(json)) { _pendingPanelJson = void; return true; }
+        _pendingPanelJson = json;
+        return false;
+    }
+    function _tryPanel(json)
+    {
+        // 既存パネルだけ閉じる。shellClosePanel は _pendingPanelJson も消すため
+        // ここで呼ぶと「失敗時リトライ」が 1 回で止まってしまう (GL シーンは
+        // OGLDrawDevice の renderer 登録が数フレーム遅れるので、その間リトライを
+        // 続けられないとパネルが二度と出ない)。pending は成功するまで保持する。
+        if (panel !== void) { invalidate panel; panel = void; }
+        panel = new global.DemoPanel(this);   // onAction → this.onPanelAction → シーンへ委譲
+        // grabFocus=false: パネルはキーボードフォーカスを取らず、未処理キー
+        // (ESC / PgUp/PgDn 等) はホスト Window (シェル) へ通す。これがないと
+        // slider 等を含むパネルがキーを奪い、シーン切替/メニュー復帰ができない。
+        var ok = panel.showJson(json, false);
+        if (!ok) { invalidate panel; panel = void; }
+        return ok;
+    }
+    function shellClosePanel()
+    {
+        if (panel !== void) { invalidate panel; panel = void; }
+        _pendingPanelJson = void;
+    }
+    // DemoPanel からの onAction を現在シーンへ転送
+    function onPanelAction(id, payload)
+    {
+        if (_panelOwner !== void) _panelOwner.onPanelAction(id, payload);
+    }
+
+    // --- 連続ハンドラ ----------------------------------------------------
+    function onShellCont()
+    {
+        var tick = System.getTickCount();
+
+        // ESC ポーリング (Elements パネルがキーイベントを奪うため、イベント経路に
+        // 依存せず getKeyState で検出する)。hub でデモ表示中なら押下エッジで
+        // メニューへ戻る。メニュー上/非 hub では従来どおり onKeyDown 側で終了。
+        if (hub) {
+            var esc = false;
+            try { esc = System.getKeyState(VK_ESCAPE); } catch (e) {}
+            if (esc && !_escDown && index != 0) { _escDown = true; switchTo(0); return; }
+            _escDown = esc;
+        }
+
+        if (_pendingPanelJson !== void && hasElements()) {
+            if (_tryPanel(_pendingPanelJson)) _pendingPanelJson = void;
+        }
+        if (_fpsOn) {
+            _fpsFrames++;
+            if (tick - _fpsTick >= 500) {
+                _drawFps(_fpsFrames * 1000.0 / (tick - _fpsTick));
+                _fpsFrames = 0; _fpsTick = tick;
+            }
+        }
+
+        if (scene !== void) scene.onDemoFrame(tick);
+
+        // -demotest: 各シーンを数十フレームずつ巡回して検証出力し最後に終了
+        if (_autoTest !== void) {
+            _autoTest--;
+            if (_autoTest <= 0) {
+                if (typeof _autoTested[index] == "undefined") {
+                    _autoTested[index] = 1;
+                    scene.onDemoTest();
+                    dm(@"@demotest:scene ${index + 1}/${scenes.count} ${scene.sceneTitle}");
+                }
+                if (index + 1 < scenes.count) { switchTo(index + 1); _autoTest = 40; }
+                else { dm("@demotest:ok"); System.exit(0); }
+            }
+        }
+    }
+
+    // --- 入力: ナビはシェル、その他は現在シーンへ ------------------------
+    function onKeyDown(key, shift)
+    {
+        if (key == VK_ESCAPE) {
+            // hub では ESC は「デモ→メニュー」のみ。System.exit しない
+            // (getKeyState ポーリングと onKeyDown が実キーボードで二重発火し、
+            //  poll が switchTo(0) した直後に onKeyDown が index==0 を見て
+            //  System.exit してしまう = web で固まる問題を回避)。両経路で
+            //  _escDown エッジを共有して二重 switchTo も防ぐ。
+            if (hub) {
+                if (index != 0 && !_escDown) { _escDown = true; switchTo(0); }
+                return;
+            }
+            System.exit(0); return;                            // 非hub→終了
+        }
+        // 非 hub のみ PgUp/PgDn でシーン巡回 (hub はメニューから選ぶ)
+        if (!hub && scenes.count > 1 && (key == VK_PRIOR)) { prev(); return; }
+        if (!hub && scenes.count > 1 && (key == VK_NEXT))  { next(); return; }
+        if (scene !== void) scene.onKeyDown(key, shift);
+    }
+    function onKeyUp(key, shift)   { if (scene !== void) scene.onKeyUp(key, shift); }
+    function onMouseDown(x, y, button, shift)
+    {
+        // 下部バーのナビ/メニューをクリック判定
+        if (y >= H - BAR_H) {
+            if (NAV_MENU !== void && x >= NAV_MENU[0] && x <= NAV_MENU[1]) { switchTo(0); return; }
+            if (NAV_L !== void && x >= NAV_L[0] && x <= NAV_L[1]) { prev(); return; }
+            if (NAV_R !== void && x >= NAV_R[0] && x <= NAV_R[1]) { next(); return; }
+        }
+        if (scene !== void) scene.onMouseDown(x, y, button, shift);
+    }
+    function onMouseUp(x, y, button, shift)   { if (scene !== void) scene.onMouseUp(x, y, button, shift); }
+    function onMouseMove(x, y, shift)         { if (scene !== void) scene.onMouseMove(x, y, shift); }
+    function onMouseWheel(shift, delta, x, y) { if (scene !== void) scene.onMouseWheel(shift, delta, x, y); }
+}
+
+// シーン配列からシェルを起動する簡易エントリ (単体/巡回)
+function runDemoShell(scenes, title)
+{
+    var shell = new DemoShell(scenes, title);
+    shell.visible = true;
+    return shell;
+}
+
+// hub 型で起動: 先頭に MenuScene を挿入し、メニュー ⇄ 各デモを ESC/クリックで
+// 行き来する。scenes = デモシーンの配列、title = ウィンドウ/メニュー見出し。
+function runDemoHub(scenes, title)
+{
+    var all = [ new MenuScene(title) ];
+    for (var i = 0; i < scenes.count; i++) all.add(scenes[i]);
+    var shell = new DemoShell(all, title, true);   // hub モード
+    shell.visible = true;
+    return shell;
+}

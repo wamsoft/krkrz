@@ -206,6 +206,15 @@ void tTJSNI_Canvas::CreateDefaultShader() {
 			tTJSVariant *pparam[4] = { param, param + 1, param + 2, param + 3 };
 			if( TJS_FAILED( cls->CreateNew( 0, NULL, NULL, &newobj, 4, pparam, cls ) ) )
 				TVPThrowExceptionMessage( TVPInternalError, TJS_W( "tTJSNI_ShaderProgram::Construct" ) );
+			{
+				// a_opacity の既定値は 1.0 にする。未設定のままだと GL の
+				// uniform 初期値 0 (=完全透明) で描画され、drawTexture が
+				// 何も表示しないため。
+				tTJSVariant opacity(1.0);
+				static ttstr opacity_name(TJS_W("a_opacity"));
+				newobj->PropSet( TJS_MEMBERENSURE, opacity_name.c_str(),
+					opacity_name.GetHint(), &opacity, newobj );
+			}
 			EmbeddedDefaultShaderObject = tTJSVariant( newobj, newobj );
 			SetDefaultShader( EmbeddedDefaultShaderObject );
 			if( newobj ) newobj->Release();
@@ -242,7 +251,9 @@ void tTJSNI_Canvas::BeginDrawing()
 	glClearColor( c.r/255.0f, c.g/255.0f, c.b/255.0f, c.a/255.0f );
 	glClear( GL_COLOR_BUFFER_BIT | GL_STENCIL_BUFFER_BIT );
 
-	glDisable(GL_FRAMEBUFFER_SRGB_EXT); // sRGB補整の無効化
+#ifndef __EMSCRIPTEN__
+	glDisable(GL_FRAMEBUFFER_SRGB_EXT); // sRGB補整の無効化 (WebGL には存在しない enum のため除外)
+#endif
 
 	glDisable( GL_DEPTH_TEST );
 	glDisable( GL_STENCIL_TEST );
@@ -269,6 +280,15 @@ void tTJSNI_Canvas::BeginDrawing()
 //----------------------------------------------------------------------
 void tTJSNI_Canvas::EndDrawing()
 {
+	// beginEffect / beginMaskClip の取りこぼしがあれば破棄して描画先を戻す
+	if( !EffectCaptureStack.empty() || !EffectTargetStack.empty() ) {
+		TVPAddLog( TJS_W("Canvas: unbalanced beginEffect/beginMaskClip - discarded") );
+		UnwindEffects();
+		glBindFramebuffer( GL_FRAMEBUFFER, DefaultFrameBufferId );
+		glViewport( 0, 0, SurfaceWidth, SurfaceHeight );
+	}
+	StencilClipEnabled = false;
+
 	StateStack.clear();
 	InDrawing = false;
 	if (RenderTargetInstance) {
@@ -901,6 +921,165 @@ void tTJSNI_Canvas::Restore() {
 	}
 }
 //----------------------------------------------------------------------
+// ポストエフェクト / 画像クリップ (gles プラグイン GLESAdaptor 由来)
+//----------------------------------------------------------------------
+const GLint* tTJSNI_Canvas::CurrentScissorBox() {
+	if( !EnableClipRect || !ClipRectInstance ) return nullptr;
+	const tTVPRect& rect = ClipRectInstance->Get();
+	EffectScissorBox[0] = rect.left;
+	EffectScissorBox[1] = GetCanvasHeight() - rect.bottom;
+	EffectScissorBox[2] = rect.get_width();
+	EffectScissorBox[3] = rect.get_height();
+	return EffectScissorBox;
+}
+//----------------------------------------------------------------------
+void tTJSNI_Canvas::RestoreClipState() {
+	if( EnableClipRect ) {
+		ApplyClipRect();
+	} else {
+		DisableClipRect();
+	}
+}
+//----------------------------------------------------------------------
+void tTJSNI_Canvas::UnwindEffects() {
+	for( GLFrameBufferObject* cap : EffectCaptureStack ) {
+		EffectFboPool.release( cap );
+	}
+	EffectCaptureStack.clear();
+	EffectTargetStack.clear();
+}
+//----------------------------------------------------------------------
+void tTJSNI_Canvas::BeginEffect() {
+	tjs_int w = GetCanvasWidth(), h = GetCanvasHeight();
+	if( w <= 0 || h <= 0 ) {
+		TVPThrowExceptionMessage( TJS_W("Canvas.beginEffect: no canvas size (call while drawing).") );
+	}
+	if( !EffectCtx.ready() ) EffectCtx.init();
+
+	// 現在のレンダーターゲットを退避
+	GLint fb = 0;
+	glGetIntegerv( GL_FRAMEBUFFER_BINDING, &fb );
+	EffectTargetStack.push_back( (GLuint)fb );
+
+	// 中間 FBO を捕捉先にする
+	GLFrameBufferObject* cap = EffectFboPool.acquire( w, h );
+	EffectCaptureStack.push_back( cap );
+	cap->bindFramebuffer();
+	// scissor が有効なままだとクリアが欠けるので一時無効化して全面クリア
+	// (矩形クリップは各描画 / 合成時に個別に適用される)
+	glDisable( GL_SCISSOR_TEST );
+	glClearColor( 0.0f, 0.0f, 0.0f, 0.0f );
+	glClear( GL_COLOR_BUFFER_BIT | GL_STENCIL_BUFFER_BIT );
+	// 捕捉先でも矩形クリップ状態は維持する
+	RestoreClipState();
+}
+//----------------------------------------------------------------------
+void tTJSNI_Canvas::EndEffect( const tTJSVariant & commands ) {
+	if( EffectCaptureStack.empty() ) {
+		TVPAddLog( TJS_W("Canvas.endEffect: unbalanced (no beginEffect).") );
+		return;
+	}
+	GLFrameBufferObject* cap = EffectCaptureStack.back();
+	EffectCaptureStack.pop_back();
+	GLuint prevFb = EffectTargetStack.back();
+	EffectTargetStack.pop_back();
+
+	tjs_int w = GetCanvasWidth(), h = GetCanvasHeight();
+
+	// コマンド配列をコンパイルして適用 (GPU 内で完結)
+	EffectSeed += 1.0f;  // noise を毎回変化させる
+	EffectCtx.setSeed( EffectSeed );
+	GLEffectChain chain;
+	chain.compile( commands );
+	GLFrameBufferObject* produced = chain.apply( cap->textureId(), w, h, EffectFboPool, EffectCtx );
+	GLuint resultTex = produced ? produced->textureId() : cap->textureId();
+
+	// 直前のターゲットへ現在のブレンドモードで合成
+	glBindFramebuffer( GL_FRAMEBUFFER, prevFb );
+	glViewport( 0, 0, w, h );
+	ApplyBlendMode();
+	// 素通し描画 (矩形クリップが有効ならこの合成にも適用する)
+	EffectCtx.drawPointwise( resultTex, nullptr, nullptr, 0, w, h, CurrentScissorBox() );
+
+	// 後始末
+	if( produced ) EffectFboPool.release( produced );
+	EffectFboPool.release( cap );
+	RestoreClipState();
+}
+//----------------------------------------------------------------------
+// マスククリップ捕捉開始。内容は BeginEffect と同じ (中間 FBO へリダイレクト)。
+void tTJSNI_Canvas::BeginMaskClip() {
+	BeginEffect();
+}
+//----------------------------------------------------------------------
+// 捕捉内容へ αマスクを適用して直前ターゲットへ合成する。
+//   mask : Texture / Offscreen。nullptr なら素通し合成
+//          (矩形クリップだけを合成時に適用したい場合に使う)。
+//   x, y : マスク配置位置 (キャンバス座標)
+// マスク矩形の外側は α=0 (CPU 版 Layer.clipAlphaRect の第8引数 0 相当)。
+void tTJSNI_Canvas::EndMaskClip( const iTVPTextureInfoIntrface* mask, float x, float y ) {
+	if( EffectCaptureStack.empty() ) {
+		TVPAddLog( TJS_W("Canvas.endMaskClip: unbalanced (no beginMaskClip).") );
+		return;
+	}
+	GLFrameBufferObject* cap = EffectCaptureStack.back();
+	EffectCaptureStack.pop_back();
+	GLuint prevFb = EffectTargetStack.back();
+	EffectTargetStack.pop_back();
+
+	if( !ClipCtx.ready() ) ClipCtx.init();
+
+	tjs_int w = GetCanvasWidth(), h = GetCanvasHeight();
+
+	glBindFramebuffer( GL_FRAMEBUFFER, prevFb );
+	glViewport( 0, 0, w, h );
+	ApplyBlendMode();
+
+	GLuint maskTex = mask ? (GLuint)mask->GetNativeHandle() : 0;
+	float mw = mask ? (float)mask->GetWidth() : 0.0f;
+	float mh = mask ? (float)mask->GetHeight() : 0.0f;
+	ClipCtx.drawMaskComposite( cap->textureId(), maskTex, x, y, mw, mh,
+		1.0f, 1.0f, w, h, CurrentScissorBox() );
+
+	EffectFboPool.release( cap );
+	RestoreClipState();
+}
+//----------------------------------------------------------------------
+// マスク画像の α を現ターゲットのステンシルへ書き込み、
+// 以降の描画をステンシルで切り抜く。
+//   threshold : ステンシルを立てる α 閾値 (1～255)。0 以下は 1 扱い。
+// 注意: 自前でステンシルを使う描画とは競合するため単純テクスチャ描画専用。
+//       そのようなソースは mask 方式 (beginMaskClip) を使うこと。
+void tTJSNI_Canvas::BeginStencilClip( const iTVPTextureInfoIntrface* mask, float x, float y, tjs_int threshold ) {
+	tjs_int w = GetCanvasWidth(), h = GetCanvasHeight();
+	if( w <= 0 || h <= 0 ) {
+		TVPThrowExceptionMessage( TJS_W("Canvas.beginStencilClip: no canvas size (call while drawing).") );
+	}
+	if( !mask ) return;
+	if( !ClipCtx.ready() ) ClipCtx.init();
+
+	// ステンシルは全面クリアしたいので scissor を一時解除
+	glDisable( GL_SCISSOR_TEST );
+	glStencilMask( 0xFF );
+	glClearStencil( 0 );
+	glClear( GL_STENCIL_BUFFER_BIT );
+
+	if( threshold <= 0 ) threshold = 1;
+	if( threshold > 255 ) threshold = 255;
+	ClipCtx.drawStencilWrite( (GLuint)mask->GetNativeHandle(), x, y,
+		(float)mask->GetWidth(), (float)mask->GetHeight(),
+		1.0f, 1.0f, w, h, threshold / 255.0f );
+
+	StencilClipEnabled = true;
+	// drawStencilWrite が scissor を落とすので Canvas の状態へ復帰
+	RestoreClipState();
+}
+//----------------------------------------------------------------------
+void tTJSNI_Canvas::EndStencilClip() {
+	StencilClipEnabled = false;
+	glDisable( GL_STENCIL_TEST );
+}
+//----------------------------------------------------------------------
 void tTJSNI_Canvas::ApplyClipRect() {
 	if( ClipRectInstance ) {
 		CurrentScissorRect = ClipRectInstance->Get();
@@ -927,6 +1106,19 @@ void tTJSNI_Canvas::SetCulling( bool b ) {
 //----------------------------------------------------------------------
 // 各描画前に呼び出して、状態の変化に応じた設定を行う。
 void tTJSNI_Canvas::SetupEachDrawing() {
+	// WebGL は「有効化された頂点属性配列にバッファが無い」draw を拒否する
+	// (INVALID_OPERATION: no buffer is bound to enabled attribute)。各描画メソッドは
+	// 使う属性を有効化するが無効化しないため、DrawPolygon 等が a_color を有効化した
+	// まま残すと、次の DrawTexture の drawArrays が失敗する (ネイティブ GLES は許容
+	// するが WebGL は不可)。各描画の先頭で全頂点属性を無効化し、以降で必要な属性
+	// だけを有効化してクリーンな状態から描くようにする。
+	static GLint maxVertexAttribs = 0;
+	if( maxVertexAttribs <= 0 ) {
+		glGetIntegerv( GL_MAX_VERTEX_ATTRIBS, &maxVertexAttribs );
+		if( maxVertexAttribs <= 0 ) maxVertexAttribs = 16;
+	}
+	for( GLint i = 0; i < maxVertexAttribs; i++ ) glDisableVertexAttribArray( i );
+
 	if( EnableClipRect ) {
 		if( !ClipRectInstance || CurrentScissorRect != ClipRectInstance->Get() ) {
 			ApplyClipRect();
@@ -1457,6 +1649,84 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/restore )
 	return TJS_S_OK;
 }
 TJS_END_NATIVE_METHOD_DECL(/*func. name*/restore )
+//----------------------------------------------------------------------
+// beginEffect()
+//   以降の描画を中間バッファ (透明クリア済み) へ捕捉する。ネスト可。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/beginEffect )
+{
+	TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Canvas );
+	_this->BeginEffect();
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_METHOD_DECL(/*func. name*/beginEffect )
+//----------------------------------------------------------------------
+// endEffect(commands)
+//   直前の beginEffect() 以降の描画内容へ commands (加工コマンド配列、
+//   gles プラグイン互換) を適用し、現在の blendMode で合成する。
+//   commands 省略時は素通し合成。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/endEffect )
+{
+	TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Canvas );
+	tTJSVariant commands;
+	if( numparams >= 1 ) commands = *param[0];
+	_this->EndEffect( commands );
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_METHOD_DECL(/*func. name*/endEffect )
+//----------------------------------------------------------------------
+// beginMaskClip()
+//   以降の描画を中間バッファへ捕捉する (beginEffect と同じ)。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/beginMaskClip )
+{
+	TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Canvas );
+	_this->BeginMaskClip();
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_METHOD_DECL(/*func. name*/beginMaskClip )
+//----------------------------------------------------------------------
+// endMaskClip(mask, x, y)
+//   捕捉内容へ mask (Texture/Offscreen) の α を乗算して合成する。
+//   mask に void を渡すと素通し合成。x, y はマスク配置位置 (既定 0)。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/endMaskClip )
+{
+	TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Canvas );
+	const iTVPTextureInfoIntrface* mask = nullptr;
+	if( numparams >= 1 && param[0]->Type() == tvtObject ) {
+		mask = TVPGetTextureInfo( param[0] );
+		if( !mask ) return TJS_E_INVALIDPARAM;
+	}
+	float x = ( numparams >= 2 ) ? (float)(tjs_real)*param[1] : 0.0f;
+	float y = ( numparams >= 3 ) ? (float)(tjs_real)*param[2] : 0.0f;
+	_this->EndMaskClip( mask, x, y );
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_METHOD_DECL(/*func. name*/endMaskClip )
+//----------------------------------------------------------------------
+// beginStencilClip(mask, x, y, threshold)
+//   mask の α が threshold (1..255) 以上の領域をステンシルへ書き込み、
+//   以降の描画をその領域内に切り抜く。endStencilClip() で解除。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/beginStencilClip )
+{
+	TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Canvas );
+	if( numparams < 1 ) return TJS_E_BADPARAMCOUNT;
+	const iTVPTextureInfoIntrface* mask = TVPGetTextureInfo( param[0] );
+	if( !mask ) return TJS_E_INVALIDPARAM;
+	float x = ( numparams >= 2 ) ? (float)(tjs_real)*param[1] : 0.0f;
+	float y = ( numparams >= 3 ) ? (float)(tjs_real)*param[2] : 0.0f;
+	tjs_int threshold = ( numparams >= 4 ) ? (tjs_int)*param[3] : 1;
+	_this->BeginStencilClip( mask, x, y, threshold );
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_METHOD_DECL(/*func. name*/beginStencilClip )
+//----------------------------------------------------------------------
+// endStencilClip()
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/endStencilClip )
+{
+	TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Canvas );
+	_this->EndStencilClip();
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_METHOD_DECL(/*func. name*/endStencilClip )
 //----------------------------------------------------------------------
 
 

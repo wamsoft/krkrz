@@ -1,0 +1,18 @@
+// -*- mode:tjs2 -*-
+// ======================================================================
+//  image_ops — 画像処理 デモ (単体起動)
+//  実体は scene.tjs の ImageOpsScene。まとめ切替版は gallery を参照。
+// ======================================================================
+
+var demolibPath = void;
+{
+    var cands = ["../demolib/", "../core/demolib/", "../../src/core/data/demolib/"];
+    for (var i = 0; i < cands.count; i++) {
+        if (Storages.isExistentStorage(cands[i] + "demo_common.tjs")) { demolibPath = cands[i]; break; }
+    }
+}
+if (demolibPath === void) { System.inform("demolib が見つかりません"); System.exit(1); }
+Scripts.execStorage(demolibPath + "demo_common.tjs");
+Scripts.execStorage("scene.tjs");
+
+runDemoShell([ new ImageOpsScene() ], "image_ops — 画像処理");

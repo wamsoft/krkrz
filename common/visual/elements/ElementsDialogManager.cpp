@@ -166,6 +166,13 @@ struct tTVPElementsDialogManager::Impl
 	// DrawDevice ごとのレンダラ。 オーナーは manager。
 	std::map<iTVPDrawDevice*, std::unique_ptr<iTVPDialogRenderer>> renderers;
 
+	// 直近に PaintOverlay を呼んだ (= 現在フレームを提示している) DrawDevice。
+	// GL デモ等で drawDevice が OGLDrawDevice に差し替わると、提示中のデバイスも
+	// そちらへ移る。 host 未指定 (nullptr) の Show はこのデバイスを既定ホストに
+	// 選び、アクティブなデバイス上にパネルが出るようにする (renderers.begin() は
+	// map のポインタ順で決まり提示中のデバイスとは限らないため)。
+	iTVPDrawDevice* active_device = nullptr;
+
 	// インスタンスが finish したとき保存する結果。 ブロッキングモーダルの
 	// pump ループが handler をキーに取り出す。
 	struct ResultSnapshot
@@ -655,7 +662,14 @@ iTVPDrawDevice* tTVPElementsDialogManager::ResolveHostDeviceForFlow(
 			TVPAddImportantLog(TJS_W("ElementsDialog: no DrawDevice registered"));
 			return nullptr;
 		}
-		host = _impl->renderers.begin()->first;
+		// 提示中のデバイス (直近 PaintOverlay 呼出元) を優先する。 これにより
+		// GL デモ等で drawDevice が OGLDrawDevice に切り替わっていても、その上に
+		// パネルが出る。 未確定 / レンダラ無しのときのみ map 先頭へフォールバック。
+		if (_impl->active_device && _impl->FindRenderer(_impl->active_device)) {
+			host = _impl->active_device;
+		} else {
+			host = _impl->renderers.begin()->first;
+		}
 	}
 	if (!_impl->FindRenderer(host)) {
 		TVPAddImportantLog(TJS_W("ElementsDialog: no renderer for given DrawDevice"));
@@ -983,6 +997,10 @@ void tTVPElementsDialogManager::UnregisterRenderer(iTVPDrawDevice* device)
 	for (auto* inst : doomed) _impl->TeardownInstance(inst);
 
 	_impl->renderers.erase(device);
+
+	// 提示中デバイスが外れたら既定ホストの記録もクリア (次の PaintOverlay で
+	// 現行デバイスへ更新される)。 GL 離脱時の OGLDrawDevice 破棄などで発生。
+	if (_impl->active_device == device) _impl->active_device = nullptr;
 }
 
 //---------------------------------------------------------------------------
@@ -990,6 +1008,24 @@ void tTVPElementsDialogManager::UnregisterRenderer(iTVPDrawDevice* device)
 //---------------------------------------------------------------------------
 void tTVPElementsDialogManager::PaintOverlay(iTVPDrawDevice* device)
 {
+	// 提示デバイスが切り替わったら (GL デモの drawDevice 差し替え等)、既存の
+	// パネルを現在提示中のデバイスへ移設する。 パネルは create() 内で GL 有効化
+	// 直後に表示されることがあり、その時点では旧デバイス (menu を描いた SDL 等)
+	// がまだ提示中なので旧デバイスにホストされてしまう。 提示デバイスが実際に
+	// 切り替わったこのタイミングで host を追従させ、旧レンダラのレイヤは解放する。
+	// element ツリーは ThorVG の CPU ラスタ出力を各レンダラへアップロードする
+	// 方式でデバイス非依存なので、host 付け替え + 旧レイヤ解放だけで移設できる。
+	if (_impl->active_device != device) {
+		for (auto& up : _impl->instances) {
+			Impl::Instance* inst = up.get();
+			if (inst->host_device == device) continue;
+			if (auto* oldR = _impl->FindRenderer(inst->host_device))
+				oldR->ReleaseLayer(inst->LayerKey());
+			inst->host_device = device;
+		}
+		_impl->active_device = device;
+	}
+
 	// 1) close 予約 / 自動 finish の処理 (この device のインスタンスのみ)。
 	//    teardown でリスト要素が消えるので、 ポインタを集めてから処理する。
 	{
