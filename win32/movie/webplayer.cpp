@@ -2,6 +2,7 @@
 #include "tp_stub.h"
 #include "webplayer.h"
 #include "IMoviePlayer.h"
+#include "D3D11OverlayWindow.h"
 
 #ifndef EC_COMPLETE
 #define EC_COMPLETE 0x0001
@@ -69,12 +70,15 @@ private:
 };
 
 
-tTVPWebpMovie::tTVPWebpMovie(HWND owner)
+tTVPWebpMovie::tTVPWebpMovie(HWND owner, bool overlayOutput)
 : RefCount(1)
 , Player(nullptr)
 , OwnerWindow(owner)
 , mBuffer(nullptr)
 , mUpdate(false)
+, OverlayMode(overlayOutput)
+, Overlay(nullptr)
+, DispW(0), DispH(0)
 {
 }
 
@@ -82,8 +86,12 @@ tTVPWebpMovie::~tTVPWebpMovie()
 {
 	mBuffer = nullptr;
 	if (Player) {
-		delete Player;
+		delete Player;   // decoder thread 停止 (以後 callback は来ない)
 		Player = nullptr;
+	}
+	if (Overlay) {       // Player 停止後に破棄
+		delete Overlay;
+		Overlay = nullptr;
 	}
 }
 
@@ -92,14 +100,21 @@ tTVPWebpMovie::Open(const char *path)
 {
     IMoviePlayer::InitParam param;
     param.Init();
-    param.videoColorFormat = IMoviePlayer::ColorFormat::COLOR_BGRA;
+    param.videoColorFormat = OverlayMode ? IMoviePlayer::ColorFormat::COLOR_NOCONV
+                                         : IMoviePlayer::ColorFormat::COLOR_BGRA;
 	param.audioSink        = &AudioSink;
 	Player = IMoviePlayer::CreateMoviePlayer(path, param);
 
 	if (Player) {
-		Player->SetOnVideoDecoded([this](int w, int h, IMoviePlayer::DestUpdater updater) {
-			Update(w, h, updater);
-		});
+		if (OverlayMode) {
+			Player->SetOnVideoDecodedPlanes([this](const IMoviePlayer::VideoFrameInfo &frame) {
+				UpdatePlanes(frame);
+			});
+		} else {
+			Player->SetOnVideoDecoded([this](int w, int h, IMoviePlayer::DestUpdater updater) {
+				Update(w, h, updater);
+			});
+		}
 		Player->SetOnState([](void *userData, IMoviePlayer::State state){
 			tTVPWebpMovie *self = (tTVPWebpMovie *)userData;
 			self->OnState(state);
@@ -116,14 +131,21 @@ tTVPWebpMovie::Open(IStream *stream)
 {
     IMoviePlayer::InitParam param;
     param.Init();
-    param.videoColorFormat = IMoviePlayer::ColorFormat::COLOR_BGRA;
+    param.videoColorFormat = OverlayMode ? IMoviePlayer::ColorFormat::COLOR_NOCONV
+                                         : IMoviePlayer::ColorFormat::COLOR_BGRA;
 	param.audioSink        = &AudioSink;
 	Player = IMoviePlayer::CreateMoviePlayer(new MovieStream(stream), param);
 
 	if (Player) {
-		Player->SetOnVideoDecoded([this](int w, int h, IMoviePlayer::DestUpdater updater) {
-			Update(w, h, updater);
-		});
+		if (OverlayMode) {
+			Player->SetOnVideoDecodedPlanes([this](const IMoviePlayer::VideoFrameInfo &frame) {
+				UpdatePlanes(frame);
+			});
+		} else {
+			Player->SetOnVideoDecoded([this](int w, int h, IMoviePlayer::DestUpdater updater) {
+				Update(w, h, updater);
+			});
+		}
 		Player->SetOnState([](void *userData, IMoviePlayer::State state){
 			tTVPWebpMovie *self = (tTVPWebpMovie *)userData;
 			self->OnState(state);
@@ -145,6 +167,47 @@ tTVPWebpMovie::Update(int w, int h, IMoviePlayer::DestUpdater updater)
 		mUpdate = true;
 		if( OwnerWindow != NULL) {
 			::PostMessage( OwnerWindow, WM_GRAPHNOTIFY, 0, 0 );
+		}
+	}
+}
+//----------------------------------------------------------------------------
+//! @brief overlay モード: YUV(I420) plane を D3D11 子ウィンドウへ present する。
+//----------------------------------------------------------------------------
+void tTVPWebpMovie::UpdatePlanes(const IMoviePlayer::VideoFrameInfo &frame)
+{
+	if (!Overlay) return;
+	// VP8/9 は I420 (planeCount=3)。alpha 付き webm でも overlay では色のみ (不透明表示)。
+	if (frame.planeCount >= 3) {
+		// frame.width は coded 幅 (16 アライン padding 付き) なので、表示幅にクロップする。
+		// (crop しないと右端に未定義 chroma 由来の緑帯が出る。GetVideoFormat は
+		//  extractor 由来の表示寸法を返す。plane stride はそのままで width だけ縮める)
+		if (DispW == 0 && Player) {
+			IMoviePlayer::VideoFormat fmt{};
+			Player->GetVideoFormat(&fmt);
+			DispW = (fmt.width  > 0 && fmt.width  <= frame.width ) ? fmt.width  : frame.width;
+			DispH = (fmt.height > 0 && fmt.height <= frame.height) ? fmt.height : frame.height;
+		}
+		int vw = (DispW > 0 && DispW <= frame.width ) ? DispW : frame.width;
+		int vh = (DispH > 0 && DispH <= frame.height) ? DispH : frame.height;
+		Overlay->PresentI420(
+			frame.planes[0].data, frame.planes[0].stride,
+			frame.planes[1].data, frame.planes[1].stride,
+			frame.planes[2].data, frame.planes[2].stride,
+			vw, vh );
+		mUpdate = true;
+		if (OwnerWindow) ::PostMessage(OwnerWindow, WM_GRAPHNOTIFY, 0, 0);
+		// デバッグ: KRMOVIE_OVERLAY_DUMP があれば ~100 フレーム目を BMP 保存 (冒頭の
+		// 黒フェードを避けるため少し進めてから。自己検証用)
+		static int frameCount = 0;
+		static bool dumped = false;
+		if (!dumped && ++frameCount >= 100) {
+			const char *dp = getenv("KRMOVIE_OVERLAY_DUMP");
+			if (dp && *dp) {
+				wchar_t wp[1024]; wp[0]=0;
+				MultiByteToWideChar(CP_ACP, 0, dp, -1, wp, 1024);
+				Overlay->DebugSaveLastFrame(wp);
+				dumped = true;
+			}
 		}
 	}
 }
@@ -439,24 +502,30 @@ void __stdcall tTVPWebpMovie::SetVideoBuffer( BYTE *buff1, BYTE *buff2, long siz
 //----------------------------------------------------------------------------
 void __stdcall tTVPWebpMovie::SetWindow( HWND window )
 {
+	if (!OverlayMode) return;
+	if (window) {
+		if (!Overlay) {
+			Overlay = new tTVPD3D11OverlayWindow();
+			if (!Overlay->Create(window)) { delete Overlay; Overlay = nullptr; }
+		}
+	} else {
+		if (Overlay) { delete Overlay; Overlay = nullptr; }
+	}
 }
-//----------------------------------------------------------------------------
-//! @brief	  	何もしない。
 //----------------------------------------------------------------------------
 void __stdcall tTVPWebpMovie::SetMessageDrainWindow( HWND window )
 {
+	if (OverlayMode && Overlay) Overlay->SetMessageDrainWindow(window);
 }
-//----------------------------------------------------------------------------
-//! @brief	  	何もしない。
 //----------------------------------------------------------------------------
 void __stdcall tTVPWebpMovie::SetRect( RECT *rect )
 {
+	if (OverlayMode && Overlay && rect) Overlay->SetRect(*rect);
 }
-//----------------------------------------------------------------------------
-//! @brief	  	何もしない。
 //----------------------------------------------------------------------------
 void __stdcall tTVPWebpMovie::SetVisible( bool b )
 {
+	if (OverlayMode && Overlay) Overlay->SetVisible(b);
 }
 //----------------------------------------------------------------------------
 //! @brief	  	再生速度を設定する
@@ -528,14 +597,15 @@ void __stdcall tTVPWebpMovie::SetAudioVolume( long b )
 //----------------------------------------------------------------------------
 void __stdcall tTVPWebpMovie::GetAudioVolume( long *b )
 {
-	if (!Player) { *b = 0; } return;
-	if (b) {
-		float volume = Player->Volume();
-		if (volume <= 0.0f) {
-			*b = -10000;
-		} else {
-			*b =  (tjs_int)(20*log10f(volume) * 100);
-		}
+	// ★修正: 旧コードは `if(!Player){*b=0;} return;` で return が無条件だったため、
+	// Player 再生中は *b が未設定 (garbage) で以降が dead code だった。
+	if( !b ) return;
+	if( !Player ) { *b = 0; return; }
+	float volume = Player->Volume();
+	if( volume <= 0.0f ) {
+		*b = -10000;
+	} else {
+		*b = (tjs_int)( 20 * log10f(volume) * 100 );
 	}
 }
 //----------------------------------------------------------------------------

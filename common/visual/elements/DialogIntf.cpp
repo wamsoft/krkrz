@@ -75,6 +75,14 @@ void tTJSNI_Dialog::OnScreenLeave(const ttstr& name, const ttstr& action)
 	TVPPostEvent(Owner, Owner, eventname, 0, TVP_EPT_IMMEDIATE, 2, args);
 }
 
+void tTJSNI_Dialog::OnClosed(const ttstr& action)
+{
+	if (!Owner) return;
+	tTJSVariant args[1] = { action };
+	static ttstr eventname(TJS_W("onClose"));
+	TVPPostEvent(Owner, Owner, eventname, 0, TVP_EPT_IMMEDIATE, 1, args);
+}
+
 bool tTJSNI_Dialog::ShowFile(const ttstr& path, bool grabFocus)
 {
 	auto& mgr = tTVPElementsDialogManager::Instance();
@@ -109,6 +117,11 @@ void tTJSNI_Dialog::Close()
 	if (mgr.IsHandlerActive(this)) {
 		mgr.Close(this);
 	}
+}
+
+bool tTJSNI_Dialog::SetVar(const ttstr& name, const ttstr& value)
+{
+	return tTVPElementsDialogManager::Instance().SetVar(this, name, value);
 }
 
 //---------------------------------------------------------------------------
@@ -603,6 +616,30 @@ tTJSNC_Dialog::tTJSNC_Dialog() : inherited(TJS_W("Dialog"))
 		return TJS_S_OK;
 	}
 	TJS_END_NATIVE_METHOD_DECL(/*func. name*/onAction)
+	//---------------------------------------------------------------------------
+	// onClose(action) — インスタンス teardown 完了時に発火 (非ブロッキング経路)。
+	// action は close_on_click / Esc で閉じた button id (close() 等は空文字)。
+	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/onClose)
+	{
+		// no-op default
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_METHOD_DECL(/*func. name*/onClose)
+	//---------------------------------------------------------------------------
+	// setVar(name, value) — 表示中ダイアログの変数 store へ書込。 JSON で
+	// "text_var": name を指定した label が次フレームで更新される。 自分の
+	// インスタンスが非アクティブなら false。
+	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/setVar)
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Dialog);
+		if (numparams < 2) return TJS_E_BADPARAMCOUNT;
+		ttstr name(*param[0]);
+		ttstr value(*param[1]);
+		bool ok = _this->SetVar(name, value);
+		if (result) *result = ok;
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_METHOD_DECL(/*func. name*/setVar)
 	//---------------------------------------------------------------------------
 	// registerFont(family, path [, weight [, slant [, stretch]]])
 	//

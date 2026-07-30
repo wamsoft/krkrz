@@ -288,6 +288,12 @@ void TTVPWindowForm::InternalKeyUp( tjs_uint16 key, tjs_uint32 shift ) {
 	}
 }
 void TTVPWindowForm::OnKeyPress( tjs_int vk, int repeat, bool prevkeystate, bool convertkey ) {
+	// 文字入力 (win32 の WM_CHAR 相当)。SDL3 では form の SDL_EVENT_TEXT_INPUT
+	// から UTF-16 コード単位ごとに呼ばれる。KAG の Edit レイヤ等へ配送する。
+	if( TJSNativeInstance && vk ) {
+		if( GetUseMouseKey() && (vk == 0x1b || vk == 13 || vk == 32) ) return;
+		TVPPostInputEvent(new tTVPOnKeyPressInputEvent(TJSNativeInstance, (tjs_char)vk));
+	}
 }
 
 tTVPRect

@@ -13,7 +13,6 @@
 
 #include "FilePathUtil.h"
 #include <delayimp.h>
-#include <mmsystem.h>
 #include <objbase.h>
 #include <commdlg.h>
 #include <thread>
@@ -891,6 +890,7 @@ static void TVPInitRandomGenerator()
 #include "BitmapBitsAlloc.h"
 #include "BinaryStreamBuffer.h"
 #include "SoundAllocator.h"
+#include "AudioStream.h"
 #include "MemoryStatPeriodicDump.h"
 #include "MemoryOverlay.h"
 #include "PadOverlay.h"
@@ -923,6 +923,13 @@ void TVPInitializeBaseSystems()
 	tTVPBitmapBitsAlloc::InitializeAllocator();
 	TVPInitializeFileAllocator();
 	TVPInitializeSoundAllocator();
+
+	// オーディオデバイス (miniaudio engine) を起動時に先行初期化する。
+	// 遅延初期化のままだと初回サウンド再生時に WASAPI デバイスを開くため、
+	// その分の遅延で音の頭が欠けることがある。ここで前倒ししておく
+	// (サウンドアロケータ初期化直後・config.cf 反映済みなので
+	//  -wspreinit / -wsfreq / -wsvolfactor を参照できる)。
+	TVPPreInitAudioDevice();
 
 	// メモリ stats 周期ダンプ + 終了時ダンプ
 	// (-memstatinterval=N / -memstatonexit=1 が効くようになる)。
@@ -1276,8 +1283,6 @@ static void TVPDumpOptions();
 //---------------------------------------------------------------------------
 extern void TVPGL_SSE2_Init();
 extern void TVPAddGlobalHeapCompactCallback();
-static bool TVPHighTimerPeriod = false;
-static UINT TVPTimeBeginPeriodRes = 0;
 //---------------------------------------------------------------------------
 #include "../../common/visual/cpu_detect.h"
 //---------------------------------------------------------------------------
@@ -1439,15 +1444,12 @@ void TVPAfterSystemInit()
 	TVPGL_IA32_Init();
 	TVPGL_SSE2_Init();
 
-	// timer precision
-	UINT prectick = 1;
-	if(TVPGetCommandLine(TJS_W("-timerprec"), &opt))
-	{
-		ttstr str(opt);
-		if(str == TJS_W("high")) prectick = 1;
-		if(str == TJS_W("higher")) prectick = 5;
-		if(str == TJS_W("normal")) prectick = 10;
-	}
+	// timer precision:
+	// 旧実装は timeBeginPeriod(1) でシステム全体のタイマ分解能を 1ms に引き上げて
+	// いた (-timerprec オプション。既定でも 1ms)。これはシステム全体・自プロセスの
+	// 消費電力を上げるレガシーな手法なので Phase4-2 で廃止した。精度が要る箇所は
+	// 局所的に対応する: tick 源は QueryPerformanceCounter (TickCountImpl.cpp)、
+	// VSync の前眠りは high-resolution waitable timer (VSyncTimingThread.cpp)。
 
         // draw thread num
         tjs_int drawThreadNum = 1;
@@ -1459,22 +1461,6 @@ void TVPAfterSystemInit()
             drawThreadNum = (tjs_int)opt;
         }
         TVPDrawThreadNum = drawThreadNum;
-
-	if(prectick)
-	{
-		// retrieve minimum timer resolution
-		TIMECAPS tc;
-		timeGetDevCaps(&tc, sizeof(tc));
-		if(prectick < tc.wPeriodMin)
-			TVPTimeBeginPeriodRes = tc.wPeriodMin;
-		else
-			TVPTimeBeginPeriodRes = prectick;
-		if(TVPTimeBeginPeriodRes > tc.wPeriodMax)
-			TVPTimeBeginPeriodRes = tc.wPeriodMax;
-		// set timer resolution
-		timeBeginPeriod(TVPTimeBeginPeriodRes);
-		TVPHighTimerPeriod = true;
-	}
 
 	TVPPushEnvironNoise(&TVPCPUType, sizeof(TVPCPUType));
 
@@ -1507,11 +1493,7 @@ void TVPBeforeSystemUninit()
 //---------------------------------------------------------------------------
 void TVPAfterSystemUninit()
 {
-	// restore timer precision
-	if(TVPHighTimerPeriod)
-	{
-		timeEndPeriod(TVPTimeBeginPeriodRes);
-	}
+	// timeBeginPeriod は廃止したのでタイマ分解能の復元処理は不要 (Phase4-2)。
 }
 //---------------------------------------------------------------------------
 

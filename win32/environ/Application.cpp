@@ -106,7 +106,6 @@ void TVPOnError();
 
 int _argc;
 tjs_char ** _wargv;
-extern void TVPInitCompatibleNativeFunctions();
 extern void TVPLoadMessage();
 
 AcceleratorKeyTable::AcceleratorKeyTable() {
@@ -222,9 +221,6 @@ int APIENTRY wWinMain( _In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstanc
 	try {
 		CheckMemoryLeaksStart();
 		// ウォッチで _crtBreakAlloc にセットする
-
-		// XP より後で使えるAPIを動的に読み込んで互換性を取る
-		TVPInitCompatibleNativeFunctions();
 
 		// ログレベル設定
 #ifdef MASTER
@@ -400,7 +396,10 @@ const tjs_char* SECodeToMessage( unsigned int code ) {
 bool tTVPApplication::StartApplication( int argc, tjs_char* argv[] ) {
 	_set_se_translator(se_translator_function);
 
-	::SetDllDirectory( (const wchar_t*)PluginPath().c_str() );
+	// DLL 検索を「アプリディレクトリ + System32 + 明示追加ディレクトリ」に限定し、
+	// CWD / PATH 経由の DLL プリロード(ハイジャック)面を塞ぐ (Win8+、本ビルドは Win10)。
+	::SetDefaultDllDirectories( LOAD_LIBRARY_SEARCH_DEFAULT_DIRS );
+	::AddDllDirectory( (const wchar_t*)PluginPath().c_str() );
 
 	ArgC = argc;
 	ArgV = argv;
@@ -895,7 +894,11 @@ void TVPDeleteAcceleratorKeyTable( HWND hWnd ) {
 tjs_int
 tTVPApplication::GetDensity() const
 {
-	return ::GetDeviceCaps( ::GetDC(0), LOGPIXELSX );
+	// per-monitor DPI (マニフェストは PerMonitorV2)。旧実装は GetDC(0) で
+	// (a) プライマリモニタ固定 (b) DC を ReleaseDC せずリーク、の2つの不具合があった。
+	HWND hWnd = GetMainWindowHandle();
+	if( hWnd ) return (tjs_int)::GetDpiForWindow( hWnd );
+	return (tjs_int)::GetDpiForSystem(); // メインウィンドウ未生成時のフォールバック
 }
 
 // システムアロケータ情報を返す

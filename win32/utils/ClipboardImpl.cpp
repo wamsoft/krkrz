@@ -40,34 +40,23 @@ void TVPClipboardSetText(const ttstr & text)
 	if( ::OpenClipboard(0) ) {
 		EmptyClipboard();
 
-		HGLOBAL ansihandle = NULL;
 		HGLOBAL unicodehandle = NULL;
 		try {
-			// store ANSI string
-			std::string ansistr = text.AsNarrowStdString();
-			int ansistrlen = (int)((ansistr.length() + 1)*sizeof(char));
-			ansihandle = ::GlobalAlloc(GMEM_DDESHARE | GMEM_MOVEABLE, ansistrlen);
-			if( !ansihandle ) TVPThrowExceptionMessage( TVPFaildClipboardCopy );
-
-			char *mem = (char*)::GlobalLock(ansihandle);
-			if(mem) strncpy_s(mem, ansistrlen, ansistr.c_str(),ansistrlen);
-			::GlobalUnlock(ansihandle);
-
-			::SetClipboardData( CF_TEXT, ansihandle );
-			ansihandle = NULL;
-
-			// store UNICODE string
+			// UNICODE 文字列のみを格納する。CF_TEXT (ANSI) は Windows が
+			// CF_UNICODETEXT から自動的に合成して要求元に提供するため、明示的に
+			// 設定する必要はない。旧実装は ANSI 版も別途書いていたが、冗長な上に
+			// AsNarrowStdString での ANSI 変換で非 ANSI 文字が欠落する劣化があった。
 			unicodehandle = ::GlobalAlloc(GMEM_DDESHARE | GMEM_MOVEABLE, (text.GetLen() + 1) * sizeof(tjs_char));
-			if(!unicodehandle) TVPThrowExceptionMessage( TVPFaildClipboardCopy );;
+			if(!unicodehandle) TVPThrowExceptionMessage( TVPFaildClipboardCopy );
 
 			tjs_char *unimem = (tjs_char*)::GlobalLock(unicodehandle);
 			if(unimem) TJS_strcpy(unimem, text.c_str());
 			::GlobalUnlock(unicodehandle);
 
+			// SetClipboardData 成功後は HGLOBAL の所有権がクリップボードに移る。
 			::SetClipboardData( CF_UNICODETEXT, unicodehandle );
 			unicodehandle = NULL;
 		} catch(...) {
-			if(ansihandle) ::GlobalFree(ansihandle);
 			if(unicodehandle) ::GlobalFree(unicodehandle);
 			::CloseClipboard();
 			throw;

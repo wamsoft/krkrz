@@ -29,7 +29,7 @@
 
 #include "Application.h"
 #include "TVPScreen.h"
-#include "CompatibleNativeFuncs.h"
+// CompatibleNativeFuncs は撤去 (touch API は Win10 で常在、直接リンク)
 #include "DebugIntf.h"
 #include "VersionFormUnit.h"
 #include "PluginImpl.h"
@@ -165,78 +165,30 @@ ttstr TVPGetOSName()
 	tjs_char buf[256];
 	const tjs_char *osname = NULL;
 
-	switch(ovi.dwPlatformId)
-	{
-	case VER_PLATFORM_WIN32s:
-		osname = TJS_W("Win32s"); break;
-	case VER_PLATFORM_WIN32_WINDOWS:
-		switch((ovi.dwBuildNumber&0xffff ))
-		{
-		case 1998:
-			osname = TJS_W("Windows 98"); break;
-		case 95:
-			osname = TJS_W("Windows 95"); break;
-		default:
-			osname = TJS_W("Win9x"); break;
-		}
-		break;
-	case VER_PLATFORM_WIN32_NT:
-		if( ovi.dwMajorVersion == 5 ) {
-			switch(ovi.dwMinorVersion) {
-			case 0:
-				osname = TJS_W("Windows 2000");
-				break;
-			case 1:
-				osname = TJS_W("Windows XP");
-				break;
-			case 2:
-				osname = TJS_W("Windows Server 2003");
-				break;
-			}
-		} else if( ovi.dwMajorVersion == 6 ) {
-			switch(ovi.dwMinorVersion) {
-			case 0:
-				if( ovi.wProductType == VER_NT_WORKSTATION )
-					osname = TJS_W("Windows Vista");
-				else
-					osname = TJS_W("Windows Server 2008");
-				break;
-			case 1:
-				if( ovi.wProductType == VER_NT_WORKSTATION )
-					osname = TJS_W("Windows 7");
-				else
-					osname = TJS_W("Windows Server 2008 R2");
-				break;
-			case 2:
-				if( ovi.wProductType == VER_NT_WORKSTATION )
-					osname = TJS_W("Windows 8");
-				else
-					osname = TJS_W("Windows Server 2012");
-				break;
-			case 3:
-				if( ovi.wProductType == VER_NT_WORKSTATION )
-					osname = TJS_W("Windows 8.1");
-				else
-					osname = TJS_W("Windows Server 2012 R2");
-				break;
-			case 4:
-				if( ovi.wProductType == VER_NT_WORKSTATION )
-					osname = TJS_W( "Windows 10" );
-				else
-					osname = TJS_W( "Windows Server 2016" );
-				break;
-			}
-		} else if( ovi.dwMajorVersion == 10 ) {
-			if( ovi.wProductType == VER_NT_WORKSTATION )
-				osname = TJS_W( "Windows 10" );
+	// エンジンは Phase0 で _WIN32_WINNT=0x0A00 (Win10) を下限にしたため、
+	// 実行され得る OS は Windows 10 以降のみ。RtlGetVersion はマニフェスト
+	// シムの影響を受けず実バージョンを返す。
+	// Windows 11 は major=10 のままなので build 番号 (>=22000) で区別する。
+	if( ovi.dwMajorVersion == 10 ) {
+		if( ovi.wProductType == VER_NT_WORKSTATION ) {
+			if( ovi.dwBuildNumber >= 22000 )
+				osname = TJS_W("Windows 11");
 			else
-				osname = TJS_W( "Windows Server 2016" );
-			break;
+				osname = TJS_W("Windows 10");
+		} else {
+			// Server は build 番号で世代判定
+			if( ovi.dwBuildNumber >= 26100 )
+				osname = TJS_W("Windows Server 2025");
+			else if( ovi.dwBuildNumber >= 20348 )
+				osname = TJS_W("Windows Server 2022");
+			else if( ovi.dwBuildNumber >= 17763 )
+				osname = TJS_W("Windows Server 2019");
+			else
+				osname = TJS_W("Windows Server 2016");
 		}
-		if( osname == NULL ) osname = TJS_W("Windows NT");
-		break;
-	default:
-		osname = TJS_W("Unknown"); break;
+	} else {
+		// Win10 未満はサポート外 (通常到達しない)。将来の major 繰り上げ用の保険。
+		osname = TJS_W("Windows");
 	}
 
 	TJS_snprintf(buf, sizeof(buf)/sizeof(tjs_char), TJS_W("%ls %d.%d.%d "), osname, ovi.dwMajorVersion,
@@ -488,12 +440,18 @@ static void TVPReadRegValue(tTJSVariant &result, const ttstr & key)
 //---------------------------------------------------------------------------
 // Static function for retrieving special folder path
 //---------------------------------------------------------------------------
-static ttstr TVPGetSpecialFolderPath(int csidl)
+// 旧実装は非推奨の SHGetSpecialFolderPath + CSIDL_* を使っていたが、
+// Vista 以降の推奨 API である SHGetKnownFolderPath + FOLDERID_* に置換。
+static ttstr TVPGetKnownFolderPath(REFKNOWNFOLDERID rfid)
 {
-	wchar_t path[MAX_PATH+1];
-	if(!SHGetSpecialFolderPath(NULL, path, csidl, false))
-		return ttstr();
-	return ttstr((tjs_char*)path);
+	ttstr result;
+	PWSTR ppszPath = NULL;
+	if( SUCCEEDED( ::SHGetKnownFolderPath(rfid, 0, NULL, &ppszPath) ) && ppszPath )
+	{
+		result = ttstr( (const tjs_char*)ppszPath );
+	}
+	if( ppszPath ) ::CoTaskMemFree( ppszPath );
+	return result;
 }
 //---------------------------------------------------------------------------
 
@@ -510,10 +468,10 @@ ttstr TVPGetPersonalPath()
 	// If this is not exist, returns application data path, then exe path.
 	// for windows vista, this refers application data path.
 	ttstr path;
-	path = TVPGetSpecialFolderPath(CSIDL_PERSONAL);
+	path = TVPGetKnownFolderPath(FOLDERID_Documents);
 	if(path.IsEmpty())
-		path = TVPGetSpecialFolderPath(CSIDL_APPDATA);
-	
+		path = TVPGetKnownFolderPath(FOLDERID_RoamingAppData);
+
 	if(!path.IsEmpty())
 	{
 		path = TVPNormalizeStorageName(path);
@@ -536,8 +494,8 @@ ttstr TVPGetAppDataPath()
 	// Retrieve application data directory;
 	// If this is not exist, returns application exe path.
 
-	ttstr path = TVPGetSpecialFolderPath(CSIDL_APPDATA);
-	
+	ttstr path = TVPGetKnownFolderPath(FOLDERID_RoamingAppData);
+
 	if(!path.IsEmpty())
 	{
 		path = TVPNormalizeStorageName(path);
@@ -615,7 +573,7 @@ enum tTVPTouchDevice {
 static int TVPGetSupportTouchDevice()
 {
 	int result = 0;
-	if( procRegisterTouchWindow ) {
+	{  // タッチ API は Win10 で常在 (SM_DIGITIZER で実接続を判定)
 		int value = ::GetSystemMetrics( SM_DIGITIZER );
 
 		if( value & NID_INTEGRATED_TOUCH ) result |= tdIntegratedTouch;

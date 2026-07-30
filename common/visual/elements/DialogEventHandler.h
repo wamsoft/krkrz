@@ -25,6 +25,13 @@ public:
 	//                (Esc / B / 右クリック等は空文字)。
 	virtual void OnScreenEnter(const ttstr& /*name*/) {}
 	virtual void OnScreenLeave(const ttstr& /*name*/, const ttstr& /*action*/) {}
+
+	// インスタンスの teardown 完了時 (manager のリストから外れた後) に 1 回
+	// 呼ばれる。 action は close_on_click / Esc で閉じた場合の button id
+	// (Close() / ForceClose / Window close 等の外部要因は空文字)。 一度も
+	// active にならなかった (show 失敗) インスタンスでは呼ばれない。 既定 no-op。
+	// この中から manager の Show* / Close を呼んでも安全 (teardown 完了後発火)。
+	virtual void OnClosed(const ttstr& /*action*/) {}
 };
 
 #endif

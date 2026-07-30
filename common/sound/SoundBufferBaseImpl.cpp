@@ -13,10 +13,6 @@
 #include <algorithm>
 #include "SoundBufferBaseImpl.h"
 
-#ifdef __WINVER__
-extern void TVPWaveSoundBufferCommitSettings();
-#endif
-
 #include "TVPTimer.h"
 
 //---------------------------------------------------------------------------
@@ -36,9 +32,7 @@ public:
 		{
 			(*i)->TimerBeatHandler();
 		}
-		#ifdef __WINVER__
-		TVPWaveSoundBufferCommitSettings();	// for DirectSound(Windows7)
-		#endif
+		// (DirectSound 撤去済み。旧 TVPWaveSoundBufferCommitSettings 呼びは廃止)
 	}
 } static TVPSoundBufferTimerDispatcher;
 //---------------------------------------------------------------------------

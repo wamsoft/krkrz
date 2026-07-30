@@ -10,163 +10,25 @@
 //---------------------------------------------------------------------------
 #include "tjsCommHead.h"
 
-#include "tjsUtils.h"
 #include "TickCount.h"
-#include "SysInitIntf.h"
-#include "ThreadIntf.h"
-
-#if 0
-// システムに依存しない実装ではあるが、乱数の偏り等懸念される
-// 環境ごとにシステム軌道からのtickを取得することにする
-#include <chrono>
-//---------------------------------------------------------------------------
-class tTVPTickCounter {
-	std::chrono::time_point<std::chrono::system_clock> start_;
-public:
-	tTVPTickCounter() : start_(std::chrono::system_clock::now()) {}
-	tjs_uint32 Count() const {
-		auto current = std::chrono::system_clock::now();
-		auto duration = current - start_;
-		auto msec = std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
-		return static_cast<tjs_uint32>(msec);
-	}
-} static TVPTickCounter;
-
-//---------------------------------------------------------------------------
-// TVPGetRoughTickCount
-// 32bit値のtickカウントを得る
-//---------------------------------------------------------------------------
-tjs_uint32 TVPGetRoughTickCount32()
-{
-	return TVPTickCounter.Count();
-}
-
-//---------------------------------------------------------------------------
-#endif
-
-//---------------------------------------------------------------------------
-// 64bit may enough to hold usual time count.
-// ( 32bit is clearly insufficient )
-//---------------------------------------------------------------------------
-static tjs_uint64 TVPTickCountBias = 0;
-static tjs_uint TVPWatchLastTick;
-static tTJSCriticalSection TVPTickWatchCS;
-//---------------------------------------------------------------------------
-
-
-//---------------------------------------------------------------------------
-static tjs_uint TVPCheckTickOverflow()
-{
-	tjs_uint curtick;
-	{	// thread-protected
-		tTJSCriticalSectionHolder holder(TVPTickWatchCS);
-
-		curtick = TVPGetRoughTickCount32();
-		if(curtick < TVPWatchLastTick)
-		{
-			// timeGetTime() was overflowed
-			TVPTickCountBias += 0x100000000L; // add 1<<32
-		}
-		TVPWatchLastTick = curtick;
-	}	// end-of-thread-protected
-	return curtick;
-}
-//---------------------------------------------------------------------------
-
-
-
-//---------------------------------------------------------------------------
-class tTVPWatchThread : public tTVPThread
-{
-	// thread which watches overflow of 32bit counter of TVPGetRoughTickCount32
-
-	tTVPThreadEvent Event;
-
-public:
-
-	tTVPWatchThread();
-	~tTVPWatchThread();
-
-protected:
-	void Execute();
-
-} static * TVPWatchThread = NULL;
-//---------------------------------------------------------------------------
-tTVPWatchThread::tTVPWatchThread()
-	: tTVPThread("WatchThread")
-{
-	TVPWatchLastTick = TVPGetRoughTickCount32();
-	SetPriority(ttpNormal);
-	StartThread();
-}
-//---------------------------------------------------------------------------
-tTVPWatchThread::~tTVPWatchThread()
-{
-	Terminate();
-	Event.Set();
-	WaitFor();
-}
-//---------------------------------------------------------------------------
-void tTVPWatchThread::Execute()
-{
-	while(!GetTerminated())
-	{
-		TVPCheckTickOverflow();
-
-		Event.WaitFor(0x10000000);
-			// 0x10000000 will be enough to watch timeGetTime()'s counter overflow.
-	}
-}
-//---------------------------------------------------------------------------
-
-
-//---------------------------------------------------------------------------
-static void TVPWatchThreadInit()
-{
-	if(!TVPWatchThread)
-	{
-		TVPWatchThread = new tTVPWatchThread();
-	}
-}
-//---------------------------------------------------------------------------
-static void TVPWatchThreadUninit()
-{
-	if(TVPWatchThread)
-	{
-		delete TVPWatchThread;
-		TVPWatchThread = NULL;
-	}
-}
-//---------------------------------------------------------------------------
-static tTVPAtExit TVPWatchThreadUninitAtExit(TVP_ATEXIT_PRI_SHUTDOWN,
-	TVPWatchThreadUninit);
-//---------------------------------------------------------------------------
-
-
 
 //---------------------------------------------------------------------------
 // TVPGetTickCount
 //---------------------------------------------------------------------------
+// 取得元 (TVPGetRoughTickCount64、win32 では QueryPerformanceCounter ベース) は
+// 既に 64bit で桁溢れしないため、旧実装が持っていた「32bit カウンタの桁溢れを
+// 監視してバイアス (1<<32) を加算する専用スレッド + クリティカルセクション」は
+// 不要になった。
+//---------------------------------------------------------------------------
 tjs_uint64 TVPGetTickCount()
 {
-	TVPWatchThreadInit();
-
-	tjs_uint curtick = TVPCheckTickOverflow();
-
-	return curtick + TVPTickCountBias;
+	return TVPGetRoughTickCount64();
 }
-//---------------------------------------------------------------------------
-
-
-
 //---------------------------------------------------------------------------
 // TVPStartTickCount
 //---------------------------------------------------------------------------
 void TVPStartTickCount()
 {
-	TVPWatchThreadInit();
+	// 監視スレッド廃止により初期化処理は不要。呼び出し元互換のため関数は残置。
 }
 //---------------------------------------------------------------------------
-
-
-

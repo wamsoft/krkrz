@@ -1,14 +1,13 @@
 
 #include "tjsCommHead.h"
 
-#include <mmsystem.h>
-
 #include "VSyncTimingThread.h"
 #include "WindowImpl.h"
 #include "EventIntf.h"
 #include "UserEvent.h"
 #include "DebugIntf.h"
 #include "MsgImpl.h"
+#include "TickCount.h"
 
 //---------------------------------------------------------------------------
 tTVPVSyncTimingThread::tTVPVSyncTimingThread(tTJSNI_Window* owner)
@@ -18,6 +17,15 @@ tTVPVSyncTimingThread::tTVPVSyncTimingThread(tTJSNI_Window* owner)
 	LastVBlankTick = 0;
 	VSyncInterval = 16; // 約60FPS
 	Enabled = false;
+
+	// high-resolution waitable timer を用意する。これにより timeBeginPeriod で
+	// システム全体のタイマ分解能を上げなくても、~0.5ms 精度の短時間スリープが
+	// できる (Win10 1803+ で CREATE_WAITABLE_TIMER_HIGH_RESOLUTION が有効)。
+	TimerHandle = ::CreateWaitableTimerExW(NULL, NULL,
+		CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+	if(TimerHandle == NULL) // 古い環境向けフォールバック (通常到達しない)
+		TimerHandle = ::CreateWaitableTimerExW(NULL, NULL, 0, TIMER_ALL_ACCESS);
+
 	EventQueue.Allocate();
 	MeasureVSyncInterval();
 	StartThread();
@@ -32,6 +40,24 @@ tTVPVSyncTimingThread::~tTVPVSyncTimingThread()
 	Event.Set();
 	WaitFor();
 	EventQueue.Deallocate();
+	if(TimerHandle) { ::CloseHandle(TimerHandle); TimerHandle = NULL; }
+}
+//---------------------------------------------------------------------------
+void tTVPVSyncTimingThread::PreciseSleep( DWORD ms )
+{
+	// high-resolution waitable timer による精密スリープ。相対指定は 100ns 単位の
+	// 負値で与える。失敗時は通常の Sleep にフォールバック。
+	if(TimerHandle && ms > 0)
+	{
+		LARGE_INTEGER due;
+		due.QuadPart = -(LONGLONG)ms * 10000LL; // ms → 100ns 単位・相対
+		if(::SetWaitableTimer(TimerHandle, &due, 0, NULL, NULL, FALSE))
+		{
+			::WaitForSingleObject(TimerHandle, INFINITE);
+			return;
+		}
+	}
+	::Sleep(ms);
 }
 //---------------------------------------------------------------------------
 
@@ -42,7 +68,8 @@ void tTVPVSyncTimingThread::Execute()
 	while(!GetTerminated())
 	{
 		// SleepTime と LastVBlankTick を得る
-		DWORD sleep_time, last_vblank_tick;
+		DWORD sleep_time;
+		tjs_uint64 last_vblank_tick;
 		{	// thread-protected
 			tTJSCriticalSectionHolder holder(CS);
 			sleep_time = SleepTime;
@@ -51,13 +78,13 @@ void tTVPVSyncTimingThread::Execute()
 
 		// SleepTime 分眠る
 		// LastVBlankTick から起算し、SleepTime 分眠る
-		DWORD sleep_start_tick = timeGetTime();
+		tjs_uint64 sleep_start_tick = TVPGetTickCount();
 
-		DWORD sleep_time_adj = sleep_start_tick - last_vblank_tick;
+		tjs_uint64 sleep_time_adj = sleep_start_tick - last_vblank_tick;
 
 		if(sleep_time_adj < sleep_time)
 		{
-			::Sleep(sleep_time - sleep_time_adj);
+			PreciseSleep((DWORD)(sleep_time - sleep_time_adj));
 		}
 		else
 		{
@@ -69,7 +96,7 @@ void tTVPVSyncTimingThread::Execute()
 			// よほどシステムが重たい状態になってると考えられる。
 			// そこで立て続けに イベントをポストするわけにはいかないので
 			// 適当な時間(本当に適当) 眠る。
-			::Sleep(5);
+			PreciseSleep(5);
 		}
 
 		// イベントをポストする
@@ -107,16 +134,16 @@ void tTVPVSyncTimingThread::Proc( NativeEvent& ev )
 	if(!delayed)
 	{
 		tTJSCriticalSectionHolder holder(CS);
-		LastVBlankTick = timeGetTime(); // これが次に眠る時間の起算点になる
+		LastVBlankTick = TVPGetTickCount(); // これが次に眠る時間の起算点になる
 	}
 	else
 	{
 		tTJSCriticalSectionHolder holder(CS);
 		LastVBlankTick += VSyncInterval; // これが次に眠る時間の起算点になる(おおざっぱ)
-		if((long) (timeGetTime() - (LastVBlankTick + SleepTime)) <= 0)
+		if((tjs_int64) (TVPGetTickCount() - (LastVBlankTick + SleepTime)) <= 0)
 		{
 			// 眠った後、次に起きようとする時間がすでに過去なので眠れません
-			LastVBlankTick = timeGetTime(); // 強制的に今の時刻にします
+			LastVBlankTick = TVPGetTickCount(); // 強制的に今の時刻にします
 		}
 	}
 

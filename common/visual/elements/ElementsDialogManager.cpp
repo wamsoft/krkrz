@@ -136,7 +136,12 @@ struct tTVPElementsDialogManager::Impl
 		// grabFocus 指定 (常駐 HUD は false でゲームのホットキーを邪魔しない)。
 		bool wants_focus = true;
 		bool active = false;
+		bool ever_active = false;     // 一度でも active になったか (OnClosed 発火条件)
 		bool close_requested = false; // 次フレーム PaintOverlay で teardown
+
+		// close_on_click / Esc で finish したときの action id (Close() 等の
+		// 外部要因 close は空のまま)。 teardown 時の OnClosed に渡す。
+		ttstr close_action;
 
 		// dialog 論理サイズ (JSON "size" → content フィット後)。
 		int dialog_w = 400;
@@ -283,7 +288,16 @@ struct tTVPElementsDialogManager::Impl
 	void StopTextInputIfNoInstances()
 	{
 		if (instances.empty()) {
-			if (auto* w = GetMainSDLWindow()) SDL_StopTextInput(w);
+			// デスクトップ (物理キーボード) では text input を有効のままでも
+			// ソフトキーボード等の副作用が無く、 ホスト (ゲーム) が常時テキスト
+			// 入力を必要とする場合がある (例: STEINS;GATE 8BIT の start 画面の
+			// タイプ入力)。 ここで無条件停止するとホスト側の文字入力まで止まる
+			// ため、 オンスクリーンキーボードを持つ環境でのみ停止する。 デスク
+			// トップでは host が設定したベースライン (form 生成時の StartTextInput)
+			// をそのまま残す。
+			if (PlatformUsesScreenKeyboard()) {
+				if (auto* w = GetMainSDLWindow()) SDL_StopTextInput(w);
+			}
 			ime_focus_active = false;
 		}
 	}
@@ -333,6 +347,12 @@ struct tTVPElementsDialogManager::Impl
 		if (auto* r = FindRenderer(inst->host_device)) {
 			r->ReleaseLayer(inst->LayerKey());
 		}
+		// OnClosed はリストから外し終えてから発火する (callback 内から
+		// 同 handler での Show* 再入があっても FindByHandler が旧インスタンス
+		// を拾わないように)。 show 失敗時の teardown では発火しない。
+		iTVPDialogEventHandler* handler =
+			inst->ever_active ? inst->handler : nullptr;
+		ttstr close_action = inst->close_action;
 		for (auto it = instances.begin(); it != instances.end(); ++it) {
 			if (it->get() == inst) {
 				instances.erase(it);
@@ -340,19 +360,25 @@ struct tTVPElementsDialogManager::Impl
 			}
 		}
 		StopTextInputIfNoInstances();
+		if (handler) handler->OnClosed(close_action);
 	}
 
 	// 全インスタンスを即破棄。
 	void TeardownAll()
 	{
+		std::vector<std::pair<iTVPDialogEventHandler*, ttstr>> closed;
 		for (auto& inst : instances) {
 			if (auto* r = FindRenderer(inst->host_device)) {
 				r->ReleaseLayer(inst->LayerKey());
+			}
+			if (inst->ever_active && inst->handler) {
+				closed.emplace_back(inst->handler, inst->close_action);
 			}
 		}
 		instances.clear();
 		if (auto* w = GetMainSDLWindow()) SDL_StopTextInput(w);
 		ime_focus_active = false;
+		for (auto& [handler, action] : closed) handler->OnClosed(action);
 	}
 
 	// === session / フロー (Instance 単位) ===
@@ -396,24 +422,47 @@ bool tTVPElementsDialogManager::Impl::BeginScreen(
 	Instance& inst, const std::string& json_utf8,
 	const std::string& resource_base_utf8)
 {
-	// JSON の top-level "size" を簡易 peek (上限サイズ。 fit で内容に詰める)。
-	inst.dialog_w = 400;
-	inst.dialog_h = 220;
+	// JSON の top-level "size":[w,h] を peek (上限サイズ)。
+	// 注意: widget の "size": N (フォントサイズ等) と衝突しないよう、値が配列
+	// ([ で始まる) の "size" だけを採用する (従来は最初の "size" の後の '[' を
+	// 拾っていて font size と衝突していた)。
+	// "size" が無ければ overlay の既定を surface (ゲーム画面) 全面にする
+	// (従来は 400x220 きめうちで、content が大きいとクリップされていた)。
+	inst.dialog_w = 0;
+	inst.dialog_h = 0;
+	bool has_explicit_size = false;
 	{
-		auto pos = json_utf8.find("\"size\"");
-		if (pos != std::string::npos) {
-			auto lb = json_utf8.find('[', pos);
-			auto rb = (lb != std::string::npos) ? json_utf8.find(']', lb)
-			                                    : std::string::npos;
-			if (lb != std::string::npos && rb != std::string::npos) {
-				const char* p = json_utf8.c_str() + lb + 1;
+		size_t search = 0;
+		while (true) {
+			auto pos = json_utf8.find("\"size\"", search);
+			if (pos == std::string::npos) break;
+			auto colon = json_utf8.find(':', pos);
+			size_t vs = (colon != std::string::npos) ? colon + 1
+			                                         : std::string::npos;
+			while (vs != std::string::npos && vs < json_utf8.size() &&
+			       (json_utf8[vs] == ' '  || json_utf8[vs] == '\t' ||
+			        json_utf8[vs] == '\n' || json_utf8[vs] == '\r')) vs++;
+			if (vs != std::string::npos && vs < json_utf8.size() &&
+			    json_utf8[vs] == '[') {
+				const char* p = json_utf8.c_str() + vs + 1;
 				char* endp = nullptr;
 				int w = (int)std::strtol(p, &endp, 10);
 				int h = (endp && *endp == ',')
 				            ? (int)std::strtol(endp + 1, nullptr, 10) : 0;
-				if (w > 0 && h > 0) { inst.dialog_w = w; inst.dialog_h = h; }
+				if (w > 0 && h > 0) {
+					inst.dialog_w = w; inst.dialog_h = h;
+					has_explicit_size = true;
+				}
+				break;   // 値が配列の "size" を最初に見つけた時点で確定
 			}
+			search = pos + 6;   // strlen("\"size\"")
 		}
+	}
+	if (!has_explicit_size) {
+		int sw = 0, sh = 0;
+		if (auto* r = FindRenderer(inst.host_device)) r->GetSurfaceSize(sw, sh);
+		if (sw > 0 && sh > 0) { inst.dialog_w = sw; inst.dialog_h = sh; }
+		else                  { inst.dialog_w = 400; inst.dialog_h = 220; }
 	}
 
 	auto sess = std::make_unique<elements_modal::overlay_session>();
@@ -506,6 +555,7 @@ bool tTVPElementsDialogManager::Impl::StartCurrentScreen(Instance& inst)
 	if (!inst.flow_lang.empty()) inst.session->set_language(inst.flow_lang);
 
 	inst.active = true;
+	inst.ever_active = true;
 	if (inst.handler) inst.handler->OnScreenEnter(Utf8ToTtstr(name));
 	return true;
 }
@@ -541,6 +591,7 @@ void tTVPElementsDialogManager::Impl::AdvanceFlow(Instance& inst)
 		SnapshotResult(inst, action, values);
 		inst.active = false;
 		inst.close_requested = true;
+		inst.close_action = action;
 		return;
 	}
 
@@ -548,6 +599,7 @@ void tTVPElementsDialogManager::Impl::AdvanceFlow(Instance& inst)
 		SnapshotResult(inst, action, values);
 		inst.active = false;
 		inst.close_requested = true;
+		inst.close_action = action;
 	}
 }
 
@@ -562,6 +614,7 @@ void tTVPElementsDialogManager::Impl::FinishSingle(Instance& inst)
 	SnapshotResult(inst, action, values);
 	inst.active = false;
 	inst.close_requested = true;
+	inst.close_action = action;
 	TVPAddLog(TJS_W("ElementsDialog: session auto-finished (close_on_click)"));
 }
 
@@ -709,6 +762,7 @@ bool tTVPElementsDialogManager::ShowFromJsonString(
 		return false;
 	}
 	inst->active = true;
+	inst->ever_active = true;
 
 	TVPAddLog(TJS_W("ElementsDialog: shown (overlay_session)"));
 	return true;
@@ -905,6 +959,15 @@ tTVPElementsDialogManager::DescribeInstances() const
 		out.push_back(std::move(info));
 	}
 	return out;
+}
+
+bool tTVPElementsDialogManager::SetVar(iTVPDialogEventHandler* handler,
+                                       const ttstr& name, const ttstr& value)
+{
+	Impl::Instance* inst = _impl->FindByHandler(handler);
+	if (!inst || !inst->active || !inst->session) return false;
+	inst->session->set_var(TtstrToUtf8(name), TtstrToUtf8(value));
+	return true;
 }
 
 bool tTVPElementsDialogManager::FocusWidgetById(int index, const ttstr& id)

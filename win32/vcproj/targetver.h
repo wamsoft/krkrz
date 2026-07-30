@@ -5,11 +5,10 @@
 
 // 以前の Windows プラットフォーム用にアプリケーションをビルドする場合は、WinSDKVer.h をインクルードし、
 // SDKDDKVer.h をインクルードする前に、サポート対象とするプラットフォームを示すように _WIN32_WINNT マクロを設定します。
-//#define WINVER 0x0501 // Windows XP
-//#define _WIN32_WINNT 0x0501 // Windows XP
-// for touch device
-#define WINVER 0x0601 // Window 7
-#define _WIN32_WINNT 0x0601 // Windows 7
+// 最低ターゲット = Windows 10 (WinXP/Vista/7/8 はサポート外)。
+// これにより touch/gesture/SetThreadDescription 等 Win7+/Win10+ API を直接リンクできる。
+#define WINVER 0x0A00 // Windows 10
+#define _WIN32_WINNT 0x0A00 // Windows 10
 #include <SDKDDKVer.h>
 
 #endif

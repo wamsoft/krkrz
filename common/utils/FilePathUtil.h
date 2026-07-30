@@ -79,8 +79,11 @@ inline tjs_string ExpandUNCFileName( const tjs_string& path ) {
 		}
 		::GlobalFree(pInfo);
 	} else {
-		wchar_t fullpath[_MAX_PATH];
-		result = tjs_string( (const tjs_char*)_wfullpath( fullpath, (const wchar_t*)path.c_str(), _MAX_PATH ) );
+		// long-path 対応: 固定 _MAX_PATH バッファをやめ _wfullpath に必要長を確保させる
+		// (第1引数 NULL + maxlen 0 で malloc された絶対パスが返る。呼び出し側で free)。
+		wchar_t *fullpath = _wfullpath( NULL, (const wchar_t*)path.c_str(), 0 );
+		if( fullpath ) { result = tjs_string( (const tjs_char*)fullpath ); free( fullpath ); }
+		else { result = tjs_string( (const tjs_char*)path.c_str() ); }
 	}
 	return result;
 }

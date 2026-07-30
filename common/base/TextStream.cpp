@@ -18,6 +18,7 @@
 #include "UtilStreams.h"
 #include "tjsError.h"
 #include "CharacterSet.h"
+#include "SysInitIntf.h"
 
 /*
 	Text stream is used by TJS's Array.save, Dictionary.saveStruct etc.
@@ -29,6 +30,27 @@ static ttstr DefaultReadEncoding = TJS_W("Shift_JIS");
 #else
 static ttstr DefaultReadEncoding = TJS_W("UTF-8");
 #endif
+//---------------------------------------------------------------------------
+// エンコーディング自動フォールバック時の warning ログ出力可否
+// 既定では出力しない ( 混在テキストのプロジェクトでログが埋まるため )。
+// -textencodingwarn=1 ( コマンドライン / config.cf ) 指定時のみ出力する。
+//---------------------------------------------------------------------------
+static bool TVPIsTextEncodingFallbackWarningEnabled()
+{
+	static bool enabled = []() -> bool
+	{
+		tTJSVariant val;
+		if(TVPGetCommandLine(TJS_W("-textencodingwarn"), &val))
+		{
+			ttstr s(val);
+			if(s == TJS_W("no") || s == TJS_W("false") || s == TJS_W("off")) return false;
+			return s == TJS_W("yes") || s == TJS_W("true") || s == TJS_W("on") ||
+				((tjs_int)val) != 0;
+		}
+		return false;
+	}();
+	return enabled;
+}
 //---------------------------------------------------------------------------
 // Interface to tTJSTextStream
 //---------------------------------------------------------------------------
@@ -183,14 +205,37 @@ public:
 						nbuf[size] = 0; // terminater
 						if( encoding == TJS_W("UTF-8") ) {
 							BufferLen = TVPUtf8ToWideCharString((const char*)nbuf, NULL);
-							if(BufferLen == (size_t)-1) TVPThrowExceptionMessage(TJSNarrowToWideConversionError);
-							Buffer = new tjs_char [ BufferLen +1];
-							TVPUtf8ToWideCharString((const char*)nbuf, Buffer);
+							if(BufferLen == (size_t)-1) {
+								// UTF-8 として解釈できない場合は Shift_JIS として再解釈を試みる
+								// (エンコーディング自動フォールバック。UTF-8 は厳格デコードのため
+								//  Shift_JIS テキストを確実に検知できる)
+								BufferLen = TJS_narrowtowidelen((tjs_nchar*)nbuf);
+								if(BufferLen == (size_t)-1) TVPThrowExceptionMessage(TJSNarrowToWideConversionError);
+								if(TVPIsTextEncodingFallbackWarningEnabled())
+									TVPAddLog(ttstr(TJS_W("warning : ")) + name +
+										TJS_W(" : UTF-8 として解釈できないため Shift_JIS として読み込みました"));
+								Buffer = new tjs_char [ BufferLen +1];
+								TJS_narrowtowide(Buffer, (tjs_nchar*)nbuf, BufferLen);
+							} else {
+								Buffer = new tjs_char [ BufferLen +1];
+								TVPUtf8ToWideCharString((const char*)nbuf, Buffer);
+							}
 						} else if( encoding == TJS_W("Shift_JIS") ) {
 							BufferLen = TJS_narrowtowidelen((tjs_nchar*)nbuf);
-							if(BufferLen == (size_t)-1) TVPThrowExceptionMessage(TJSNarrowToWideConversionError);
-							Buffer = new tjs_char [ BufferLen +1];
-							TJS_narrowtowide(Buffer, (tjs_nchar*)nbuf, BufferLen);
+							if(BufferLen == (size_t)-1) {
+								// Shift_JIS として解釈できない場合は UTF-8 を試す
+								// (Shift_JIS デコードは寛容なため失敗しない場合が多い点に注意)
+								BufferLen = TVPUtf8ToWideCharString((const char*)nbuf, NULL);
+								if(BufferLen == (size_t)-1) TVPThrowExceptionMessage(TJSNarrowToWideConversionError);
+								if(TVPIsTextEncodingFallbackWarningEnabled())
+									TVPAddLog(ttstr(TJS_W("warning : ")) + name +
+										TJS_W(" : Shift_JIS として解釈できないため UTF-8 として読み込みました"));
+								Buffer = new tjs_char [ BufferLen +1];
+								TVPUtf8ToWideCharString((const char*)nbuf, Buffer);
+							} else {
+								Buffer = new tjs_char [ BufferLen +1];
+								TJS_narrowtowide(Buffer, (tjs_nchar*)nbuf, BufferLen);
+							}
 						} else {
 							TVPThrowExceptionMessage(TVPUnsupportedEncoding, encoding);
 						}

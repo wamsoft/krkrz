@@ -14,6 +14,7 @@
 //---------------------------------------------------------------------------
 TJS_EXP_FUNC_DEF(tjs_uint64, TVPGetTickCount, ());
 extern tjs_uint32 TVPGetRoughTickCount32();
+extern tjs_uint64 TVPGetRoughTickCount64();
 extern void TVPStartTickCount();
 	// this must be called before TVPGetTickCount(), in main thread.
 	// this function can be called more than one time.

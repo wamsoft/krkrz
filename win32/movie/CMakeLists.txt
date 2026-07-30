@@ -6,57 +6,6 @@ add_compile_options("$<$<AND:$<CXX_COMPILER_ID:MSVC>,$<COMPILE_LANGUAGE:CXX>>:/u
 add_compile_options("$<$<AND:$<CXX_COMPILER_ID:MSVC>,$<COMPILE_LANGUAGE:CXX>>:/Zc:__cplusplus>")
 
 # ----------------------------------------------------
-# DirectShow BaseClasses
-# ----------------------------------------------------
-
-set(BASECLASSES_FOLDER ../../external/baseclasses)
-
-add_library( baseclasses 
-    ${BASECLASSES_FOLDER}/amextra.cpp
-    ${BASECLASSES_FOLDER}/amfilter.cpp
-    ${BASECLASSES_FOLDER}/amvideo.cpp
-    ${BASECLASSES_FOLDER}/arithutil.cpp
-    ${BASECLASSES_FOLDER}/combase.cpp
-    ${BASECLASSES_FOLDER}/cprop.cpp
-    ${BASECLASSES_FOLDER}/ctlutil.cpp
-    ${BASECLASSES_FOLDER}/ddmm.cpp
-    ${BASECLASSES_FOLDER}/dllentry.cpp
-    ${BASECLASSES_FOLDER}/dllsetup.cpp
-    ${BASECLASSES_FOLDER}/mtype.cpp
-    ${BASECLASSES_FOLDER}/outputq.cpp
-    ${BASECLASSES_FOLDER}/perflog.cpp
-    ${BASECLASSES_FOLDER}/pstream.cpp
-    ${BASECLASSES_FOLDER}/pullpin.cpp
-    ${BASECLASSES_FOLDER}/refclock.cpp
-    ${BASECLASSES_FOLDER}/renbase.cpp
-    ${BASECLASSES_FOLDER}/schedule.cpp
-    ${BASECLASSES_FOLDER}/seekpt.cpp
-    ${BASECLASSES_FOLDER}/source.cpp
-    ${BASECLASSES_FOLDER}/strmctl.cpp
-    ${BASECLASSES_FOLDER}/sysclock.cpp
-    ${BASECLASSES_FOLDER}/transfrm.cpp
-    ${BASECLASSES_FOLDER}/transip.cpp
-    ${BASECLASSES_FOLDER}/videoctl.cpp
-    ${BASECLASSES_FOLDER}/vtrans.cpp
-    ${BASECLASSES_FOLDER}/winctrl.cpp
-    ${BASECLASSES_FOLDER}/winutil.cpp
-    ${BASECLASSES_FOLDER}/wxdebug.cpp
-    ${BASECLASSES_FOLDER}/wxlist.cpp
-    ${BASECLASSES_FOLDER}/wxutil.cpp
-)
-
-target_include_directories( baseclasses PUBLIC
-    ${BASECLASSES_FOLDER}
-)
-
-target_compile_definitions( baseclasses PRIVATE
-	_LIB
-	WIN32
-	UNICODE
-	_UNICODE
-)
-
-# ----------------------------------------------------
 # webp movieplayer (for layer)
 # ----------------------------------------------------
 
@@ -65,47 +14,46 @@ add_subdirectory( ../../external/movie-player movie-player)
 # ----------------------------------------------------
 # krmovie plugin
 # ----------------------------------------------------
+# DirectShow / EVR(MediaSession) スタックは Track V-D で全撤去。動画は全て
+#   webm     = movie-player (libvpx)     → D3D11 present
+#   mpg/mpeg = pl_mpeg (MPEG-1)          → D3D11 present
+#   その他   = MF SourceReader (RGB32)   → D3D11 present / レイヤバッファ
+# の CPU デコード + D3D11 経路に統一。baseclasses / DirectShow への依存は無い。
 
-add_library( krmovie SHARED
+# Track V-A: krmovie は exe へ静的統合するため STATIC ライブラリ化。
+#  - tp_stub.cpp (namespace krkrz_plugin の import 側) は krmovie 内に保持
+#    (exe の実 TVP* とは別名前空間で衝突せず、V2Link で pointer 初期化)。
+#  - sound_alloc_stub.c は撤去: exe の common/base/SoundAllocator.cpp が
+#    sound_malloc 等を提供するため、静的リンクすると二重定義になる。
+#  - krmovie.rc / resource.h (DLL 版 About リソース) は撤去。
+add_library( krmovie STATIC
     ../../tp_stub/tp_stub.cpp
-    asyncio.cpp
-    asyncrdr.cpp
-    BufferRenderer.cpp
-    CDemuxOutputPin.cpp
-    CDemuxSource.cpp
-    CMediaSeekingProxy.cpp
-    CVMRCustomAllocatorPresenter9.cpp
-    CWMAllocator.cpp
-    CWMBuffer.cpp
-    CWMReader.cpp
-    DShowException.cpp
-    dslayerd.cpp
-    dsmixer.cpp
-    dsmovie.cpp
-    dsoverlay.cpp
     krlmovie.cpp
-    krmmovie.cpp
     krmovie.cpp
-    MFByteStream.cpp
-    MFPlayer.cpp
-    PlayWindow.cpp
-    IBufferRenderer_i.c
-    IRendererBufferAccess_i.c
-    IRendererBufferVideo_i.c
-    resource.h
-    krmovie.rc
+    LayerVideoBase.cpp
+    MFSourceReaderVideo.cpp
+    Mpeg1Video.cpp
+    MediaEngineVideo.cpp
+    D3D11OverlayWindow.cpp
     webplayer.cpp
-    # libvorbis/libogg が要求する sound_malloc 等を malloc 直行で満たすスタブ。
-    # 本体 (krkrz exe) は common/base/SoundAllocator.cpp を使うので別リンク単位。
-    sound_alloc_stub.c
 )
 
-target_include_directories( krmovie PRIVATE 
+target_include_directories( krmovie PRIVATE
     ../../tp_stub/
     ../
     ../visual
     ../vcproj
     ../../external/movie-player/extlibs/libyuv/include
+    ../../external/pl_mpeg
+    # Track V-E: MediaEngineVideo.cpp が VideoPresenter.h 経由で参照する common ヘッダ
+    # (tjsCommHead.h=common/tjs2 / ComplexRect.h=common/visual 等)。
+    ../../common/tjs2
+    ../../common/base
+    ../../common/environ
+    ../../common/utils
+    ../../common/msg
+    ../../common/visual
+    ../../external
 )
 
 target_compile_definitions( krmovie PRIVATE
@@ -114,10 +62,12 @@ target_compile_definitions( krmovie PRIVATE
 	_WIN32
     UNICODE
     _UNICODE
+    # Track V-E: VideoPresenter.h の presenter インターフェース定義 (#ifdef __WINVER__) を
+    # 有効化する。krmovie は Windows 専用なので __WINVER__ を定義する。
+    __WINVER__
 )
 
 target_link_libraries( krmovie PUBLIC
-	baseclasses
     movieplayer
     xaudio2
 )

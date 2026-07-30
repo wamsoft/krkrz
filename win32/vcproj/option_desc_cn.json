@@ -49,18 +49,6 @@
 				]
 			},
 			{
-				"caption":"计时器的精度",
-				"description":"计时器精度的设定。\n\n设定成“高”的话运行可能会有所改善，不过性能会降低。这个设定只在NT系列操作系统(NT/2000/XP/Vista及以后)有意义。",
-				"name":"timerprec",
-				"type":"select",
-				"user":true,
-				"values":[
-					{ "value":"normal", "desc":"普通", "default":true },
-					{ "value":"higher", "desc":"较高" },
-					{ "value":"high", "desc":"最高" }
-				]
-			},
-			{
 				"caption":"计时器事件容许量限制",
 				"description":"设定是否限制计时器事件的容许量。\n\n设定成“是”的话，在处理较慢的电脑上可以回避因为系统运行太慢不能对用户操作做出反应的问题。",
 				"name":"laxtimer",
@@ -236,209 +224,8 @@
 				]
 			},
 			{
-				"caption":"DirectSound软件混音",
-				"description":"设定是否使用DirectSound进行软件混音。\n\n改变设定可能会改善卡音拖音现象。",
-				"name":"wssoft",
-				"type":"select",
-				"user":true,
-				"values":[
-					{ "value":"yes", "desc":"只用软件", "default":true },
-					{ "value":"no", "desc":"硬件优先" }
-				]
-			},
-			{
-				"caption":"DirectSound辅助缓冲区再次生成",
-				"description":"设定DirectSound是否不断再次生成辅助缓冲区。\n\n改变设定的话可能可以改善开始播放时发生的卡音漏音现象。",
-				"name":"wsrecreate",
-				"type":"select",
-				"user":true,
-				"values":[
-					{ "value":"yes", "desc":"不断再次生成" },
-					{ "value":"no", "desc":"有需要时再次生成", "default":true }
-				]
-			},
-			{
-				"caption":"DirectSound辅助缓冲区的长度",
-				"description":"设定DirectSound辅助缓冲区的长度。\n\n缓冲区越长播放就越稳定，但同时也会占用更多内存。",
-				"name":"wsl1len",
-				"type":"select",
-				"user":true,
-				"values":[
-					{ "value":"250", "desc":"250ms" },
-					{ "value":"375", "desc":"375ms" },
-					{ "value":"500", "desc":"500ms" },
-					{ "value":"625", "desc":"625ms" },
-					{ "value":"750", "desc":"750ms" },
-					{ "value":"875", "desc":"875ms" },
-					{ "value":"1000", "desc":"1000ms", "default":true },
-					{ "value":"1125", "desc":"1125ms" },
-					{ "value":"1250", "desc":"1250ms" },
-					{ "value":"1375", "desc":"1375ms" },
-					{ "value":"1500", "desc":"1500ms" },
-					{ "value":"1625", "desc":"1625ms" },
-					{ "value":"1750", "desc":"1750ms" },
-					{ "value":"1875", "desc":"1875ms" },
-					{ "value":"2000", "desc":"2000ms" },
-					{ "value":"2125", "desc":"2125ms" },
-					{ "value":"2250", "desc":"2250ms" },
-					{ "value":"2375", "desc":"2375ms" },
-					{ "value":"2500", "desc":"2500ms" },
-					{ "value":"2625", "desc":"2625ms" },
-					{ "value":"2750", "desc":"2750ms" },
-					{ "value":"2875", "desc":"2875ms" },
-					{ "value":"3000", "desc":"3000ms" },
-					{ "value":"3125", "desc":"3125ms" },
-					{ "value":"3250", "desc":"3250ms" },
-					{ "value":"3375", "desc":"3375ms" },
-					{ "value":"3500", "desc":"3500ms" },
-					{ "value":"3625", "desc":"3625ms" },
-					{ "value":"3750", "desc":"3750ms" },
-					{ "value":"3875", "desc":"3875ms" },
-					{ "value":"4000", "desc":"4000ms" },
-					{ "value":"4500", "desc":"4500ms" },
-					{ "value":"5000", "desc":"5000ms" },
-					{ "value":"5500", "desc":"5500ms" },
-					{ "value":"6000", "desc":"6000ms" },
-					{ "value":"6500", "desc":"6500ms" },
-					{ "value":"7000", "desc":"7000ms" },
-					{ "value":"7500", "desc":"7500ms" },
-					{ "value":"8000", "desc":"8000ms" },
-					{ "value":"8500", "desc":"8500ms" },
-					{ "value":"9000", "desc":"9000ms" },
-					{ "value":"9500", "desc":"9500ms" },
-					{ "value":"10000", "desc":"10000ms" }
-				]
-			},
-			{
-				"caption":"DirectSound辅助缓冲区长度",
-				"description":"设定DirectSound辅助缓冲区的长度。\n\n缓冲区越长播放就越稳定，但同时也会占用更多内存。",
-				"name":"wsl2len",
-				"type":"select",
-				"user":true,
-				"values":[
-					{ "value":"250", "desc":"250ms" },
-					{ "value":"375", "desc":"375ms" },
-					{ "value":"500", "desc":"500ms" },
-					{ "value":"625", "desc":"625ms" },
-					{ "value":"750", "desc":"750ms" },
-					{ "value":"875", "desc":"875ms" },
-					{ "value":"1000", "desc":"1000ms", "default":true },
-					{ "value":"1125", "desc":"1125ms" },
-					{ "value":"1250", "desc":"1250ms" },
-					{ "value":"1375", "desc":"1375ms" },
-					{ "value":"1500", "desc":"1500ms" },
-					{ "value":"1625", "desc":"1625ms" },
-					{ "value":"1750", "desc":"1750ms" },
-					{ "value":"1875", "desc":"1875ms" },
-					{ "value":"2000", "desc":"2000ms" },
-					{ "value":"2125", "desc":"2125ms" },
-					{ "value":"2250", "desc":"2250ms" },
-					{ "value":"2375", "desc":"2375ms" },
-					{ "value":"2500", "desc":"2500ms" },
-					{ "value":"2625", "desc":"2625ms" },
-					{ "value":"2750", "desc":"2750ms" },
-					{ "value":"2875", "desc":"2875ms" },
-					{ "value":"3000", "desc":"3000ms" },
-					{ "value":"3125", "desc":"3125ms" },
-					{ "value":"3250", "desc":"3250ms" },
-					{ "value":"3375", "desc":"3375ms" },
-					{ "value":"3500", "desc":"3500ms" },
-					{ "value":"3625", "desc":"3625ms" },
-					{ "value":"3750", "desc":"3750ms" },
-					{ "value":"3875", "desc":"3875ms" },
-					{ "value":"4000", "desc":"4000ms" },
-					{ "value":"4500", "desc":"4500ms" },
-					{ "value":"5000", "desc":"5000ms" },
-					{ "value":"5500", "desc":"5500ms" },
-					{ "value":"6000", "desc":"6000ms" },
-					{ "value":"6500", "desc":"6500ms" },
-					{ "value":"7000", "desc":"7000ms" },
-					{ "value":"7500", "desc":"7500ms" },
-					{ "value":"8000", "desc":"8000ms" },
-					{ "value":"8500", "desc":"8500ms" },
-					{ "value":"9000", "desc":"9000ms" },
-					{ "value":"9500", "desc":"9500ms" },
-					{ "value":"10000", "desc":"10000ms" }
-				]
-			},
-			{
-				"caption":"DirectSound静音",
-				"description":"设定DirectSound在应用程序最小化或进入非活跃状态时是否静音（降低音量）。\n\n选择“不静音”的话音量就不会降低。\n\n选择“最小化”或“非活跃”的话，应用程序会在相应的状态下静音。",
-				"name":"wsmute",
-				"type":"select",
-				"user":true,
-				"values":[
-					{ "value":"never", "desc":"不静音", "default":true },
-					{ "value":"minimize", "desc":"最小化时" },
-					{ "value":"deactive", "desc":"非活跃时" }
-				]
-			},
-			{
-				"caption":"DirectSound静音音量",
-				"description":"设定“DirectSound静音”时的音量。\n\n选择“0%”会完全静音，选择“50%”会减少一半(大约-6dB)。",
-				"name":"wsmutevol",
-				"type":"select",
-				"user":true,
-				"values":[
-					{ "value":"0", "desc":"0%(-∞dB)", "default":true },
-					{ "value":"5", "desc":"5%(-26.0dB)" },
-					{ "value":"10", "desc":"10%(-20.0dB)" },
-					{ "value":"15", "desc":"15%(-16.5dB)" },
-					{ "value":"20", "desc":"20%(-14.0dB)" },
-					{ "value":"25", "desc":"25%(-12.0dB)" },
-					{ "value":"30", "desc":"30%(-10.5dB)" },
-					{ "value":"35", "desc":"35%(-9.1dB)" },
-					{ "value":"40", "desc":"40%(-8.0dB)" },
-					{ "value":"45", "desc":"45%(-6.9dB)" },
-					{ "value":"50", "desc":"50%(-6.0dB)" },
-					{ "value":"55", "desc":"55%(-5.2dB)" },
-					{ "value":"60", "desc":"60%(-4.4dB)" },
-					{ "value":"65", "desc":"65%(-3.7dB)" },
-					{ "value":"70", "desc":"70%(-3.1dB)" },
-					{ "value":"75", "desc":"75%(-2.5dB)" },
-					{ "value":"80", "desc":"80%(-1.9dB)" },
-					{ "value":"85", "desc":"85%(-1.4dB)" },
-					{ "value":"90", "desc":"90%(-0.9dB)" },
-					{ "value":"95", "desc":"95%(-0.4dB)" }
-				]
-			},
-			{
-				"caption":"DirectSound强制格式转换",
-				"description":"设定DirectSound播放的PCM数据是否强制转换成选择的格式。\n\n改变设定后可能会改善播放声音出的问题。\n\n选择“转换成16bit单声道”时“DirctSound强制4ch播放”会被忽略",
-				"name":"wsforcecnv",
-				"type":"select",
-				"user":true,
-				"values":[
-					{ "value":"none", "desc":"不转换", "default":true },
-					{ "value":"i16", "desc":"转换成16bit整数" },
-					{ "value":"i16m", "desc":"转换成16bit整数单声道" }
-				]
-			},
-			{
-				"caption":"DirectSound 3D控制",
-				"description":"设定是否用DirectSound进行3D控制。\n\n选择“是”的话，3D声音控制效果会有效(有些应用程序会没有效果)。在很多环境中，单声道和立体声的音频会拓展到多声道扬声器上播放。选择“是”的话“DirectSound强制4ch播放”的设定会被忽略。",
-				"name":"wsuse3d",
-				"type":"select",
-				"user":true,
-				"values":[
-					{ "value":"no", "desc":"否", "default":true },
-					{ "value":"yes", "desc":"是" }
-				]
-			},
-			{
-				"caption":"DirectSound 强制4ch播放",
-				"description":"设定在用DirectSound播放单声道和立体声音频的时候，是否强制用上后置扬声器，使用4ch播放。\n\n启用时，在立体声和单声道只能在前置扬声器的环境中，音频将可以在前置和后置扬声器播放。",
-				"name":"wsexpandquad",
-				"type":"select",
-				"user":true,
-				"values":[
-					{ "value":"no", "desc":"否", "default":true },
-					{ "value":"yes", "desc":"是" }
-				]
-			},
-			{
-				"caption":"DirectSound 主缓冲区频率",
-				"description":"设定DirectSound主缓冲区的播放频率。\n\n更改设定可能不会改变播放情况。",
+				"caption":"声音输出频率",
+				"description":"设定声音输出(混音器)的采样频率。\n\n更改设定可能不会改变播放情况。",
 				"name":"wsfreq",
 				"type":"select",
 				"user":true,
@@ -456,43 +243,16 @@
 					{ "value":"88200", "desc":"88.2kHz" },
 					{ "value":"96000", "desc":"96kHz" }
 				]
-			},
+						},
 			{
-				"caption":"DirectSound 主缓冲区比特数",
-				"description":"设定DirectSound主缓冲区的比特数。\n\n更改设定可能不会改变播放情况。",
-				"name":"wsbits",
+				"caption":"预先初始化音频设备",
+				"description":"在启动时预先初始化音频（声音输出）设备。\n\n如果仅在首次播放声音时才打开设备，播放开始会略有延迟，声音开头可能会被截断。启用此项会在启动时完成初始化，从而避免这种截断。\n\n如果因不稳定的声音驱动等原因希望避免在启动时打开设备，请选择“否”。",
+				"name":"wspreinit",
 				"type":"select",
 				"user":true,
 				"values":[
-					{ "value":"i8", "desc":"8bit整数" },
-					{ "value":"i16", "desc":"16bit整数", "default":true },
-					{ "value":"i24", "desc":"24bit整数" },
-					{ "value":"i32", "desc":"32bit整数" },
-					{ "value":"f32", "desc":"32bit浮点数" }
-				]
-			},
-			{
-				"caption":"DirectSound 主缓冲区播放控制",
-				"description":"设定是否对DirectSound的主缓冲区进行播放和停止的控制。\n\n通过更改设定可能会改善卡音拖音的问题。",
-				"name":"wscontrolpri",
-				"type":"select",
-				"user":true,
-				"values":[
-					{ "value":"yes", "desc":"控制", "default":true },
-					{ "value":"no", "desc":"不控制" }
-				]
-			},
-			{
-				"caption":"DirectSound 主缓冲区设定尝试等级",
-				"description":"设定DirectSound指定主缓冲区格式时会尝试多少种不同的设定。\n\n 第0级会尝试立体声16bit整数格式的设定。\n\n第1级在尝试第0级之前，会尝试系统扬声器声道数的16bit整数设定。\n\n第2级在尝试第1级之前，尝试“DirectSound主缓冲区比特数”设定的比特数、系统扬声器设定的声道数、WAVEFORMATEX结构体格式的设定。\n\n“所有”级在尝试第2级设定之前，会尝试跟第2级相同但使用WAVEFORMATEXTENSIBLE结构体格式的设定。",
-				"name":"wspritry",
-				"type":"select",
-				"user":true,
-				"values":[
-					{ "value":"0", "desc":"第0级" },
-					{ "value":"1", "desc":"第1级" },
-					{ "value":"2", "desc":"第2级" },
-					{ "value":"all", "desc":"所有", "default":true }
+					{ "value":"yes", "desc":"是", "default":true },
+					{ "value":"no", "desc":"否" }
 				]
 			}
 		]
@@ -1011,17 +771,6 @@
 				"values":[
 					{ "value":"default", "desc":"2.25版本以后的行为", "default":true },
 					{ "value":"compat", "desc":"兼容2.25以前的版本" }
-				]
-			},
-			{
-				"caption":"DirectSound音量曲线",
-				"description":"DirectSound的音量曲线。\n\nDirectSound的音量曲线从2.31 2011/6/14版以后变成更为直观的曲线。",
-				"name":"dsvolfactor",
-				"type":"select",
-				"user":false,
-				"values":[
-					{ "value":"3322", "desc":"2.31版本以后的行为", "default":true },
-					{ "value":"5000", "desc":"兼容2.31以前的版本" }
 				]
 			},
 			{

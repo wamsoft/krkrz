@@ -1,0 +1,242 @@
+/****************************************************************************/
+/*! @file
+@brief overlay 動画 presenter 用 BGRA→RTV ブリッタの実装 (Track V-E)
+*****************************************************************************/
+#include "tjsCommHead.h"
+#include "VideoPresenterD3D.h"
+#include <d3dcompiler.h>
+
+//---------------------------------------------------------------------------
+namespace {
+struct tVertex { float x, y, u, v; };
+
+// 単純なテクスチャ付きクアッド。定数バッファの全体アルファをフレームのアルファに乗算する。
+static const char PresenterShaderHLSL[] =
+	"Texture2D tex : register(t0);\n"
+	"SamplerState smp : register(s0);\n"
+	"cbuffer CB : register(b0) { float4 gColor; };\n"
+	"struct VSIn  { float2 pos : POSITION; float2 uv : TEXCOORD; };\n"
+	"struct VSOut { float4 pos : SV_POSITION; float2 uv : TEXCOORD; };\n"
+	"VSOut VSMain(VSIn i){ VSOut o; o.pos = float4(i.pos, 0.0f, 1.0f); o.uv = i.uv; return o; }\n"
+	"float4 PSMain(VSOut i) : SV_TARGET {\n"
+	"    float4 c = tex.Sample(smp, i.uv);\n"
+	"    return c * gColor;\n"   // rgb もアルファも gColor で乗算 (premultiply でないので rgb は視覚的に同等)
+	"}\n";
+
+template<class T> static inline void SafeRelease( T *&p ) { if(p) { p->Release(); p = 0; } }
+}
+//---------------------------------------------------------------------------
+tTVPVideoPresenterD3D::tTVPVideoPresenterD3D()
+: Dev(0), VS(0), PS(0), IL(0), VB(0), CB(0), Samp(0), Blend(0), Tex(0), Srv(0), TexW(0), TexH(0)
+{
+}
+//---------------------------------------------------------------------------
+tTVPVideoPresenterD3D::~tTVPVideoPresenterD3D()
+{
+	Release();
+}
+//---------------------------------------------------------------------------
+void tTVPVideoPresenterD3D::Release()
+{
+	SafeRelease(Srv);
+	SafeRelease(Tex);
+	SafeRelease(Blend);
+	SafeRelease(Samp);
+	SafeRelease(CB);
+	SafeRelease(VB);
+	SafeRelease(IL);
+	SafeRelease(PS);
+	SafeRelease(VS);
+	Dev = 0;
+	TexW = TexH = 0;
+}
+//---------------------------------------------------------------------------
+bool tTVPVideoPresenterD3D::EnsurePipeline( ID3D11Device * dev )
+{
+	if( Dev == dev && VS && PS && IL && VB && CB && Samp && Blend ) return true;
+
+	// デバイスが変わった (デバイスロスト等) → 全部作り直す
+	Release();
+	Dev = dev;
+
+	HRESULT hr;
+	ID3DBlob *vsBlob = 0, *psBlob = 0, *errBlob = 0;
+	UINT flags = 0;
+#ifdef _DEBUG
+	flags |= D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+#endif
+
+	hr = D3DCompile(PresenterShaderHLSL, sizeof(PresenterShaderHLSL)-1, "vpres", NULL, NULL,
+		"VSMain", "vs_4_0", flags, 0, &vsBlob, &errBlob);
+	if( FAILED(hr) ) { SafeRelease(errBlob); Release(); return false; }
+	SafeRelease(errBlob);
+
+	hr = D3DCompile(PresenterShaderHLSL, sizeof(PresenterShaderHLSL)-1, "vpres", NULL, NULL,
+		"PSMain", "ps_4_0", flags, 0, &psBlob, &errBlob);
+	if( FAILED(hr) ) { SafeRelease(errBlob); SafeRelease(vsBlob); Release(); return false; }
+	SafeRelease(errBlob);
+
+	hr = dev->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), NULL, &VS);
+	if( FAILED(hr) ) { SafeRelease(psBlob); SafeRelease(vsBlob); Release(); return false; }
+	hr = dev->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), NULL, &PS);
+	SafeRelease(psBlob);
+	if( FAILED(hr) ) { SafeRelease(vsBlob); Release(); return false; }
+
+	D3D11_INPUT_ELEMENT_DESC ied[] = {
+		{ "POSITION", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 0,                            D3D11_INPUT_PER_VERTEX_DATA, 0 },
+		{ "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+	};
+	hr = dev->CreateInputLayout(ied, 2, vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), &IL);
+	SafeRelease(vsBlob);
+	if( FAILED(hr) ) { Release(); return false; }
+
+	D3D11_BUFFER_DESC bd; ZeroMemory(&bd, sizeof(bd));
+	bd.ByteWidth = sizeof(tVertex) * 4;
+	bd.Usage = D3D11_USAGE_DYNAMIC;
+	bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+	bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+	hr = dev->CreateBuffer(&bd, NULL, &VB);
+	if( FAILED(hr) ) { Release(); return false; }
+
+	D3D11_BUFFER_DESC cbd; ZeroMemory(&cbd, sizeof(cbd));
+	cbd.ByteWidth = 16; // float4
+	cbd.Usage = D3D11_USAGE_DYNAMIC;
+	cbd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+	cbd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+	hr = dev->CreateBuffer(&cbd, NULL, &CB);
+	if( FAILED(hr) ) { Release(); return false; }
+
+	D3D11_SAMPLER_DESC sd; ZeroMemory(&sd, sizeof(sd));
+	sd.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+	sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+	sd.ComparisonFunc = D3D11_COMPARISON_NEVER;
+	sd.MaxLOD = D3D11_FLOAT32_MAX;
+	hr = dev->CreateSamplerState(&sd, &Samp);
+	if( FAILED(hr) ) { Release(); return false; }
+
+	D3D11_BLEND_DESC bl; ZeroMemory(&bl, sizeof(bl));
+	bl.RenderTarget[0].BlendEnable = TRUE;
+	bl.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
+	bl.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+	bl.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+	bl.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
+	bl.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
+	bl.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
+	bl.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+	hr = dev->CreateBlendState(&bl, &Blend);
+	if( FAILED(hr) ) { Release(); return false; }
+
+	return true;
+}
+//---------------------------------------------------------------------------
+bool tTVPVideoPresenterD3D::EnsureTexture( ID3D11Device * dev, int w, int h )
+{
+	if( Tex && Srv && TexW == w && TexH == h ) return true;
+	SafeRelease(Srv);
+	SafeRelease(Tex);
+	TexW = TexH = 0;
+	if( w <= 0 || h <= 0 ) return false;
+
+	D3D11_TEXTURE2D_DESC td; ZeroMemory(&td, sizeof(td));
+	td.Width = w; td.Height = h;
+	td.MipLevels = 1; td.ArraySize = 1;
+	td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+	td.SampleDesc.Count = 1;
+	td.Usage = D3D11_USAGE_DYNAMIC;
+	td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+	td.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+	HRESULT hr = dev->CreateTexture2D(&td, NULL, &Tex);
+	if( FAILED(hr) ) return false;
+
+	hr = dev->CreateShaderResourceView(Tex, NULL, &Srv);
+	if( FAILED(hr) ) { SafeRelease(Tex); return false; }
+
+	TexW = w; TexH = h;
+	return true;
+}
+//---------------------------------------------------------------------------
+bool tTVPVideoPresenterD3D::Render( const tTVPVideoPresenterContext & ctx,
+	const void * topRow, int pitch, int w, int h,
+	const tTVPRect & dst, float alpha )
+{
+	if( !ctx.Device || !ctx.Context || !topRow || w <= 0 || h <= 0 ) return false;
+	if( !EnsurePipeline(ctx.Device) ) return false;
+	if( !EnsureTexture(ctx.Device, w, h) ) return false;
+
+	ID3D11DeviceContext * ictx = ctx.Context;
+
+	// -- フレームをテクスチャへアップロード (top-down)
+	D3D11_MAPPED_SUBRESOURCE m;
+	if( FAILED(ictx->Map(Tex, 0, D3D11_MAP_WRITE_DISCARD, 0, &m)) ) return false;
+	const BYTE * src = (const BYTE*)topRow;
+	BYTE * dstp = (BYTE*)m.pData;
+	int rowBytes = w * 4;
+	for( int y = 0; y < h; ++y ) {
+		memcpy( dstp + (size_t)y * m.RowPitch, src + (ptrdiff_t)y * pitch, rowBytes );
+	}
+	ictx->Unmap(Tex, 0);
+
+	DrawQuad( ictx, Srv, ctx, dst, alpha );
+	return true;
+}
+//---------------------------------------------------------------------------
+bool tTVPVideoPresenterD3D::RenderSRV( const tTVPVideoPresenterContext & ctx,
+	ID3D11ShaderResourceView * srv, int w, int h,
+	const tTVPRect & dst, float alpha )
+{
+	if( !ctx.Device || !ctx.Context || !srv || w <= 0 || h <= 0 ) return false;
+	if( !EnsurePipeline(ctx.Device) ) return false;
+	DrawQuad( ctx.Context, srv, ctx, dst, alpha );
+	return true;
+}
+//---------------------------------------------------------------------------
+void tTVPVideoPresenterD3D::DrawQuad( ID3D11DeviceContext * ictx,
+	ID3D11ShaderResourceView * srv, const tTVPVideoPresenterContext & ctx,
+	const tTVPRect & dst, float alpha )
+{
+	// -- 定数バッファ (全体アルファ)
+	D3D11_MAPPED_SUBRESOURCE cm;
+	if( SUCCEEDED(ictx->Map(CB, 0, D3D11_MAP_WRITE_DISCARD, 0, &cm)) ) {
+		float col[4] = { 1.0f, 1.0f, 1.0f, alpha };
+		memcpy(cm.pData, col, sizeof(col));
+		ictx->Unmap(CB, 0);
+	}
+
+	// -- dest ピクセル → NDC
+	float sw = (float)(ctx.TargetWidth  ? ctx.TargetWidth  : 1);
+	float sh = (float)(ctx.TargetHeight ? ctx.TargetHeight : 1);
+	float nl = (float)dst.left   * 2.0f / sw - 1.0f;
+	float nr = (float)dst.right  * 2.0f / sw - 1.0f;
+	float nt = 1.0f - (float)dst.top    * 2.0f / sh;
+	float nb = 1.0f - (float)dst.bottom * 2.0f / sh;
+
+	tVertex verts[4] = {
+		{ nl, nt, 0.0f, 0.0f },
+		{ nr, nt, 1.0f, 0.0f },
+		{ nl, nb, 0.0f, 1.0f },
+		{ nr, nb, 1.0f, 1.0f },
+	};
+	D3D11_MAPPED_SUBRESOURCE vm;
+	if( FAILED(ictx->Map(VB, 0, D3D11_MAP_WRITE_DISCARD, 0, &vm)) ) return;
+	memcpy(vm.pData, verts, sizeof(verts));
+	ictx->Unmap(VB, 0);
+
+	// -- 描画 (RTV/viewport は呼び出し側 = RenderVideoPresenters が設定済み)
+	UINT stride = sizeof(tVertex), offset = 0;
+	ictx->IASetInputLayout(IL);
+	ictx->IASetVertexBuffers(0, 1, &VB, &stride, &offset);
+	ictx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+	ictx->VSSetShader(VS, NULL, 0);
+	ictx->PSSetShader(PS, NULL, 0);
+	ictx->PSSetConstantBuffers(0, 1, &CB);
+	ictx->PSSetShaderResources(0, 1, &srv);
+	ictx->PSSetSamplers(0, 1, &Samp);
+	const float bf[4] = { 0, 0, 0, 0 };
+	ictx->OMSetBlendState(Blend, bf, 0xffffffff);
+	ictx->Draw(4, 0);
+
+	// SRV を外す (次フレーム Map 時の hazard 回避)
+	ID3D11ShaderResourceView * nullsrv[1] = { NULL };
+	ictx->PSSetShaderResources(0, 1, nullsrv);
+}
+//---------------------------------------------------------------------------

@@ -61,9 +61,17 @@ void InitAudioSystem()
 		return;
 	}
 
+	// デバイス(エンドポイント)のネイティブ ch に追従して開く (5.1 等をパススルー)。
+	int devchannels = 2;
+	{
+		SDL_AudioSpec devspec;
+		if (SDL_GetAudioDeviceFormat(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &devspec, NULL)) {
+			if (devspec.channels >= 1) devchannels = devspec.channels;
+		}
+	}
 	SDL_AudioSpec spec;
 	spec.format = SDL_AUDIO_F32; // オーディオフォーマットを設定
-	spec.channels = 2; // ステレオ
+	spec.channels = devchannels; // エンドポイント追従 (旧: 2 固定)
 	spec.freq = 48000; // サンプルレート
 
 	// オーディオデバイスの初期化

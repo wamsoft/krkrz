@@ -54,6 +54,10 @@ SDL3WindowForm::SDL3WindowForm(class tTJSNI_Window* win)
 		// ウィンドウのユーザーデータとして自身を設定
 		//SDL_SetWindowFullscreen(mWindow, true);
 		SDL_SetPointerProperty(SDL_GetWindowProperties(mWindow), "form", this);
+		// テキスト入力を有効化 (SDL_EVENT_TEXT_INPUT を発生させ、KAG の Edit
+		// レイヤ等へ文字入力を配送できるようにする。未呼出だと TEXT_INPUT が
+		// 一切発生せず、STEINS;GATE 8BIT の start 画面のタイプ入力が通らない)
+		SDL_StartTextInput(mWindow);
 	} else {
 		const char *error = SDL_GetError();
 		TVPLOG_ERROR("SDL3WindowForm: Failed to create SDL Window: {}", error);
@@ -241,17 +245,35 @@ SDL3WindowForm::AppEvent(const SDL_Event& event)
 			SendMessage(message, key, shift);
 			break;
 		}
+		case SDL_EVENT_TEXT_INPUT: {
 #ifdef KRKRZ_HAS_ELEMENTS
-		case SDL_EVENT_TEXT_INPUT:
-			// SDL3 ビルドは通常テキスト入力イベントを扱わないが、 Elements
-			// modal dialog 表示中だけは IME / 物理キー由来のテキストを直接
-			// dialog に流す (DialogManager 経由)。
+			// Elements ダイアログ (modal / 常駐 HUD 問わず) が表示中の場合、
+			// キーボードフォーカスを持つインスタンスがあればそこへ文字入力を
+			// 流し消費する。 フォーカスが無い (grabFocus=false の常駐 HUD 等) と
+			// ForwardText は false を返すので、 その場合は下のゲーム配送へ流す。
+			// (IsModalActive は実際には「いずれかのダイアログがアクティブ」の意)
 			if (tTVPElementsDialogManager::Instance().IsModalActive()) {
-				tTVPElementsDialogManager::Instance().ForwardText(event.text.text);
-				return true;
+				if (tTVPElementsDialogManager::Instance().ForwardText(event.text.text))
+					return true;
+			}
+#endif
+			// modal 非表示中は KAG(ゲーム) へ文字入力を配送する。
+			// SDL の UTF-8 テキストを UTF-16(tjs_char) に変換し、1文字ずつ
+			// onKeyPress として送る (win32 の WM_CHAR 相当)。
+			const char* u8 = event.text.text;
+			if (u8 && *u8) {
+				tjs_int n = TVPUtf8ToWideCharString(u8, NULL);
+				if (n > 0) {
+					tjs_char* buf = new tjs_char[n + 1];
+					TVPUtf8ToWideCharString(u8, buf);
+					for (tjs_int i = 0; i < n; i++) {
+						if (buf[i]) OnKeyPress((tjs_int)buf[i], 0, false, false);
+					}
+					delete[] buf;
+				}
 			}
 			break;
-#endif
+		}
 		case SDL_EVENT_MOUSE_BUTTON_DOWN:
 		case SDL_EVENT_MOUSE_BUTTON_UP: {
 			static int buttonmap[] = {mbLeft, mbMiddle, mbRight, mbX1, mbX2};

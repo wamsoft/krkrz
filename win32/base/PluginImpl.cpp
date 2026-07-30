@@ -347,6 +347,29 @@ tTVPPlugin::tTVPPlugin(const ttstr & name, ITSSStorageProvider *storageprovider)
 		TVPThrowExceptionMessage(TVPCannotLoadPlugin, name);
 	}
 
+	// このプラグインDLLを PIN し、プロセス終了までは物理アンロード(アンマップ)され
+	// ないようにする。プラグインが ncbind 経由で System/Window 等のコアオブジェクトに
+	// 付与したネイティブメソッドの C++ vtable は当該DLL内に存在し、スクリプトエンジン
+	// 終了時(tTJS::Shutdown のグローバル解体)でオブジェクトが finalize されるまで参照
+	// され得る。それ以前にDLLがアンマップされると、消えた vtable を呼んでクラッシュする
+	// (tTJSCustomObject::DeleteAllMembers 内で AV)。PIN しておけば FreeLibrary の呼出
+	// 経路に依らず終了処理完了までDLLが生存し、プロセス終了時にOSがまとめて解放する。
+	//
+	// [補足/TODO(plugin-unload-crash)] 本PINは「全プラグインを終了まで固定」という広い
+	//   対症的回避策(ncbindの推奨『一度linkしたら終了まで持て』には合致し安全側)。
+	//   本筋の妥当な修正は、tTJS::Shutdown より前にプラグインDLLを FreeLibrary している
+	//   正確なコード経路を特定し、その解放を engine 終了後に回すこと。今回その特定は
+	//   release/WOW64 ビルドでの cdb アンワインド不安定(SetContext失敗)により未達。
+	//   確度高い特定手段: ntdll!LdrUnloadDll へBP+スタック / Debug(frame-pointer)ビルド /
+	//   ntdllシンボル入手で kb・!address 安定化。特定できればPIN撤去→局所修正が可能で、
+	//   同経路を generic/SDL 版(generic/base/PluginImpl.cpp, sdl3/environ/app.cpp)でも直せる。
+	{
+		HMODULE pinned = NULL;
+		::GetModuleHandleExW(
+			GET_MODULE_HANDLE_EX_FLAG_PIN | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+			(LPCWSTR)Instance, &pinned);
+	}
+
 	try
 	{
 		// retrieve each functions

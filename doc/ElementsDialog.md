@@ -81,10 +81,45 @@ public:
     virtual ~iTVPDialogEventHandler() = default;
     // state widget の値変化 (payload に値)、 button click (payload = void) で発火
     virtual void OnAction(const ttstr& id, const tTJSVariant& payload) = 0;
+    // フロー画面遷移通知 (既定 no-op)
+    virtual void OnScreenEnter(const ttstr& name) {}
+    virtual void OnScreenLeave(const ttstr& name, const ttstr& action) {}
+    // teardown 完了通知 (既定 no-op)。 action は close_on_click / Esc で閉じた
+    // button id (Close() / ForceClose 等の外部要因は空)。 show 失敗では来ない。
+    virtual void OnClosed(const ttstr& action) {}
 };
 ```
 
-TJS の `Dialog` クラスはこれを実装し、 TJS の `onAction` を `TVPPostEvent` 経由で発火する。
+TJS の `Dialog` クラスはこれを実装し、 TJS の `onAction` / `onScreen` /
+`onScreenLeave` / `onClose` を `TVPPostEvent` 経由で発火する。
+
+### 変数 store への書込 (`SetVar` / `Dialog.setVar`)
+
+elements_modal の VariableStore (`vars` / `text_var`) へホスト側から書き込む
+経路。 `tTVPElementsDialogManager::SetVar(handler, name, value)` が
+`overlay_session::set_var` を呼び、 同名を `"text_var"` で subscribe している
+label が次フレームで自動更新される。 TJS からは `dlg.setVar(name, value)`。
+ソフトウェアキーボードの入力文字列表示のような「ホスト状態 → label」の
+動的反映に使う (Phase 7d 値 API の最小先行版)。
+
+### SDL 拡張プラグイン向け C ABI サービス (`tp_dialog_service.h`)
+
+静的リンクプラグイン (tp_stub ベース) から overlay ダイアログ機構を使うための
+C インタフェース。 tp_stub は本体と別系統の TJS 型定義を持つため本体ヘッダを
+include できない — そこで UTF-8 `char*` + 関数ポインタ + opaque handle に
+落とした ABI を `common/visual/elements/tp_dialog_service.h` に切ってある。
+
+```c
+const TVPSDLDialogAPI_v1* api = TVPGetSDLDialogAPI(TVP_SDL_DIALOG_API_VERSION);
+// api->show_overlay_json(json, modal, grab_focus, on_action, on_close, user)
+// api->close(handle) / api->is_active(handle) / api->set_var(handle, name, value)
+```
+
+実装は `DialogPluginService.cpp` (KRKRZ_USE_ELEMENTS ゲート)。 handle は
+`on_close` が返るまで有効で、 死んだ handle は生存レジストリで弾かれる。
+将来の拡張 (SDL_Renderer への描画 hook 等) は version を上げた別 struct を
+同じ entry point から返す。 利用例: krkrz_nx の `plugins/softkey`
+(Elements ベース英数字ソフトウェアキーボード)。
 
 ### `iTVPDialogRenderer` (DrawDevice 適合)
 
@@ -92,7 +127,7 @@ TJS の `Dialog` クラスはこれを実装し、 TJS の `onAction` を `TVPPo
 |---|---|---|
 | `tTVPSDLDialogRenderer` | `sdl3/visual/SDLDrawDevice.cpp` | `SDL_Texture (STREAMING)` + `SDL_UpdateTexture` + `SDL_RenderTexture` |
 | `tTVPOGLDialogRenderer` | `common/visual/opengl/OGLDrawDevice.cpp` | krkrz `Texture` + `Canvas::DrawTexture` |
-| WINVER `BasicDrawDevice` | 未実装 (Phase 5) | D3D9 surface 系を予定 |
+| WINVER `BasicDrawDevice` | 未実装 (WINVER 未対応) | D3D11 系を予定 |
 
 `AcquireBuffer(layer, w, h)` / `ReleaseBuffer(layer)` / `PresentOverlay(layer, x, y, w, h)` /
 `ReleaseLayer(layer)` の 4 関数。 **`layer` は overlay インスタンスを一意に識別する不透明

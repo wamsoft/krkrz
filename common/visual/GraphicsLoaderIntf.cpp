@@ -177,10 +177,8 @@ public:
 			TJS_W(".tlg5"), TVPLoadTLG, TVPLoadHeaderTLG, TVPSaveAsTLG, TVPAcceptSaveAsTLG, NULL));
 		Handlers.push_back(tTVPGraphicHandlerType(
 			TJS_W(".tlg6"), TVPLoadTLG, TVPLoadHeaderTLG, TVPSaveAsTLG, TVPAcceptSaveAsTLG, NULL));
-#ifdef __WINVER__
-		Handlers.push_back(tTVPGraphicHandlerType(
-			TJS_W(".jxr"), TVPLoadJXR, TVPLoadHeaderJXR, TVPSaveAsJXR, TVPAcceptSaveAsJXR, NULL));
-#endif
+		// JPEG XR (.jxr) は WINVER の OS WIC コーデック依存の WINVER 専用対応だった
+		// が、旧式・低採用の Microsoft 独自フォーマットで移植性も無いため撤去した。
 		ReCreateHash();
 		Avail = true;
 	}

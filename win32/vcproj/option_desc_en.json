@@ -49,18 +49,6 @@
 				]
 			},
 			{
-				"caption":"Timer accuracy",
-				"description":"Set timer accuracy.\n\nExecuion mighy be improved, but performance can be affected. This setting only applies to NT OS (NT/2000/XP/Vista and higher).",
-				"name":"timerprec",
-				"type":"select",
-				"user":true,
-				"values":[
-					{ "value":"normal", "desc":"Normal", "default":true },
-					{ "value":"higher", "desc":"Higher" },
-					{ "value":"high", "desc":"Highest" }
-				]
-			},
-			{
 				"caption":"Timer event tolerance limit",
 				"description":"Set if the engine should limit the tolerance of timer events.\n\nIf enabled, some user control issues caused by slow computers not being able to match the processing speed can sometimes by solved.",
 				"name":"laxtimer",
@@ -236,209 +224,8 @@
 				]
 			},
 			{
-				"caption":"DirectSound software mixing",
-				"description":"Set if the engine should use DirectSound for software mixing.\n\n Skipping sound issues can sometimes be solved by changing this setting.",
-				"name":"wssoft",
-				"type":"select",
-				"user":true,
-				"values":[
-					{ "value":"yes", "desc":"Software only", "default":true },
-					{ "value":"no", "desc":"Prioritize hardware" }
-				]
-			},
-			{
-				"caption":"DirectSound secondary buffer rebuild",
-				"description":"Set if the engine should rebuild DirectSound secondary buffer constantly.\n\nSkipping sound at the beginning of playback can sometimes be solved by adjusting this setting.",
-				"name":"wsrecreate",
-				"type":"select",
-				"user":true,
-				"values":[
-					{ "value":"yes", "desc":"Rebuild constantly" },
-					{ "value":"no", "desc":"Rebuild when necessary", "default":true }
-				]
-			},
-			{
-				"caption":"DirectSound secondary buffer length",
-				"description":"Define the length of DirectSound secondary buffer.\n\nPlayback is more stable with a longer buffer, but it also consumes more memory.",
-				"name":"wsl1len",
-				"type":"select",
-				"user":true,
-				"values":[
-					{ "value":"250", "desc":"250ms" },
-					{ "value":"375", "desc":"375ms" },
-					{ "value":"500", "desc":"500ms" },
-					{ "value":"625", "desc":"625ms" },
-					{ "value":"750", "desc":"750ms" },
-					{ "value":"875", "desc":"875ms" },
-					{ "value":"1000", "desc":"1000ms", "default":true },
-					{ "value":"1125", "desc":"1125ms" },
-					{ "value":"1250", "desc":"1250ms" },
-					{ "value":"1375", "desc":"1375ms" },
-					{ "value":"1500", "desc":"1500ms" },
-					{ "value":"1625", "desc":"1625ms" },
-					{ "value":"1750", "desc":"1750ms" },
-					{ "value":"1875", "desc":"1875ms" },
-					{ "value":"2000", "desc":"2000ms" },
-					{ "value":"2125", "desc":"2125ms" },
-					{ "value":"2250", "desc":"2250ms" },
-					{ "value":"2375", "desc":"2375ms" },
-					{ "value":"2500", "desc":"2500ms" },
-					{ "value":"2625", "desc":"2625ms" },
-					{ "value":"2750", "desc":"2750ms" },
-					{ "value":"2875", "desc":"2875ms" },
-					{ "value":"3000", "desc":"3000ms" },
-					{ "value":"3125", "desc":"3125ms" },
-					{ "value":"3250", "desc":"3250ms" },
-					{ "value":"3375", "desc":"3375ms" },
-					{ "value":"3500", "desc":"3500ms" },
-					{ "value":"3625", "desc":"3625ms" },
-					{ "value":"3750", "desc":"3750ms" },
-					{ "value":"3875", "desc":"3875ms" },
-					{ "value":"4000", "desc":"4000ms" },
-					{ "value":"4500", "desc":"4500ms" },
-					{ "value":"5000", "desc":"5000ms" },
-					{ "value":"5500", "desc":"5500ms" },
-					{ "value":"6000", "desc":"6000ms" },
-					{ "value":"6500", "desc":"6500ms" },
-					{ "value":"7000", "desc":"7000ms" },
-					{ "value":"7500", "desc":"7500ms" },
-					{ "value":"8000", "desc":"8000ms" },
-					{ "value":"8500", "desc":"8500ms" },
-					{ "value":"9000", "desc":"9000ms" },
-					{ "value":"9500", "desc":"9500ms" },
-					{ "value":"10000", "desc":"10000ms" }
-				]
-			},
-			{
-				"caption":"DirectSound secondary auxiliary buffer length",
-				"description":"Define the length of DirectSound secondary auxiliary buffer.\n\nPlayback is more stable with a longer buffer, but it also consumes more memory.",
-				"name":"wsl2len",
-				"type":"select",
-				"user":true,
-				"values":[
-					{ "value":"250", "desc":"250ms" },
-					{ "value":"375", "desc":"375ms" },
-					{ "value":"500", "desc":"500ms" },
-					{ "value":"625", "desc":"625ms" },
-					{ "value":"750", "desc":"750ms" },
-					{ "value":"875", "desc":"875ms" },
-					{ "value":"1000", "desc":"1000ms", "default":true },
-					{ "value":"1125", "desc":"1125ms" },
-					{ "value":"1250", "desc":"1250ms" },
-					{ "value":"1375", "desc":"1375ms" },
-					{ "value":"1500", "desc":"1500ms" },
-					{ "value":"1625", "desc":"1625ms" },
-					{ "value":"1750", "desc":"1750ms" },
-					{ "value":"1875", "desc":"1875ms" },
-					{ "value":"2000", "desc":"2000ms" },
-					{ "value":"2125", "desc":"2125ms" },
-					{ "value":"2250", "desc":"2250ms" },
-					{ "value":"2375", "desc":"2375ms" },
-					{ "value":"2500", "desc":"2500ms" },
-					{ "value":"2625", "desc":"2625ms" },
-					{ "value":"2750", "desc":"2750ms" },
-					{ "value":"2875", "desc":"2875ms" },
-					{ "value":"3000", "desc":"3000ms" },
-					{ "value":"3125", "desc":"3125ms" },
-					{ "value":"3250", "desc":"3250ms" },
-					{ "value":"3375", "desc":"3375ms" },
-					{ "value":"3500", "desc":"3500ms" },
-					{ "value":"3625", "desc":"3625ms" },
-					{ "value":"3750", "desc":"3750ms" },
-					{ "value":"3875", "desc":"3875ms" },
-					{ "value":"4000", "desc":"4000ms" },
-					{ "value":"4500", "desc":"4500ms" },
-					{ "value":"5000", "desc":"5000ms" },
-					{ "value":"5500", "desc":"5500ms" },
-					{ "value":"6000", "desc":"6000ms" },
-					{ "value":"6500", "desc":"6500ms" },
-					{ "value":"7000", "desc":"7000ms" },
-					{ "value":"7500", "desc":"7500ms" },
-					{ "value":"8000", "desc":"8000ms" },
-					{ "value":"8500", "desc":"8500ms" },
-					{ "value":"9000", "desc":"9000ms" },
-					{ "value":"9500", "desc":"9500ms" },
-					{ "value":"10000", "desc":"10000ms" }
-				]
-			},
-			{
-				"caption":"DirectSound mute",
-				"description":"Define if DirectSound should mute (lower the volume) when the application becomes inactive or minimized.\n\n'Never mute' will not mute the application.\n\n'Mute when minized' and 'Mute when inactive' will mute the application in coresponding conditions.",
-				"name":"wsmute",
-				"type":"select",
-				"user":true,
-				"values":[
-					{ "value":"never", "desc":"Never mute", "default":true },
-					{ "value":"minimize", "desc":"Mute when minimized" },
-					{ "value":"deactive", "desc":"Mute when inactive" }
-				]
-			},
-			{
-				"caption":"DirectSound mute volume",
-				"description":"Set mute volume for 'DirectSound mute'\n\nSet to '0%' for complete mute, '50%' for around half of the full volume (around -6dB)",
-				"name":"wsmutevol",
-				"type":"select",
-				"user":true,
-				"values":[
-					{ "value":"0", "desc":"0%(-∞dB)", "default":true },
-					{ "value":"5", "desc":"5%(-26.0dB)" },
-					{ "value":"10", "desc":"10%(-20.0dB)" },
-					{ "value":"15", "desc":"15%(-16.5dB)" },
-					{ "value":"20", "desc":"20%(-14.0dB)" },
-					{ "value":"25", "desc":"25%(-12.0dB)" },
-					{ "value":"30", "desc":"30%(-10.5dB)" },
-					{ "value":"35", "desc":"35%(-9.1dB)" },
-					{ "value":"40", "desc":"40%(-8.0dB)" },
-					{ "value":"45", "desc":"45%(-6.9dB)" },
-					{ "value":"50", "desc":"50%(-6.0dB)" },
-					{ "value":"55", "desc":"55%(-5.2dB)" },
-					{ "value":"60", "desc":"60%(-4.4dB)" },
-					{ "value":"65", "desc":"65%(-3.7dB)" },
-					{ "value":"70", "desc":"70%(-3.1dB)" },
-					{ "value":"75", "desc":"75%(-2.5dB)" },
-					{ "value":"80", "desc":"80%(-1.9dB)" },
-					{ "value":"85", "desc":"85%(-1.4dB)" },
-					{ "value":"90", "desc":"90%(-0.9dB)" },
-					{ "value":"95", "desc":"95%(-0.4dB)" }
-				]
-			},
-			{
-				"caption":"DirectSound forced format conversion",
-				"description":"Set if the engine should forcibly convert PCM data played by DirectSound to a defined format.\n\nPlayback issues can sometimes be solved by adjusting this setting.\n\nChoosing '16bit integer monaural' will make the engine ignore 'DirectSound forced 4ch playback'.",
-				"name":"wsforcecnv",
-				"type":"select",
-				"user":true,
-				"values":[
-					{ "value":"none", "desc":"No conversion", "default":true },
-					{ "value":"i16", "desc":"Convert to 16bit integer" },
-					{ "value":"i16m", "desc":"Conver to 16bit integer monaural" }
-				]
-			},
-			{
-				"caption":"DirectSound 3D control",
-				"description":"Set if the engine should use DirectSound for 3D control.\n\nThis will enable 3D control of sound in some applications. In most cases stereo and monaural sound will be extended to surrounding speakers. The engine will ignore 'DirectSound forced 4ch playback' if enabled.",
-				"name":"wsuse3d",
-				"type":"select",
-				"user":true,
-				"values":[
-					{ "value":"no", "desc":"Disabled", "default":true },
-					{ "value":"yes", "desc":"Enabled" }
-				]
-			},
-			{
-				"caption":"DirectSound forced 4ch playback",
-				"description":"Set if the engine should force 4ch playback including rear speakers when playing stereo or monaural sound with DirectSound.\n\nChoosing 'Yes' will allow front and rear speakers to play stereo and monaural sound if sound was not played previously.",
-				"name":"wsexpandquad",
-				"type":"select",
-				"user":true,
-				"values":[
-					{ "value":"no", "desc":"Disabled", "default":true },
-					{ "value":"yes", "desc":"Enabled" }
-				]
-			},
-			{
-				"caption":"DirectSound primary buffer frequency",
-				"description":"Set frequency of DirectSound primary buffer.\n\nIn some cases playback will manifest some change.",
+				"caption":"Sound output frequency",
+				"description":"Set the sound output (mixer) sampling frequency.\n\nIn some cases playback will manifest some change.",
 				"name":"wsfreq",
 				"type":"select",
 				"user":true,
@@ -456,43 +243,16 @@
 					{ "value":"88200", "desc":"88.2kHz" },
 					{ "value":"96000", "desc":"96kHz" }
 				]
-			},
+						},
 			{
-				"caption":"DirectSound primary buffer bit length",
-				"description":"Set playback bit length of DirectSound primary buffer.\n\nIn some cases playback will not change by ajusting this setting.",
-				"name":"wsbits",
+				"caption":"Pre-initialize audio device",
+				"description":"Initializes the audio (sound output) device at startup.\n\nIf the device is opened only when the first sound plays, playback can start slightly late and the beginning of the sound may be clipped. Enabling this performs the initialization at startup and avoids that clipping.\n\nChoose 'No' if you want to avoid opening the device at startup (e.g. with an unstable sound driver).",
+				"name":"wspreinit",
 				"type":"select",
 				"user":true,
 				"values":[
-					{ "value":"i8", "desc":"8bit integer" },
-					{ "value":"i16", "desc":"16bit integer", "default":true },
-					{ "value":"i24", "desc":"24bit integer" },
-					{ "value":"i32", "desc":"32bit integer" },
-					{ "value":"f32", "desc":"32bit float" }
-				]
-			},
-			{
-				"caption":"DirectSound primary buffer playback control",
-				"description":"Set if the engine should control playback of DirectSound primary buffer buffer.\n\nAdjust this setting can sometimes solve skipping sound issues.",
-				"name":"wscontrolpri",
-				"type":"select",
-				"user":true,
-				"values":[
-					{ "value":"yes", "desc":"Enabled", "default":true },
-					{ "value":"no", "desc":"Disabled" }
-				]
-			},
-			{
-				"caption":"DirectSound primary buffer attempt level",
-				"description":"Set how many combinations of format configurations to try when defining DirectSound primary buffer.\n\nLevel 0: Try stereo 16-bit integer.\n\nLevel 1: Try channels defined by system speaker settings, 16-bit integer before trying level 0.\n\nLevel 2: Try bit-length defined by 'DirectSound primary buffer bit-length' and channels defined by system speaker settings as a WAVEFORMATEX struct, before trying level 1.\n\nAll: Try the same values in level 2 as a WAVEFORMATEXTENSIBLE struct before trying level 2.",
-				"name":"wspritry",
-				"type":"select",
-				"user":true,
-				"values":[
-					{ "value":"0", "desc":"Level 0" },
-					{ "value":"1", "desc":"Level 1" },
-					{ "value":"2", "desc":"Level 2" },
-					{ "value":"all", "desc":"All", "default":true }
+					{ "value":"yes", "desc":"Yes", "default":true },
+					{ "value":"no", "desc":"No" }
 				]
 			}
 		]
@@ -1011,17 +771,6 @@
 				"values":[
 					{ "value":"default", "desc":"Higher than 2.25", "default":true },
 					{ "value":"compat", "desc":"Compatible with lower than 2.25" }
-				]
-			},
-			{
-				"caption":"DirectSound volume curve",
-				"description":"DirectSound volume curve.\n\nVolume sound curve of DirectSound became more intuitive after 2.31 2011/6/14.",
-				"name":"dsvolfactor",
-				"type":"select",
-				"user":false,
-				"values":[
-					{ "value":"3322", "desc":"Higher than 2.31 ", "default":true },
-					{ "value":"5000", "desc":"Compatible with lower than 2.31" }
 				]
 			},
 			{

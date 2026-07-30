@@ -138,6 +138,14 @@ public:
 	};
 	std::vector<WidgetInfo> DescribeWidgets(int index) const;
 
+	//! @brief 指定 handler のインスタンスの変数 store へ書き込む。 JSON で
+	//!        "text_var": name を指定した label が次フレームで自動更新される
+	//!        (elements_modal の VariableStore / overlay_session::set_var)。
+	//!        ソフトウェアキーボードの入力文字列表示等、 ホスト状態 → label の
+	//!        動的反映に使う。 handler のインスタンスが非アクティブなら false。
+	bool SetVar(iTVPDialogEventHandler* handler,
+	            const ttstr& name, const ttstr& value);
+
 	//! @brief index 番目のインスタンスの widget を id 指定でフォーカス + 起動
 	//!        (Enter 相当)。 座標を当てずにボタン押下 / トグルできる。
 	//!        index が範囲外 / id が見つからなければ false。

@@ -7,15 +7,20 @@
 
 class ApplicationSpecialPath {
 public:
-	static tjs_string GetSpecialFolderPath(int csidl) {
-		wchar_t path[MAX_PATH+1];
-		if(!SHGetSpecialFolderPath(NULL, path, csidl, false))
-			return tjs_string();
-		return tjs_string((tjs_char*)path);
+	// 旧実装は非推奨の SHGetSpecialFolderPath + CSIDL_* を使っていたが、
+	// Vista 以降の推奨 API SHGetKnownFolderPath + FOLDERID_* に置換。
+	static tjs_string GetKnownFolderPath(REFKNOWNFOLDERID rfid) {
+		tjs_string result;
+		PWSTR ppszPath = NULL;
+		if( SUCCEEDED( ::SHGetKnownFolderPath(rfid, 0, NULL, &ppszPath) ) && ppszPath ) {
+			result = tjs_string( (const tjs_char*)ppszPath );
+		}
+		if( ppszPath ) ::CoTaskMemFree( ppszPath );
+		return result;
 	}
 	static inline tjs_string GetPersonalPath() {
-		tjs_string path = GetSpecialFolderPath(CSIDL_PERSONAL);
-		if( path.empty() ) path = GetSpecialFolderPath(CSIDL_APPDATA);
+		tjs_string path = GetKnownFolderPath(FOLDERID_Documents);
+		if( path.empty() ) path = GetKnownFolderPath(FOLDERID_RoamingAppData);
 
 		if(path != TJS_W("")) {
 			return path;
@@ -23,7 +28,7 @@ public:
 		return TJS_W("");
 	}
 	static inline tjs_string GetAppDataPath() {
-		tjs_string path = GetSpecialFolderPath(CSIDL_APPDATA);
+		tjs_string path = GetKnownFolderPath(FOLDERID_RoamingAppData);
 		if(path != TJS_W("") ) {
 			return path;
 		}

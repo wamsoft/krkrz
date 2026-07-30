@@ -11,7 +11,7 @@
 #include "Exception.h"
 #include "Application.h"
 #include "resource.h"
-#include "CompatibleNativeFuncs.h"
+// CompatibleNativeFuncs は撤去 (touch/gesture API は Win10 で常在、直接リンク)
 #include "WindowsUtil.h"
 #include "MsgImpl.h"
 #include "UserEvent.h"
@@ -148,15 +148,14 @@ LRESULT WINAPI tTVPWindow::Proc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
 		}
 		return ::DefWindowProc(hWnd,msg,wParam,lParam);
 	case WM_TOUCH: {
-		// user32.dll から GetTouchInputInfo など読み込む
-		if( procGetTouchInputInfo && procCloseTouchInputHandle ) {
+		{  // GetTouchInputInfo/CloseTouchInputHandle は Win10 で常在
 			UINT cInputs = LOWORD(wParam);
 			PTOUCHINPUT pInputs = new TOUCHINPUT[cInputs];
 			if( NULL != pInputs ) {
 				OnTouchSequenceStart();
 				try {
 					DWORD basetick = TVPGetRoughTickCount32();
-					if( procGetTouchInputInfo( (HTOUCHINPUT)lParam, cInputs, pInputs, sizeof(TOUCHINPUT)) ) {
+					if( GetTouchInputInfo( (HTOUCHINPUT)lParam, cInputs, pInputs, sizeof(TOUCHINPUT)) ) {
 						// process pInputs
 						for( UINT i = 0; i < cInputs; i++ ) {
 							int x = pInputs[i].x / 100;
@@ -189,7 +188,7 @@ LRESULT WINAPI tTVPWindow::Proc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
 								OnTouchUp( vx, vy, cx, cy, pInputs[i].dwID, tick );
 							}
 						}
-						if( !procCloseTouchInputHandle((HTOUCHINPUT)lParam) ) {
+						if( !CloseTouchInputHandle((HTOUCHINPUT)lParam) ) {
 							// error handling
 							TVPThrowWindowsErrorException();
 						}
@@ -211,11 +210,11 @@ LRESULT WINAPI tTVPWindow::Proc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
 		return DefWindowProc(hWnd, msg, wParam, lParam);
 	}
 	case WM_GESTURE:
-		if( procGetGestureInfo && procCloseGestureInfoHandle ) {
+		{  // GetGestureInfo/CloseGestureInfoHandle は Win10 で常在
 			GESTUREINFO gi;
 			ZeroMemory(&gi, sizeof(GESTUREINFO));
 			gi.cbSize = sizeof(gi);
-			BOOL bResult = procGetGestureInfo((HGESTUREINFO)lParam, &gi);
+			BOOL bResult = GetGestureInfo((HGESTUREINFO)lParam, &gi);
 			BOOL bHandled = FALSE;
 			switch (gi.dwID){
 			case GID_ZOOM:
@@ -248,7 +247,7 @@ LRESULT WINAPI tTVPWindow::Proc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
 				// You have encountered an unknown gesture
 				break;
 			}
-			procCloseGestureInfoHandle((HGESTUREINFO)lParam);
+			CloseGestureInfoHandle((HGESTUREINFO)lParam);
 			if( bHandled ) return 0;
 		}
 		return DefWindowProc(hWnd, msg, wParam, lParam);
@@ -270,6 +269,19 @@ LRESULT WINAPI tTVPWindow::Proc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
 		return 0;
 	case WM_KILLFOCUS:
 		OnFocusLost( reinterpret_cast<HWND>(wParam) );
+		return 0;
+	case WM_DPICHANGED:
+		{
+			// 異DPIモニタへ移動 (または DPI 変更) 時、OS 提案の新矩形へリサイズ/再配置。
+			// マニフェスト PerMonitorV2 では OS が自動スケールしないため必須。クライアント
+			// サイズ変化は BasicDrawDevice(D3D11) の swapchain 追従で描画に反映される。
+			RECT* prc = reinterpret_cast<RECT*>(lParam);
+			if( prc ) {
+				::SetWindowPos( hWnd, NULL, prc->left, prc->top,
+					prc->right - prc->left, prc->bottom - prc->top,
+					SWP_NOZORDER | SWP_NOACTIVATE );
+			}
+		}
 		return 0;
 	case WM_GETMINMAXINFO:
 		{
@@ -442,12 +454,12 @@ HRESULT tTVPWindow::CreateWnd( const tjs_string& classname, const tjs_string& ti
 		if(str == TJS_W("true")) ignore_touch = true;
 	}
 	// ハードがマルチタッチをサポートしているかどうか
-	if( procRegisterTouchWindow && ignore_touch == false ) {
+	if( ignore_touch == false ) {  // RegisterTouchWindow は Win10 で常在
 		int value= ::GetSystemMetrics( SM_DIGITIZER );
 		if( (value & (NID_MULTI_INPUT|NID_READY)) == (NID_MULTI_INPUT|NID_READY) ) {
 			// マルチタッチサポート & 準備できている
 #ifndef TVP_TOUCH_DISABLE
-			procRegisterTouchWindow( window_handle_, REGISTER_TOUCH_FLAG );
+			RegisterTouchWindow( window_handle_, REGISTER_TOUCH_FLAG );
 			ignore_touch_mouse_ = true;
 #endif
 			// MICROSOFT_TABLETPENSERVICE_PROPERTY プロパティを変更する

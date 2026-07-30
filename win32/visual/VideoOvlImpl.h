@@ -21,12 +21,14 @@
 #include "voMode.h"
 
 #include "NativeEventQueue.h"
+#include "VideoPresenter.h"   // iTVPVideoPresenter / iTVPVideoPresenterHost
 
 //---------------------------------------------------------------------------
 // tTJSNI_VideoOverlay : VideoOverlay Native Instance
 //---------------------------------------------------------------------------
 class iTVPVideoOverlay;
-class tTJSNI_VideoOverlay : public tTJSNI_BaseVideoOverlay
+class tTVPVideoPresenterD3D;
+class tTJSNI_VideoOverlay : public tTJSNI_BaseVideoOverlay, public iTVPVideoPresenter
 {
 	typedef tTJSNI_BaseVideoOverlay inherited;
 
@@ -48,6 +50,22 @@ class tTJSNI_VideoOverlay : public tTJSNI_BaseVideoOverlay
 
 	class tTVPBaseBitmap	*Bitmap[2];	//!< Layer描画用バッファ用Bitmap
 	BYTE			*BmpBits[2];
+
+	//-- Track V-E: overlay を DrawDevice presenter 経由で本体 D3D11 バックバッファへ
+	//   合成する経路 (host 有り時)。host が無ければ従来の子ウィンドウ present に
+	//   フォールバックする (UsePresenter=false)。
+	bool	UsePresenter;					//!< presenter 経路 (buffer 出力 + 本体合成)
+	bool	HWMode;							//!< HW 経路 (IMFMediaEngine)。VideoOverlay が presenter も実装
+	iTVPVideoPresenter *ActivePresenter;	//!< host へ登録する presenter (CPU=this / HW=VideoOverlay側)
+	iTVPVideoPresenterHost *PresenterHost;	//!< DrawDevice の host (非所有)
+	bool	PresenterRegistered;			//!< host へ登録済みか
+	bool	HasFrame;						//!< 最初のフレームを生成したか
+	tjs_real MovieAlpha;					//!< overlay 全体アルファ (0..1, 既定 1)
+	tTVPVideoPresenterD3D *VideoBlit;		//!< 動画フレーム用ブリッタ (lazy)
+	tTVPVideoPresenterD3D *MixerBlit;		//!< mixer 追加画像用ブリッタ (lazy)
+	class tTVPBaseBitmap *MixerBitmap;		//!< mixer 追加画像のコピー (presenter 経路)
+	tTVPRect MixerRect;						//!< mixer 追加画像の配置 (プライマリレイヤ座標)
+	tjs_real MixerAlpha;					//!< mixer 追加画像のアルファ
 
 	bool	IsPrepare;			//!< 準備モードかどうか
 
@@ -190,7 +208,17 @@ public:
 	void SetRectOffset(tjs_int ofsx, tjs_int ofsy);
 	void DetachVideoOverlay();
 
+	//-- iTVPVideoPresenter 実装 (Track V-E)。DrawDevice の Show() から描画スレッドで
+	//   呼ばれ、現在の動画フレームを engine の D3D11 バックバッファへ描く。
+	virtual bool TJS_INTF_METHOD RenderVideoFrame( const tTVPVideoPresenterContext & ctx );
+
 private:
+	//-- presenter host の取得 / 登録 / 解除 (overlay + host 有り時)。
+	iTVPVideoPresenterHost * QueryPresenterHost();
+	void * QueryD3D11Device();   //!< DrawDevice の TJS プロパティ d3d11Device (ID3D11Device*)
+	void RegisterPresenter();
+	void UnregisterPresenter();
+
 	void WndProc( NativeEvent& ev );
 		// UtilWindow's window procedure
 	void ClearWndProcMessages(); // clear WndProc's message queue

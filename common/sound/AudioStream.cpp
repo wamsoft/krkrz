@@ -46,7 +46,10 @@ static const ma_allocation_callbacks &GetMiniAudioAllocationCallbacks()
 }
 
 tjs_int TVPSoundFrequency = 48000;
-tjs_int TVPSoundChannels = 2;
+// 0 = デバイスネイティブ ch (WASAPI エンドポイント構成) に追従。
+// engine 生成後に実際の ch 数をここへキャッシュする。SDL 版は audio.cpp が
+// SetMiniAudioSpec で SDL デバイスの ch を事前設定する。
+tjs_int TVPSoundChannels = 0;
 static const int VOLUME_MAX = 100000;
 
 // WIN 版 DirectSound 経路 (win32/sound/WaveImpl.cpp::TVPVolumeToDSAttenuate)
@@ -100,7 +103,10 @@ void InitMiniAudio()
 			ma_log_callback_init(OnLog, NULL);
 
 			ma_engine_config engineConfig = ma_engine_config_init();
-			engineConfig.channels = TVPSoundChannels; // チャンネル数は2（ステレオ）
+			// channels=0 のときはデバイスネイティブ ch (エンドポイント構成) を採用して
+			// エンドポイント追従にする (5.1/7.1 をパススルーできる)。SDL 版は
+			// SetMiniAudioSpec で SDL デバイスの ch が事前設定される。
+			engineConfig.channels = TVPSoundChannels;
 			engineConfig.sampleRate = TVPSoundFrequency; // サンプルレートは48000Hz
 			// miniaudio 内部 alloc を SoundAllocator 経由に流す。
 			engineConfig.allocationCallbacks = GetMiniAudioAllocationCallbacks();
@@ -109,15 +115,46 @@ void InitMiniAudio()
 			if (result != MA_SUCCESS) {
 				const char *msg = ma_result_description(result);
 				TVPLOG_ERROR("failed to initialize miniaudio engine: {}", msg);
+			} else {
+				// 実際に開かれた ch 数を反映 (以降 GetMiniAudioSpec 等が参照)
+				TVPSoundChannels = ma_engine_get_channels(gEngine);
+				TVPLOG_INFO("miniaudio engine initialized: {} channels, {} Hz",
+					(int)ma_engine_get_channels(gEngine), (int)ma_engine_get_sample_rate(gEngine));
 			}
 	    }
 	}
 }
 
-ma_engine *GetMiniAudioEngine() 
+ma_engine *GetMiniAudioEngine()
 {
 	InitMiniAudio();
 	return gEngine;
+}
+
+// -wsfreq 等のサウンドオプションを反映する (QueueSoundBuffer 生成時にも呼ばれる)。
+extern void TVPInitSoundOptions();
+
+// 起動シーケンスからオーディオデバイス (miniaudio engine) を先行初期化する。
+// 遅延初期化のままだと初回サウンド再生時に WASAPI デバイスを開くため、
+// その分の遅延で音の頭が欠けることがある。起動時にデバイスオープンを
+// 前倒ししておくことでこれを防ぐ。-wspreinit=no/off/false/0 で従来の
+// 遅延初期化に戻せる (broken driver 等で起動時オープンを避けたい場合の逃げ道)。
+// SDL 版は InitAudioSystem() が起動時に InitMiniAudio() を呼ぶため不要。
+void TVPPreInitAudioDevice()
+{
+	if (gEngine) return; // 既に初期化済み
+
+	tTJSVariant val;
+	if (TVPGetCommandLine(TJS_W("-wspreinit"), &val)) {
+		ttstr s = val; s.ToLowerCase();
+		if (s == TJS_W("no") || s == TJS_W("off") || s == TJS_W("false") || s == TJS_W("0"))
+			return;
+	}
+
+	// 遅延初期化経路 (QueueSoundBuffer ctor → GetMiniAudioEngine) と同じ順序で
+	// オプション反映 → engine 初期化を行う。
+	TVPInitSoundOptions();
+	InitMiniAudio();
 }
 
 static void DoneMiniAudio()
@@ -646,7 +683,11 @@ MiniAudioStream::MiniAudioStream(const tTVPAudioStreamParam& param )
     dataSourceConfig.vtable = &g_my_data_source_vtable;
     ma_data_source_init(&dataSourceConfig, &data_source);
 
-    ma_sound_init_from_data_source(GetMiniAudioEngine(), &data_source, 0, NULL, &sound);
+    // NO_SPATIALIZATION: 3D 空間化を切り、ソース ch → engine ch を channel-map ベースで
+    // 変換 (5.1 音源を discrete にパススルー、ステレオはフロントへアップミックス)。
+    // pan/volume/pitch は spatialization とは独立に効く。
+    ma_sound_init_from_data_source(GetMiniAudioEngine(), &data_source,
+        MA_SOUND_FLAG_NO_SPATIALIZATION, NULL, &sound);
 }
 
 MiniAudioStream::~MiniAudioStream()

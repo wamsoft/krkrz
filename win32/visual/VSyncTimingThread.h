@@ -14,13 +14,17 @@ class tTVPVSyncTimingThread : public tTVPThread
 	tTVPThreadEvent Event;
 	tTJSCriticalSection CS;
 	DWORD VSyncInterval; //!< VSync の間隔(参考値)
-	DWORD LastVBlankTick; //!< 最後の vblank の時間
+	tjs_uint64 LastVBlankTick; //!< 最後の vblank の時間 (ms, TVPGetTickCount 基準)
+
+	HANDLE TimerHandle; //!< high-resolution waitable timer (前眠り用)
 
 	bool Enabled;
 
 	NativeEventQueue<tTVPVSyncTimingThread> EventQueue;
 
 	class tTJSNI_Window* OwnerWindow;
+
+	void PreciseSleep( DWORD ms ); //!< タイマ分解能に依存しない精密な短時間スリープ
 public:
 	tTVPVSyncTimingThread(class tTJSNI_Window* owner);
 	~tTVPVSyncTimingThread();

@@ -95,6 +95,30 @@ void TJS_INTF_METHOD tTVPFileMedia::NormalizePathName(ttstr &name)
 #endif
 }
 //---------------------------------------------------------------------------
+// long-path (>MAX_PATH) 対応: 絶対ネイティブパスを \\?\ 拡張長形式へ変換する。
+// GetLocallyAccessibleName の出力は既に絶対バックスラッシュ (X:\... か \\server\share) な
+// ので、レジストリの LongPathsEnabled ポリシーに依存せず MAX_PATH (260) 制限を回避できる。
+// 短いパス (回帰リスク回避) と非絶対/変換不能なパスはそのまま返す。
+static ttstr TVPToExtendedLengthPath(const ttstr &name)
+{
+	// MAX_PATH 近傍未満はそのまま (既存挙動を変えない)。末尾に *.* 等が付く経路もあるので
+	// 余裕を持たせる。
+	if(name.GetLen() < MAX_PATH - 12) return name;
+	const tjs_char *p = name.c_str();
+	// 既に \\?\ / \\.\ 形式ならそのまま
+	if(p[0]==TJS_W('\\') && p[1]==TJS_W('\\') &&
+	   (p[2]==TJS_W('?') || p[2]==TJS_W('.')) && p[3]==TJS_W('\\'))
+		return name;
+	// UNC: \\server\share... -> \\?\UNC\server\share...
+	if(p[0]==TJS_W('\\') && p[1]==TJS_W('\\'))
+		return ttstr(TJS_W("\\\\?\\UNC\\")) + (p + 2);
+	// ドライブ絶対: X:\... -> \\?\X:\...
+	if(p[0] && p[1]==TJS_W(':') && p[2]==TJS_W('\\'))
+		return ttstr(TJS_W("\\\\?\\")) + name;
+	// それ以外 (相対・想定外) はそのまま
+	return name;
+}
+//---------------------------------------------------------------------------
 bool TJS_INTF_METHOD tTVPFileMedia::CheckExistentStorage(const ttstr &name)
 {
 	if(name.IsEmpty()) return false;
@@ -127,7 +151,7 @@ void TJS_INTF_METHOD tTVPFileMedia::GetListAt(const ttstr &_name, iTVPStorageLis
 
 	// perform UNICODE operation
 	WIN32_FIND_DATAW ffd;
-	HANDLE handle = ::FindFirstFile((const wchar_t*)name.c_str(), &ffd);
+	HANDLE handle = ::FindFirstFile((const wchar_t*)TVPToExtendedLengthPath(name).c_str(), &ffd);
 	if(handle != INVALID_HANDLE_VALUE)
 	{
 		BOOL cont;
@@ -283,9 +307,11 @@ ttstr TVPGetTemporaryName()
 
 		if(!TVPTempPathInit)
 		{
-			wchar_t tmp[MAX_PATH+1];
-			::GetTempPath(MAX_PATH, tmp);
-			TVPTempPath = (tjs_char*)tmp;
+			// long-path 対応: 必要長を問い合わせて動的確保 (TMP が MAX_PATH 超でも切れない)
+			DWORD tlen = ::GetTempPath(0, NULL);
+			std::vector<wchar_t> tmp((size_t)tlen + 1);
+			::GetTempPath(tlen + 1, tmp.data());
+			TVPTempPath = (tjs_char*)tmp.data();
 
 			if(TVPTempPath.GetLastChar() != TJS_W('\\')) TVPTempPath += TJS_W("\\");
 			TVPProcessID = (tjs_int) GetCurrentProcessId();
@@ -409,7 +435,7 @@ iTJSBinaryStream * TVPOpenStream(const ttstr & _name, tjs_uint32 flags)
 //---------------------------------------------------------------------------
 bool TVPCheckExistentLocalFile(const ttstr &name)
 {
-	DWORD attrib = ::GetFileAttributes((const wchar_t*)name.c_str());
+	DWORD attrib = ::GetFileAttributes((const wchar_t*)TVPToExtendedLengthPath(name).c_str());
 	if(attrib == 0xffffffff || (attrib & FILE_ATTRIBUTE_DIRECTORY))
 		return false; // not a file
 
@@ -434,7 +460,7 @@ bool TVPCheckExistentLocalFile(const ttstr &name)
 //---------------------------------------------------------------------------
 bool TVPCheckExistentLocalFolder(const ttstr &name)
 {
-	DWORD attrib = GetFileAttributes((const wchar_t*)name.c_str());
+	DWORD attrib = GetFileAttributes((const wchar_t*)TVPToExtendedLengthPath(name).c_str());
 	if(attrib != 0xffffffff && (attrib & FILE_ATTRIBUTE_DIRECTORY))
 		return true; // a folder
 	else
@@ -562,7 +588,7 @@ tTVPLocalFileStream::tTVPLocalFileStream(const ttstr &origname,
 
 retry:
 	Handle = CreateFile(
-		(const wchar_t*)localname.c_str(),
+		(const wchar_t*)TVPToExtendedLengthPath(localname).c_str(),
 		rw,
 		FILE_SHARE_READ, // read shared accesss is strongly needed
 		NULL,

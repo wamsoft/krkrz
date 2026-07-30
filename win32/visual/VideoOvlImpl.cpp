@@ -26,10 +26,25 @@
 #include <evcode.h>
 
 #include "Application.h"
-#include "TVPVideoOverlay.h"
 #include "BitmapInfomation.h"
+#include "VideoPresenterD3D.h"
+#include "LayerBitmapIntf.h"
 
 //---------------------------------------------------------------------------
+// Track V-A: krmovie は exe へ静的統合されたので、そのエクスポート関数を直接
+// リンクして呼ぶ (LoadLibrary/GetProcAddress を経由しない)。krflash.dll は従来通り
+// DLL ロードなので tTVPVideoModule(name) 経路を残す。
+extern "C" {
+	void    __stdcall GetAPIVersion( DWORD *ver );
+	void    __stdcall GetVideoOverlayObject( HWND, IStream*, const tjs_char*, const tjs_char*, unsigned __int64, iTVPVideoOverlay** );
+	void    __stdcall GetVideoLayerObject( HWND, IStream*, const tjs_char*, const tjs_char*, unsigned __int64, iTVPVideoOverlay** );
+	void    __stdcall GetMFVideoOverlayObject( HWND, IStream*, const tjs_char*, const tjs_char*, unsigned __int64, iTVPVideoOverlay** );
+	HRESULT __stdcall V2Link( iTVPFunctionExporter *exporter );
+	HRESULT __stdcall V2Unlink();
+	// Track V-E HW: IMFMediaEngine バックエンドのファクトリ (engineDevice=ID3D11Device*)。
+	void    __stdcall GetMediaEngineVideoObject( HWND, IStream*, const tjs_char*, const tjs_char*, unsigned __int64, void*, iTVPVideoOverlay**, iTVPVideoPresenter** );
+}
+
 class tTVPVideoModule
 {
 	tTVPPluginHolder *Holder;
@@ -37,13 +52,13 @@ class tTVPVideoModule
 	tGetAPIVersion procGetAPIVersion;
 	tGetVideoOverlayObject procGetVideoOverlayObject;
 	tGetVideoOverlayObject procGetVideoLayerObject; // krmovie.dll only
-	tGetVideoOverlayObject procGetMixingVideoOverlayObject; // krmovie.dll only
 	tGetVideoOverlayObject procGetMFVideoOverlayObject; // krmovie.dll only
 	tTVPV2LinkProc procV2Link;
 	tTVPV2UnlinkProc procV2Unlink;
 
 public:
-	tTVPVideoModule(const ttstr & name);
+	tTVPVideoModule();               // 静的統合された krmovie を直接束ねる
+	tTVPVideoModule(const ttstr & name); // DLL ロード (krflash.dll 用)
 	~tTVPVideoModule();
 
 	void GetAPIVersion(DWORD *version) { procGetAPIVersion(version); }
@@ -59,12 +74,6 @@ public:
 	{
 		procGetVideoLayerObject(callbackwin, stream, streamname, type, size, out);
 	}
-	void GetMixingVideoOverlayObject(HWND callbackwin, IStream *stream,
-		const wchar_t * streamname, const wchar_t *type, unsigned __int64 size,
-		iTVPVideoOverlay **out)
-	{
-		procGetMixingVideoOverlayObject(callbackwin, stream, streamname, type, size, out);
-	}
 	void GetMFVideoOverlayObject(HWND callbackwin, IStream *stream,
 		const wchar_t * streamname, const wchar_t *type, unsigned __int64 size,
 		iTVPVideoOverlay **out)
@@ -75,6 +84,26 @@ public:
 static tTVPVideoModule *TVPMovieVideoModule = NULL;
 static tTVPVideoModule *TVPFlashVideoModule = NULL;
 static void TVPUnloadKrMovie();
+//---------------------------------------------------------------------------
+// 静的統合された krmovie を直接束ねる (LoadLibrary 不要)。
+tTVPVideoModule::tTVPVideoModule()
+{
+	Holder = NULL;
+	Handle = NULL;
+	procGetVideoOverlayObject   = (tGetVideoOverlayObject)&::GetVideoOverlayObject;
+	procGetVideoLayerObject     = (tGetVideoOverlayObject)&::GetVideoLayerObject;
+	procGetMFVideoOverlayObject = (tGetVideoOverlayObject)&::GetMFVideoOverlayObject;
+	procGetAPIVersion           = (tGetAPIVersion)&::GetAPIVersion;
+	procV2Link                  = (tTVPV2LinkProc)&::V2Link;
+	procV2Unlink                = (tTVPV2UnlinkProc)&::V2Unlink;
+
+	DWORD version;
+	procGetAPIVersion(&version);
+	if(version != TVP_KRMOVIE_VER)
+		TVPThrowExceptionMessage(TVPInvalidKrMovieDLL);
+
+	procV2Link(TVPGetFunctionExporter()); // link functions used by tp_stub
+}
 //---------------------------------------------------------------------------
 tTVPVideoModule::tTVPVideoModule(const ttstr &name)
 {
@@ -93,9 +122,6 @@ tTVPVideoModule::tTVPVideoModule(const ttstr &name)
 
 		procGetVideoLayerObject = (tGetVideoOverlayObject)
 			GetProcAddress(Handle, "GetVideoLayerObject");
-
-		procGetMixingVideoOverlayObject = (tGetVideoOverlayObject)
-			GetProcAddress(Handle, "GetMixingVideoOverlayObject");
 
 		procGetMFVideoOverlayObject = (tGetVideoOverlayObject)
 			GetProcAddress(Handle, "GetMFVideoOverlayObject");
@@ -130,14 +156,14 @@ tTVPVideoModule::tTVPVideoModule(const ttstr &name)
 tTVPVideoModule::~tTVPVideoModule()
 {
 	procV2Unlink();
-	FreeLibrary(Handle);
-	delete Holder;
+	if(Handle) FreeLibrary(Handle); // 静的統合 (krmovie) 時は Handle=NULL
+	if(Holder) delete Holder;
 }
 //---------------------------------------------------------------------------
 static tTVPVideoModule * TVPGetMovieVideoModule()
 {
 	if(TVPMovieVideoModule == NULL)
-		TVPMovieVideoModule = new tTVPVideoModule("krmovie.dll");
+		TVPMovieVideoModule = new tTVPVideoModule(); // 静的統合 krmovie
 
 	return TVPMovieVideoModule;
 }
@@ -180,6 +206,31 @@ static void TVPShutdownVideoOverlay()
 static tTVPAtExit TVPShutdownVideoOverlayAtExit
 	(TVP_ATEXIT_PRI_PREPARE, TVPShutdownVideoOverlay);
 //---------------------------------------------------------------------------
+// Track V-E HW: MF-native 形式か (IMFMediaEngine で HW デコード可能)。webm/mpg/avi は除外。
+static bool TVPIsMediaEngineFormat( const ttstr &ext )
+{
+	return ext == TJS_W(".mp4") || ext == TJS_W(".m4v") || ext == TJS_W(".mov")
+		|| ext == TJS_W(".wmv") || ext == TJS_W(".asf");
+}
+//---------------------------------------------------------------------------
+// HW 動画 (IMFMediaEngine) を使うか。既定 true。-mediaengine=no/off/false/0 で無効化。
+static bool TVPUseMediaEngine()
+{
+	static int cached = -1; // -1 未評価 / 0 無効 / 1 有効
+	if( cached < 0 )
+	{
+		cached = 1;
+		tTJSVariant val;
+		if( TVPGetCommandLine( TJS_W("-mediaengine"), &val ) )
+		{
+			ttstr s = val; s.ToLowerCase();
+			if( s == TJS_W("no") || s == TJS_W("off") || s == TJS_W("false") || s == TJS_W("0") )
+				cached = 0;
+		}
+	}
+	return cached != 0;
+}
+//---------------------------------------------------------------------------
 
 
 
@@ -213,6 +264,19 @@ tTJSNI_VideoOverlay::tTJSNI_VideoOverlay()
 
 	Bitmap[0] = Bitmap[1] = NULL;
 	BmpBits[0] = BmpBits[1] = NULL;
+
+	UsePresenter = false;
+	HWMode = false;
+	ActivePresenter = static_cast<iTVPVideoPresenter*>(this);
+	PresenterHost = NULL;
+	PresenterRegistered = false;
+	HasFrame = false;
+	MovieAlpha = 1.0;
+	VideoBlit = NULL;
+	MixerBlit = NULL;
+	MixerBitmap = NULL;
+	MixerRect = tTVPRect(0, 0, 0, 0);
+	MixerAlpha = 1.0;
 }
 //---------------------------------------------------------------------------
 tjs_error TJS_INTF_METHOD
@@ -321,38 +385,68 @@ void tTJSNI_VideoOverlay::Open(const ttstr &_name)
 		}
 		else
 		{
-			if(Mode == vomLayer)
-				mod->GetVideoLayerObject(EventQueue.GetOwner(),
-					istream, (const wchar_t*)name.c_str(), (const wchar_t*)ext.c_str(),
-					size, &VideoOverlay);
-			else if(Mode == vomMixer)
-				mod->GetMixingVideoOverlayObject(EventQueue.GetOwner(),
-					istream, (const wchar_t*)name.c_str(), (const wchar_t*)ext.c_str(),
-					size, &VideoOverlay);
-			else if(Mode == vomMFEVR)
-				mod->GetMFVideoOverlayObject(EventQueue.GetOwner(),
-					istream, (const wchar_t*)name.c_str(), (const wchar_t*)ext.c_str(),
-					size, &VideoOverlay);
-			else
-				mod->GetVideoOverlayObject(EventQueue.GetOwner(),
-					istream, (const wchar_t*)name.c_str(), (const wchar_t*)ext.c_str(),
-					size, &VideoOverlay);
+			// overlay 系。DrawDevice が presenter host を公開していれば、レイヤと同じ
+			// buffer 出力オブジェクト (GetVideoLayerObject) を作り、本体 D3D11 バック
+			// バッファへ presenter 経由で全画面合成する (UsePresenter)。host が無ければ
+			// 従来の子ウィンドウ present (GetVideoOverlayObject) にフォールバックする。
+			bool isOverlay = ( Mode != vomLayer );
+			if( isOverlay )
+				PresenterHost = QueryPresenterHost();
+
+			// HW 経路 (IMFMediaEngine): MF-native 形式 (mp4/wmv/asf/…) で host 有り + 既定有効
+			// (-mediaengine=no で無効化) + engine device 取得可 の overlay。webm/mpg は MF
+			// デコーダが無いので対象外 (CPU 経路)。
+			// ★vomMixer 指定時は HW を使わず CPU presenter へ。HW 経路は mixer 追加画像を
+			//   描画しない (動画側オブジェクトが presenter を持つため) 一方、CPU presenter は
+			//   mixer を確実に合成できる。よって「mixer が要る」明示指定 = vomMixer は CPU 固定。
+			if( isOverlay && Mode != vomMixer && PresenterHost && TVPUseMediaEngine() && TVPIsMediaEngineFormat(ext) )
+			{
+				void* dev = QueryD3D11Device();
+				if( dev )
+				{
+					iTVPVideoPresenter* hwpres = NULL;
+					GetMediaEngineVideoObject( EventQueue.GetOwner(), istream,
+						(const wchar_t*)name.c_str(), (const wchar_t*)ext.c_str(),
+						size, dev, &VideoOverlay, &hwpres );
+					if( VideoOverlay && hwpres )
+					{
+						HWMode = true;
+						UsePresenter = true;
+						ActivePresenter = hwpres;
+					}
+					else if( VideoOverlay )
+					{
+						VideoOverlay->Release(); VideoOverlay = NULL;
+					}
+				}
+			}
+
+			// HW 不使用/失敗 → CPU 経路 (presenter buffer 出力 or 子ウィンドウ present)。
+			if( !VideoOverlay )
+			{
+				UsePresenter = isOverlay && ( PresenterHost != NULL );
+				ActivePresenter = static_cast<iTVPVideoPresenter*>(this);
+				if( Mode == vomLayer || UsePresenter )
+					mod->GetVideoLayerObject(EventQueue.GetOwner(),
+						istream, (const wchar_t*)name.c_str(), (const wchar_t*)ext.c_str(),
+						size, &VideoOverlay);
+				else
+					mod->GetVideoOverlayObject(EventQueue.GetOwner(),
+						istream, (const wchar_t*)name.c_str(), (const wchar_t*)ext.c_str(),
+						size, &VideoOverlay);
+			}
 		}
 
-		if( flash || (Mode == vomOverlay) || (Mode == vomMixer) || (Mode == vomMFEVR) )
-		{
-			ResetOverlayParams();
-		}
-		else
-		{	// set font and back buffer to layerVideo
+		if( ( ( Mode == vomLayer ) || UsePresenter ) && !HWMode )
+		{	// buffer 出力: レイヤ / presenter バッファへ動画フレームを書く (HW は自前テクスチャ)
 			long	width, height;
-			long			size;
+			long	bufsize;
 			VideoOverlay->GetVideoSize( &width, &height );
-			
+
 			if( width <= 0 || height <= 0 )
 				TVPThrowExceptionMessage(TVPErrorInKrMovieDLL, (const tjs_char*)TVPInvalidVideoSize);
 
-			size = width * height * 4;
+			bufsize = width * height * 4;
 			if( Bitmap[0] != NULL )
 				delete Bitmap[0];
 			if( Bitmap[1] != NULL )
@@ -362,10 +456,12 @@ void tTJSNI_VideoOverlay::Open(const ttstr &_name)
 
 			BmpBits[0] = static_cast<BYTE*>(Bitmap[0]->GetBitmap()->GetScanLine( Bitmap[0]->GetBitmap()->GetHeight()-1 ));
 			BmpBits[1] = static_cast<BYTE*>(Bitmap[1]->GetBitmap()->GetScanLine( Bitmap[1]->GetBitmap()->GetHeight()-1 ));
-			//BmpBits[0] = static_cast<BYTE*>(Bitmap[0]->GetBitmap()->GetScanLine( 0 ));
-			//BmpBits[1] = static_cast<BYTE*>(Bitmap[1]->GetBitmap()->GetScanLine( 0 ));
 
-			VideoOverlay->SetVideoBuffer( BmpBits[0], BmpBits[1], size );
+			VideoOverlay->SetVideoBuffer( BmpBits[0], BmpBits[1], bufsize );
+		}
+		else
+		{	// 子ウィンドウ present (従来 overlay / flash)
+			ResetOverlayParams();
 		}
 	}
 	catch(...)
@@ -384,6 +480,17 @@ void tTJSNI_VideoOverlay::Open(const ttstr &_name)
 void tTJSNI_VideoOverlay::Close()
 {
 	// close
+	// presenter 経路: 登録解除してから GPU リソースを解放する
+	UnregisterPresenter();
+	if( VideoBlit ) { delete VideoBlit; VideoBlit = NULL; }
+	if( MixerBlit ) { delete MixerBlit; MixerBlit = NULL; }
+	if( MixerBitmap ) { delete MixerBitmap; MixerBitmap = NULL; }
+	UsePresenter = false;
+	HWMode = false;
+	ActivePresenter = static_cast<iTVPVideoPresenter*>(this);
+	PresenterHost = NULL;
+	HasFrame = false;
+
 	// release VideoOverlay object
 	if(VideoOverlay)
 	{
@@ -409,6 +516,7 @@ void tTJSNI_VideoOverlay::Shutdown()
 	// shutdown the system
 	// this functions closes the overlay object, but must not fire any events.
 	bool c = CanDeliverEvents;
+	UnregisterPresenter(); // presenter 経路: DrawDevice からの登録を外す
 	ClearWndProcMessages();
 	SetStatus(tTVPVideoOverlayStatus::Unload);
 	try
@@ -431,6 +539,124 @@ void tTJSNI_VideoOverlay::Disconnect()
 	Window = NULL;
 }
 //---------------------------------------------------------------------------
+// Track V-E: overlay 動画 presenter 経路
+//---------------------------------------------------------------------------
+// overlay/mixer の矩形 (プライマリレイヤ座標 0..Src) を、DrawDevice が動画を描く
+// クライアント矩形 (DestRect) の座標系へスケールする。
+static tTVPRect TVPMapOverlayRectToClient(const tTVPVideoPresenterContext &ctx, const tTVPRect &r)
+{
+	int sw = ctx.SrcWidth  > 0 ? ctx.SrcWidth  : 1;
+	int sh = ctx.SrcHeight > 0 ? ctx.SrcHeight : 1;
+	double dw = (double)ctx.DestRect.get_width();
+	double dh = (double)ctx.DestRect.get_height();
+	tTVPRect o;
+	o.left   = ctx.DestRect.left + (tjs_int)( r.left   * dw / sw + 0.5 );
+	o.top    = ctx.DestRect.top  + (tjs_int)( r.top    * dh / sh + 0.5 );
+	o.right  = ctx.DestRect.left + (tjs_int)( r.right  * dw / sw + 0.5 );
+	o.bottom = ctx.DestRect.top  + (tjs_int)( r.bottom * dh / sh + 0.5 );
+	return o;
+}
+//---------------------------------------------------------------------------
+iTVPVideoPresenterHost * tTJSNI_VideoOverlay::QueryPresenterHost()
+{
+	// Window が持つ DrawDevice の TJS オブジェクトから、登録口 (iTVPVideoPresenterHost)
+	// のポインタを規定プロパティ "videoPresenterHost" として取得する。プロパティが無い/
+	// 0 の描画デバイス (OGL/Null/custom 等) は非対応 → 子ウィンドウ present へフォールバック。
+	if( !Window ) return NULL;
+	const tTJSVariant & ddobj = Window->GetDrawDeviceObject();
+	if( ddobj.Type() != tvtObject ) return NULL;
+	tTJSVariantClosure clo = ddobj.AsObjectClosureNoAddRef();
+	if( clo.Object == NULL ) return NULL;
+	tTJSVariant val;
+	if( TJS_FAILED( clo.PropGet(0, TJS_W("videoPresenterHost"), NULL, &val, NULL) ) )
+		return NULL;
+	tjs_int64 p = (tjs_int64)val;
+	if( p == 0 ) return NULL;
+	return reinterpret_cast<iTVPVideoPresenterHost*>((intptr_t)p);
+}
+//---------------------------------------------------------------------------
+void * tTJSNI_VideoOverlay::QueryD3D11Device()
+{
+	// HW 動画 (MediaEngine) が束ねる engine の ID3D11Device を DrawDevice の TJS プロパティ
+	// "d3d11Device" から取得する (無ければ null → HW 不可)。
+	if( !Window ) return NULL;
+	const tTJSVariant & ddobj = Window->GetDrawDeviceObject();
+	if( ddobj.Type() != tvtObject ) return NULL;
+	tTJSVariantClosure clo = ddobj.AsObjectClosureNoAddRef();
+	if( clo.Object == NULL ) return NULL;
+	tTJSVariant val;
+	if( TJS_FAILED( clo.PropGet(0, TJS_W("d3d11Device"), NULL, &val, NULL) ) )
+		return NULL;
+	tjs_int64 p = (tjs_int64)val;
+	return reinterpret_cast<void*>((intptr_t)p);
+}
+//---------------------------------------------------------------------------
+void tTJSNI_VideoOverlay::RegisterPresenter()
+{
+	if( UsePresenter && PresenterHost && ActivePresenter && !PresenterRegistered )
+	{
+		PresenterHost->AddVideoPresenter( ActivePresenter );
+		PresenterRegistered = true;
+	}
+}
+//---------------------------------------------------------------------------
+void tTJSNI_VideoOverlay::UnregisterPresenter()
+{
+	if( PresenterRegistered && PresenterHost && ActivePresenter )
+		PresenterHost->RemoveVideoPresenter( ActivePresenter );
+	PresenterRegistered = false;
+}
+//---------------------------------------------------------------------------
+bool TJS_INTF_METHOD tTJSNI_VideoOverlay::RenderVideoFrame( const tTVPVideoPresenterContext & ctx )
+{
+	// DrawDevice の Show() (描画スレッド) から毎フレーム呼ばれる。最新フレームを engine の
+	// D3D11 テクスチャへ上げ、ゲーム画面領域 (DestRect) 全面へ描く (動画が画面を覆う前提)。
+	if( !UsePresenter || !VideoOverlay || !Visible || !HasFrame ) return false;
+
+	BYTE *buff = NULL;
+	VideoOverlay->GetFrontBuffer( &buff );
+	if( !buff ) return false;
+	tTVPBaseBitmap *bmp = ( buff == BmpBits[1] ) ? Bitmap[1] : Bitmap[0];
+	if( !bmp ) return false;
+	tTVPBitmap *raw = bmp->GetBitmap();
+	if( !raw ) return false;
+
+	int w = (int)raw->GetWidth();
+	int h = (int)raw->GetHeight();
+	if( w <= 0 || h <= 0 ) return false;
+	// レイヤバッファはボトムアップ格納。視覚的 top 行 (ScanLine 0) と符号付きピッチを求める。
+	const BYTE *top = (const BYTE*)raw->GetScanLine(0);
+	int pitch = w * 4;
+	if( h > 1 )
+		pitch = (int)( (const BYTE*)raw->GetScanLine(1) - top );
+
+	if( !VideoBlit ) VideoBlit = new tTVPVideoPresenterD3D();
+	VideoBlit->Render( ctx, top, pitch, w, h, ctx.DestRect, (float)MovieAlpha );
+
+	// mixer 追加画像 (旧 setMixingLayer の後継)。動画の上へアルファ合成で重ねる。
+	if( MixerBitmap )
+	{
+		tTVPBitmap *mraw = MixerBitmap->GetBitmap();
+		if( mraw )
+		{
+			int mw = (int)mraw->GetWidth();
+			int mh = (int)mraw->GetHeight();
+			if( mw > 0 && mh > 0 )
+			{
+				const BYTE *mtop = (const BYTE*)mraw->GetScanLine(0);
+				int mpitch = mw * 4;
+				if( mh > 1 )
+					mpitch = (int)( (const BYTE*)mraw->GetScanLine(1) - mtop );
+				tTVPRect mdst = TVPMapOverlayRectToClient( ctx, MixerRect );
+				if( !MixerBlit ) MixerBlit = new tTVPVideoPresenterD3D();
+				MixerBlit->Render( ctx, mtop, mpitch, mw, mh, mdst, (float)MixerAlpha );
+			}
+		}
+	}
+
+	return true;
+}
+//---------------------------------------------------------------------------
 void tTJSNI_VideoOverlay::Play()
 {
 	// start playing
@@ -438,7 +664,10 @@ void tTJSNI_VideoOverlay::Play()
 	{
 		VideoOverlay->Play();
 		ClearWndProcMessages();
-		if( Mode != vomMFEVR ) SetStatus(tTVPVideoOverlayStatus::Play);
+		RegisterPresenter(); // presenter 経路: 稼働開始を DrawDevice に登録
+		// Track V-D で EVR 撤去。旧 vomMFEVR は EVR の非同期 state 通知に頼って
+		// SetStatus を抑止していたが、統合後は overlay と同じく同期 SetStatus する。
+		SetStatus(tTVPVideoOverlayStatus::Play);
 	}
 }
 //---------------------------------------------------------------------------
@@ -449,7 +678,8 @@ void tTJSNI_VideoOverlay::Stop()
 	{
 		VideoOverlay->Stop();
 		ClearWndProcMessages();
-		if( Mode != vomMFEVR ) SetStatus(tTVPVideoOverlayStatus::Stop);
+		UnregisterPresenter(); // presenter 経路: 停止で登録解除 (以後 present しない)
+		SetStatus(tTVPVideoOverlayStatus::Stop);
 	}
 }
 //---------------------------------------------------------------------------
@@ -460,7 +690,7 @@ void tTJSNI_VideoOverlay::Pause()
 	{
 		VideoOverlay->Pause();
 //		ClearWndProcMessages();
-		if( Mode != vomMFEVR ) SetStatus(tTVPVideoOverlayStatus::Pause);
+		SetStatus(tTVPVideoOverlayStatus::Pause);
 	}
 }
 void tTJSNI_VideoOverlay::Rewind()
@@ -766,6 +996,28 @@ void tTJSNI_VideoOverlay::WndProc( NativeEvent& ev )
 								IsPrepare = false;
 							}
 						}
+						else if( UsePresenter && Status == tTVPVideoOverlayStatus::Play )
+						{
+							// presenter 経路 (buffer 出力の overlay)。実際の描画は DrawDevice の
+							// Show() から RenderVideoFrame で pull されるので、ここでは新フレーム
+							// 有りを記録し、フレーム/期間/セグメントループのイベントを発火する。
+							int curFrame = (int)p1;
+							int frame = GetFrame();
+							if( (frame+1) < curFrame || (frame-1) > curFrame )
+								curFrame = frame;
+							if( (!IsPrepare) && (SegLoopEndFrame > 0) && (frame >= SegLoopEndFrame) ) {
+								SetFrame( SegLoopStartFrame > 0 ? SegLoopStartFrame : 0 );
+								FirePeriodEvent(perSegLoop);
+								return;
+							}
+							HasFrame = true;
+							FireFrameUpdateEvent( curFrame );
+							if( EventFrame >= 0 && !IsEventPast && curFrame >= EventFrame )
+							{
+								EventFrame = -1;
+								FirePeriodEvent(perPeriod);
+							}
+						}
 						else if( Mode == vomMixer && Status == tTVPVideoOverlayStatus::Play )
 						{
 							int frame = GetFrame();
@@ -1050,6 +1302,26 @@ tjs_int tTJSNI_VideoOverlay::GetEnabledVideoStream()
 }
 void tTJSNI_VideoOverlay::SetMixingLayer( tTJSNI_BaseLayer *l )
 {
+	if( UsePresenter )
+	{
+		// presenter 経路: レイヤ画像のスナップショット (COW) を保持し、RenderVideoFrame で
+		// 動画の上へ描く。矩形はプライマリレイヤ座標で保持し描画時にクライアントへスケール。
+		if( MixerBitmap ) { delete MixerBitmap; MixerBitmap = NULL; }
+		if( l && l->GetVisible() )
+		{
+			tTVPBaseBitmap *src = l->GetMainImage();
+			if( src )
+			{
+				MixerBitmap = new tTVPBaseBitmap( *src );
+				MixerRect.left   = l->GetLeft() + l->GetImageLeft();
+				MixerRect.top    = l->GetTop()  + l->GetImageTop();
+				MixerRect.right  = MixerRect.left + l->GetImageWidth();
+				MixerRect.bottom = MixerRect.top  + l->GetImageHeight();
+				MixerAlpha = (tjs_real)l->GetOpacity() / 255.0;
+			}
+		}
+		return;
+	}
 	if(VideoOverlay)
 	{
 		if( l )
@@ -1096,6 +1368,11 @@ void tTJSNI_VideoOverlay::SetMixingLayer( tTJSNI_BaseLayer *l )
 }
 void tTJSNI_VideoOverlay::ResetMixingBitmap()
 {
+	if( UsePresenter )
+	{
+		if( MixerBitmap ) { delete MixerBitmap; MixerBitmap = NULL; }
+		return;
+	}
 	if(VideoOverlay)
 	{
 		VideoOverlay->ResetMixingBitmap();
@@ -1103,6 +1380,7 @@ void tTJSNI_VideoOverlay::ResetMixingBitmap()
 }
 void tTJSNI_VideoOverlay::SetMixingMovieAlpha( tjs_real a )
 {
+	MovieAlpha = a; // presenter 経路の overlay 全体アルファ
 	if(VideoOverlay)
 	{
 		VideoOverlay->SetMixingMovieAlpha( static_cast<float>(a) );

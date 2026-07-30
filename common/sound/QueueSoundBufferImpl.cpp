@@ -756,6 +756,13 @@ void tTJSNI_QueueSoundBuffer::SetGlobalFocusMode(tTVPSoundGlobalFocusMode b) {
 	}
 }
 //---------------------------------------------------------------------------
+// DirectSound 撤去 (Phase1-3) に伴い旧 WaveImpl から移設。
+// WINVER の Application (フォーカス切替時の音量リセット) が呼ぶ。
+void TVPResetVolumeToAllSoundBuffer()
+{
+	TVPSoundBuffers.ResetVolumeToAllSoundBuffer();
+}
+//---------------------------------------------------------------------------
 void tTJSNI_QueueSoundBuffer::SetFrequencyToStream() {
 	if(Stream) Stream->SetFrequency( Frequency );
 }

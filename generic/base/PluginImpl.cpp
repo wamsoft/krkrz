@@ -344,6 +344,22 @@ bool tTVPPlugin::Uninit()
 
 	if (Instance)
 	{
+		// TODO(plugin-unload-crash / generic/SDL 未対応):
+		//   プラグインが ncbind 経由で System/Window 等のコアオブジェクトに付与した
+		//   ネイティブメソッドの C++ vtable は当該プラグインDLL内に存在する。
+		//   スクリプトエンジン終了(tTJS::Shutdown のグローバル解体)で該当オブジェクトが
+		//   finalize される時、それより前に本DLLがアンマップされていると、消えた vtable を
+		//   call してクラッシュする(tTJSCustomObject::DeleteAllMembers 内で AV)。
+		//   実際、単一ファイル>1MB を xp3pack した際 windowEx.dll が System.breathe 目的で
+		//   動的ロードされ、終了時にこの不具合で落ちる事例を確認(WIN版)。
+		//   WIN版(win32/base/PluginImpl.cpp)はロード時に GetModuleHandleEx(PIN) でDLLを
+		//   固定して回避済み。generic/SDL は SDL_LoadObject/SDL_UnloadObject 使用のため
+		//   PINが直接使えず未対応。
+		//   [可搬な対処案] SDL3Application::LoadLibrary の SDL_LoadObject 直後に pin する:
+		//     POSIX: dlopen(path, RTLD_NOW|RTLD_NOLOAD|RTLD_NODELETE)
+		//     Win  : GetModuleHandleExW(PIN|FROM_ADDRESS, SDL_LoadFunction(h,"V2Link"), &m)
+		//   [本筋] shutdown前にプラグインDLLを FreeLibrary している正確なコード経路を
+		//     特定し、その解放を engine 終了後に回すのが妥当(PINは対症的な広い回避策)。
 		Application->FreeLibrary(Instance);
 	}
 	if (Holder) {

@@ -82,7 +82,7 @@ System.setMemoryOverlay(true);
 
 memoverlay 全般の使い方は `doc/MemoryGuide.md` を参照。
 
-**SDL3 build 限定**: WINVER build (`BasicDrawDevice` = D3D9) には memoverlay
+**SDL3 build 限定**: WINVER build (`BasicDrawDevice` = D3D11) には memoverlay
 の描画フックが無いため画面表示はできない。SDL3 build なら `SDLDrawDevice` /
 `SDLOGLDrawDevice` / `OGLDrawDevice` のいずれでも表示される (memoverlay の
 GLES 直接描画版 `MemoryOverlayGL.{h,cpp}` で OGL 系も対応済)。

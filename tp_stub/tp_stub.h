@@ -37,6 +37,13 @@ typedef void* HWND;
 struct IDirect3D9;
 #endif
 
+// Track V-E: overlay presenter が使う D3D11 型 (前方宣言のみ・d3d11.h は持ち込まない)
+#ifndef __d3d11_h__
+struct ID3D11Device;
+struct ID3D11DeviceContext;
+struct ID3D11RenderTargetView;
+#endif
+
 #include <string>
 #include <stdarg.h>
 #include <stdint.h>
@@ -2400,8 +2407,6 @@ extern void * TVPImportFuncPtr923884216edf134d07d8e70f8f57e827;
 extern void * TVPImportFuncPtre48798dc69498f80b6633bb405eda6eb;
 extern void * TVPImportFuncPtr998a5e1aa5cd85689795348fc540a655;
 extern void * TVPImportFuncPtr5f6d263c0d48d03f6eb0dc44c9dd0be2;
-extern void * TVPImportFuncPtrbf363ba3d5b54df9d6df35a518deb6b0;
-extern void * TVPImportFuncPtr6cc8a24cc7ce23179d1d4ccab7a8c97b;
 extern void * TVPImportFuncPtr31856aafc5b42a5b0fbfc2f63e2ab461;
 
 
@@ -5018,13 +5023,11 @@ public:
 
 //---------------------------------------------------------------------------
 // IDirectSound former declaration
+// (DirectSound は撤去済み。互換 ABI TVPGetDirectSound() の戻り値型のためだけに残す)
 //---------------------------------------------------------------------------
 #ifndef __DSOUND_INCLUDED__
 struct IDirectSound;
 #endif
-
-
-
 
 
 //---------------------------------------------------------------------------
@@ -6406,11 +6409,15 @@ public:
 // tTVPVideoOverlayMode
 //---------------------------------------------------------------------------
 enum tTVPVideoOverlayMode {
-	vomOverlay,		// Overlay
-	vomLayer,		// Draw Layer
-	vomMixer,		// VMR
-	vomMFEVR,		// Media Foundation with EVR
+	vomOverlay,		// Overlay (最前面描画)
+	vomLayer,		// Draw Layer (レイヤ描画)
+	vomMixer,		// 【非推奨エイリアス】旧 VMR。現在は vomOverlay と同挙動 (値は script 互換で保持)
+	vomMFEVR,		// 【非推奨エイリアス】旧 Media Foundation + EVR。現在は vomOverlay と同挙動
 };
+// Track V-D/V-E: DirectShow/EVR 撤去に伴い実モードは vomOverlay / vomLayer の 2 つのみ。
+// vomMixer / vomMFEVR は TJS 定数 (数値 2/3) を互換のため残すが、挙動は vomOverlay に統合
+// された。overlay は形式ルート (webm/mpg/wmv/mp4/…) の統一経路で再生され、mixer の追加画像
+// 合成は presenter (iTVPVideoPresenter) 経由の overlay 機能へ格上げされた。
 
 
 
@@ -6430,6 +6437,45 @@ enum tTVPPeriodEventReason
 
 
 
+
+
+#ifdef __WINVER__
+//---------------------------------------------------------------------------
+// overlay 動画 presenter インターフェース (Track V-E, WINVER 専用)
+//---------------------------------------------------------------------------
+//! @brief presenter が 1 フレーム描くのに必要なコンテキスト (DrawDevice が Show() で構築)
+struct tTVPVideoPresenterContext
+{
+	ID3D11Device*           Device;        //!< エンジンの D3D11 デバイス
+	ID3D11DeviceContext*    Context;       //!< ImmediateContext (描画スレッド専用)
+	ID3D11RenderTargetView* RenderTarget;  //!< バックバッファ RTV
+	tjs_uint TargetWidth;   //!< バックバッファ (=クライアント) 幅 px
+	tjs_uint TargetHeight;  //!< バックバッファ (=クライアント) 高さ px
+	tTVPRect DestRect;      //!< ゲーム画面 (プライマリレイヤ) がクライアントに配置される矩形 px
+	tTVPRect ClipRect;      //!< クリップ矩形 px
+	tjs_int  SrcWidth;      //!< プライマリレイヤ幅 (DestRect にスケールされる元寸)
+	tjs_int  SrcHeight;     //!< プライマリレイヤ高さ
+};
+
+//! @brief overlay 動画側が実装する描画コールバックインターフェース
+class iTVPVideoPresenter
+{
+public:
+	//! @brief 現在の動画フレーム (+ mixer 追加画像) を ctx.RenderTarget へ描画する。
+	//! @return 何か描いたら true。まだフレームが無い等で描かなければ false。
+	virtual bool TJS_INTF_METHOD RenderVideoFrame( const tTVPVideoPresenterContext & ctx ) = 0;
+};
+
+//! @brief DrawDevice 側が実装する presenter 登録インターフェース
+class iTVPVideoPresenterHost
+{
+public:
+	//! @brief presenter を登録する (以後 Show() で RenderVideoFrame が毎フレーム呼ばれる)。
+	virtual void TJS_INTF_METHOD AddVideoPresenter( iTVPVideoPresenter * presenter ) = 0;
+	//! @brief presenter を登録解除する (再生停止・Close・破棄時に必ず呼ぶこと)。
+	virtual void TJS_INTF_METHOD RemoveVideoPresenter( iTVPVideoPresenter * presenter ) = 0;
+};
+#endif // __WINVER__
 
 
 //---------------------------------------------------------------------------
@@ -6802,9 +6848,6 @@ typedef struct
 #define TVP_RGB2COLOR(r,g,b) ((((r)<<16) + ((g)<<8) + (b)) | 0xff000000)
 #define TVP_RGBA2COLOR(r,g,b,a) \
 	(((a)<<24) +  (((r)<<16) + ((g)<<8) + (b)))
-
-
-typedef void* (*tTVPCreateDSFilter)( void* formatdata );
 
 //---------------------------------------------------------------------------
 
@@ -11697,30 +11740,6 @@ inline void TVPPsExclusionBlend_HDA_o(tjs_uint32 * dest , const tjs_uint32 * src
 	typedef void (STDCALL * __functype)(tjs_uint32 *, const tjs_uint32 *, tjs_int , tjs_int);
 	((__functype)(TVPImportFuncPtr5f6d263c0d48d03f6eb0dc44c9dd0be2))(dest, src, len, opa);
 }
-#ifdef __WINVER__
-inline void TVPRegisterDSVideoCodec(const ttstr & name , void * guid , tTVPCreateDSFilter splitter , tTVPCreateDSFilter video , tTVPCreateDSFilter audio , void * formatdata)
-{
-	if(!TVPImportFuncPtrbf363ba3d5b54df9d6df35a518deb6b0)
-	{
-		static char funcname[] = "void ::TVPRegisterDSVideoCodec(const ttstr &,void *,tTVPCreateDSFilter,tTVPCreateDSFilter,tTVPCreateDSFilter,void *)";
-		TVPImportFuncPtrbf363ba3d5b54df9d6df35a518deb6b0 = TVPGetImportFuncPtr(funcname);
-	}
-	typedef void (STDCALL * __functype)(const ttstr &, void *, tTVPCreateDSFilter , tTVPCreateDSFilter , tTVPCreateDSFilter , void *);
-	((__functype)(TVPImportFuncPtrbf363ba3d5b54df9d6df35a518deb6b0))(name, guid, splitter, video, audio, formatdata);
-}
-#endif
-#ifdef __WINVER__
-inline void TVPUnregisterDSVideoCodec(const ttstr & name , void * guid , tTVPCreateDSFilter splitter , tTVPCreateDSFilter video , tTVPCreateDSFilter audio , void * formatdata)
-{
-	if(!TVPImportFuncPtr6cc8a24cc7ce23179d1d4ccab7a8c97b)
-	{
-		static char funcname[] = "void ::TVPUnregisterDSVideoCodec(const ttstr &,void *,tTVPCreateDSFilter,tTVPCreateDSFilter,tTVPCreateDSFilter,void *)";
-		TVPImportFuncPtr6cc8a24cc7ce23179d1d4ccab7a8c97b = TVPGetImportFuncPtr(funcname);
-	}
-	typedef void (STDCALL * __functype)(const ttstr &, void *, tTVPCreateDSFilter , tTVPCreateDSFilter , tTVPCreateDSFilter , void *);
-	((__functype)(TVPImportFuncPtr6cc8a24cc7ce23179d1d4ccab7a8c97b))(name, guid, splitter, video, audio, formatdata);
-}
-#endif
 inline void * TVPGLGetProcAddress(const char * procname)
 {
 	if(!TVPImportFuncPtr31856aafc5b42a5b0fbfc2f63e2ab461)

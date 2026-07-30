@@ -76,14 +76,8 @@ public:
 	// システムパス初期化
 	virtual bool InitPath() = 0;
 
-#ifdef USE_SPLASHWINDOW
-	// スプラッシュ画面関連
-	void CreateSplashWindow(const char *imagePath);
-	void DestroySplashWindow();
-#endif
-
-	// 起動スクリプト実行完了通知 (tTVPApplication)。splash が残っていれば
-	// 閉じ、wasm ではページ側フック (krkrzOnStartupScriptDone) を呼ぶ
+	// 起動スクリプト実行完了通知 (tTVPApplication)。wasm ではページ側フック
+	// (krkrzOnStartupScriptDone) を呼ぶ。プラットフォーム側で splash 等を閉じる用途
 	virtual void OnStartupScriptDone() override;
 	// SDL3 Kirikiri Storage関連
 	SDL_Storage* GetKirikiriStorage();
@@ -210,13 +204,6 @@ protected:
 	bool _Terminated;
 	int _TerminateCode;
 	bool _InBackground; //< バックグラウンド状態
-
-#ifdef USE_SPLASHWINDOW
-	// スプラッシュ画面用メンバー変数
-	SDL_Window* mSplashWindow;
-	SDL_Renderer* mSplashRenderer;
-	SDL_Texture* mSplashTexture;
-#endif
 
 	// SDL3 Kirikiri Storage用メンバー変数
 	SDL_Storage* mKirikiriStorage;

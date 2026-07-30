@@ -25,7 +25,9 @@ static tTVPAtExit TVPUninitANGLEAtExit
 static bool TVPInitializeOpenGLPlatform() {
 	if ( !TVPhModuleLibEGL ) {
 
-		HMODULE hModule = ::LoadLibrary( L"libEGL.dll" );
+		// 非システム DLL (ANGLE)。SetDefaultDllDirectories + AddDllDirectory 済みの
+		// 安全な検索パス (アプリ/plugin ディレクトリ + System32) からのみ読む。
+		HMODULE hModule = ::LoadLibraryExW( L"libEGL.dll", NULL, LOAD_LIBRARY_SEARCH_DEFAULT_DIRS );
 		if( !hModule ) {
 			LPVOID lpMsgBuf;
 			::FormatMessage( FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,

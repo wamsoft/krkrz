@@ -143,6 +143,7 @@ common/visual/FontSystem.cpp
 common/visual/FreeType.cpp
 common/visual/FreeTypeFontRasterizer.cpp
 common/visual/GraphicsLoaderIntf.cpp
+common/visual/SimpleImageLoad.cpp
 common/visual/GraphicsLoadThread.cpp
 common/visual/ImageFunction.cpp
 common/visual/LayerBitmapImpl.cpp
@@ -235,7 +236,6 @@ win32/visual/OpenGLPlatform.cpp
 endif()
 
 set( KRKRZ_SRC_WIN32 
-win32/environ/CompatibleNativeFuncs.cpp
 win32/environ/ConfigFormUnit.cpp
 win32/environ/EmergencyExit.cpp
 win32/environ/MouseCursor.cpp
@@ -257,7 +257,7 @@ win32/msg/MsgImpl.cpp
 win32/msg/MsgLoad.cpp
 win32/msg/ReadOptionDesc.cpp
 win32/sound/tvpsnd.c
-win32/sound/WaveImpl.cpp
+win32/sound/SoundWinCompat.cpp
 win32/utils/ClipboardImpl.cpp
 win32/utils/ThreadImpl.cpp
 win32/visual/BasicDrawDevice.cpp
@@ -266,16 +266,15 @@ win32/visual/DInputMgn.cpp
 win32/visual/DrawDeviceImpl.cpp
 win32/visual/GDIFontRasterizer.cpp
 win32/visual/GraphicsLoaderImpl.cpp
-win32/visual/LoadJXR.cpp
 win32/visual/LayerImpl.cpp
 win32/visual/NativeFreeTypeFace.cpp
 win32/visual/TVPScreen.cpp
 win32/visual/TVPSysFont.cpp
 win32/visual/VideoOvlImpl.cpp
+win32/visual/VideoPresenterD3D.cpp
 win32/visual/VSyncTimingThread.cpp
 win32/visual/WindowImpl.cpp
 win32/environ/Application.cpp
-win32/movie/TVPVideoOverlay.cpp
 
 common/utils/TickCount.cpp
 win32/utils/TickCountImpl.cpp
@@ -533,6 +532,10 @@ if (KRKRZ_USE_ELEMENTS)
 		common/visual/elements/StoragesResourceLoader.h
 		common/visual/elements/VariantJsonUtil.cpp
 		common/visual/elements/VariantJsonUtil.h
+		# SDL 拡張プラグイン向け C ABI サービス (tp_stub プラグインから
+		# TVPGetSDLDialogAPI で取得。 softkey 等が使用)
+		common/visual/elements/DialogPluginService.cpp
+		common/visual/elements/tp_dialog_service.h
 	)
 	# OpenGL ES 直接版 DrawDevice (tTVPOGLDrawDevice / tTVPSDLOGLDrawDevice) 共用の
 	# dialog overlay レンダラ。GL ヘッダを include するため OpenGL ビルド時のみ。
@@ -590,6 +593,10 @@ endif()
 
 list(APPEND KRKRZ_SRC_WIN32
 	common/sound/AudioStream.cpp
+	# Phase1-2: WaveSoundBuffer を miniaudio(QueueSoundBuffer) 化するため WINVER にも追加
+	common/sound/SoundDecodeThread.cpp
+	common/sound/SoundEventThread.cpp
+	common/sound/QueueSoundBufferImpl.cpp
 )
 # KRKRZ_AUDIO_PLATFORM_OVERRIDE が立っている場合 (例: NX/Ounce) は
 # 機種専用の iTVPAudioStream 実装を使うので、miniaudio + SDL3 audio device 経由の
@@ -608,17 +615,6 @@ if (NOT KRKRZ_AUDIO_PLATFORM_OVERRIDE)
 endif()
 
 
-if (KRKRZ_SDL3_SPLASHWINDOW)
-	list(APPEND KRKRZ_SRC_SDL3
-		sdl3/environ/app_splash.cpp
-	)
-	list(APPEND KRKRZ_DEFINES
-		USE_SPLASHWINDOW
-	)
-	list(APPEND KRKRZ_LIB_SDL3
-		SDL3_image::SDL3_image
-	)
-endif()
 
 # KRKRZ_USE_MOVIE=OFF のとき VideoOverlay 実装をスタブ化する
 # (movie-player 非依存。TVPCreateMoviePlayer は常に nullptr を返す)

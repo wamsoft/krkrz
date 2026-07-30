@@ -10,9 +10,9 @@
 //---------------------------------------------------------------------------
 #include "tjsCommHead.h"
 
-//#define DIRECTDRAW_VERSION 0x0300
-//#include <ddraw.h>
-#include <d3d9.h>
+#include <dxgi.h>
+// D3D9 は撤去済み。互換 ABI TVPGetDirect3DObjectNoAddRef() の戻り値型のための前方宣言のみ残す。
+struct IDirect3D9;
 
 #include <algorithm>
 #include "MsgImpl.h"
@@ -88,23 +88,17 @@ enum tTVPFullScreenResolutionMode
 	fsrNoChange,//!< no change resolution
 	fsrExpandWindow	//!< expand window
 };
-static IDirect3D9 *TVPDirect3D=NULL;
-
-static IDirect3D9* (WINAPI * TVPDirect3DCreate)( UINT SDKVersion ) = NULL;
-
-// [CUSTOM-MODIFIED] force disable d3d9.dll (require another DrawDevice)
+// D3D9 は撤去済み (描画は D3D11 の BasicDrawDevice、画面モード列挙は GDI、
+// アダプタ情報は DXGI)。TVPDisableDirect3D9 はフルスクリーン方式判定の互換で残置。
 extern int GetSystemSecurityOption(const char *name);
 static const bool TVPDisableDirect3D9 = GetSystemSecurityOption("disabled3d9") != 0;
 
-static HMODULE TVPDirect3DDLLHandle=NULL;
-static bool TVPUseChangeDisplaySettings = false;
+static bool TVPUseChangeDisplaySettings = true;  // D3D9 撤去により常に GDI (ChangeDisplaySettings) 経路
 static tTVPScreenMode TVPDefaultScreenMode;
 
 static bool TVPInFullScreen = false;
-static HWND TVPFullScreenWindow = NULL;
 tTVPScreenModeCandidate TVPFullScreenMode;
 
-static tjs_int TVPPreferredFullScreenBPP = 0;
 static tTVPFullScreenResolutionMode TVPPreferredFullScreenResolutionMode = fsrNoChange;
 enum tTVPFullScreenUsingEngineZoomMode
 {
@@ -121,114 +115,20 @@ static tTVPFullScreenUsingEngineZoomMode TVPPreferredFullScreenUsingEngineZoomMo
 tjs_int TVPDisplayColorFormat = 0;
 static tjs_int TVPGetDisplayColorFormat()
 {
-	// detect current 16bpp display color format
-	// return value:
-	// 555 : 16bit 555 mode
-	// 565 : 16bit 565 mode
-	// 0   : other modes
-
-	if( TVPDirect3D ) {
-		// まずは Direct3D を用いて 16bit color format 取得を試みる
-		D3DDISPLAYMODE mode = {0};
-		if( SUCCEEDED( TVPDirect3D->GetAdapterDisplayMode( D3DADAPTER_DEFAULT, &mode ) ) ) {
-			if( mode.Format == D3DFMT_R5G6B5 ) {
-				TVPDisplayColorFormat = 565;
-				return 565;
-			} else if( mode.Format == D3DFMT_X1R5G5B5 ) {
-				TVPDisplayColorFormat = 555;
-				return 555;
-			} else {
-				TVPDisplayColorFormat = 0;
-				return 0;
-			}
-		}
-	}
-	// create temporary bitmap and device contexts
-	HDC desktopdc = ::GetDC(0);
-	HDC bitmapdc = ::CreateCompatibleDC(desktopdc);
-	HBITMAP bmp = ::CreateCompatibleBitmap(desktopdc, 1, 1);
-	HBITMAP oldbmp = ::SelectObject(bitmapdc, bmp);
-
-	int count;
-	int r, g, b;
-	COLORREF lastcolor;
-
-	// red
-	count = 0;
-	lastcolor = 0xffffff;
-	for(int i = 0; i < 256; i++)
-	{
-		::SetPixel(bitmapdc, 0, 0, RGB(i, 0, 0));
-		COLORREF rgb = ::GetPixel(bitmapdc, 0, 0);
-		if(rgb != lastcolor) count ++;
-		lastcolor = rgb;
-	}
-	r = count;
-
-	// green
-	count = 0;
-	lastcolor = 0xffffff;
-	for(int i = 0; i < 256; i++)
-	{
-		::SetPixel(bitmapdc, 0, 0, RGB(0, i, 0));
-		COLORREF rgb = ::GetPixel(bitmapdc, 0, 0);
-		if(rgb != lastcolor) count ++;
-		lastcolor = rgb;
-	}
-	g = count;
-
-	// blue
-	count = 0;
-	lastcolor = 0xffffff;
-	for(int i = 0; i < 256; i++)
-	{
-		::SetPixel(bitmapdc, 0, 0, RGB(0, 0, i));
-		COLORREF rgb = ::GetPixel(bitmapdc, 0, 0);
-		if(rgb != lastcolor) count ++;
-		lastcolor = rgb;
-	}
-	b = count;
-
-	// free bitmap and device contexts
-	::SelectObject(bitmapdc, oldbmp);
-	::DeleteObject(bmp);
-	::DeleteDC(bitmapdc);
-	::ReleaseDC(0, desktopdc);
-
-	// determine type
-	if(r == 32 && g == 64 && b == 32)
-	{
-		TVPDisplayColorFormat = 565;
-		return 565;
-	}
-	else if(r == 32 && g == 32 && b == 32)
-	{
-		TVPDisplayColorFormat = 555;
-		return 555;
-	}
-	else
-	{
-		TVPDisplayColorFormat = 0;
-		return 0;
-	}
+	// 戻り値: 555 / 565 = 16bit ハイカラー, 0 = その他 (=32bit)。
+	// Win10/11 のデスクトップは常に 32bit カラーであり、16bit 555/565 モードは
+	// 存在しない。旧実装は GDI の SetPixel/GetPixel を 256 回ずつ回して色深度を
+	// 探っていたが、もはや不要なので常に 0 (=32bit) を返す。
+	TVPDisplayColorFormat = 0;
+	return 0;
 }
 //---------------------------------------------------------------------------
 static void TVPInitFullScreenOptions()
 {
 	tTJSVariant val;
 
-	if(TVPGetCommandLine(TJS_W("-fsbpp"), &val) )
-	{
-		ttstr str(val);
-		if(str == TJS_W("16"))
-			TVPPreferredFullScreenBPP = 16;
-		else if(str == TJS_W("24"))
-			TVPPreferredFullScreenBPP = 24;
-		else if(str == TJS_W("32"))
-			TVPPreferredFullScreenBPP = 32;
-		else
-			TVPPreferredFullScreenBPP = 0; // means nochange
-	}
+	// -fsbpp (フルスクリーン時のカラーモード) は廃止。D3D11/ボーダレス化で解像度・色深度
+	// 変更を行わなくなり、デスクトップは常に 32bit のため意味を持たない。
 
 	if(TVPGetCommandLine(TJS_W("-fsres"), &val) )
 	{
@@ -259,194 +159,80 @@ static void TVPInitFullScreenOptions()
 	if(TVPGetCommandLine(TJS_W("-fsmethod"), &val) )
 	{
 		ttstr str(val);
-		if(str == TJS_W("cds") || TVPDisableDirect3D9) // [CUSTOM-MODIFIED] always -fsmethod="cds" if disable d3d9
-			TVPUseChangeDisplaySettings = true;
-		else
-			TVPUseChangeDisplaySettings = false;
+		// D3D9 撤去済み。フルスクリーンは常に ChangeDisplaySettings (GDI) 経路。
+		(void)str;
+		TVPUseChangeDisplaySettings = true;
 	}
 }
 //---------------------------------------------------------------------------
 void TVPDumpDirect3DDriverInformation()
 {
-	if(TVPDirect3D)
+	// D3D9 撤去済み。DXGI でアダプタ情報をダンプする。
+	static bool dumped = false;
+	if(dumped) return;
+	dumped = true;
+
+	IDXGIFactory1 *factory = NULL;
+	if( FAILED( CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void**)&factory) ) || !factory )
+		return;
+
+	ttstr infostart(TJS_W("(info)  "));
+	try
 	{
-		IDirect3D9 *d3d9 = TVPDirect3D;
-		static bool dumped = false;
-		if(dumped) return;
-		dumped = true;
-
-		TVPAddImportantLog( (const tjs_char*)TVPInfoFoundDirect3DInterface );
-
-		try
+		// count adapters
+		UINT numofadapter = 0;
 		{
-			// dump direct3d information
-			UINT numofadapter = d3d9->GetAdapterCount();
-			ttstr infostart(TJS_W("(info)  "));
-			ttstr log;
-			log = infostart + TJS_W("Found ") + ttstr((tjs_int)numofadapter) + TJS_W(" Devices.");
-			TVPAddImportantLog(log);
-
-			for( UINT adapter = 0; adapter < numofadapter; adapter++ )
+			IDXGIAdapter1 *tmp = NULL;
+			while( factory->EnumAdapters1(numofadapter, &tmp) != DXGI_ERROR_NOT_FOUND )
 			{
-				log = infostart + TJS_W("Device Number : ") + ttstr((tjs_int)adapter);
-				TVPAddImportantLog(log);
-
-				D3DADAPTER_IDENTIFIER9 D3DID = {0};
-				if(SUCCEEDED(d3d9->GetAdapterIdentifier( adapter, 0, &D3DID)))
-				{
-					// driver string
-					log = infostart + ttstr(D3DID.Description) + TJS_W(" [") + ttstr(D3DID.Driver) + TJS_W("]");
-					TVPAddImportantLog(log);
-					log = infostart + TJS_W(" [") + ttstr(D3DID.DeviceName) + TJS_W("]");
-					TVPAddImportantLog(log);
-
-					// driver version(reported)
-					log = infostart + TJS_W("Driver version (reported) : ");
-					tjs_char tmp[256];
-					TJS_snprintf( tmp, 256, TJS_W("%d.%02d.%02d.%04d "),
-							  HIWORD( D3DID.DriverVersion.HighPart ),
-							  LOWORD( D3DID.DriverVersion.HighPart ),
-							  HIWORD( D3DID.DriverVersion.LowPart  ),
-							  LOWORD( D3DID.DriverVersion.LowPart  ) );
-					log += tmp;
-					TVPAddImportantLog(log);
-
-					// driver version(actual)
-					tjs_string driver = ttstr(D3DID.Driver).AsStdString();
-					const wchar_t *driverName = (const wchar_t*)driver.c_str();
-					wchar_t driverpath[1024];
-					wchar_t *driverpath_filename = nullptr;
-					bool success = 0!=SearchPath( nullptr, driverName, nullptr, 1023, driverpath, &driverpath_filename );
-
-					if(!success)
-					{
-						wchar_t syspath[1024];
-						GetSystemDirectory( syspath, 1023);
-						TJS_strcat((tjs_char*)syspath, TJS_W("\\drivers")); // SystemDir\drivers
-						success = 0!=SearchPath( syspath, driverName, nullptr, 1023, driverpath, &driverpath_filename );
-					}
-
-					if(!success)
-					{
-						wchar_t syspath[1024];
-						GetWindowsDirectory( syspath, 1023);
-						TJS_strcat((tjs_char*)syspath, TJS_W("\\system32")); // WinDir\system32
-						success = 0!=SearchPath( syspath, driverName, nullptr, 1023, driverpath, &driverpath_filename );
-					}
-
-					if(!success)
-					{
-						wchar_t syspath[1024];
-						GetWindowsDirectory( syspath, 1023);
-						TJS_strcat((tjs_char*)syspath, TJS_W("\\system32\\drivers")); // WinDir\system32\drivers
-						success = 0!=SearchPath( syspath, driverName, nullptr, 1023, driverpath, &driverpath_filename );
-					}
-
-					if(success)
-					{
-						log = infostart + TJS_W("Driver version (") + ttstr(driverpath) + TJS_W(") : ");
-						tjs_int major, minor, release, build;
-						if(TVPGetFileVersionOf((tjs_char*)driverpath, major, minor, release, build))
-						{
-							TJS_snprintf(tmp, 256, TJS_W("%d.%d.%d.%d"), (int)major, (int)minor, (int)release, (int)build);
-							log += tmp;
-						}
-						else
-						{
-							log += TJS_W("unknown");
-						}
-					}
-					else
-					{
-						log = infostart + TJS_W("Driver ") + ttstr(D3DID.Driver) +
-							TJS_W(" is not found in search path.");
-					}
-					TVPAddImportantLog(log);
-
-					// device id
-					TJS_snprintf(tmp, 256, TJS_W("VendorId:%08X  DeviceId:%08X  SubSysId:%08X  Revision:%08X"),
-						D3DID.VendorId, D3DID.DeviceId, D3DID.SubSysId, D3DID.Revision);
-					log = infostart + TJS_W("Device ids : ") + tmp;
-					TVPAddImportantLog(log);
-
-					// Device GUID
-					GUID *pguid = &D3DID.DeviceIdentifier;
-					TJS_snprintf( tmp, 256, TJS_W("%08X-%04X-%04X-%02X%02X%02X%02X%02X%02X%02X%02X"),
-							  pguid->Data1,
-							  pguid->Data2,
-							  pguid->Data3,
-							  pguid->Data4[0], pguid->Data4[1], pguid->Data4[2], pguid->Data4[3],
-							  pguid->Data4[4], pguid->Data4[5], pguid->Data4[6], pguid->Data4[7] );
-					log = infostart + TJS_W("Unique driver/device id : ") + tmp;
-					TVPAddImportantLog(log);
-
-					// WHQL level
-					TJS_snprintf(tmp, 256, TJS_W("%08x"), D3DID.WHQLLevel);
-					log = infostart + TJS_W("WHQL level : ")  + tmp;
-					TVPAddImportantLog(log);
-				} else {
-					TVPAddImportantLog( (const tjs_char*)TVPInfoFaild );
-				}
+				if(tmp) { tmp->Release(); tmp = NULL; }
+				numofadapter++;
 			}
 		}
-		catch(...)
+		TVPAddImportantLog( infostart + TJS_W("Found ") + ttstr((tjs_int)numofadapter) + TJS_W(" DXGI adapter(s).") );
+
+		IDXGIAdapter1 *ad = NULL;
+		for( UINT adapter = 0; factory->EnumAdapters1(adapter, &ad) != DXGI_ERROR_NOT_FOUND; adapter++ )
 		{
+			DXGI_ADAPTER_DESC1 desc;
+			ZeroMemory(&desc, sizeof(desc));
+			if( SUCCEEDED( ad->GetDesc1(&desc) ) )
+			{
+				tjs_char tmp[256];
+				TVPAddImportantLog( infostart + TJS_W("Adapter ") + ttstr((tjs_int)adapter) +
+					TJS_W(" : ") + ttstr((const tjs_char*)desc.Description) );
+				TJS_snprintf(tmp, 256, TJS_W("VendorId:%04X  DeviceId:%04X  SubSysId:%08X  Revision:%02X"),
+					desc.VendorId, desc.DeviceId, desc.SubSysId, desc.Revision);
+				TVPAddImportantLog( infostart + TJS_W("Device ids : ") + tmp );
+				TJS_snprintf(tmp, 256, TJS_W("Dedicated video memory : %u MB"),
+					(unsigned)(desc.DedicatedVideoMemory / (1024u*1024u)));
+				TVPAddImportantLog( infostart + tmp );
+				if( desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE )
+					TVPAddImportantLog( infostart + TJS_W("(software adapter)") );
+			}
+			ad->Release(); ad = NULL;
 		}
 	}
-
+	catch(...)
+	{
+	}
+	factory->Release();
 }
 //---------------------------------------------------------------------------
-static void TVPUnloadDirect3D();
+// D3D9 は撤去済み。以下は互換のためのスタブ。
 static void TVPInitDirect3D()
 {
-	if (TVPDisableDirect3D9) return;
-
-	if(!TVPDirect3DDLLHandle)
-	{
-		// load d3d9.dll
-		TVPAddLog( (const tjs_char*)TVPInfoDirect3D );
-		TVPDirect3DDLLHandle = ::LoadLibrary( L"d3d9.dll" );
-		if(!TVPDirect3DDLLHandle)
-			TVPThrowExceptionMessage(TVPCannotInitDirect3D, (const tjs_char*)TVPCannotLoadD3DDLL );
-	}
-
-	if(!TVPDirect3D)
-	{
-		try
-		{
-			// get Direct3DCreaet function
-			TVPDirect3DCreate = (IDirect3D9*(WINAPI * )(UINT))GetProcAddress(TVPDirect3DDLLHandle, "Direct3DCreate9");
-			if(!TVPDirect3DCreate)
-				TVPThrowExceptionMessage(TVPCannotInitDirect3D, (const tjs_char*)TVPNotFoundDirect3DCreate );
-
-			TVPDirect3D = TVPDirect3DCreate( D3D_SDK_VERSION );
-			if( NULL == TVPDirect3D )
-				TVPThrowExceptionMessage( TVPFaildToCreateDirect3D );
-		}
-		catch(...)
-		{
-			TVPUnloadDirect3D();
-			throw;
-		}
-	}
-
+	// 画面色形式 (555/565/32) 判定の初期化 (GDI) のみ。
 	TVPGetDisplayColorFormat();
-}
-//---------------------------------------------------------------------------
-static void TVPUninitDirect3D()
-{
-	// release Direct3D object ( DLL will not be released )
 }
 //---------------------------------------------------------------------------
 static void TVPUnloadDirect3D()
 {
-	// release Direct3D object and /*release it's DLL */
-	TVPUninitDirect3D();
-	if(TVPDirect3D) TVPDirect3D->Release(), TVPDirect3D = NULL;
-
+	// D3D9 デバイスは無いので解放対象なし。色形式のみ更新。
 	TVPGetDisplayColorFormat();
 }
 //---------------------------------------------------------------------------
+// tp_stub 公開 ABI。名前・シグネチャは維持 (外部プラグイン互換)。D3D9 廃止後は NULL を返す。
 void TVPEnsureDirect3DObject()
 {
 	try
@@ -460,8 +246,7 @@ void TVPEnsureDirect3DObject()
 //---------------------------------------------------------------------------
 IDirect3D9 * TVPGetDirect3DObjectNoAddRef()
 {
-	// retrieves IDirect3D9 interface
-	return TVPDirect3D;
+	return NULL;
 }
 //---------------------------------------------------------------------------
 
@@ -517,52 +302,7 @@ void TVPEnumerateAllDisplayModes(std::vector<tTVPScreenMode> & modes)
 {
 	modes.clear();
 
-	if(!TVPUseChangeDisplaySettings)
-	{
-		// if DisplaySettings APIs is not preferred
-		// use Direct3D
-		TVPEnsureDirect3DObject();
-		IDirect3D9* d3d = TVPGetDirect3DObjectNoAddRef();
-		if(d3d)
-		{
-			static const D3DFORMAT PixelFormatTypes[] = {
-				//D3DFMT_A1R5G5B5, // not support display
-				//D3DFMT_A2R10G10B10, // not support display
-				//D3DFMT_A8R8G8B8, // not support display
-				D3DFMT_R5G6B5,
-				// D3DFMT_X1R5G5B5, // IDirect3D9::EnumAdapterModes では D3DFMT_R5G6B5 と同等と処理される
-				D3DFMT_X8R8G8B8
-			};
-			static const int NumOfFormat = sizeof(PixelFormatTypes) / sizeof(PixelFormatTypes[0]);
-			for( int f = 0; f < NumOfFormat; f++ )
-			{
-				D3DFORMAT format = PixelFormatTypes[f];
-				UINT count = d3d->GetAdapterModeCount(D3DADAPTER_DEFAULT,format);
-				for( UINT a = 0; a < count; a++ )
-				{
-					D3DDISPLAYMODE mode;
-					HRESULT hr = d3d->EnumAdapterModes( D3DADAPTER_DEFAULT, format, a, &mode );
-					if( SUCCEEDED( hr ) )
-					{
-						tTVPScreenMode sm;
-						sm.Width =  mode.Width;
-						sm.Height = mode.Height;
-						// modes.Refreshrate
-						if( mode.Format == D3DFMT_R5G6B5 || mode.Format == D3DFMT_X1R5G5B5 ) {
-							sm.BitsPerPixel = 16;
-							modes.push_back(sm);
-						} else if( mode.Format == D3DFMT_X8R8G8B8 ) {
-							sm.BitsPerPixel = 32;
-							modes.push_back(sm);
-						} else {
-							// unknown ここでは無視
-						}
-					}
-				}
-			}
-		}
-	}
-
+	// D3D9 による列挙は撤去。常に EnumDisplaySettings (GDI) を用いる。
 	if(modes.size() == 0)
 	{
 		// try another API to retrieve screen sizes
@@ -844,22 +584,7 @@ static void TVPMakeFullScreenModeCandidates(
 	}
 }
 //---------------------------------------------------------------------------
-#if 0
-tjs_uint TVPGetMonitorNumber( HWND window )
-{
-	if( TVPDirect3D == NULL ) return D3DADAPTER_DEFAULT;
-	HMONITOR windowMonitor = ::MonitorFromWindow( window, MONITOR_DEFAULTTOPRIMARY );
-	UINT iCurrentMonitor = 0;
-	UINT numOfMonitor = TVPDirect3D->GetAdapterCount();
-	for( ; TVPDirect3D < numOfMonitor; ++iCurrentMonitor ) 	{
-		if( IDirect3D9->GetAdapterMonitor(iCurrentMonitor) == windowMonitor )
-			break;
-	}
-	if( iCurrentMonitor == numOfMonitor )
-		iCurrentMonitor = D3DADAPTER_DEFAULT;
-	return iCurrentMonitor;
-}
-#endif
+// (旧 D3D9 版 TVPGetMonitorNumber は撤去。モニタ↔アダプタ対応は DXGI/GDI で不要)
 //---------------------------------------------------------------------------
 void TVPSwitchToFullScreen(HWND window, tjs_int w, tjs_int h, iTVPDrawDevice* drawdevice )
 {
@@ -869,29 +594,16 @@ void TVPSwitchToFullScreen(HWND window, tjs_int w, tjs_int h, iTVPDrawDevice* dr
 
 	//TVPReleaseVSyncTimingThread();
 
-	if(!TVPUseChangeDisplaySettings)
-	{
-		try
-		{
-			TVPInitDirect3D();
-		}
-		catch(eTJS &e)
-		{
-			TVPAddLog(e.GetMessage());
-			TVPUseChangeDisplaySettings = true;
-		}
-		catch(...)
-		{
-			TVPUseChangeDisplaySettings = true;
-		}
-	}
+	// D3D9 撤去済み。フルスクリーンは常にボーダレスウィンドウ (WS_POPUP でモニタ
+	// 全体を覆う) で実現し、ChangeDisplaySettings による排他モード変更は行わない。
+	// 画面モード候補は表示ウィンドウのサイズ / ズーム決定にのみ使用する。
 
 	// get fullscreen mode candidates
 	std::vector<tTVPScreenModeCandidate> candidates;
 	tTVPScreenMode preferred;
 	preferred.Width = w;
 	preferred.Height = h;
-	preferred.BitsPerPixel = TVPPreferredFullScreenBPP;
+	preferred.BitsPerPixel = 0; // 色深度変更は廃止 (nochange 固定・常に 32bit)
 	TVPMakeFullScreenModeCandidates(
 		preferred,
 		TVPPreferredFullScreenResolutionMode,
@@ -936,7 +648,7 @@ void TVPRecalcFullScreen( tjs_int w, tjs_int h )
 	tTVPScreenMode preferred;
 	preferred.Width = w;
 	preferred.Height = h;
-	preferred.BitsPerPixel = TVPPreferredFullScreenBPP;
+	preferred.BitsPerPixel = 0; // 色深度変更は廃止 (nochange 固定・常に 32bit)
 	TVPMakeFullScreenModeCandidates(
 		preferred,
 		TVPPreferredFullScreenResolutionMode,
@@ -1001,48 +713,17 @@ void TVPRevertFromFullScreen(HWND window,tjs_uint w,tjs_uint h, iTVPDrawDevice* 
 //---------------------------------------------------------------------------
 void TVPMinimizeFullScreenWindowAtInactivation()
 {
-	// only works when TVPUseChangeDisplaySettings == true
-	// (Direct3D framework does this)
-
-	if(!TVPInFullScreen) return;
-	if(!TVPUseChangeDisplaySettings) return;
-
-	::ChangeDisplaySettings(NULL, 0);
-
-	::ShowWindow(TVPFullScreenWindow, SW_MINIMIZE);
+	// ボーダレスフルスクリーン化により排他モードは持たないため、非アクティブ化時に
+	// 画面モードを復元する必要はない (旧実装は ChangeDisplaySettings(NULL,0) で
+	// デスクトップ解像度へ戻していた)。ウィンドウの最小化はフォーム側 (StayOnTop 等)
+	// の挙動に委ねる。
 }
 //---------------------------------------------------------------------------
 void TVPRestoreFullScreenWindowAtActivation()
 {
-	// only works when TVPUseChangeDisplaySettings == true
-	// (Direct3D framework does this)
-
-	if(!TVPInFullScreen) return;
-	if(!TVPUseChangeDisplaySettings) return;
-
-	DEVMODE dm;
-	ZeroMemory(&dm, sizeof(DEVMODE));
-	dm.dmSize = sizeof(DEVMODE);
-	dm.dmPelsWidth = TVPFullScreenMode.Width;
-	dm.dmPelsHeight = TVPFullScreenMode.Height;
-	dm.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT | DM_BITSPERPEL;
-	dm.dmBitsPerPel = TVPFullScreenMode.BitsPerPixel;
-	::ChangeDisplaySettings((DEVMODE*)&dm, CDS_FULLSCREEN);
-
-	ShowWindow(TVPFullScreenWindow, SW_RESTORE);
-	SetWindowPos(TVPFullScreenWindow, HWND_TOP,
-		0, 0, TVPFullScreenMode.Width, TVPFullScreenMode.Height, SWP_SHOWWINDOW);
-}
-//---------------------------------------------------------------------------
-
-
-//---------------------------------------------------------------------------
-static void TVPRestoreDisplayMode()
-{
-	// only works when TVPUseChangeDisplaySettings == true
-	if(!TVPUseChangeDisplaySettings) return;
-	if(!TVPInFullScreen) return;
-	::ChangeDisplaySettings(NULL, 0);
+	// ボーダレスフルスクリーン化により、アクティブ化時に排他画面モードを再適用する
+	// 必要はない (旧実装は ChangeDisplaySettings(...,CDS_FULLSCREEN) で候補モードへ
+	// 実解像度を変更していたが、ボーダレスでは有害)。
 }
 //---------------------------------------------------------------------------
 static tTVPAtExit

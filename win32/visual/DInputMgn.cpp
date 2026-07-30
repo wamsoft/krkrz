@@ -189,7 +189,8 @@ IDirectInput * TVPAddRefDirectInput()
 
 	TVPDirectInputInit = true;
 
-	TVPDirectInputLibHandle = ::LoadLibrary( L"dinput.dll" );
+	// システム DLL は System32 から明示ロード (DLL ハイジャック対策)
+	TVPDirectInputLibHandle = ::LoadLibraryExW( L"dinput.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32 );
 	if(!TVPDirectInputLibHandle) return NULL; // load error; is not a fatal error
 
 	HRESULT (WINAPI *procDirectInputCreateW)

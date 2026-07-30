@@ -78,21 +78,10 @@ SDL3Application::SDL3Application()
 	// platform 
 	TVPUtf8ToUtf16(_platformName, SDL_GetPlatform());
 	TVPUtf8ToUtf16(_osName, GetOSVersion());
-	
-#ifdef USE_SPLASHWINDOW
-	mSplashWindow = nullptr;
-	mSplashRenderer = nullptr;
-	mSplashTexture = nullptr;
-#endif
-
 }
 
 SDL3Application::~SDL3Application()
 {
-#ifdef USE_SPLASHWINDOW
-	DestroySplashWindow();
-#endif
-	
 	// SDL3 Kirikiri Storageを閉じる
 	if (mKirikiriStorage) {
 		SDL_CloseStorage(mKirikiriStorage);
@@ -121,11 +110,6 @@ EM_ASYNC_JS(void, krkrz_host_startup_done, (), {
 void
 SDL3Application::OnStartupScriptDone()
 {
-#ifdef USE_SPLASHWINDOW
-	// 通常は最初の Window 生成時に破棄済みだが、Window を作らない構成でも
-	// スクリプト完了で必ず閉じる
-	DestroySplashWindow();
-#endif
 #ifdef __EMSCRIPTEN__
 	// ページ側の開始待ち (あれば) + ローディング終了フック (krkrz_web web/pre.js)
 	krkrz_host_startup_done();
@@ -136,9 +120,6 @@ SDL3Application::OnStartupScriptDone()
 TTVPWindowForm *
 SDL3Application::CreateWindowForm(class tTJSNI_Window *win)
 {
-	// splash はここ (最初の Window 生成) では閉じない。Window 生成は起動
-	// スクリプトの途中で、そこから描画開始までブランクが出るため、
-	// OnStartupScriptDone (起動スクリプト完了 ≒ メイン描画開始) まで維持する
 	TTVPWindowForm *form = new SDL3WindowForm(win);
 	return form;
 }
@@ -365,6 +346,16 @@ SDL3Application::LoadLibrary( const tjs_char* path )
 		const char *error = SDL_GetError();
 		TVPLOG_ERROR("Failed to load library: {}", error);
 	}
+	// TODO(plugin-unload-crash / generic/SDL 未対応):
+	//   プラグインDLLが engine 終了(tTJS::Shutdown)より前にアンマップされると、
+	//   ncbind で System/Window 等に付与したメソッドの vtable が消えてクラッシュする
+	//   (詳細は generic/base/PluginImpl.cpp tTVPPlugin::Uninit の TODO 参照)。
+	//   WIN版は win32/base/PluginImpl.cpp で GetModuleHandleEx(PIN) 済みだが SDL は未対応。
+	//   ここ(SDL_LoadObject 成功直後)で pin するのが可搬な対処:
+	//     POSIX: dlopen(path_utf8.c_str(), RTLD_NOW|RTLD_NOLOAD|RTLD_NODELETE); // 返り値は捨て可
+	//     Win  : GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN|..._FROM_ADDRESS,
+	//              (LPCWSTR)SDL_LoadFunction(handle,"V2Link"), &m);
+	//   ※現状はWIN環境のビルド一気通しが主目的のため後回し。SDLビルドで要実装・要検証。
 	return handle;
 }
 

@@ -82,7 +82,6 @@ option(KRKRZ_USE_OPENGL "use opengl" ON)
 option(KRKRZ_EMSCRIPTEN_EMBED_RESOURCE "embed resource into wasm (OFF=external MEMFS /resource via preload)" OFF)
 set(KRKRZ_VARIANT "SDL" CACHE STRING "Build variant: SDL (default), WIN (Windows native), LIB (static library)")
 option(KRKRZ_BUILD_TESTS "build SIMD parity tests" ON)
-option(KRKRZ_SDL3_SPLASHWINDOW "use splash window" OFF)
 
 # Elements (汎用ダイアログ機構 / -userconf UI) を組み込むかどうか。
 # SDL build でのみ意味があり、 OFF にすると:
@@ -411,24 +410,39 @@ foreach(PLUGIN ${TVP_PLUGINS})
         message(FATAL_ERROR "Plugin '${PLUGIN}' not found in any of: ${PLUGIN_FOLDERS}")
     endif()
 
+    # krkrz_plugin() (tp_stub/krkrz.cmake) は生成ターゲットを GLOBAL プロパティ
+    # KRKRZ_PLUGIN_TARGETS へ追記する。add_subdirectory 前後の差分を取ることで、
+    # フォルダ名と異なるターゲット名 (gles → krkrgles) や 1 フォルダ複数プラグイン
+    # (motion → krkrmotion + krkremote) を実ターゲット名で扱える。
+    get_property(_PLUGIN_TARGETS_BEFORE GLOBAL PROPERTY KRKRZ_PLUGIN_TARGETS)
     add_subdirectory(${PLUGIN_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR}/plugins/${PLUGIN})
+    get_property(PLUGIN_TARGETS GLOBAL PROPERTY KRKRZ_PLUGIN_TARGETS)
+    if(_PLUGIN_TARGETS_BEFORE)
+        list(REMOVE_ITEM PLUGIN_TARGETS ${_PLUGIN_TARGETS_BEFORE})
+    endif()
+    if(NOT PLUGIN_TARGETS)
+        # krkrz_plugin() を使わない従来型 CMakeLists はフォルダ名=ターゲット名前提
+        set(PLUGIN_TARGETS ${PLUGIN})
+    endif()
 
+    foreach(PLUGIN_TARGET ${PLUGIN_TARGETS})
     if(TVP_STATIC_PLUGIN)
-        message(STATUS "static  plugin: ${PLUGIN}")
-        list(APPEND KRKRZ_LIB_ADD ${PLUGIN})
+        message(STATUS "static  plugin: ${PLUGIN} (target: ${PLUGIN_TARGET})")
+        list(APPEND KRKRZ_LIB_ADD ${PLUGIN_TARGET})
         # StaticPlugins.cpp 用のデータを生成
-        string(APPEND STATIC_PLUGIN_EXTERNS "extern \"C\" void krkrz_plugin_${PLUGIN}();\n")
-        string(APPEND STATIC_PLUGIN_ATSTARTS "static tTVPAtStart AtStart_${PLUGIN}(TVP_ATSTART_PRI_PREPARE, [](){ krkrz_plugin_${PLUGIN}(); });\n")
+        string(APPEND STATIC_PLUGIN_EXTERNS "extern \"C\" void krkrz_plugin_${PLUGIN_TARGET}();\n")
+        string(APPEND STATIC_PLUGIN_ATSTARTS "static tTVPAtStart AtStart_${PLUGIN_TARGET}(TVP_ATSTART_PRI_PREPARE, [](){ krkrz_plugin_${PLUGIN_TARGET}(); });\n")
     else()
-        message(STATUS "dynamic plugin: ${PLUGIN}")
-		list(APPEND KRKRZ_DYNAMIC_PLUGINS ${PLUGIN})
+        message(STATUS "dynamic plugin: ${PLUGIN} (target: ${PLUGIN_TARGET})")
+		list(APPEND KRKRZ_DYNAMIC_PLUGINS ${PLUGIN_TARGET})
 		if(NOT APPLE)
-        install(TARGETS ${PLUGIN} 
+        install(TARGETS ${PLUGIN_TARGET}
 			LIBRARY DESTINATION ${KRKRZ_PLUGIN_INSTALL_DIR}
 			RUNTIME DESTINATION ${KRKRZ_PLUGIN_INSTALL_DIR}
         )
 		endif()
     endif()
+    endforeach()
 endforeach()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS" AND KRKRZ_DYNAMIC_PLUGINS)
@@ -589,27 +603,12 @@ if (NOT TARGET SDL3::SDL3)
 		GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
 		GIT_TAG main
 	)
-	FetchContent_Declare(
-		SDL3_image
-		GIT_REPOSITORY https://github.com/libsdl-org/SDL_image.git
-		GIT_TAG main
-	)
 
 	set(SDL_SHARED ON CACHE BOOL "Build SDL shared library")
 	set(SDL_STATIC OFF CACHE BOOL "Build SDL static library")
-	
+
 	FetchContent_MakeAvailable(SDL3)
 
-	if (KRKRZ_SDL3_SPLASHWINDOW)
-	FetchContent_MakeAvailable(SDL3_image)
-	endif()
-
-endif()
-
-if (KRKRZ_SDL3_SPLASHWINDOW)
-if (NOT TARGET SDL3_image::SDL3_image)
-	find_package(SDL3_image REQUIRED CONFIG)
-endif()
 endif()
 
 # ----------------------------------------------------
@@ -1082,10 +1081,8 @@ else()
 message(FATAL_ERROR "Unsupported platform")
 endif()
 
-# krmovie
+# krmovie (Track V-A: STATIC ライブラリ化して exe へ静的統合)
 add_subdirectory( win32/movie )
-set_target_properties(krmovie PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
 # krkrz executable
 
@@ -1132,6 +1129,11 @@ target_link_libraries( ${EXENAME} PRIVATE
 	PNG::PNG
 	glm::glm
  	plog::plog
+	d3d11
+	dxgi
+	d3dcompiler
+	shlwapi
+	krmovie
 	${KRKRZ_LIB_REPL}
 	${KRKRZ_LIB_ADD}
 	${KRKRZ_LIB_DAP}
@@ -1139,11 +1141,6 @@ target_link_libraries( ${EXENAME} PRIVATE
 
 install(TARGETS ${EXENAME}
 	DESTINATION .
-)
-
-install(TARGETS krmovie
-	LIBRARY DESTINATION ${PLUGIN_DIR}
-	RUNTIME DESTINATION ${PLUGIN_DIR}
 )
 
 endif() # KRKRZ_VARIANT

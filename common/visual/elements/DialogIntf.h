@@ -37,6 +37,8 @@ public:
 	// navigator フロー: 画面遷移時に TJS の onScreen / onScreenLeave を起動
 	void OnScreenEnter(const ttstr& name) override;
 	void OnScreenLeave(const ttstr& name, const ttstr& action) override;
+	// teardown 完了時に TJS の onClose(action) を起動 (非ブロッキング経路用)
+	void OnClosed(const ttstr& action) override;
 
 	// TJS から呼ばれる
 	bool ShowFile(const ttstr& path, bool grabFocus = true);
@@ -47,6 +49,8 @@ public:
 	// ホスト (Window) へ通る (常駐 HUD / 独自ホットキー併用向け)。
 	bool ShowDict(iTJSDispatch2* dict, bool grabFocus = true);
 	void Close();
+	// 変数 store へ書込 ("text_var" label の動的更新)。 非アクティブなら false。
+	bool SetVar(const ttstr& name, const ttstr& value);
 
 	// Phase 6c: 独立 SDL_Window 経由のブロッキングモーダル。
 	// 戻り値は Dictionary `%[ action: ttstr, values: %[id: value, ...] ]`。

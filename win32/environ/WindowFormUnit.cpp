@@ -1,9 +1,6 @@
 
 #include "tjsCommHead.h"
 
-#define DIRECTDRAW_VERSION 0x0300
-#include <ddraw.h>
-
 #include <dbt.h> // for WM_DEVICECHANGE
 
 #include <algorithm>
@@ -28,7 +25,7 @@
 #include "TickCount.h"
 #include "WindowsUtil.h"
 
-#include "CompatibleNativeFuncs.h"
+// CompatibleNativeFuncs は撤去 (touch API は Win10 で常在、直接リンク)
 
 #pragma comment (lib, "imm32")
 
@@ -1588,13 +1585,13 @@ void TTVPWindowForm::DeliverPopupHide() {
 
 void TTVPWindowForm::SetEnableTouch( bool b ) {
 	if( b != GetEnableTouch() ) {
-		if( procRegisterTouchWindow && procUnregisterTouchWindow ) {
+		{  // Register/UnregisterTouchWindow は Win10 で常在
 			int value= ::GetSystemMetrics( SM_DIGITIZER );
 			if( (value & NID_READY ) == NID_READY ) {
 				if( b ) {
-					procRegisterTouchWindow( GetHandle(), REGISTER_TOUCH_FLAG );
+					RegisterTouchWindow( GetHandle(), REGISTER_TOUCH_FLAG );
 				} else {
-					procUnregisterTouchWindow( GetHandle() );
+					UnregisterTouchWindow( GetHandle() );
 				}
 			}
 		}
@@ -1602,11 +1599,8 @@ void TTVPWindowForm::SetEnableTouch( bool b ) {
 }
 
 bool TTVPWindowForm::GetEnableTouch() const {
-	if( procIsTouchWindow ) {
-		BOOL ret = procIsTouchWindow( GetHandle(), NULL );
-		return ret != 0;
-	}
-	return false;
+	BOOL ret = IsTouchWindow( GetHandle(), NULL );  // Win10 で常在
+	return ret != 0;
 }
 
 void TTVPWindowForm::SetEnableTouchMouse( bool b ) 
@@ -1797,13 +1791,16 @@ void TTVPWindowForm::OnResize( UINT_PTR state, int w, int h ) {
 	}
 }
 void TTVPWindowForm::OnDropFile( HDROP hDrop ) {
-	tjs_char filename[MAX_PATH];
-	tjs_int filecount= ::DragQueryFile(hDrop, 0xFFFFFFFF, NULL, MAX_PATH);
+	tjs_int filecount= ::DragQueryFile(hDrop, 0xFFFFFFFF, NULL, 0);
 	iTJSDispatch2 * array = TJSCreateArrayObject();
 	try {
 		tjs_int count = 0;
 		for( tjs_int i = filecount-1; i>=0; i-- ) {
-			::DragQueryFile( hDrop, i, (wchar_t*)filename, MAX_PATH );
+			// long-path 対応: ドロップされたファイル名長を問い合わせて動的確保 (MAX_PATH 固定廃止)
+			UINT fnlen = ::DragQueryFile( hDrop, i, NULL, 0 );
+			std::vector<wchar_t> fnbuf( (size_t)fnlen + 1 );
+			::DragQueryFile( hDrop, i, fnbuf.data(), fnlen + 1 );
+			const tjs_char *filename = (const tjs_char*)fnbuf.data();
 			WIN32_FIND_DATA fd;
 			HANDLE h;
 			// existence checking

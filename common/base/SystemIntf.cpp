@@ -22,6 +22,9 @@
 #include "Random.h"
 #include "ScriptMgnIntf.h"
 #include "DebugIntf.h"
+#ifdef KRKRZ_USE_REPL
+#include "ScreenCapture.h"     // TVPRequestScreenCapture / TVPGetLastScreenCapture
+#endif
 
 #ifdef TVP_USE_OPENGL
 extern int TVPGetOpenGLESVersion();
@@ -271,6 +274,26 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/addContinuousHandler)
 }
 TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/addContinuousHandler)
 //---------------------------------------------------------------------------
+#ifdef KRKRZ_USE_REPL
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/captureScreen)
+{
+	// captureScreen(path [, x, y, w, h]) : 次フレームの present 直前に overlay 込みの
+	// 実画面を読み戻して PNG 保存する要求を立てる。実際の保存は DrawDevice::Show()。
+	// SDL の Agent.captureScreen と同等だが、Agent 非対応の WINVER でも使えるよう
+	// REPL 有効時は System 側に用意する (テスト/検証用)。
+	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
+	ttstr path = *param[0];
+	tjs_int x = (numparams > 1) ? (tjs_int)*param[1] : 0;
+	tjs_int y = (numparams > 2) ? (tjs_int)*param[2] : 0;
+	tjs_int w = (numparams > 3) ? (tjs_int)*param[3] : 0;
+	tjs_int h = (numparams > 4) ? (tjs_int)*param[4] : 0;
+	TVPRequestScreenCapture(path, x, y, w, h);
+	if(result) *result = path;
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/captureScreen)
+//---------------------------------------------------------------------------
+#endif // KRKRZ_USE_REPL
 TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/removeContinuousHandler)
 {
 	// remove function from continuous handler list

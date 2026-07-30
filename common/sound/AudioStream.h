@@ -65,4 +65,9 @@ public:
 
 extern iTVPAudioStream* TVPCreateAudioStream(tTVPAudioStreamParam& param);
 
+// オーディオデバイス (miniaudio engine) を起動時に先行初期化する。
+// 初回サウンド再生時のデバイスオープン遅延 (音の頭切れ) を防ぐ目的。
+// -wspreinit=no で無効化可 (既定 ON)。詳細は AudioStream.cpp を参照。
+extern void TVPPreInitAudioDevice();
+
 #endif // _AUDIO_DEVICE_H__

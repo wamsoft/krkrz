@@ -107,9 +107,14 @@ void TVPUninitializeFreeFont() {
  * filename はアーカイブやassetから追加された時に保持される
  * つまり、システムフォントとアーカイブ/assetのフォントは別物扱いされる
  */
+// [static-link] この FontInfo は FreeType.cpp 内専用の実装詳細だが、
+// グローバル名前空間だと静的リンク時に layerExVector プラグインの公開
+// クラス FontInfo と多重定義衝突する (LNK2005)。名前付き名前空間に入れて
+// マングル名を分離し、using で従来どおり FontInfo として使えるようにする。
+namespace krkrz_ft_detail {
 struct FontInfo {
 	tjs_string	facename;
-	tjs_string	path;		// 
+	tjs_string	path;		//
 	tjs_string	filename;
 	tjs_uint	index;
 	std::string	stylename;
@@ -119,6 +124,8 @@ struct FontInfo {
 	tjs_uint	enc_flags;
 	FontInfo() : index( 0 ), num_glyphs( 0 ), style_flags( 0 ), face_flags( 0 ), enc_flags( 0 ) {}
 };
+} // namespace krkrz_ft_detail
+using krkrz_ft_detail::FontInfo;
 enum TVPEncodingFlags {
 	TVP_ENC_SJIS			= 0x01 << 0,
 	TVP_ENC_UNICODE			= 0x01 << 1,

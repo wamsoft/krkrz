@@ -450,6 +450,30 @@ function dialogTest()
 }
 
 // ----------------------------------------------------------------------
+// VK_K: SoftKeyboard (softkey プラグイン) — Elements ベース英数字キーボード
+// ----------------------------------------------------------------------
+var softKeyInstance = void;
+
+function softkeyTest()
+{
+    if (typeof global.SoftKeyboard == "undefined") {
+        dm("softkey plugin not linked");
+        return;
+    }
+    if (softKeyInstance === void) {
+        softKeyInstance = new SoftKeyboard();
+        softKeyInstance.onResult = function(text) {
+            if (text === void) dm("softkey: canceled");
+            else dm(@"softkey: result='${text}'");
+        };
+    }
+    if (!softKeyInstance.show(%["text" => "ABC", "maxLength" => 12,
+                                "title" => "NAME ENTRY"])) {
+        dm("softkey: show failed (already active?)");
+    }
+}
+
+// ----------------------------------------------------------------------
 // showModal* 用ハンドラ。 close_on_click=false な button (hello / togA 等) の
 // 押下を観測する用。 ok / cancel は元々 close_on_click=true なので modal が
 // 閉じてから result.action として帰ってくる (それも一応 onAction にも来る)。
@@ -1177,6 +1201,10 @@ class MyWindow extends Window
             break;
         case VK_G:
             flowInlineTest();
+            break;
+        case VK_K:
+        case VK_PAD9:   // ゲームパッド SELECT (BACK/マイナス) でソフトキーボード
+            softkeyTest();
             break;
         }
     }

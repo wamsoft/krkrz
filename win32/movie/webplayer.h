@@ -6,16 +6,20 @@
 #include "IMoviePlayer.h"
 #include "WebpXAudio2Sink.h"
 
+class tTVPD3D11OverlayWindow;
+
 class tTVPWebpMovie : public iTVPVideoOverlay
 {
 public:
-    tTVPWebpMovie(HWND owner);
+    //! overlayOutput=true で overlay 出力 (子ウィンドウ D3D11 YUV present)。
+    tTVPWebpMovie(HWND owner, bool overlayOutput = false);
     virtual ~tTVPWebpMovie();
 
 	bool Open(const char *path);
 	bool Open(IStream *stream);
 
 	void Update(int width, int height, IMoviePlayer::DestUpdater updater);
+	void UpdatePlanes(const IMoviePlayer::VideoFrameInfo &frame); // overlay: YUV plane 経路
 	void OnState(IMoviePlayer::State state);
 
 	virtual void __stdcall AddRef();
@@ -115,4 +119,8 @@ protected:
 	HWND OwnerWindow;
 	BYTE *mBuffer;
 	bool mUpdate;
+
+	bool OverlayMode;                 //!< true=overlay 出力
+	tTVPD3D11OverlayWindow *Overlay;  //!< overlay 時の D3D11 present 先
+	int DispW, DispH;                 //!< 表示サイズ (coded 幅 padding を除いたクロップ寸法。0=未取得)
 };

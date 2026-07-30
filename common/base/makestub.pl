@@ -619,6 +619,11 @@ process_exp_stub("../../common/visual/voMode.h");
 print OFH "#include \"VideoOvlIntf.h\"\n";
 process_exp_stub("../../common/visual/VideoOvlIntf.h");
 
+print OFH "#ifdef __WINVER__\n";
+print OFH "#include \"VideoPresenter.h\"\n";
+print OFH "#endif\n";
+process_exp_stub("../../win32/visual/VideoPresenter.h");
+
 print OFH "#include \"TransIntf.h\"\n";
 process_exp_stub("../../common/visual/TransIntf.h");
 
@@ -627,11 +632,6 @@ process_exp_stub("../../common/visual/transhandler.h");
 
 print OFH "#include \"tvpgl.h\"\n";
 process_exp_stub("../../common/visual/tvpgl.h");
-
-print OFH "#ifdef __WINVER__\n";
-print OFH "#include \"TVPVideoOverlay.h\"\n";
-print OFH "#endif\n";
-process_exp_stub("../../win32/movie/TVPVideoOverlay.h");
 
 print OFH "#include \"OpenGLHeader.h\"\n";
 process_exp_stub("../../common/visual/opengl/OpenGLHeader.h");
@@ -786,6 +786,13 @@ typedef void* HWND;
 // for compatibillyty with old plugins
 #ifndef DIRECT3D_VERSION
 struct IDirect3D9;
+#endif
+
+// Track V-E: overlay presenter が使う D3D11 型 (前方宣言のみ・d3d11.h は持ち込まない)
+#ifndef __d3d11_h__
+struct ID3D11Device;
+struct ID3D11DeviceContext;
+struct ID3D11RenderTargetView;
 #endif
 
 #include <string>

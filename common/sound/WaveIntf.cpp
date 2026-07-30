@@ -1780,33 +1780,19 @@ iTJSDispatch2 * TVPCreateWaveFlagsObject(iTJSDispatch2 * buffer)
 	return out;
 }
 //---------------------------------------------------------------------------
-#ifdef __WINVER__
-extern tTJSNativeClass * TVPCreateNativeClass_WaveSoundBuffer();
-extern void TVPSoundSetGlobalVolume(tjs_int v);
-extern tjs_int TVPSoundGetGlobalVolume();
-extern void TVPSoundSetGlobalFocusMode(tTVPSoundGlobalFocusMode b);
-extern tTVPSoundGlobalFocusMode TVPSoundGetGlobalFocusMode();
-#else
+// Phase1-2: 全ビルドで miniaudio(QueueSoundBuffer) を使う。
+// (旧 WINVER の DirectSound 版 WaveSoundBuffer は 1-3 で撤去)
 extern tTJSNativeClass * TVPCreateNativeClass_QueueSoundBuffer();
 extern void TVPQueueSoundSetGlobalVolume(tjs_int v);
 extern tjs_int TVPQueueSoundGetGlobalVolume();
 extern void TVPQueueSoundSetGlobalFocusMode(tTVPSoundGlobalFocusMode b);
 extern tTVPSoundGlobalFocusMode TVPQueueSoundGetGlobalFocusMode();
-#endif
 tTJSNativeClass * TVPCreateNativeClass_SoundBuffer()
 {
-#ifdef __WINVER__
-	TVPSetGlobalVolume = TVPSoundSetGlobalVolume;
-	TVPGetGlobalVolume = TVPSoundGetGlobalVolume;
-	TVPSetGlobalFocusMode = TVPSoundSetGlobalFocusMode;
-	TVPGetGlobalFocusMode = TVPSoundGetGlobalFocusMode;
-	return TVPCreateNativeClass_WaveSoundBuffer();
-#else
 	TVPSetGlobalVolume = TVPQueueSoundSetGlobalVolume;
 	TVPGetGlobalVolume = TVPQueueSoundGetGlobalVolume;
 	TVPSetGlobalFocusMode = TVPQueueSoundSetGlobalFocusMode;
 	TVPGetGlobalFocusMode = TVPQueueSoundGetGlobalFocusMode;
 	return TVPCreateNativeClass_QueueSoundBuffer();
-#endif
 }
 //---------------------------------------------------------------------------

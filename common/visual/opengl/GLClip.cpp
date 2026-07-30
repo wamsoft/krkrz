@@ -2,6 +2,19 @@
 // クリッピング描画基盤 (GLClip.h 参照)
 //   gles プラグイン (GLESAdaptor) の GLClip.cpp からの移植。
 //   GLTexture* 引数を GL texture id + サイズに置き換えている以外は同一。
+//
+//   【重要・マスクテクスチャの上下向き】
+//   gles プラグインと吉里吉里本体(内蔵 Canvas)で、テクスチャの v 方向の
+//   格納向きが逆になっている:
+//     - gles GLESTexture::load : レイヤ内容を上下反転してアップロード
+//                                = ボトムアップ格納 (v=1 側が画像上端)
+//     - 本体 Texture(LoadTexture): スキャンラインを上から順にコピー
+//                                = トップダウン格納 (v=0 側が画像上端)。
+//                                  drawTexture もこの向きで正立表示する。
+//   このため gles からそのまま移植すると mask/stencil のマスクだけ上下逆に
+//   なる。本体版は「drawTexture(mask) と同じ向きで endMaskClip(mask) が
+//   適用される」よう、マスクを v=m.y (トップダウン) でサンプルするよう
+//   修正済み (gles 版は 1-y のまま。移植時に取り違えないこと)。
 // ---------------------------------------------------------------------------
 #include "tjsCommHead.h"
 #include "GLClip.h"
@@ -41,8 +54,9 @@ static const char *kStencilFsSource =
 //   u_useMask  : 0 なら素通し (矩形クリップのみの合成用)
 //   捕捉テクスチャは v=0 が画面下端 (GL 座標) なので、
 //   キャンバス座標への変換で上下を反転する。マスクテクスチャは
-//   krkrz Texture の慣例どおり v=1 側が画像上端のため
-//   こちらも 1-y でサンプリングする。
+//   内蔵 Canvas の Texture (LoadTexture) と同じくトップダウン格納
+//   (v=0 側が画像上端) なので、drawTexture と同じ向きになるよう
+//   m.y をそのまま v としてサンプリングする。
 static const char *kMaskFsSource =
 	"precision mediump float;"
 	"varying vec2 v_texCoord;"
@@ -60,7 +74,7 @@ static const char *kMaskFsSource =
 	"vec2 m = (pixel - u_maskRect.xy) / u_maskRect.zw;"
 	"float a = 0.0;"
 	"if (m.x >= 0.0 && m.x <= 1.0 && m.y >= 0.0 && m.y <= 1.0) {"
-	"a = texture2D(s_mask, vec2(m.x * u_maskUV.x, (1.0 - m.y) * u_maskUV.y)).a;"
+	"a = texture2D(s_mask, vec2(m.x * u_maskUV.x, m.y * u_maskUV.y)).a;"
 	"}"
 	"color.a *= a;"
 	"}"
@@ -139,12 +153,13 @@ void GLClipContext::drawStencilWrite(GLuint maskTex, float x, float y, float w, 
 	position[6] =   (w + tx) / w2;  // right bottom
 	position[7] = - (h + ty) / h2;
 
-	// テクスチャは v=vScale 側が画像上端
+	// マスクは Texture (トップダウン格納) なので v=0 側が画像上端。
+	// 画面上端 (position 上辺) に v=0 を割り当てる。
 	GLfloat uv[8];
-	uv[0] = 0.0f;   uv[1] = vScale;  // left top
-	uv[2] = 0.0f;   uv[3] = 0.0f;    // left bottom
-	uv[4] = uScale; uv[5] = vScale;  // right top
-	uv[6] = uScale; uv[7] = 0.0f;    // right bottom
+	uv[0] = 0.0f;   uv[1] = 0.0f;    // left top
+	uv[2] = 0.0f;   uv[3] = vScale;  // left bottom
+	uv[4] = uScale; uv[5] = 0.0f;    // right top
+	uv[6] = uScale; uv[7] = vScale;  // right bottom
 
 	glViewport(0, 0, scrW, scrH);
 

@@ -15,7 +15,14 @@
 
 #define TVP_KRMOVIE_VER   0x0001000B
 
+// krmovie を DLL としてビルドするときのみ dllexport (krmovie_EXPORTS は CMake が
+// SHARED ターゲットに自動定義)。exe へ静的統合 (Track V-A) するときは通常の
+// 関数として本体から直接リンクするので dllexport 不要。
+#ifdef krmovie_EXPORTS
 #define EXPORT(hr) extern "C" __declspec(dllexport) hr __stdcall
+#else
+#define EXPORT(hr) extern "C" hr __stdcall
+#endif
 
 
 //---------------------------------------------------------------------------
