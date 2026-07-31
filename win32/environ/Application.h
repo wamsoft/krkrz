@@ -213,6 +213,11 @@ public:
 	unsigned int GetWindowCount() const {
 		return (unsigned int)windows_list_.size();
 	}
+	// 先頭ウィンドウ (= メインウィンドウ) の form。generic 版 tTVPApplication と
+	// 対称の accessor (Agent 入力注入 seam 等が共通コードから参照する)。
+	class TTVPWindowForm* MainWindowForm() const {
+		return windows_list_.empty() ? nullptr : windows_list_[0];
+	}
 
 	void FreeDirectInputDeviceForWindows();
 

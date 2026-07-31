@@ -57,15 +57,17 @@ tTVPOGLDrawDevice::tTVPOGLDrawDevice(iTJSDispatch2 *self)
  , GLContext(nullptr)
  , DoCreateCanvas(false)
 #ifndef __WINVER__
- , _video_texture(0)
- , mVideoBuffer(0)
- , mVideoBufferDirty(false)
- , mVideoWidth(0)
- , mVideoHeight(0)
+ , VideoPresenter(nullptr)
 #endif
 
  {
 	if (Self) Self->AddRef();
+
+#ifdef __GENERIC__
+	// overlay 動画 presenter factory を登録 (VideoOverlay が pull 経路で使う)。冪等。
+	// WINVER-OGL は GL 動画 presenter 非対応 (D3D11/子ウィンドウ fallback)。
+	TVPRegisterGLVideoOverlayPresenterFactory();
+#endif
 
     // 描画位置指定・いったん全画面
     _position[0] = -1.0f; // left top
@@ -109,19 +111,8 @@ tTVPOGLDrawDevice::tTVPOGLDrawDevice(iTJSDispatch2 *self)
 		}
 		MatrixClass->Release();
 	}
-
-#ifndef __WINVER__
-    // 描画位置指定・いったん全画面対象
-    _video_position[0] = -1.0f; // left top
-    _video_position[1] =  1.0f;
-    _video_position[2] = -1.0f; // left bottom
-    _video_position[3] = -1.0f;
-    _video_position[4] =  1.0f; // right top
-    _video_position[5] =  1.0f;
-    _video_position[6] =  1.0f; // right bottom
-    _video_position[7] = -1.0f;
-#endif
-
+	// 動画の配置矩形は presenter (GLVideoPresenter.cpp) が毎フレーム算出するので
+	// device 側の _video_position は廃止。
 }
 
 //---------------------------------------------------------------------------
@@ -419,9 +410,10 @@ void tTVPOGLDrawDevice::InitContext(void *nativeWindow)
 	TextureDrawer.Init();
 
 #ifdef KRKRZ_HAS_ELEMENTS
-	// GL context 生存中だけ存在する dialog renderer を登録 (DoneContext で解除)
-	tTVPElementsDialogManager::Instance().RegisterRenderer(
-		this, std::make_unique<tTVPOGLDialogRenderer>(this));
+	// GL context 生存中だけ存在する dialog renderer を DrawDevice 自身が所有し、
+	// iTVPDialogRendererHost (this) として manager に登録 (DoneContext で解除)。
+	DialogRenderer = std::make_unique<tTVPOGLDialogRenderer>(this);
+	tTVPElementsDialogManager::Instance().RegisterDialogHost(this, this);
 #endif
 
 	// Context コンテキスト作成時コールバック
@@ -445,8 +437,10 @@ void tTVPOGLDrawDevice::DoneContext()
 	}
 
 #ifdef KRKRZ_HAS_ELEMENTS
-	// GL リソース付き dialog renderer を context 解放前に破棄する
-	tTVPElementsDialogManager::Instance().UnregisterRenderer(this);
+	// GL リソース付き dialog renderer を context 解放前に破棄する。host 登録解除
+	// (この device のダイアログ teardown) を renderer 破棄前に行う。
+	tTVPElementsDialogManager::Instance().UnregisterDialogHost(this);
+	DialogRenderer.reset();
 #endif
 
 	DestroyTexture();
@@ -454,10 +448,9 @@ void tTVPOGLDrawDevice::DoneContext()
 	TextureDrawer.Done();
 
 #ifdef __GENERIC__
-	// 動画用 GLTexture / mVideoBuffer は ClearVideo でのみ解放される。
-	// DrawDevice 破棄時に呼ばないとリークするため、GL context を解放する
-	// 直前で必ず一度呼ぶ (_video_texture の glDeleteTextures が context 必須)。
-	ClearVideo();
+	// 動画用 GLTexture / バッファは presenter 側 (VideoOverlay 所有) が持つので device 破棄時の
+	// 解放は不要 (通常は動画 Close で presenter が解放される)。ここでは pull を止めるだけ。
+	VideoPresenter = nullptr;
 	// ビューポート壁紙テクスチャも context 解放前に破棄。
 	mWallpaperCache.Release();
 #endif
@@ -628,130 +621,38 @@ void TJS_INTF_METHOD tTVPOGLDrawDevice::EndBitmapCompletion(iTVPLayerManager * m
 //  VideoOverlay Support
 //---------------------------------------------------------------------------
 
-void 
-tTVPOGLDrawDevice::UpdateVideoPosition(int w, int h)
+// overlay 動画 presenter host (pull 型)。単一スロットで最後に登録した 1 つを保持する
+// (WINVER BasicDrawDevice / SDLDrawDevice と同じ規約)。
+void TJS_INTF_METHOD tTVPOGLDrawDevice::AddVideoPresenter( iTVPGLVideoPresenter * presenter )
 {
-    // 配置座標計算 (内接表示で補正)
-    int sw =  SurfaceWidth;
-    int sh =  SurfaceHeight;
-    if (sw > 0 && sh > 0) {
-        // 描画位置
-        double scale = std::min((double)sw/w, (double)sh/h);
-        int nw = w * scale;
-        int nh = h * scale;
-        int offx = (sw-nw)/2;
-        int offy = (sh-nh)/2;
-
-        // 描画位置を position換算
-        int w2 = sw/2;
-        int h2 = sh/2;
-        float left    = (float)(offx      - w2) / w2;
-        float top     = (float)(offy      - h2) / h2;
-        float right   = (float)(offx + nw - w2) / w2;
-        float bottom  = (float)(offy + nh - h2) / h2;
-
-        _video_position[0] = left; // left top
-        _video_position[1] = top;
-        _video_position[2] = left; // left bottom
-        _video_position[3] = bottom;
-        _video_position[4] = right; // right top
-        _video_position[5] = top;
-        _video_position[6] = right; // right bottom
-        _video_position[7] = bottom;
-    }
+	if( !presenter ) return;
+	VideoPresenter = presenter;
 }
-
-void
-tTVPOGLDrawDevice::UpdateVideo(int w, int h, std::function<void(char *dest, int pitch)> updator)
+void TJS_INTF_METHOD tTVPOGLDrawDevice::RemoveVideoPresenter( iTVPGLVideoPresenter * presenter )
 {
-    std::lock_guard<std::mutex> lock( videooverlay_mutex_ );
-	if (!mVideoBuffer) {
-		// 動画バッファが無い場合は初期化
-		mVideoBuffer = new char[w * h * 4]; // ARGB8888
-		mVideoWidth = w;
-		mVideoHeight = h;
-	} else if (mVideoWidth != w || mVideoHeight != h) {
-		// サイズが変わった場合は CPU 側バッファを再初期化。
-		// ここはデコーダスレッドなので GL 操作 (delete _video_texture) は不可。
-		// 旧サイズの _video_texture / 中の PBO は ShowVideo 側でサイズ不一致を
-		// 検出して破棄・再生成する (そうしないと旧 PBO 容量を超える
-		// glMapBufferRange / updator 書き込みが起きて GL メモリ側で overrun する)。
-		delete[] mVideoBuffer;
-		mVideoBuffer = new char[w * h * 4]; // ARGB8888
-		mVideoWidth = w;
-		mVideoHeight = h;
-	}
-	if (mVideoBuffer) {
-		updator((char *)mVideoBuffer, w*4);
-		UpdateVideoPosition(w, h);
-		mVideoBufferDirty = true;
-	}
+	if( VideoPresenter == presenter ) VideoPresenter = nullptr;
 }
 
 bool
 tTVPOGLDrawDevice::ShowVideo()
 {
-    if (mVideoBuffer) {
-        if (mVideoBufferDirty) {
-        	std::lock_guard<std::mutex> lock( videooverlay_mutex_ );
-            // UpdateVideo 側で動画解像度が変わった場合、_video_texture と
-            // 内部 PBO は旧サイズのままなので、ここで破棄して再生成する。
-            // (GL 操作なので必ず render thread = ShowVideo 側で行う)
-            if (_video_texture &&
-                ((int)_video_texture->width()  != mVideoWidth ||
-                 (int)_video_texture->height() != mVideoHeight)) {
-                delete _video_texture;
-                _video_texture = nullptr;
-            }
-            if (!_video_texture) {
-                _video_texture = new GLTexture(mVideoWidth, mVideoHeight);
-            }
-            if (_video_texture) {
-
-                int w = mVideoWidth;
-                int h = mVideoHeight;
-                char* src = (char*)mVideoBuffer;
-                int spitch = mVideoWidth * 4;
-                _video_texture->UpdateTexture(0, 0, w, h, [w,h,src,spitch](char *Dest, int pitch) {
-                    if (pitch == spitch) {
-                        // ピッチが正しい場合はデータをコピー
-                        memcpy(Dest, src, pitch * h);
-                    } else {
-                        // ピッチが異なる場合は行ごとにコピー
-                        for (int y = 0; y < h; ++y) {
-                            memcpy((char *)Dest + y * pitch, (char*)src + y * spitch, spitch);
-                        }
-                    }
-                });
-            }
-            mVideoBufferDirty = false;
-        }
-        if (_video_texture) {
-            glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-		    TextureDrawer.DrawTexture(_video_texture, SurfaceWidth, SurfaceHeight, _video_position);
-        }
-
-		return true;
-	}
-	return false;
+	// presenter 稼働中は動画のみを描く (動画が画面を覆う前提)。フレームの保持と GLTexture 管理は
+	// presenter 側 (GLVideoPresenter.cpp) が行い、ここでは描画スレッド (GL context current) から
+	// pull するだけ。
+	if( !VideoPresenter ) return false;
+	glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+	tTVPGLVideoPresenterContext ctx;
+	ctx.TextureDrawer = &TextureDrawer;
+	ctx.TargetWidth   = SurfaceWidth;
+	ctx.TargetHeight  = SurfaceHeight;
+	ctx.DestRect      = DestRect;
+	{	tjs_int sw = 0, sh = 0; GetSrcSize( sw, sh ); ctx.SrcWidth = sw; ctx.SrcHeight = sh; }
+	VideoPresenter->RenderVideoFrame(ctx);
+	return true;
 }
 
-void 
-tTVPOGLDrawDevice::ClearVideo()
-{
-	std::lock_guard<std::mutex> lock( videooverlay_mutex_ );
-    if (_video_texture) {
-        delete _video_texture;
-        _video_texture = 0;
-    }
-	if (mVideoBuffer) {
-		delete[] mVideoBuffer;
-		mVideoBuffer = nullptr;
-	}
-}
-
-void 
+void
 tTVPOGLDrawDevice::SetWaitVSync(bool enable)
 {
     if (GLContext) {
@@ -849,6 +750,27 @@ TJS_BEGIN_NATIVE_PROP_DECL(window)
 }
 TJS_END_NATIVE_PROP_DECL(window)
 //---------------------------------------------------------------------------
+#ifdef __GENERIC__
+// overlay 動画 presenter の登録口 (iTVPGLVideoPresenterHost) をポインタ値として公開する
+// (WINVER の videoPresenterHost / SDL の sdlVideoPresenterHost と同じ規約)。VideoOverlay は
+// このプロパティを Window の DrawDevice TJS オブジェクトから読み、非 0 なら presenter を登録する。
+// WINVER-OGL は GL 動画 presenter を持たない (D3D11/子ウィンドウ fallback) ので __GENERIC__ 限定。
+TJS_BEGIN_NATIVE_PROP_DECL(glVideoPresenterHost)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_OGLDrawDevice);
+		iTVPGLVideoPresenterHost * host = static_cast<iTVPGLVideoPresenterHost*>(_this->GetDevice());
+		*result = reinterpret_cast<tjs_int64>(host);
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_DENY_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_PROP_DECL(glVideoPresenterHost)
+#endif
+//---------------------------------------------------------------------------
 TJS_BEGIN_NATIVE_PROP_DECL(canvas)
 {
 	TJS_BEGIN_NATIVE_PROP_GETTER
@@ -890,6 +812,26 @@ TJS_BEGIN_NATIVE_PROP_DECL(matrix)
 	TJS_DENY_NATIVE_PROP_SETTER
 }
 TJS_END_NATIVE_PROP_DECL(matrix)
+//----------------------------------------------------------------------
+#ifdef KRKRZ_HAS_ELEMENTS
+// Elements ダイアログ overlay の描画アダプタ提供口 (iTVPDialogRendererHost) を
+// ポインタ値として公開する (videoPresenterHost と同じ規約)。GL context 未生成時は
+// GetDialogRenderer() が nullptr を返す (host ポインタ自体は非 0)。
+TJS_BEGIN_NATIVE_PROP_DECL(dialogRendererHost)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_OGLDrawDevice);
+		iTVPDialogRendererHost * host = static_cast<iTVPDialogRendererHost*>(_this->GetDevice());
+		*result = reinterpret_cast<tjs_int64>(host);
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_DENY_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_PROP_DECL(dialogRendererHost)
+#endif
 //----------------------------------------------------------------------
 	TJS_END_NATIVE_MEMBERS
 }

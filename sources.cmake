@@ -138,6 +138,8 @@ common/visual/BitmapInfomation.cpp
 common/visual/CharacterData.cpp
 common/visual/ComplexRect.cpp
 common/visual/DrawDevice.cpp
+common/visual/VideoOverlayPresenter.cpp
+common/visual/VideoOverlayPresenter.h
 common/visual/ViewportConfig.h
 common/visual/FontSystem.cpp
 common/visual/FreeType.cpp
@@ -199,6 +201,8 @@ if (KRKRZ_USE_OPENGL)
 
 set( KRKRZ_SRC_OPENGL
 common/visual/opengl/OGLDrawDevice.cpp
+common/visual/opengl/GLVideoPresenter.cpp
+common/visual/opengl/GLVideoPresenter.h
 common/visual/opengl/OGLViewportBackground.h
 common/visual/opengl/CanvasIntf.cpp
 common/visual/opengl/GLTexture.cpp
@@ -272,6 +276,8 @@ win32/visual/TVPScreen.cpp
 win32/visual/TVPSysFont.cpp
 win32/visual/VideoOvlImpl.cpp
 win32/visual/VideoPresenterD3D.cpp
+win32/visual/D3D11DialogRenderer.cpp
+win32/visual/D3D11DialogRenderer.h
 win32/visual/VSyncTimingThread.cpp
 win32/visual/WindowImpl.cpp
 win32/environ/Application.cpp
@@ -280,6 +286,10 @@ common/utils/TickCount.cpp
 win32/utils/TickCountImpl.cpp
 
 generic/utils/LogImpl.cpp
+# plog バックエンド (別 TU に隔離)。 WINVER で <windows.h> と plog/WinApi.h が同居
+# できないため、tjs 側ブリッジ (LogImpl.cpp) と plog 側 (LogPlogBackend.cpp) を分離。
+generic/utils/LogPlogBackend.cpp
+generic/utils/LogPlogBackend.h
 
 win32/vcproj/tvpwin32.rc
 win32/vcproj/dpi.manifest
@@ -487,6 +497,8 @@ set(KRKRZ_SRC_SDL3
 	sdl3/utils/TickCount.cpp
 	sdl3/visual/SDLDrawDevice.cpp
 	sdl3/visual/SDLDrawDevice.h
+	sdl3/visual/SDLVideoPresenter.cpp
+	sdl3/visual/SDLVideoPresenter.h
 	sdl3/visual/MemoryOverlayRender.cpp
 	sdl3/visual/MemoryOverlayRender.h
 	sdl3/visual/PadOverlayRender.cpp
@@ -528,6 +540,10 @@ if (KRKRZ_USE_ELEMENTS)
 		common/visual/elements/ElementsUserConfig.h
 		common/visual/elements/DialogIntf.cpp
 		common/visual/elements/DialogIntf.h
+		common/visual/elements/ElementsModalRunner.h
+		# モーダル実行 API の WINVER 実装 (スタブ)。 SDL host では #ifdef __WINVER__
+		# ガードで空 TU になる (SDL 実装は sdl3/visual/SDLElementsModalRunner.cpp)。
+		common/visual/elements/WinElementsModalRunner.cpp
 		common/visual/elements/StoragesResourceLoader.cpp
 		common/visual/elements/StoragesResourceLoader.h
 		common/visual/elements/VariantJsonUtil.cpp
@@ -556,6 +572,15 @@ if (KRKRZ_USE_ELEMENTS)
 		sdl3/visual/SDLElementsModalRunner.cpp
 		sdl3/visual/SDLElementsModalRunner.h
 	)
+	# WIN variant: overlay ダイアログ経路 (host 非依存の overlay_session を使う分) を
+	# WINVER exe にも組み込む。 KRKRZ_SRC_ELEMENTS は host 非依存の manager / DialogIntf /
+	# StoragesResourceLoader / VariantJsonUtil / DialogPluginService (+ OGLDialogRenderer)。
+	# SDL 専用の SDLDialogRenderer / SDLElements* / AgentControlIntf は含めない。
+	# 独立ウィンドウ modal (showModal*) は WIN では overlay-modal で代替する (#ifdef)。
+	# D3D11 版 DialogRenderer (win32/visual/D3D11DialogRenderer) は別途追加する。
+	list(APPEND KRKRZ_SRC_WIN32
+		${KRKRZ_SRC_ELEMENTS}
+	)
 	# エージェント駆動制御 API (REPL / -replfile から入力注入・キャプチャ・
 	# ダイアログ制御)。 dialogs()/dialogClick()/dialogTree() 等が
 	# ElementsDialogManager を直接呼ぶため Elements 依存。 よって ELEMENTS と
@@ -563,13 +588,26 @@ if (KRKRZ_USE_ELEMENTS)
 	# #if defined(KRKRZ_HAS_ELEMENTS) && defined(KRKRZ_USE_REPL) で二重ガード)。
 	# 画面キャプチャ実体 (ScreenCapture.cpp) は Elements 非依存なので上の
 	# KRKRZ_REPL ブロック (KRKRZ_SRC) 側に移動済み。
+	# Agent クラス本体は common 化 (SDL3 / WINVER 両対応)。入力注入だけ AgentInput
+	# seam でプラットフォーム分離する (sdl3 = SendMouseMessage/SendMessage、
+	# win32 = OnMouse*/OnKey*)。ダイアログ制御・text・captureScreen は共通。
 	if (KRKRZ_REPL)
-		list(APPEND KRKRZ_SRC_SDL3
-			sdl3/environ/AgentControlIntf.cpp
-			sdl3/environ/AgentControlIntf.h
+		list(APPEND KRKRZ_SRC
+			common/environ/AgentControlIntf.cpp
+			common/environ/AgentControlIntf.h
+			common/environ/AgentInput.h
+		)
+		# generic seam は SDL3 / LIB 両ビルドで使う generic form (SendMouseMessage) 依存
+		# なので KRKRZ_SRC_GENERIC 側 (SDL は GENERIC+SDL3 を両方リンクする)。
+		list(APPEND KRKRZ_SRC_GENERIC
+			generic/environ/AgentInput.cpp
+		)
+		list(APPEND KRKRZ_SRC_WIN32
+			win32/environ/AgentInput.cpp
 		)
 	endif()
-	list(APPEND KRKRZ_LIB_SDL3 cycfi::elements)
+	# cycfi::elements / elements_modal のリンクは CMakeLists.txt の共有ブロック
+	# (KRKRZ_LIB_ELEMENTS) で WIN / SDL 両 variant に対して行う。
 	# elements_modal は elements リポ管轄 (external/elements/external/elements_modal)
 	# で add_subdirectory(external/elements) 経由でビルドされる。 CMakeLists.txt が
 	# その直後で krkrz64 にリンクする (TARGET 存在を確認できるタイミング)。
@@ -589,6 +627,13 @@ if (KRKRZ_USE_ELEMENTS)
 		sdl3/visual/SDLElementsModalRunner.cpp
 		PROPERTIES CXX_STANDARD 20
 	)
+	# WINVER の独立ウィンドウ modal は overlay_session (elements ヘッダ) を include するため C++20。
+	if (KRKRZ_VARIANT STREQUAL "WIN")
+		set_source_files_properties(
+			common/visual/elements/WinElementsModalRunner.cpp
+			PROPERTIES CXX_STANDARD 20
+		)
+	endif()
 endif()
 
 list(APPEND KRKRZ_SRC_WIN32
@@ -623,7 +668,9 @@ endif()
 if(EMSCRIPTEN)
 	set(KRKRZ_SRC_MOVIE sdl3/base/WebMoviePlayer.cpp)
 elseif(KRKRZ_USE_MOVIE)
-	set(KRKRZ_SRC_MOVIE generic/app/movie.cpp)
+	# movie.cpp = movie-player (webm) ラッパ。Mpeg1MoviePlayer.cpp = pl_mpeg 内蔵の
+	# MPEG-1 (.mpg/.mpeg) プレイヤ (movie.cpp が拡張子で振り分ける)。
+	set(KRKRZ_SRC_MOVIE generic/app/movie.cpp generic/app/Mpeg1MoviePlayer.cpp)
 else()
 	set(KRKRZ_SRC_MOVIE generic/app/movie_null.cpp)
 endif()

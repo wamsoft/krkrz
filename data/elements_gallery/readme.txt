@@ -27,8 +27,8 @@ Elements (Dialog クラス) の主要ウィジェットを「実物 + 定義ソ�
 
   bin/<preset>/<config>/krkrz64.exe  src/core/data/elements_gallery
 
-SDL3 ビルド + KRKRZ_USE_ELEMENTS=ON が必要 (WINVER では Dialog クラスが
-無い旨を表示して待機する)。
+KRKRZ_USE_ELEMENTS=ON が必要 (SDL3 / WINVER 両ビルドで動作する。
+KRKRZ_USE_ELEMENTS=OFF ビルドでは Dialog クラスが無い旨を表示して待機する)。
 
 ■ 操作
 

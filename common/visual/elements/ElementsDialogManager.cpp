@@ -20,8 +20,10 @@
 #include "MsgIntf.h"
 #include "CharacterSet.h"   // TVPUtf8ToUtf16
 #include "StorageIntf.h"    // TVPReadStream
-#include "Application.h"    // Application, MainWindowForm()
-#include "WindowForm.h"     // TTVPWindowForm::NativeWindowHandle()
+#include "Application.h"    // Application, MainWindowForm() / ResourcePath()
+#ifndef __WINVER__
+#include "WindowForm.h"     // TTVPWindowForm::NativeWindowHandle() (SDL/generic host)
+#endif
 #include "StoragesResourceLoader.h"   // TVPInstallElementsResourceLoader / Fonts
 
 #ifndef _WIN32
@@ -30,8 +32,14 @@
 
 #include <elements_modal/modal.h>
 #include <elements_modal/navigator.h>   // フロー駆動 (画面遷移スタック)
+#include <elements/base_view.hpp>        // cycfi 中立入力型 (mouse_button / key_code / mod_*)
+#include <elements/element/gamepad.hpp>  // cycfi 中立入力型 (pad_button)
 
-#include <SDL3/SDL.h>        // SDL_BUTTON_* / SDL_KMOD_*
+// テキスト入力の開始/停止 (ソフトキーボード制御) は host 依存。 WINVER は Win32 の
+// WM_CHAR 経由 (ForwardText) で扱うため SDL は不要。 SDL host のみ SDL3 を引く。
+#ifndef __WINVER__
+#include <SDL3/SDL.h>        // SDL host: SDL_StartTextInput / SDL_HasScreenKeyboardSupport 等
+#endif
 
 #include <cstdlib>           // std::strtol
 #include <map>
@@ -107,6 +115,37 @@ ttstr DirOfStoragePath(const ttstr& path)
 	return ttstr(s.substr(0, pos + 1).c_str());
 }
 
+//---------------------------------------------------------------------------
+// host 依存のテキスト入力制御 (ソフトキーボード / IME イベント有効化)。
+//
+//  - SDL host: SDL_StartTextInput / SDL_StopTextInput でウィンドウ単位に text
+//    入力を制御し、 Android/iOS では SDL_HasScreenKeyboardSupport() が true =
+//    オンスクリーンキーボードが出る。
+//  - WINVER host: テキストは Win32 の WM_CHAR → ForwardText で常時届くため明示的な
+//    開始/停止は不要。 デスクトップなのでソフトキーボードも無い。 全て no-op。
+//---------------------------------------------------------------------------
+#ifdef __WINVER__
+
+inline bool HostHasScreenKeyboard() { return false; }
+inline void HostStartTextInput() {}
+inline void HostStopTextInput()  {}
+
+#else
+
+inline bool HostHasScreenKeyboard() { return SDL_HasScreenKeyboardSupport(); }
+
+inline SDL_Window* HostMainWindow()
+{
+	if (!Application) return nullptr;
+	auto* form = Application->MainWindowForm();
+	if (!form) return nullptr;
+	return static_cast<SDL_Window*>(form->NativeWindowHandle());
+}
+inline void HostStartTextInput() { if (auto* w = HostMainWindow()) SDL_StartTextInput(w); }
+inline void HostStopTextInput()  { if (auto* w = HostMainWindow()) SDL_StopTextInput(w); }
+
+#endif
+
 } // anonymous
 
 //---------------------------------------------------------------------------
@@ -168,8 +207,9 @@ struct tTVPElementsDialogManager::Impl
 
 	std::vector<std::unique_ptr<Instance>> instances;  // z-order (末尾=最前面)
 
-	// DrawDevice ごとのレンダラ。 オーナーは manager。
-	std::map<iTVPDrawDevice*, std::unique_ptr<iTVPDialogRenderer>> renderers;
+	// DrawDevice ごとの描画アダプタ提供口 (host)。 renderer 自体は DrawDevice が所有し、
+	// ここは host ポインタを借用保持するだけ (非所有)。 host 経由で renderer を取得する。
+	std::map<iTVPDrawDevice*, iTVPDialogRendererHost*> hosts;
 
 	// 直近に PaintOverlay を呼んだ (= 現在フレームを提示している) DrawDevice。
 	// GL デモ等で drawDevice が OGLDrawDevice に差し替わると、提示中のデバイスも
@@ -189,18 +229,12 @@ struct tTVPElementsDialogManager::Impl
 
 	// --- helpers ---
 
-	static SDL_Window* GetMainSDLWindow()
-	{
-		if (!Application) return nullptr;
-		auto* form = Application->MainWindowForm();
-		if (!form) return nullptr;
-		return static_cast<SDL_Window*>(form->NativeWindowHandle());
-	}
-
+	// host 経由で DrawDevice の renderer を解決する (具象型は知らない)。 名前は従来
+	// のまま (呼出側多数) だが、実体は host->GetDialogRenderer()。
 	iTVPDialogRenderer* FindRenderer(iTVPDrawDevice* dev) const
 	{
-		auto it = renderers.find(dev);
-		return (it != renderers.end()) ? it->second.get() : nullptr;
+		auto it = hosts.find(dev);
+		return (it != hosts.end() && it->second) ? it->second->GetDialogRenderer() : nullptr;
 	}
 
 	bool AnyActive() const
@@ -265,17 +299,24 @@ struct tTVPElementsDialogManager::Impl
 	}
 
 	// このプラットフォームがオンスクリーンキーボード (Android / iOS 等) を持つか。
-	// true の場合、 SDL_StartTextInput はソフトキーボードを画面に出す。 そのため
+	// true の場合、 テキスト入力開始はソフトキーボードを画面に出す。 そのため
 	// 「ダイアログを開いた瞬間に無条件で開始」ではなく、 テキスト欄に focus が
 	// 入ったときだけ開始する focus 駆動に切り替える。 デスクトップ (false) は物理
 	// キーボードなので従来どおり開いた時点で開始してよい (ポップアップは出ない)。
+	// WINVER (Win32 host) は常に false = デスクトップ扱い。
 	static bool PlatformUsesScreenKeyboard()
 	{
-		return SDL_HasScreenKeyboardSupport();
+		return HostHasScreenKeyboard();
 	}
 
 	// focus 駆動でソフトキーボードを出している最中か (portable のみ使用)。
 	bool ime_focus_active = false;
+
+	// UTF-16 サロゲートペアの high surrogate を一時保持する (ForwardKeyPress 用)。
+	// WINVER の WM_CHAR は BMP 外 (絵文字 / 拡張漢字) を high/low 2 回に分けて
+	// tjs_char (16bit) で配信するため、 high を受けたら保持し、 続く low と合成して
+	// 1 コードポイントにする。 0 = 保持なし。
+	tjs_uint16 pending_high_surrogate = 0;
 
 	// テキスト入力受信の開始/停止 (ウィンドウ単位なので参照カウント的に扱う)。
 	void StartTextInputIfNeeded()
@@ -283,7 +324,7 @@ struct tTVPElementsDialogManager::Impl
 		// portable はここでは開始しない。 UpdateFocusDrivenTextInput() が
 		// テキスト欄への focus を検出して開始/停止する。
 		if (PlatformUsesScreenKeyboard()) return;
-		if (auto* w = GetMainSDLWindow()) SDL_StartTextInput(w);
+		HostStartTextInput();
 	}
 	void StopTextInputIfNoInstances()
 	{
@@ -296,7 +337,7 @@ struct tTVPElementsDialogManager::Impl
 			// トップでは host が設定したベースライン (form 生成時の StartTextInput)
 			// をそのまま残す。
 			if (PlatformUsesScreenKeyboard()) {
-				if (auto* w = GetMainSDLWindow()) SDL_StopTextInput(w);
+				HostStopTextInput();
 			}
 			ime_focus_active = false;
 		}
@@ -304,22 +345,20 @@ struct tTVPElementsDialogManager::Impl
 
 	// portable 用: 最前面フォーカスインスタンスのテキスト欄 focus 状態に追従して
 	// ソフトキーボードを出し入れする。 PaintOverlay 末尾から毎フレーム呼ぶ。
-	// デスクトップでは no-op (開いた時点で開始済み・ポップアップも無い)。
+	// デスクトップ (WINVER 含む) では no-op (開いた時点で開始済み・ポップアップも無い)。
 	void UpdateFocusDrivenTextInput()
 	{
 		if (!PlatformUsesScreenKeyboard()) return;
-		auto* w = GetMainSDLWindow();
-		if (!w) return;
 
 		Instance* owner = TopmostKeyboardFocus();
 		bool want = owner && owner->active && owner->session &&
 		            owner->session->focus_consumes_text();
 
 		if (want && !ime_focus_active) {
-			SDL_StartTextInput(w);        // テキスト欄に focus → IME 表示
+			HostStartTextInput();         // テキスト欄に focus → IME 表示
 			ime_focus_active = true;
 		} else if (!want && ime_focus_active) {
-			SDL_StopTextInput(w);         // focus が外れた / ダイアログ閉じ → IME 非表示
+			HostStopTextInput();          // focus が外れた / ダイアログ閉じ → IME 非表示
 			ime_focus_active = false;
 		}
 	}
@@ -376,7 +415,7 @@ struct tTVPElementsDialogManager::Impl
 			}
 		}
 		instances.clear();
-		if (auto* w = GetMainSDLWindow()) SDL_StopTextInput(w);
+		HostStopTextInput();
 		ime_focus_active = false;
 		for (auto& [handler, action] : closed) handler->OnClosed(action);
 	}
@@ -696,10 +735,21 @@ void tTVPElementsDialogManager::EnsureRuntimeInitialized()
 	elements_modal::init("", /*load_default_fonts=*/false);
 
 	static bool s_fonts_loaded = false;
-	if (!s_fonts_loaded && Application) {
-		TVPRegisterElementsFontsFromStorageDir(ttstr(Application->ResourcePath().c_str()));
+	if (!s_fonts_loaded) {
+#ifdef __WINVER__
+		// WINVER: フォントは exe 埋め込み (resources.rc の "BINARY" 型)。 SDL 版の
+		// ResourcePath (resource:// / file://./resource/) は WINVER 埋め込みリソースの
+		// 代替なので、 WINVER では Win32 リソース API から直接列挙・登録する。
+		TVPRegisterElementsFontsFromWinResources();
 		TVPApplyRegisteredFontsToElementsTheme();
 		s_fonts_loaded = true;
+#else
+		if (Application) {
+			TVPRegisterElementsFontsFromStorageDir(ttstr(Application->ResourcePath().c_str()));
+			TVPApplyRegisteredFontsToElementsTheme();
+			s_fonts_loaded = true;
+		}
+#endif
 	}
 }
 
@@ -711,7 +761,7 @@ iTVPDrawDevice* tTVPElementsDialogManager::ResolveHostDeviceForFlow(
 {
 	iTVPDrawDevice* host = requested;
 	if (!host) {
-		if (_impl->renderers.empty()) {
+		if (_impl->hosts.empty()) {
 			TVPAddImportantLog(TJS_W("ElementsDialog: no DrawDevice registered"));
 			return nullptr;
 		}
@@ -721,7 +771,7 @@ iTVPDrawDevice* tTVPElementsDialogManager::ResolveHostDeviceForFlow(
 		if (_impl->active_device && _impl->FindRenderer(_impl->active_device)) {
 			host = _impl->active_device;
 		} else {
-			host = _impl->renderers.begin()->first;
+			host = _impl->hosts.begin()->first;
 		}
 	}
 	if (!_impl->FindRenderer(host)) {
@@ -1039,19 +1089,18 @@ void tTVPElementsDialogManager::ForceClose()
 }
 
 //---------------------------------------------------------------------------
-// Renderer 登録
+// 描画アダプタ提供口 (host) 登録
 //---------------------------------------------------------------------------
-void tTVPElementsDialogManager::RegisterRenderer(
-	iTVPDrawDevice* device,
-	std::unique_ptr<iTVPDialogRenderer> renderer)
+void tTVPElementsDialogManager::RegisterDialogHost(
+	iTVPDrawDevice* device, iTVPDialogRendererHost* host)
 {
-	if (!device || !renderer) return;
-	_impl->renderers[device] = std::move(renderer);
+	if (!device || !host) return;
+	_impl->hosts[device] = host;
 }
 
-void tTVPElementsDialogManager::UnregisterRenderer(iTVPDrawDevice* device)
+void tTVPElementsDialogManager::UnregisterDialogHost(iTVPDrawDevice* device)
 {
-	// この device をホストとするインスタンスは renderer が消える前に teardown。
+	// この device をホストとするインスタンスは host/renderer が消える前に teardown。
 	// (renderer 破棄前に ReleaseLayer 相当を済ませる)
 	std::vector<Impl::Instance*> doomed;
 	for (auto& inst : _impl->instances) {
@@ -1059,11 +1108,26 @@ void tTVPElementsDialogManager::UnregisterRenderer(iTVPDrawDevice* device)
 	}
 	for (auto* inst : doomed) _impl->TeardownInstance(inst);
 
-	_impl->renderers.erase(device);
+	_impl->hosts.erase(device);
 
 	// 提示中デバイスが外れたら既定ホストの記録もクリア (次の PaintOverlay で
 	// 現行デバイスへ更新される)。 GL 離脱時の OGLDrawDevice 破棄などで発生。
 	if (_impl->active_device == device) _impl->active_device = nullptr;
+}
+
+//---------------------------------------------------------------------------
+// tp_stub 公開の登録 API (プラグイン / 差し替え DrawDevice 向け)。 engine 内蔵
+// DrawDevice は manager を直接呼ぶが、プラグインは manager singleton を触れないので
+// この free 関数経由で host を登録する。 実体は singleton への委譲。
+//---------------------------------------------------------------------------
+void TVPRegisterDialogHost(iTVPDrawDevice* device, iTVPDialogRendererHost* host)
+{
+	tTVPElementsDialogManager::Instance().RegisterDialogHost(device, host);
+}
+
+void TVPUnregisterDialogHost(iTVPDrawDevice* device)
+{
+	tTVPElementsDialogManager::Instance().UnregisterDialogHost(device);
 }
 
 //---------------------------------------------------------------------------
@@ -1137,84 +1201,93 @@ void tTVPElementsDialogManager::PaintOverlay(iTVPDrawDevice* device)
 //---------------------------------------------------------------------------
 namespace {
 
-int MouseButtonToSDL(tTVPMouseButton mb)
+namespace ce = cycfi::elements;
+
+// krkrz ネイティブ入力型 → cycfi 中立入力型への変換。 マネージャは SDL/WIN 両
+// build 共通で Windows VK / tTVPMouseButton / TVP_SS_* を受け取り、 overlay_session
+// の host 非依存 API (mouse_button::what / key_code / pad_button + mod_* の OR) へ
+// 直接マップする。 SDL や Win32 のネイティブ enum は経由しない。
+ce::mouse_button::what MouseButtonToElements(tTVPMouseButton mb)
 {
 	switch (mb) {
-		case mbLeft:   return SDL_BUTTON_LEFT;
-		case mbMiddle: return SDL_BUTTON_MIDDLE;
-		case mbRight:  return SDL_BUTTON_RIGHT;
-		default:       return SDL_BUTTON_LEFT;
+		case mbMiddle: return ce::mouse_button::middle;
+		case mbRight:  return ce::mouse_button::right;
+		default:       return ce::mouse_button::left;   // mbLeft ほか
 	}
 }
 
-int FlagsToSDLMods(tjs_uint32 flags)
+int FlagsToElementsMods(tjs_uint32 flags)
 {
 	int mods = 0;
-	if (flags & TVP_SS_SHIFT) mods |= SDL_KMOD_SHIFT;
-	if (flags & TVP_SS_CTRL)  mods |= SDL_KMOD_CTRL;
-	if (flags & TVP_SS_ALT)   mods |= SDL_KMOD_ALT;
+	if (flags & TVP_SS_SHIFT) mods |= ce::mod_shift;
+	if (flags & TVP_SS_CTRL)  mods |= ce::mod_control;
+	if (flags & TVP_SS_ALT)   mods |= ce::mod_alt;
 	return mods;
 }
 
 //---------------------------------------------------------------------------
-// Windows VK code → (SDL_Keycode | SDL_GAMEPAD_BUTTON) 振り分け。
+// Windows VK code → cycfi 中立入力型 (key_code | pad_button) 振り分け。
 //---------------------------------------------------------------------------
 struct vk_routing {
 	enum class kind { none, key, pad_button };
-	kind k         = kind::none;
-	int  sdl_key   = 0;
-	int  extra_mods = 0;
-	int  sdl_pad   = 0;
+	kind           k          = kind::none;
+	ce::key_code   key        = ce::key_code::unknown;
+	int            extra_mods = 0;
+	ce::pad_button pad        = ce::pad_button::unknown;
 };
 
 vk_routing RouteVk(tjs_uint vk)
 {
-	using K = vk_routing::kind;
-	auto key  = [](int sdl, int m = 0) { return vk_routing{K::key, sdl, m, 0}; };
-	auto pad  = [](int gp) { return vk_routing{K::pad_button, 0, 0, gp}; };
+	using K  = vk_routing::kind;
+	using kc = ce::key_code;
+	using pb = ce::pad_button;
+	auto as_key = [](kc c, int m = 0) { return vk_routing{K::key, c, m, pb::unknown}; };
+	auto as_pad = [](pb b)            { return vk_routing{K::pad_button, kc::unknown, 0, b}; };
 
 	switch (vk) {
-		case VK_RETURN: return key(SDLK_RETURN);
-		case VK_TAB:    return key(SDLK_TAB);
-		case VK_ESCAPE: return key(SDLK_ESCAPE);
-		case VK_BACK:   return key(SDLK_BACKSPACE);
-		case VK_DELETE: return key(SDLK_DELETE);
-		case VK_INSERT: return key(SDLK_INSERT);
-		case VK_HOME:   return key(SDLK_HOME);
-		case VK_END:    return key(SDLK_END);
-		case VK_PRIOR:  return key(SDLK_PAGEUP);
-		case VK_NEXT:   return key(SDLK_PAGEDOWN);
-		case VK_SPACE:  return key(SDLK_SPACE);
-		case VK_LEFT:   return key(SDLK_LEFT);
-		case VK_UP:     return key(SDLK_UP);
-		case VK_RIGHT:  return key(SDLK_RIGHT);
-		case VK_DOWN:   return key(SDLK_DOWN);
+		case VK_RETURN: return as_key(kc::enter);
+		case VK_TAB:    return as_key(kc::tab);
+		case VK_ESCAPE: return as_key(kc::escape);
+		case VK_BACK:   return as_key(kc::backspace);
+		case VK_DELETE: return as_key(kc::_delete);
+		case VK_INSERT: return as_key(kc::insert);
+		case VK_HOME:   return as_key(kc::home);
+		case VK_END:    return as_key(kc::end);
+		case VK_PRIOR:  return as_key(kc::page_up);
+		case VK_NEXT:   return as_key(kc::page_down);
+		case VK_SPACE:  return as_key(kc::space);
+		case VK_LEFT:   return as_key(kc::left);
+		case VK_UP:     return as_key(kc::up);
+		case VK_RIGHT:  return as_key(kc::right);
+		case VK_DOWN:   return as_key(kc::down);
 
-		case 0x1C0: return pad(SDL_GAMEPAD_BUTTON_SOUTH);          // VK_PAD1  (A)
-		case 0x1C1: return pad(SDL_GAMEPAD_BUTTON_EAST);           // VK_PAD2  (B)
-		case 0x1C2: return pad(SDL_GAMEPAD_BUTTON_WEST);           // VK_PAD3  (X)
-		case 0x1C3: return pad(SDL_GAMEPAD_BUTTON_NORTH);          // VK_PAD4  (Y)
-		case 0x1C4: return pad(SDL_GAMEPAD_BUTTON_LEFT_SHOULDER);  // VK_PAD5  (LB)
-		case 0x1C5: return pad(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER); // VK_PAD6  (RB)
-		case 0x1C8: return pad(SDL_GAMEPAD_BUTTON_BACK);           // VK_PAD9  (Back)
-		case 0x1C9: return pad(SDL_GAMEPAD_BUTTON_START);          // VK_PAD10 (Start)
-		case 0x1CA: return pad(SDL_GAMEPAD_BUTTON_LEFT_STICK);     // VK_PAD11 (L3)
-		case 0x1CB: return pad(SDL_GAMEPAD_BUTTON_RIGHT_STICK);    // VK_PAD12 (R3)
+		case 0x1C0: return as_pad(pb::a);          // VK_PAD1  (A)
+		case 0x1C1: return as_pad(pb::b);          // VK_PAD2  (B)
+		case 0x1C2: return as_pad(pb::x);          // VK_PAD3  (X)
+		case 0x1C3: return as_pad(pb::y);          // VK_PAD4  (Y)
+		case 0x1C4: return as_pad(pb::lb);         // VK_PAD5  (LB)
+		case 0x1C5: return as_pad(pb::rb);         // VK_PAD6  (RB)
+		case 0x1C8: return as_pad(pb::back);       // VK_PAD9  (Back)
+		case 0x1C9: return as_pad(pb::start);      // VK_PAD10 (Start)
+		case 0x1CA: return as_pad(pb::l3);         // VK_PAD11 (L3)
+		case 0x1CB: return as_pad(pb::r3);         // VK_PAD12 (R3)
 
 		case 0x1B5: case 0x1CC: case 0x1D0:
-			return pad(SDL_GAMEPAD_BUTTON_DPAD_LEFT);
+			return as_pad(pb::dpad_left);
 		case 0x1B6: case 0x1CD: case 0x1D1:
-			return pad(SDL_GAMEPAD_BUTTON_DPAD_UP);
+			return as_pad(pb::dpad_up);
 		case 0x1B7: case 0x1CE: case 0x1D2:
-			return pad(SDL_GAMEPAD_BUTTON_DPAD_RIGHT);
+			return as_pad(pb::dpad_right);
 		case 0x1B8: case 0x1CF: case 0x1D3:
-			return pad(SDL_GAMEPAD_BUTTON_DPAD_DOWN);
+			return as_pad(pb::dpad_down);
 
-		case 0x1B9: return pad(SDL_GAMEPAD_BUTTON_SOUTH);
+		case 0x1B9: return as_pad(pb::a);
 
 		default:
-			if (vk >= '0' && vk <= '9') return key(static_cast<int>(vk));
-			if (vk >= 'A' && vk <= 'Z') return key(static_cast<int>(vk - 'A' + 'a'));
+			// 数字 (VK_0..9 = 0x30..0x39) / 英字 (VK_A..Z = 0x41..0x5A) は
+			// cycfi key_code が大文字 ASCII 準拠なのでそのまま通す。
+			if (vk >= '0' && vk <= '9') return as_key(static_cast<kc>(vk));
+			if (vk >= 'A' && vk <= 'Z') return as_key(static_cast<kc>(vk));
 			return vk_routing{};
 	}
 }
@@ -1239,7 +1312,7 @@ bool tTVPElementsDialogManager::ForwardMouseDown(
 		float sy = Impl::ToSurfaceY(*inst, y);
 		if (inst->modal || Impl::RectContains(*inst, sx, sy)) {
 			inst->session->on_mouse_down(sx, sy,
-				MouseButtonToSDL(mb), FlagsToSDLMods(flags));
+				MouseButtonToElements(mb), FlagsToElementsMods(flags));
 			return true;
 		}
 	}
@@ -1259,7 +1332,7 @@ bool tTVPElementsDialogManager::ForwardMouseUp(
 		float sy = Impl::ToSurfaceY(*inst, y);
 		if (inst->modal || Impl::RectContains(*inst, sx, sy)) {
 			inst->session->on_mouse_up(sx, sy,
-				MouseButtonToSDL(mb), FlagsToSDLMods(flags));
+				MouseButtonToElements(mb), FlagsToElementsMods(flags));
 			return true;
 		}
 	}
@@ -1278,7 +1351,7 @@ bool tTVPElementsDialogManager::ForwardMouseMove(
 		float sx = Impl::ToSurfaceX(*inst, x);
 		float sy = Impl::ToSurfaceY(*inst, y);
 		if (!hit && (inst->modal || Impl::RectContains(*inst, sx, sy))) {
-			inst->session->on_mouse_move(sx, sy, FlagsToSDLMods(flags));
+			inst->session->on_mouse_move(sx, sy, FlagsToElementsMods(flags));
 			inst->cursor_inside = true;
 			hit = inst;
 			consumed = true;
@@ -1344,12 +1417,12 @@ bool tTVPElementsDialogManager::ForwardKeyDown(tjs_uint key, tjs_uint32 shift)
 	bool handled = false;
 	switch (r.k) {
 		case vk_routing::kind::key: {
-			int mods = FlagsToSDLMods(shift) | r.extra_mods;
-			handled = f->session->on_key_down(r.sdl_key, mods);
+			int mods = FlagsToElementsMods(shift) | r.extra_mods;
+			handled = f->session->on_key_down(r.key, mods);
 			break;
 		}
 		case vk_routing::kind::pad_button:
-			handled = f->session->on_pad_button(r.sdl_pad, /*down=*/true);
+			handled = f->session->on_pad_button(r.pad, /*down=*/true);
 			break;
 		case vk_routing::kind::none:
 			handled = false;
@@ -1367,12 +1440,12 @@ bool tTVPElementsDialogManager::ForwardKeyUp(tjs_uint key, tjs_uint32 shift)
 	bool handled = false;
 	switch (r.k) {
 		case vk_routing::kind::key: {
-			int mods = FlagsToSDLMods(shift) | r.extra_mods;
-			handled = f->session->on_key_up(r.sdl_key, mods);
+			int mods = FlagsToElementsMods(shift) | r.extra_mods;
+			handled = f->session->on_key_up(r.key, mods);
 			break;
 		}
 		case vk_routing::kind::pad_button:
-			handled = f->session->on_pad_button(r.sdl_pad, /*down=*/false);
+			handled = f->session->on_pad_button(r.pad, /*down=*/false);
 			break;
 		case vk_routing::kind::none:
 			handled = false;
@@ -1384,18 +1457,52 @@ bool tTVPElementsDialogManager::ForwardKeyUp(tjs_uint key, tjs_uint32 shift)
 bool tTVPElementsDialogManager::ForwardKeyPress(tjs_char key)
 {
 	Impl::Instance* f = _impl->TopmostKeyboardFocus();
-	if (!f || !f->session) return false;
+	if (!f || !f->session) {
+		_impl->pending_high_surrogate = 0;   // フォーカス喪失時は保持もクリア
+		return false;
+	}
+
+	// key は UTF-16 code unit (tjs_char = 16bit)。 サロゲートペアを合成して
+	// 1 コードポイント (cp) にしてから UTF-8 化する。 WINVER の WM_CHAR は BMP 外を
+	// high/low 2 回に分けて配信する (SDL は ForwardText で完全 UTF-8 が来るので無関係)。
+	tjs_uint32 unit = static_cast<tjs_uint16>(key);
+	tjs_uint32 cp;
+	if (unit >= 0xD800 && unit <= 0xDBFF) {
+		// high surrogate: 保持して low を待つ (まだ出力しない、 消費扱い)。
+		_impl->pending_high_surrogate = static_cast<tjs_uint16>(unit);
+		return true;
+	} else if (unit >= 0xDC00 && unit <= 0xDFFF) {
+		// low surrogate: 直前の high と合成。 high が無ければ孤立 low なので無視。
+		if (_impl->pending_high_surrogate) {
+			cp = 0x10000u
+			   + ((static_cast<tjs_uint32>(_impl->pending_high_surrogate) - 0xD800u) << 10)
+			   + (unit - 0xDC00u);
+			_impl->pending_high_surrogate = 0;
+		} else {
+			return true;
+		}
+	} else {
+		// 通常の BMP 文字。 保持中の high があれば (不正並び) 破棄する。
+		_impl->pending_high_surrogate = 0;
+		cp = unit;
+	}
+
+	// cp → UTF-8 (最大 4 byte)。
 	char buf[8] = {0};
-	tjs_uint32 cp = static_cast<tjs_uint32>(key);
 	if (cp < 0x80) {
 		buf[0] = (char)cp;
 	} else if (cp < 0x800) {
 		buf[0] = (char)(0xC0 | (cp >> 6));
 		buf[1] = (char)(0x80 | (cp & 0x3F));
-	} else {
+	} else if (cp < 0x10000) {
 		buf[0] = (char)(0xE0 | (cp >> 12));
 		buf[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
 		buf[2] = (char)(0x80 | (cp & 0x3F));
+	} else {
+		buf[0] = (char)(0xF0 | (cp >> 18));
+		buf[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+		buf[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
+		buf[3] = (char)(0x80 | (cp & 0x3F));
 	}
 	f->session->on_text_input(buf);
 	return true;
@@ -1418,11 +1525,11 @@ bool tTVPElementsDialogManager::ForwardTouchMove(tjs_real, tjs_real, tjs_real, t
 
 void tTVPElementsDialogManager::ShowTestDialog()
 {
-	if (_impl->renderers.empty()) {
+	if (_impl->hosts.empty()) {
 		TVPAddImportantLog(TJS_W("ElementsDialog: no registered DrawDevice; cannot show test dialog"));
 		return;
 	}
-	ShowTestDialog(_impl->renderers.begin()->first);
+	ShowTestDialog(_impl->hosts.begin()->first);
 }
 
 //---------------------------------------------------------------------------

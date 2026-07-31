@@ -2140,6 +2140,8 @@ extern void * TVPImportFuncPtrd795cd5ebfb6ca6f1b91bafbe66d7a65;
 extern void * TVPImportFuncPtr4564a3ce5cf48cb47e63a3948cef03be;
 extern void * TVPImportFuncPtrbee2775f2e4042043b7cb08056d2ae5c;
 extern void * TVPImportFuncPtr5fd8dfd2816a2cfd4a51cab41053d575;
+extern void * TVPImportFuncPtrf9ae2164a9808838ae76d5abbd4da3ee;
+extern void * TVPImportFuncPtrb102018b90a9c8a06052b9d3acf78edc;
 extern void * TVPImportFuncPtr9982ebedc12d343cb098e2a7b25bdef1;
 extern void * TVPImportFuncPtr81eeacbed5ee6129bef4b370e28b5d10;
 extern void * TVPImportFuncPtr6ed1088905d99012d2fb5827ea19527e;
@@ -6409,15 +6411,18 @@ public:
 // tTVPVideoOverlayMode
 //---------------------------------------------------------------------------
 enum tTVPVideoOverlayMode {
-	vomOverlay,		// Overlay (最前面描画)
+	vomOverlay,		// Overlay (最前面描画)。既定。MF-native 形式は HW (IMFMediaEngine) デコード
 	vomLayer,		// Draw Layer (レイヤ描画)
-	vomMixer,		// 【非推奨エイリアス】旧 VMR。現在は vomOverlay と同挙動 (値は script 互換で保持)
+	vomMixer,		// Overlay + mixer 追加画像。HW を使わず CPU presenter 固定 (mixer 確実描画)
 	vomMFEVR,		// 【非推奨エイリアス】旧 Media Foundation + EVR。現在は vomOverlay と同挙動
 };
-// Track V-D/V-E: DirectShow/EVR 撤去に伴い実モードは vomOverlay / vomLayer の 2 つのみ。
-// vomMixer / vomMFEVR は TJS 定数 (数値 2/3) を互換のため残すが、挙動は vomOverlay に統合
-// された。overlay は形式ルート (webm/mpg/wmv/mp4/…) の統一経路で再生され、mixer の追加画像
-// 合成は presenter (iTVPVideoPresenter) 経由の overlay 機能へ格上げされた。
+// Track V-D/V-E: DirectShow/EVR 撤去に伴い実モードは vomOverlay / vomLayer / vomMixer。
+// - vomOverlay(既定): 形式ルート統一経路。MF-native (mp4/wmv/asf 等) は HW デコード
+//   (IMFMediaEngine)、webm/mpg は CPU。mixer 追加画像は描画しない (HW 経路は動画側が
+//   presenter を持つため)。-mediaengine=no で HW を無効化し全形式 CPU へ。
+// - vomMixer: mixer 追加画像 (setMixingLayer) を確実に描画したい時の指定。HW を使わず必ず
+//   CPU presenter 経路にする (mixer を engine 側で合成 + 音声は自前処理=音量制御が engine 統合)。
+// - vomMFEVR は互換のため残す (値 3、挙動は vomOverlay と同じ)。
 
 
 
@@ -6476,6 +6481,68 @@ public:
 	virtual void TJS_INTF_METHOD RemoveVideoPresenter( iTVPVideoPresenter * presenter ) = 0;
 };
 #endif // __WINVER__
+
+
+class iTVPDialogRenderer
+{
+public:
+	virtual ~iTVPDialogRenderer() = default;
+
+	// 表示先サーフェイスのサイズ (renderer の logical 座標空間)。
+	// 中央配置の計算等に使う。失敗時は 0,0 を返す。
+	virtual void GetSurfaceSize(int& w, int& h) = 0;
+
+	// DrawDevice の DestRect (= ゲーム画像が描画される rect、 logical 座標
+	// 空間の絶対位置)。マウス座標もこの rect の原点系で来るので、ダイアログの
+	// 中央配置およびマウス座標変換の基準としてこちらを使う。
+	// 取れない場合は (0, 0, surface_w, surface_h) でフォールバックすること。
+	virtual void GetDestRect(int& x, int& y, int& w, int& h) = 0;
+
+	// === レイヤ (= overlay インスタンス) 単位のテクスチャ管理 ===
+	// 複数の非モーダル UI を同一フレーム内で重ねて表示できるように、 描画先
+	// テクスチャ / ステージングバッファは `layer` キー (overlay インスタンスを
+	// 一意に識別する不透明ポインタ) ごとに保持する。 同じ layer で同一サイズが
+	// 連続する場合は再確保しないこと。 SDL_RenderTexture 等はテクスチャを
+	// 参照キューイングするため、 単一テクスチャを使い回すと先に present した
+	// レイヤの内容が壊れる。 layer ごとに別テクスチャを持つ必要がある。
+
+	// Elements が描画する RGBA8888 ピクセルバッファ (layer 固有、 連続 pitch)。
+	virtual uint32_t* AcquireBuffer(const void* layer, int w, int h) = 0;
+	// 直近 AcquireBuffer した layer のステージングをテクスチャへアップロード。
+	virtual void ReleaseBuffer(const void* layer) = 0;
+
+	// layer のバッファ内容を画面の (x, y, w, h) に貼る (surface 座標)。
+	// DrawDevice::Show() 終端で、 z-order 奥→手前の順に layer ごとに呼ばれる。
+	virtual void PresentOverlay(const void* layer, int x, int y, int w, int h) = 0;
+
+	// overlay インスタンスが閉じられたとき、 その layer のテクスチャ /
+	// ステージングを破棄する。 未知の layer は no-op。
+	virtual void ReleaseLayer(const void* layer) = 0;
+};
+
+//---------------------------------------------------------------------------
+//!@brief DrawDevice が実装する「ダイアログ描画アダプタの提供口」。
+//
+// overlay 動画の iTVPVideoPresenterHost と対になる設計。 各 DrawDevice は自分の
+// iTVPDialogRenderer 実装 (SDL_Texture / GLTexture / D3D11 等) を所有し、この
+// インターフェース経由で貸し出す。 tTVPElementsDialogManager は具象 renderer 型を
+// 知らずに host 経由で renderer を取得する。
+//
+// DrawDevice はさらに TJS の読み取り専用プロパティ "dialogRendererHost" で自身
+// (iTVPDialogRendererHost*) のポインタを tjs_int64 として公開する (videoPresenterHost
+// と同じ規約)。 これにより、 プラグイン等の差し替え DrawDevice も同じ構造 —
+// iTVPDialogRendererHost を実装 + renderer を所有 + manager へ RegisterDialogHost —
+// を実装するだけで overlay ダイアログ描画に参加できる。
+//---------------------------------------------------------------------------
+class iTVPDialogRendererHost
+{
+public:
+	virtual ~iTVPDialogRendererHost() = default;
+
+	//! このDrawDeviceが所有するダイアログ描画アダプタ。 DrawDevice が所有し続ける
+	//! (呼出側は delete しない)。 未対応 DrawDevice / まだ生成前は nullptr を返してよい。
+	virtual iTVPDialogRenderer* GetDialogRenderer() = 0;
+};
 
 
 //---------------------------------------------------------------------------
@@ -9070,6 +9137,26 @@ inline IDirect3D9 * TVPGetDirect3DObjectNoAddRef()
 	return ((__functype)(TVPImportFuncPtr5fd8dfd2816a2cfd4a51cab41053d575))();
 }
 #endif
+inline void TVPRegisterDialogHost(iTVPDrawDevice * device , iTVPDialogRendererHost * host)
+{
+	if(!TVPImportFuncPtrf9ae2164a9808838ae76d5abbd4da3ee)
+	{
+		static char funcname[] = "void ::TVPRegisterDialogHost(iTVPDrawDevice *,iTVPDialogRendererHost *)";
+		TVPImportFuncPtrf9ae2164a9808838ae76d5abbd4da3ee = TVPGetImportFuncPtr(funcname);
+	}
+	typedef void (STDCALL * __functype)(iTVPDrawDevice *, iTVPDialogRendererHost *);
+	((__functype)(TVPImportFuncPtrf9ae2164a9808838ae76d5abbd4da3ee))(device, host);
+}
+inline void TVPUnregisterDialogHost(iTVPDrawDevice * device)
+{
+	if(!TVPImportFuncPtrb102018b90a9c8a06052b9d3acf78edc)
+	{
+		static char funcname[] = "void ::TVPUnregisterDialogHost(iTVPDrawDevice *)";
+		TVPImportFuncPtrb102018b90a9c8a06052b9d3acf78edc = TVPGetImportFuncPtr(funcname);
+	}
+	typedef void (STDCALL * __functype)(iTVPDrawDevice *);
+	((__functype)(TVPImportFuncPtrb102018b90a9c8a06052b9d3acf78edc))(device);
+}
 inline iTVPScanLineProvider * TVPSLPLoadImage(const ttstr & name , tjs_int bpp , tjs_uint32 key , tjs_uint w , tjs_uint h)
 {
 	if(!TVPImportFuncPtr9982ebedc12d343cb098e2a7b25bdef1)

@@ -32,6 +32,18 @@ void TVPInstallElementsResourceLoader();
 //!        directory が存在しないか空の場合は no-op。
 void TVPRegisterElementsFontsFromStorageDir(const ttstr& dir);
 
+#ifdef __WINVER__
+//! @brief WINVER host: exe に埋め込まれた ("BINARY" 型リソース) .ttf / .otf を
+//!        列挙して register_font_buffer で登録する。 SDL/generic の
+//!        TVPRegisterElementsFontsFromStorageDir に相当する WINVER 向け経路。
+//!        WINVER はリソースが exe 埋め込み (CMakeLists.txt の resources.rc,
+//!        `<filename> BINARY "<path>"`) で、 storage 列挙が効かないため、 Win32
+//!        リソース API (EnumResourceNames / FindResource) で直接読み出す。
+//!        フォント名から family / weight / slant / stretch を推定するのは
+//!        StorageDir 版と同一ロジック。
+void TVPRegisterElementsFontsFromWinResources();
+#endif
+
 //! @brief 単一フォントを明示登録する (TJS Dialog.registerFont のバックエンド)。
 //!        weight / slant / stretch は `cycfi::elements::font_constants` の整数値:
 //!          weight  : 10 thin / 20 extra_light / 30 light / 40 normal /

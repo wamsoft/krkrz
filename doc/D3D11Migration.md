@@ -104,9 +104,23 @@ D3D11/DXGI ベースへ全面置換する作業計画。SDL / generic 変種は�
   再合成される)。ウィンドウ移動 OK。全画面は排他非使用 (borderless windowed) のため
   Alt+Enter は no-op (`DXGI_MWA_NO_ALT_ENTER` + エンジン未割当。設計どおり); エンジンの
   `SwitchToFullScreen` はクライアントサイズ変化として同じ `ResizeSwapChain` 経路で処理される。
-  マルチモニタ移動は単一モニタ環境のため未検証。TDR/デバイス削除は runtime 再現が困難で
+  TDR/デバイス削除は runtime 再現が困難で
   未実行だが、コード経路 (Present `DXGI_ERROR_DEVICE_REMOVED` → `HandleDeviceLost` →
   `DestroyD3DDevice` + `InvalidateAll` → 次 `EnsureDevice` で再生成) は実装済。
+  **異DPIマルチモニタ移動の追従 (2026-07-31)**: 別スケーリングモニタへ移動すると
+  `WM_DPICHANGED` で OS 提案矩形へリサイズされクライアント物理px が DPI 比で変化する
+  (実測 200%→300% で 1920×1080 → 2883×1624)。`ResizeSwapChain` は追従するが、
+  `TTVPWindowForm::SetDrawDeviceDestRect` の `DestRect` は従来 `layer×zoom` 固定で
+  クライアントに追従せず、ゲーム合成が左上に寄り黒帯化していた (ダイアログも同オフセット)。
+  修正: windowed 分岐で `layer×zoom` を実クライアントへ**アスペクト維持 letterbox フィット**
+  させ、`DestRect` をクライアントに追従させた (SDL の `SetRenderLogicalPresentation` 相当を
+  WINVER 側の DestRect 計算で表現)。`DestRect` は描画配置と入力座標変換
+  (`TransformToPrimaryLayerManager` は DestRect 幅でスケール) の単一基準なので、これ一箇所で
+  描画・入力・ダイアログが整合する。DPI 変更は縦横同率スケールのためフィット後はクライアント
+  全体を占め offset=0。通常時 (client==layer×zoom) は `DestRect=layer×zoom` で従来と同一の
+  no-op。実機検証: プログラム的な `win.left` 移動で DISPLAY1(200%)⇔DISPLAY2(300%) を往復し、
+  両モニタでゲーム内容が全面表示・ダイアログ中央・往復で inner が 1920⇔2883 追従・通常時無回帰を
+  captureScreen で確認済。
 
 ## 別計画 (本計画のスコープ外)
 

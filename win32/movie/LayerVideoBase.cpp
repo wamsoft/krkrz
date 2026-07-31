@@ -17,13 +17,15 @@
 #endif
 
 //---------------------------------------------------------------------------
-tTVPLayerVideoBase::tTVPLayerVideoBase( HWND owner, bool overlayOutput )
+tTVPLayerVideoBase::tTVPLayerVideoBase( HWND owner, bool overlayOutput, bool preferI420 )
 : VideoWidth(0), VideoHeight(0), VideoFPS(0.0), DurationMs(0)
 , State(stStopped), Terminate(false), DoSeek(false), SeekMs(0)
 , OwnerWindow(owner), FrontIdx(0), BufferSize(0)
 , Updated(false), Completed(false), CurPtsMs(0)
 , ClockValid(false), AudioEpochMs(0), PtsEpochMs(0)
 , RefCount(1), Loop(false), AudioVolMB(0), OverlayMode(overlayOutput), Overlay(nullptr)
+, PreferI420(preferI420 && !overlayOutput)   // overlayOutput が優先
+, I420W(0), I420H(0), I420Valid(false), I420Dirty(false)
 , Audio(nullptr)
 {
 	Buf[0] = nullptr;
@@ -96,8 +98,10 @@ void tTVPLayerVideoBase::ThreadMain()
 		}
 		if( State.load() != stPlaying ) continue;
 
-		// 出力先が未準備なら少し待って再試行 (layer=バッファ / overlay=子ウィンドウ)
-		bool notReady = OverlayMode ? ( Overlay == nullptr )
+		// 出力先が未準備なら少し待って再試行 (layer=バッファ / overlay=子ウィンドウ /
+		// preferI420=内部保持なので寸法のみ確認)
+		bool notReady = PreferI420  ? ( VideoWidth <= 0 || VideoHeight <= 0 )
+		              : OverlayMode ? ( Overlay == nullptr )
 		                            : ( !Buf[0] || VideoWidth <= 0 || VideoHeight <= 0 );
 		if( notReady )
 		{
@@ -114,8 +118,9 @@ void tTVPLayerVideoBase::ThreadMain()
 		bool eos = false;
 		bool got = false;
 		int back = 0;
-		if( OverlayMode )
+		if( OverlayMode || PreferI420 )
 		{
+			// overlay / presenter(I420): デコードして内部保持 (present/buffer は sync 後)
 			got = DecoderDecodeOverlay( pts, eos );
 		}
 		else
@@ -173,7 +178,12 @@ void tTVPLayerVideoBase::ThreadMain()
 		if( Terminate ) break;
 
 		// 提示
-		if( OverlayMode )
+		if( PreferI420 )
+		{
+			// presenter 経路: 保持 I420 を内部バッファへ copy (engine が GetI420Frame で pull)
+			BufferI420FromDecoder();
+		}
+		else if( OverlayMode )
 		{
 			// 保持フレームを子ウィンドウへ present (D3D11 YUV)
 			if( Overlay )
@@ -353,6 +363,44 @@ void __stdcall tTVPLayerVideoBase::GetVideoSize( long *width, long *height )
 void __stdcall tTVPLayerVideoBase::GetFrontBuffer( BYTE **buff )
 {
 	if( buff ) *buff = Buf[FrontIdx.load()];
+}
+//---------------------------------------------------------------------------
+// preferI420: 直前 DecoderDecodeOverlay の I420 を I420Back へ packed copy する
+// (デコードスレッドから呼ばれる)。plane データは次デコードで無効化されるため同期 copy。
+//---------------------------------------------------------------------------
+void tTVPLayerVideoBase::BufferI420FromDecoder()
+{
+	const BYTE *y=nullptr,*u=nullptr,*v=nullptr; int ys=0,us=0,vs=0,w=0,h=0;
+	if( !DecoderGetI420Planes( &y, &ys, &u, &us, &v, &vs, &w, &h ) ) return;
+	if( !y || !u || !v || w<=0 || h<=0 ) return;
+	int cw = (w+1)/2, ch = (h+1)/2;
+	std::lock_guard<std::mutex> lk(I420Mtx);
+	I420Back.resize( (size_t)w*h + 2*(size_t)cw*ch );
+	BYTE *d = I420Back.data();
+	for( int r=0; r<h;  ++r ) memcpy( d + (size_t)r*w, y + (size_t)r*ys, w );
+	BYTE *du = d + (size_t)w*h;
+	for( int r=0; r<ch; ++r ) memcpy( du + (size_t)r*cw, u + (size_t)r*us, cw );
+	BYTE *dv = du + (size_t)cw*ch;
+	for( int r=0; r<ch; ++r ) memcpy( dv + (size_t)r*cw, v + (size_t)r*vs, cw );
+	I420W = w; I420H = h; I420Valid = true; I420Dirty = true;
+}
+//---------------------------------------------------------------------------
+// 描画スレッドから最新 I420 を取得。ロック下に Back→Front 複製し Front を返す
+// (upload 中にデコードスレッドが Back を上書きしても安全)。
+//---------------------------------------------------------------------------
+bool __stdcall tTVPLayerVideoBase::GetI420Frame( const BYTE **y, int *yStride, const BYTE **u, int *uStride,
+	const BYTE **v, int *vStride, int *w, int *h )
+{
+	std::lock_guard<std::mutex> lk(I420Mtx);
+	if( !I420Valid || I420W<=0 || I420H<=0 ) return false;
+	if( I420Dirty || I420Front.size()!=I420Back.size() ) { I420Front = I420Back; I420Dirty = false; }
+	int vw = I420W, vh = I420H, cw = (vw+1)/2, ch = (vh+1)/2;
+	const BYTE *base = I420Front.data();
+	if(y)*y=base; if(yStride)*yStride=vw;
+	if(u)*u=base+(size_t)vw*vh; if(uStride)*uStride=cw;
+	if(v)*v=base+(size_t)vw*vh+(size_t)cw*ch; if(vStride)*vStride=cw;
+	if(w)*w=vw; if(h)*h=vh;
+	return true;
 }
 //---------------------------------------------------------------------------
 // overlay モード: 子ウィンドウ present へ委譲。layer モードでは no-op。

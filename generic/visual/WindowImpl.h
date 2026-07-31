@@ -98,7 +98,7 @@ public:
 	virtual void UpdateContent();
 
 //-- videooverlay
-	void UpdateVideo(tjs_int w, tjs_int h, std::function<void(char *dest, int pitch)> updator);
+	//! pull 型 overlay 動画の presenter 登録を全 overlay 分解除する (mixer 停止/window close)。
 	void ClearVideo();
 	void AddVideoOverlay( tTJSNI_VideoOverlay *overlay );
 	void DelVideoOverlay( tTJSNI_VideoOverlay *overlay );

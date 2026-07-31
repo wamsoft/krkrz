@@ -14,10 +14,10 @@
 #include "StoragesResourceLoader.h"   // TVPRegisterElementsFont(Dir)
 #include "VariantJsonUtil.h" // TVPVariantToJsonUtf8 (showDict / showModalDict)
 
-// Phase 6c モーダル: 独立 SDL_Window 経由のブロッキング実行 (SDL3 ビルド専用)。
-// DialogIntf.cpp 自体が KRKRZ_SRC_ELEMENTS → KRKRZ_SRC_SDL3 にしか含まれない
-// ので #ifdef ガード不要。
-#include "SDLElementsModalRunner.h"
+// モーダル実行 API (host 非依存の宣言)。 実装は host 別: SDL host =
+// SDLElementsModalRunner.cpp (独立 SDL_Window の nested pump)、 WINVER host =
+// WinElementsModalRunner.cpp (現状スタブ、 showModal* は未対応で false を返す)。
+#include "ElementsModalRunner.h"
 #include "StorageIntf.h"     // TVPReadStream (ShowModalFile)
 
 #include <string>

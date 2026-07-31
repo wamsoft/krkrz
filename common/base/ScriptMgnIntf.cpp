@@ -68,7 +68,10 @@
 #endif
 // Agent クラス (エージェント駆動制御 API)。 REPL 機構の一部なので
 // KRKRZ_REPL=OFF (= KRKRZ_USE_REPL 未定義) では完全に除外される。
-// 実装は sdl3/environ/AgentControlIntf.cpp。 include パス非依存のため前方宣言。
+// 実装は common/environ/AgentControlIntf.cpp (SDL3 / WINVER 両対応)。入力注入は
+// AgentInput seam (sdl3/win32 の AgentInput.cpp) 経由でプラットフォーム分離、
+// captureScreen / ダイアログ制御は共通。
+// include パス非依存のため前方宣言。
 #if defined(KRKRZ_HAS_ELEMENTS) && defined(KRKRZ_USE_REPL)
 extern tTJSNativeClass* TVPCreateNativeClass_Agent();
 #endif

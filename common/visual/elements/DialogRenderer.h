@@ -5,7 +5,11 @@
 #define ELEMENTS_DIALOG_RENDERER_H
 
 #include <cstdint>
+#include "tjsTypes.h"   // TJS_EXP_FUNC_DEF (TVPRegisterDialogHost の tp_stub 公開)
 
+class iTVPDrawDevice;   // 登録 API の引数 (前方宣言)
+
+/*[*/
 class iTVPDialogRenderer
 {
 public:
@@ -42,5 +46,41 @@ public:
 	// ステージングを破棄する。 未知の layer は no-op。
 	virtual void ReleaseLayer(const void* layer) = 0;
 };
+
+//---------------------------------------------------------------------------
+//!@brief DrawDevice が実装する「ダイアログ描画アダプタの提供口」。
+//
+// overlay 動画の iTVPVideoPresenterHost と対になる設計。 各 DrawDevice は自分の
+// iTVPDialogRenderer 実装 (SDL_Texture / GLTexture / D3D11 等) を所有し、この
+// インターフェース経由で貸し出す。 tTVPElementsDialogManager は具象 renderer 型を
+// 知らずに host 経由で renderer を取得する。
+//
+// DrawDevice はさらに TJS の読み取り専用プロパティ "dialogRendererHost" で自身
+// (iTVPDialogRendererHost*) のポインタを tjs_int64 として公開する (videoPresenterHost
+// と同じ規約)。 これにより、 プラグイン等の差し替え DrawDevice も同じ構造 —
+// iTVPDialogRendererHost を実装 + renderer を所有 + manager へ RegisterDialogHost —
+// を実装するだけで overlay ダイアログ描画に参加できる。
+//---------------------------------------------------------------------------
+class iTVPDialogRendererHost
+{
+public:
+	virtual ~iTVPDialogRendererHost() = default;
+
+	//! このDrawDeviceが所有するダイアログ描画アダプタ。 DrawDevice が所有し続ける
+	//! (呼出側は delete しない)。 未対応 DrawDevice / まだ生成前は nullptr を返してよい。
+	virtual iTVPDialogRenderer* GetDialogRenderer() = 0;
+};
+/*]*/
+
+//---------------------------------------------------------------------------
+// プラグイン / 差し替え DrawDevice 向け登録 API (tp_stub 公開)
+//
+// 差し替え DrawDevice は iTVPDialogRendererHost を実装し、自身を host として登録
+// する。 これで engine 内蔵の tTVPElementsDialogManager が具象型を知らずに overlay
+// ダイアログを描画する。 通常は DrawDevice の生成/破棄 (or context init/done) で呼ぶ。
+// (engine 内蔵 DrawDevice は直接 manager を呼ぶのでこの API は使わない。)
+//---------------------------------------------------------------------------
+TJS_EXP_FUNC_DEF(void, TVPRegisterDialogHost, (iTVPDrawDevice* device, iTVPDialogRendererHost* host));
+TJS_EXP_FUNC_DEF(void, TVPUnregisterDialogHost, (iTVPDrawDevice* device));
 
 #endif

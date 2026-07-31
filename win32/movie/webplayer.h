@@ -6,13 +6,19 @@
 #include "IMoviePlayer.h"
 #include "WebpXAudio2Sink.h"
 
+#include <vector>
+#include <mutex>
+
 class tTVPD3D11OverlayWindow;
 
 class tTVPWebpMovie : public iTVPVideoOverlay
 {
 public:
     //! overlayOutput=true で overlay 出力 (子ウィンドウ D3D11 YUV present)。
-    tTVPWebpMovie(HWND owner, bool overlayOutput = false);
+    //! preferI420=true で presenter 経路向けに I420 プレーンを内部保持し GetI420Frame で
+    //! 供給する (engine の D3D11 presenter が GPU で YUV→RGB する。CPU 変換を省く)。
+    //! overlayOutput とは排他 (overlayOutput が優先)。
+    tTVPWebpMovie(HWND owner, bool overlayOutput = false, bool preferI420 = false);
     virtual ~tTVPWebpMovie();
 
 	bool Open(const char *path);
@@ -20,6 +26,7 @@ public:
 
 	void Update(int width, int height, IMoviePlayer::DestUpdater updater);
 	void UpdatePlanes(const IMoviePlayer::VideoFrameInfo &frame); // overlay: YUV plane 経路
+	void BufferI420(const IMoviePlayer::VideoFrameInfo &frame);   // presenter: I420 内部保持
 	void OnState(IMoviePlayer::State state);
 
 	virtual void __stdcall AddRef();
@@ -50,6 +57,8 @@ public:
 	virtual void __stdcall GetVideoSize( long *width, long *height );
 	virtual void __stdcall GetFrontBuffer( BYTE **buff );
 	virtual void __stdcall SetVideoBuffer( BYTE *buff1, BYTE *buff2, long size );
+	virtual bool __stdcall GetI420Frame( const BYTE** y, int* yStride, const BYTE** u, int* uStride,
+		const BYTE** v, int* vStride, int* w, int* h );
 
 	virtual void __stdcall SetStopFrame( int frame );
 	virtual void __stdcall GetStopFrame( int *frame );
@@ -123,4 +132,13 @@ protected:
 	bool OverlayMode;                 //!< true=overlay 出力
 	tTVPD3D11OverlayWindow *Overlay;  //!< overlay 時の D3D11 present 先
 	int DispW, DispH;                 //!< 表示サイズ (coded 幅 padding を除いたクロップ寸法。0=未取得)
+
+	// --- presenter 経路の I420 内部保持 (preferI420) ---
+	bool PreferI420;                  //!< I420 を内部保持し GetI420Frame で供給する
+	std::mutex I420Mtx;
+	std::vector<uint8_t> I420Back;    //!< デコードスレッドが書く packed I420 (Y+U+V, 表示寸法)
+	std::vector<uint8_t> I420Front;   //!< 描画スレッドが読む複製 (GetI420Frame でロック下に複製)
+	int I420W, I420H;                 //!< 表示寸法 (packed のプレーン寸法)
+	bool I420Valid;                   //!< 1 フレーム以上供給済みか
+	bool I420Dirty;                   //!< Back に未複製の新フレームがあるか
 };

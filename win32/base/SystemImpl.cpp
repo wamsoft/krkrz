@@ -673,7 +673,7 @@ void TVPHeapDump()
 		bool isdefault = false;
 		bool isCRT = false;
 		if( ::HeapQueryInformation( heaps[i], HeapCompatibilityInformation, &heap_info, sizeof(heap_info), &ret_size) ) {
-			tjs_char* type = NULL;
+			const tjs_char* type = NULL;
 			switch( heap_info ) {
 			case 0:
 				type = TJS_W("standard");

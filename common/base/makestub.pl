@@ -624,6 +624,9 @@ print OFH "#include \"VideoPresenter.h\"\n";
 print OFH "#endif\n";
 process_exp_stub("../../win32/visual/VideoPresenter.h");
 
+print OFH "#include \"elements/DialogRenderer.h\"\n";
+process_exp_stub("../../common/visual/elements/DialogRenderer.h");
+
 print OFH "#include \"TransIntf.h\"\n";
 process_exp_stub("../../common/visual/TransIntf.h");
 

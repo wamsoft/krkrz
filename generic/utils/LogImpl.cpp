@@ -1,109 +1,80 @@
+//---------------------------------------------------------------------------
+// ログの tjs 側ブリッジ (tjsCommHead / LogIntf 側 = <windows.h> を引く TU)
+//
+// plog 本体は LogPlogBackend.cpp 側に隔離した。 WINVER では tjsCommHead.h が
+// <windows.h> を引き、plog の <plog/WinApi.h> が同名の Win32 API (RegCreateKeyExW
+// 等) を extern "C" で再宣言するため同一 TU に同居できない (C++20 で C2116/C2733)。
+// そこで本 TU は plog を一切 include せず、seam (tvplog::) 経由で backend を呼ぶ。
+//---------------------------------------------------------------------------
 #include "tjsCommHead.h"
-#include "CharacterSet.h"
 #include "LogIntf.h"
-
-#include <plog/Log.h>
-#include <plog/Init.h>
-#include <plog/Formatters/MessageOnlyFormatter.h>
-#include <plog/Appenders/IAppender.h>
-#include <plog/Util.h>
+#include "LogPlogBackend.h"
 
 //---------------------------------------------------------------------------
-// TJSログレベルから plog のログレベルに変換する関数
+// TVPLogLevel ⇔ seam の中立 severity 変換
 //---------------------------------------------------------------------------
-static plog::Severity TVPLogLevelToPlogSeverity(TVPLogLevel logLevel)
+namespace {
+
+tvplog::Sev ToSev(TVPLogLevel logLevel)
 {
-    switch (logLevel) {
-        case TVPLOG_LEVEL_VERBOSE:  return plog::verbose;
-        case TVPLOG_LEVEL_DEBUG:    return plog::debug;
-        case TVPLOG_LEVEL_INFO:     return plog::info;
-        case TVPLOG_LEVEL_WARNING:  return plog::warning;
-        case TVPLOG_LEVEL_ERROR:    return plog::error;
-        case TVPLOG_LEVEL_CRITICAL: return plog::fatal;
-        default:                    return plog::none;
-    }
+	switch (logLevel) {
+		case TVPLOG_LEVEL_VERBOSE:  return tvplog::Sev::Verbose;
+		case TVPLOG_LEVEL_DEBUG:    return tvplog::Sev::Debug;
+		case TVPLOG_LEVEL_INFO:     return tvplog::Sev::Info;
+		case TVPLOG_LEVEL_WARNING:  return tvplog::Sev::Warning;
+		case TVPLOG_LEVEL_ERROR:    return tvplog::Sev::Error;
+		case TVPLOG_LEVEL_CRITICAL: return tvplog::Sev::Fatal;
+		default:                    return tvplog::Sev::None;
+	}
 }
 
-static TVPLogLevel TVPPlogSeverityToLogLevel(plog::Severity s)
+TVPLogLevel FromSev(tvplog::Sev s)
 {
-    switch (s) {
-        case plog::verbose: return TVPLOG_LEVEL_VERBOSE;
-        case plog::debug:   return TVPLOG_LEVEL_DEBUG;
-        case plog::info:    return TVPLOG_LEVEL_INFO;
-        case plog::warning: return TVPLOG_LEVEL_WARNING;
-        case plog::error:   return TVPLOG_LEVEL_ERROR;
-        case plog::fatal:   return TVPLOG_LEVEL_CRITICAL;
-        default:            return TVPLOG_LEVEL_OFF;
-    }
+	switch (s) {
+		case tvplog::Sev::Verbose: return TVPLOG_LEVEL_VERBOSE;
+		case tvplog::Sev::Debug:   return TVPLOG_LEVEL_DEBUG;
+		case tvplog::Sev::Info:    return TVPLOG_LEVEL_INFO;
+		case tvplog::Sev::Warning: return TVPLOG_LEVEL_WARNING;
+		case tvplog::Sev::Error:   return TVPLOG_LEVEL_ERROR;
+		case tvplog::Sev::Fatal:   return TVPLOG_LEVEL_CRITICAL;
+		default:                   return TVPLOG_LEVEL_OFF;
+	}
 }
+
+// plog バックエンド → LogCore への配送 (seam DispatchFn)。 backend が整形した
+// UTF-8 1 行をそのまま TVPLogDispatchLine へ渡す。
+void DispatchToCore(tvplog::Sev sev, const char* utf8line)
+{
+	TVPLogDispatchLine(FromSev(sev), utf8line);
+}
+
+} // anonymous
 
 void TVPLogSetLevel(TVPLogLevel logLevel)
 {
-    auto logger = plog::get();
-    if (logger) {
-        logger->setMaxSeverity(TVPLogLevelToPlogSeverity(logLevel));
-    }
+	tvplog::PlogSetLevel(ToSev(logLevel));
 }
 
 void TVPLog(TVPLogLevel logLevel, const char *file, int line, const char *func, const char *format, tvpfmt::format_args args)
 {
-    auto logger = plog::get();
-    if (logger) {
-        plog::Record record(TVPLogLevelToPlogSeverity(logLevel), func, line, file, 0, 0);
-        std::string msg;
-        try {
-            msg = tvpfmt::vformat(format, args);
-        } catch (const tvpfmt::format_error& e) {
-            msg = "Log Format error: " + std::string(e.what());
-        }
-        record << msg;
-        logger->write(record.ref());
-    }
+	// 整形は tjs 側の tvpfmt で行い、 結果の UTF-8 文字列だけを backend に渡す。
+	std::string msg;
+	try {
+		msg = tvpfmt::vformat(format, args);
+	} catch (const tvpfmt::format_error& e) {
+		msg = "Log Format error: " + std::string(e.what());
+	}
+	tvplog::PlogWrite(ToSev(logLevel), file, line, func, msg);
 }
 
 void TVPLogMsg(TVPLogLevel logLevel, const char *msg)
 {
-    auto logger = plog::get();
-    if (logger) {
-        plog::Record record(TVPLogLevelToPlogSeverity(logLevel), "", 0, "", 0, 0);
-        record << msg;
-        logger->write(record.ref());
-    }
+	tvplog::PlogWriteMsg(ToSev(logLevel), msg ? msg : "");
 }
-
-//---------------------------------------------------------------------------
-// TVPDispatchAppender
-//
-// plog で整形された本文 (タイムスタンプ無し、MessageOnlyFormatter) を
-// UTF-8 化して LogCore の TVPLogDispatchLine に引き渡す。以降の
-// コンソール/ファイル/キャッシュ/sink は LogCore が面倒を見る。
-//---------------------------------------------------------------------------
-class TVPDispatchAppender : public plog::IAppender
-{
-public:
-    virtual void write(const plog::Record& record) override
-    {
-        plog::util::nstring str = plog::MessageOnlyFormatter::format(record);
-        plog::util::MutexLock lock(m_mutex);
-
-#ifdef _WIN32
-        const std::wstring& wstr = plog::util::toWide(str);
-        std::string utf8;
-        TVPUtf16ToUtf8(utf8, (const tjs_char*)wstr.c_str());
-#else
-        std::string utf8 = str;
-#endif
-        // 末尾の改行は LogCore 側で処理されるので剥がしてもしなくても良い
-        while (!utf8.empty() && (utf8.back() == '\n' || utf8.back() == '\r'))
-            utf8.pop_back();
-        TVPLogDispatchLine(TVPPlogSeverityToLogLevel(record.getSeverity()), utf8.c_str());
-    }
-protected:
-    plog::util::Mutex m_mutex;
-};
 
 void TVPLogInit(TVPLogLevel logLevel)
 {
-    static TVPDispatchAppender dispatchAppender;
-    plog::init(TVPLogLevelToPlogSeverity(logLevel), &dispatchAppender);
+	// backend が整形行を LogCore へ返せるよう、 初期化前に配送先を登録する。
+	tvplog::PlogSetDispatch(&DispatchToCore);
+	tvplog::PlogInit(ToSev(logLevel));
 }

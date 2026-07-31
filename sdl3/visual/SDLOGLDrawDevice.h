@@ -6,10 +6,12 @@
 #include "OpenGLHeader.h"
 #include "SDLOGLTextureUpdateRect.h"
 #include "GLTexture.h"
+#include "GLVideoPresenter.h"   // iTVPGLVideoPresenter / iTVPGLVideoPresenterHost
 #include "OGLViewportBackground.h"
 #include <SDL3/SDL.h>
 #include <functional>
 #include <mutex>
+#include <memory>
 
 #ifdef KRKRZ_HAS_ELEMENTS
 #include "OGLDialogRenderer.h"
@@ -32,8 +34,10 @@
 // iTVPGLContext::GetContext で取得 (= OGLDrawDevice と context 共有可)。
 //---------------------------------------------------------------------------
 class tTVPSDLOGLDrawDevice : public tTVPDrawDevice
+	, public iTVPGLVideoPresenterHost   // overlay 動画を pull 型で受ける登録口
 #ifdef KRKRZ_HAS_ELEMENTS
-	, public iTVPGLDialogHost
+	, public iTVPGLDialogHost         // renderer→DrawDevice: GL リソース借用
+	, public iTVPDialogRendererHost   // manager→DrawDevice: renderer 提供
 #endif
 {
 	typedef tTVPDrawDevice inherited;
@@ -97,30 +101,25 @@ public:
 	virtual void TJS_INTF_METHOD EndBitmapCompletion(iTVPLayerManager * manager);
 
 	// -----------------------------------------------------
-	// VideoOverlay Support
+	// VideoOverlay Support (pull 型: presenter host、WINVER/SDL/OGL と統一)
 	// -----------------------------------------------------
 public:
-	virtual void UpdateVideo(int w, int h, std::function<void(char *dest, int pitch)> updator);
-	virtual void ClearVideo();
+	//---- iTVPGLVideoPresenterHost
+	virtual void TJS_INTF_METHOD AddVideoPresenter( iTVPGLVideoPresenter * presenter );
+	virtual void TJS_INTF_METHOD RemoveVideoPresenter( iTVPGLVideoPresenter * presenter );
+	//! 現在 presenter が稼働中か (稼働中はレイヤ描画を省き動画のみ描く)。
+	bool HasActiveVideoPresenter() const { return VideoPresenter != nullptr; }
+
 	virtual void SetWaitVSync(bool enable);
 
 private:
-	std::mutex videooverlay_mutex_;
-
 	// ビューポート余白の壁紙テクスチャキャッシュ (背景色は base が保持)
 	tTVPGLWallpaperCache mWallpaperCache;
 
-	// 動画用テクスチャ
-	GLTexture *_video_texture;
-	GLfloat _video_position[8];
-
-	char *mVideoBuffer;
-	bool mVideoBufferDirty;
-	int mVideoWidth;
-	int mVideoHeight;
-
+	// overlay 動画 presenter (単一スロット)。フレームバッファ / GLTexture は
+	// presenter 側 (GLVideoPresenter.cpp) が持つ。
+	iTVPGLVideoPresenter *VideoPresenter;
 	bool ShowVideo();
-	void UpdateVideoPosition(int w, int h);
 
 #ifdef KRKRZ_HAS_ELEMENTS
 public:
@@ -136,6 +135,14 @@ public:
 		w = DestRect.get_width();
 		h = DestRect.get_height();
 	}
+
+	// iTVPDialogRendererHost — manager が具象型を知らずに renderer を取得する口。
+	iTVPDialogRenderer * GetDialogRenderer() override { return DialogRenderer.get(); }
+private:
+	//! この DrawDevice が所有する OGL dialog renderer (host = this)。InitContext で
+	//! 生成、DoneContext で破棄 (GL context 寿命に一致)。
+	std::unique_ptr<tTVPOGLDialogRenderer> DialogRenderer;
+public:
 #endif
 };
 //---------------------------------------------------------------------------

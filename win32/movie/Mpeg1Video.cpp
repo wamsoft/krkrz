@@ -13,8 +13,8 @@
 #include "pl_mpeg.h"
 
 //---------------------------------------------------------------------------
-tTVPMpeg1Video::tTVPMpeg1Video( HWND owner, bool overlayOutput )
-: tTVPLayerVideoBase( owner, overlayOutput ), Plm(nullptr), FileData(nullptr), FileSize(0)
+tTVPMpeg1Video::tTVPMpeg1Video( HWND owner, bool overlayOutput, bool preferI420 )
+: tTVPLayerVideoBase( owner, overlayOutput, preferI420 ), Plm(nullptr), FileData(nullptr), FileSize(0)
 , FrameW(0), FrameH(0), Fps(0.0), Duration(0), HasAudio(false), AudioSampleRate(0)
 , LastFrame(nullptr)
 {
@@ -177,5 +177,19 @@ void tTVPMpeg1Video::DecoderPresentOverlay( tTVPD3D11OverlayWindow *ov )
 		f->cb.data, (int)f->cb.width,
 		f->cr.data, (int)f->cr.width,
 		(int)f->width, (int)f->height );
+}
+//---------------------------------------------------------------------------
+// presenter 経路: 直近フレームの I420 プレーンを返す (基底が同期 copy)。pl_mpeg は I420。
+bool tTVPMpeg1Video::DecoderGetI420Planes( const BYTE **y, int *yStride, const BYTE **u, int *uStride,
+	const BYTE **v, int *vStride, int *w, int *h )
+{
+	if( LastFrame == nullptr ) return false;
+	plm_frame_t *f = (plm_frame_t*)LastFrame;
+	if( y ) *y = f->y.data;   if( yStride ) *yStride = (int)f->y.width;
+	if( u ) *u = f->cb.data;  if( uStride ) *uStride = (int)f->cb.width;
+	if( v ) *v = f->cr.data;  if( vStride ) *vStride = (int)f->cr.width;
+	if( w ) *w = (int)f->width;
+	if( h ) *h = (int)f->height;
+	return true;
 }
 //---------------------------------------------------------------------------

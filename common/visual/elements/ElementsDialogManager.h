@@ -19,6 +19,7 @@
 
 class iTVPDialogEventHandler;
 class iTVPDialogRenderer;
+class iTVPDialogRendererHost;
 
 class tTVPElementsDialogManager
 {
@@ -171,9 +172,13 @@ public:
 	                         ttstr& out_action,
 	                         std::map<ttstr, tTJSVariant>& out_values);
 
-	// === 描画アダプタ登録 (DrawDevice 生成時に渡す) ===
-	void RegisterRenderer(iTVPDrawDevice* device, std::unique_ptr<iTVPDialogRenderer> renderer);
-	void UnregisterRenderer(iTVPDrawDevice* device);
+	// === 描画アダプタ提供口の登録 (DrawDevice が自身を host として登録) ===
+	// DrawDevice は iTVPDialogRendererHost を実装し (renderer は DrawDevice が所有)、
+	// 自身を host として登録する。 manager は具象 renderer 型を知らず、host 経由で
+	// renderer を取得する (overlay 動画の presenter host と同じ設計)。 差し替え /
+	// プラグイン DrawDevice も同じ登録で overlay ダイアログ描画に参加できる。
+	void RegisterDialogHost(iTVPDrawDevice* device, iTVPDialogRendererHost* host);
+	void UnregisterDialogHost(iTVPDrawDevice* device);
 
 	// === DrawDevice からの入力フォワード ===
 	// 戻り値 = イベントを Elements 側で消費したか。 false なら呼出側 (DrawDevice /

@@ -69,3 +69,45 @@ EXPORT(void) GetVideoLayerObject(
 		video->Release();
 	}
 }
+
+//----------------------------------------------------------------------------
+//! @brief overlay presenter (engine D3D11 バックバッファへ pull 合成) 用の VideoOverlay
+//!   Object を取得する。GetVideoLayerObject と同じくバッファ出力 (子ウィンドウを持たない)
+//!   だが、I420 出力に対応する形式は preferI420=true で開き、GetI420Frame で YUV プレーンを
+//!   engine へ供給する (engine 側 presenter が GPU で YUV→RGB する = CPU 変換を省く)。
+//!   I420 非対応の形式は従来どおり BGRA (GetFrontBuffer) 経路。
+//----------------------------------------------------------------------------
+EXPORT(void) GetVideoPresenterObject(
+	HWND callbackwin, IStream *stream, const tjs_char * streamname,
+	const tjs_char *type, unsigned __int64 size, iTVPVideoOverlay **out)
+{
+	*out = nullptr;
+	const wchar_t *wtype = (const wchar_t*)type;
+
+	// .webm (movie-player) は I420 native なので presenter へ I420 直渡し。
+	if( wtype != nullptr && _wcsicmp( wtype, L".webm" ) == 0 ) {
+		tTVPWebpMovie *video = new tTVPWebpMovie(callbackwin, /*overlayOutput=*/false, /*preferI420=*/true);
+		if (video->Open(stream)) {
+			*out = video;
+		} else {
+			delete video;
+		}
+		return;
+	}
+
+	// .mpg/.mpeg (pl_mpeg) も I420 native なので presenter へ I420 直渡し。
+	if( wtype != nullptr &&
+		( _wcsicmp( wtype, L".mpg" ) == 0 || _wcsicmp( wtype, L".mpeg" ) == 0 ) ) {
+		tTVPMpeg1Video *video = new tTVPMpeg1Video( callbackwin, /*overlayOutput=*/false, /*preferI420=*/true );
+		if( video->Open( stream, streamname, type, size ) ) {
+			*out = video;
+		} else {
+			video->Release();
+		}
+		return;
+	}
+
+	// 上記以外 (.wmv/.mp4/… MF SourceReader) は現状 I420 presenter 未対応 = 通常レイヤ(BGRA)へ委譲。
+	// (GetI420Frame は既定 false を返すので engine 側は BGRA にフォールバックする)
+	GetVideoLayerObject( callbackwin, stream, streamname, type, size, out );
+}

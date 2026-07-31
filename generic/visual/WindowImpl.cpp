@@ -161,17 +161,13 @@ void tTJSNI_Window::UpdateContent()
 }
 
 //---------------------------------------------------------------------------
-void tTJSNI_Window::UpdateVideo(tjs_int w, tjs_int h, std::function<void(char *dest, int pitch)> updator)
-{
-	if (DrawDevice) {
-		DrawDevice->UpdateVideo(w, h, updator);
-	}
-}
-
 void tTJSNI_Window::ClearVideo()
 {
-	if (DrawDevice) {
-		DrawDevice->ClearVideo();
+	// pull 型 overlay 動画: DrawDevice はフレームを持たず presenter (VideoOverlay 所有) が
+	// 持つ。mixer 停止・window close 時にここが呼ばれるので、各 overlay の presenter 登録を
+	// 解除して DrawDevice の pull を止める (= ゲーム画面へ復帰)。
+	for (auto it = VideoOverlays.begin(); it != VideoOverlays.end(); ++it) {
+		if (*it) (*it)->UnregisterPresenter();
 	}
 }
 

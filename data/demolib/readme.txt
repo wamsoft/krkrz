@@ -54,5 +54,5 @@ SSOT はここ (src/core/data/demolib)。umbrella (krkrz_dev) の data/ 直下�
 
   - このフォルダを編集したら、依存する全デモ (core / umbrella) の動作を
     確認すること。互換を壊す変更は DEMOLIB_VERSION を上げる。
-  - Elements (Dialog) が無いビルド (WINVER 等) でも読み込み自体は成功する
-    ように保つこと (DemoPanel は条件付き定義)。
+  - Elements (Dialog) が無いビルド (KRKRZ_USE_ELEMENTS=OFF) でも読み込み自体は
+    成功するように保つこと (DemoPanel は条件付き定義)。WINVER でも Dialog は使える。

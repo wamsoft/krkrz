@@ -16,6 +16,10 @@
 #ifdef KRKRZ_USE_REPL
 #include "ScreenCapture.h"
 #endif
+#ifdef KRKRZ_HAS_ELEMENTS
+#include "elements/ElementsDialogManager.h"   // dialog renderer 登録
+#include <memory>
+#endif
 
 #include <d3d11.h>
 #include <d3d11_4.h>   // ID3D11Multithread (Track V-E: HW 動画のデバイス共有保護)
@@ -100,10 +104,22 @@ tTVPBasicDrawDevice::tTVPBasicDrawDevice()
 	VsyncInterval = 16;
 
 	VideoPresenter = NULL;
+
+#ifdef KRKRZ_HAS_ELEMENTS
+	// Elements ダイアログ overlay の D3D11 描画アダプタを DrawDevice 自身が所有し、
+	// iTVPDialogRendererHost (this) として manager に登録する。renderer は host (this)
+	// から描画スレッドで D3D11 リソースを借用する。
+	DialogRenderer = std::make_unique<tTVPD3D11DialogRenderer>(this);
+	tTVPElementsDialogManager::Instance().RegisterDialogHost(this, this);
+#endif
 }
 //---------------------------------------------------------------------------
 tTVPBasicDrawDevice::~tTVPBasicDrawDevice()
 {
+#ifdef KRKRZ_HAS_ELEMENTS
+	// host 登録解除 (この device をホストとするダイアログを teardown) を renderer 破棄前に。
+	tTVPElementsDialogManager::Instance().UnregisterDialogHost(this);
+#endif
 	DestroyD3DDevice();
 }
 //---------------------------------------------------------------------------
@@ -520,14 +536,22 @@ void TJS_INTF_METHOD tTVPBasicDrawDevice::Show()
 	// (動画はデコードスレッドで layer 更新と非同期に進むため)。
 	bool videoActive = HasActiveVideoPresenter();
 
-#ifdef KRKRZ_USE_REPL
-	// 動画 presenter 非稼働時: キャプチャ要求は持続 CPU シャドウ (TextureBuffer) から
-	// 充足する。ShouldShow の早期 return より前に処理すればアイドルでも消化できる。
-	// 稼働時は動画が CPU シャドウに載らないので、描画直後にバックバッファから読み戻す (下)。
-	if( !videoActive && TVPHasPendingScreenCapture() ) FulfillScreenCapture();
+	// Elements ダイアログ表示中も同様に毎フレーム present が要る (flip swapchain の
+	// バックバッファが毎フレーム回るため、game frame + overlay を毎フレーム描き直す)。
+	bool dialogActive = false;
+#ifdef KRKRZ_HAS_ELEMENTS
+	dialogActive = tTVPElementsDialogManager::Instance().IsModalActive(); // = 何か表示中
 #endif
 
-	if(!ShouldShow && !videoActive) return;
+#ifdef KRKRZ_USE_REPL
+	// overlay (動画/ダイアログ) 非稼働時: キャプチャ要求は持続 CPU シャドウ
+	// (TextureBuffer) から充足する。ShouldShow の早期 return より前に処理すれば
+	// アイドルでも消化できる。overlay 稼働時は CPU シャドウに overlay が載らないので、
+	// 描画直後にバックバッファから読み戻す (下)。
+	if( !videoActive && !dialogActive && TVPHasPendingScreenCapture() ) FulfillScreenCapture();
+#endif
+
+	if(!ShouldShow && !videoActive && !dialogActive) return;
 
 	ShouldShow = false;
 
@@ -536,14 +560,20 @@ void TJS_INTF_METHOD tTVPBasicDrawDevice::Show()
 		// (動画が全画面を覆う前提)。RenderVideoPresenters が RTV を黒クリアしてから
 		// 各 presenter (動画 + mixer 追加画像) を描く。
 		RenderVideoPresenters();
+	} else if( dialogActive ) {
+		// ダイアログ表示中は layer 更新が無いフレームでも、回ってきた新しい
+		// バックバッファへ game frame を描き直してから overlay を重ねる。
+		DrawCompositedFrame();
 	}
 
 	// Layer 合成完了直後・Present 直前に Elements ダイアログをオーバーレイ
 	PresentDialogOverlay();
 
 #ifdef KRKRZ_USE_REPL
-	// 動画 presenter 稼働時: 描画後・Present 前にバックバッファを読み戻してキャプチャ。
-	if( videoActive && TVPHasPendingScreenCapture() ) FulfillScreenCaptureFromBackBuffer();
+	// overlay (動画/ダイアログ) 稼働時: 描画後・Present 前にバックバッファを
+	// 読み戻してキャプチャ (overlay 込みの実画面が撮れる)。
+	if( (videoActive || dialogActive) && TVPHasPendingScreenCapture() )
+		FulfillScreenCaptureFromBackBuffer();
 #endif
 
 	// flip model のベストプラクティス: Present 前に RTV を外す
@@ -845,6 +875,31 @@ void TJS_INTF_METHOD tTVPBasicDrawDevice::RemoveVideoPresenter( iTVPVideoPresent
 	if( VideoPresenter == presenter ) VideoPresenter = NULL;
 }
 //---------------------------------------------------------------------------
+#ifdef KRKRZ_HAS_ELEMENTS
+//---------------------------------------------------------------------------
+// iTVPD3D11DialogHost (Elements ダイアログの D3D11 描画リソース貸出口)
+//---------------------------------------------------------------------------
+bool tTVPBasicDrawDevice::DialogHost_GetD3D( ID3D11Device *& dev,
+	ID3D11DeviceContext *& ctx, ID3D11RenderTargetView *& rtv,
+	int & targetW, int & targetH )
+{
+	dev     = D3DDevice;
+	ctx     = D3DContext;
+	rtv     = BackBufferRTV;
+	targetW = static_cast<int>(SwapWidth);
+	targetH = static_cast<int>(SwapHeight);
+	return D3DDevice && D3DContext && BackBufferRTV && SwapWidth > 0 && SwapHeight > 0;
+}
+//---------------------------------------------------------------------------
+void tTVPBasicDrawDevice::DialogHost_GetDestRect( int & x, int & y, int & w, int & h )
+{
+	x = DestRect.left;
+	y = DestRect.top;
+	w = DestRect.get_width();
+	h = DestRect.get_height();
+}
+#endif // KRKRZ_HAS_ELEMENTS
+//---------------------------------------------------------------------------
 void tTVPBasicDrawDevice::RenderVideoPresenters()
 {
 	if( !VideoPresenter ) return;
@@ -970,6 +1025,27 @@ TJS_BEGIN_NATIVE_PROP_DECL(videoPresenterHost)
 	TJS_DENY_NATIVE_PROP_SETTER
 }
 TJS_END_NATIVE_PROP_DECL(videoPresenterHost)
+//----------------------------------------------------------------------
+#ifdef KRKRZ_HAS_ELEMENTS
+// Elements ダイアログ overlay の描画アダプタ提供口 (iTVPDialogRendererHost) を
+// ポインタ値として公開する (videoPresenterHost と同じ規約)。 外部 (プラグイン等) が
+// Window の DrawDevice TJS オブジェクトから読み、host->GetDialogRenderer() で描画
+// アダプタを取得できる。 static_cast で多重継承のポインタ調整を済ませてから渡す。
+TJS_BEGIN_NATIVE_PROP_DECL(dialogRendererHost)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_BasicDrawDevice);
+		iTVPDialogRendererHost * host = static_cast<iTVPDialogRendererHost*>(_this->GetDevice());
+		*result = reinterpret_cast<tjs_int64>(host);
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_DENY_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_PROP_DECL(dialogRendererHost)
+#endif
 //----------------------------------------------------------------------
 // Track V-E: HW 動画 (IMFMediaEngine) が engine の D3D11 デバイスへ束ねて HW デコード
 // するため、ID3D11Device ポインタを公開する (VIDEO_SUPPORT + multithread 保護済み)。

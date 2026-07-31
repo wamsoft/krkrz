@@ -1,8 +1,11 @@
 //---------------------------------------------------------------------------
-// TJS Agent クラス実装 — エージェント / 自動テスト駆動用の制御 API (SDL3 専用)
+// TJS Agent クラス実装 — エージェント / 自動テスト駆動用の制御 API
 //
-// 入力注入は実入力と同じ TTVPWindowForm::Send* 経路を通すので、 ゲームにも
-// Elements ダイアログにも届く (DrawDevice / Window の dialog intercept を経由)。
+// SDL3 / WINVER 両対応。入力注入は AgentInput seam (TVPAgentInject*) 経由で実入力と
+// 同じ経路を通すので、 ゲームにも Elements ダイアログにも届く (DrawDevice / Window の
+// dialog intercept を経由)。seam 実装は sdl3/environ/AgentInput.cpp (SendMouseMessage/
+// SendMessage) と win32/environ/AgentInput.cpp (OnMouse*/OnKey*)。ダイアログ制御・
+// text・captureScreen は元から横断 (ElementsDialogManager / ScreenCapture は common)。
 //---------------------------------------------------------------------------
 #include "tjsCommHead.h"
 #include "AgentControlIntf.h"
@@ -10,9 +13,7 @@
 #include "tjsDictionary.h"
 #include "DebugIntf.h"
 #include "CharacterSet.h"
-#include "Application.h"
-#include "WindowForm.h"
-#include "WindowFormEvent.h"   // AM_KEY_DOWN / AM_MOUSE_DOWN 等
+#include "AgentInput.h"        // TVPAgentInject* / TVPAgentRequestRedraw (platform seam)
 #include "tvpinputdefs.h"      // mbLeft / mbRight / mbMiddle
 #include "ScreenCapture.h"     // TVPRequestScreenCapture / TVPGetLastScreenCapture
 
@@ -22,21 +23,8 @@
 
 #include <string>
 
-//---------------------------------------------------------------------------
-// 内部ヘルパ
-//---------------------------------------------------------------------------
-namespace {
-
-TTVPWindowForm* AgentMainForm()
-{
-	if (!Application) return nullptr;
-	return Application->MainWindowForm();
-}
-
-// shift フラグ (TVP_SS_*) は TJS から渡された数値をそのまま使う。
+// shift フラグは TJS から渡された数値をそのまま seam へ渡す。
 // button は krkrz の tTVPMouseButton (mbLeft=0 / mbRight=1 / mbMiddle=2)。
-
-} // anonymous
 
 //---------------------------------------------------------------------------
 // Agent クラス (インスタンス不要、 System と同様にクラスオブジェクトのメソッド)
@@ -60,12 +48,10 @@ tTJSNC_Agent::tTJSNC_Agent() : inherited(TJS_W("Agent"))
 	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/mouseMove)
 	{
 		if (numparams < 2) return TJS_E_BADPARAMCOUNT;
-		TTVPWindowForm* form = AgentMainForm();
-		if (!form) return TJS_E_FAIL;
 		int x = (int)(tjs_int)*param[0];
 		int y = (int)(tjs_int)*param[1];
 		int shift = (numparams >= 3) ? (int)(tjs_int)*param[2] : 0;
-		form->SendMouseMessage(AM_MOUSE_MOVE, 0, shift, x, y);
+		if (!TVPAgentInjectMouseMove(shift, x, y)) return TJS_E_FAIL;
 		if (result) *result = (tjs_int)1;
 		return TJS_S_OK;
 	}
@@ -75,13 +61,11 @@ tTJSNC_Agent::tTJSNC_Agent() : inherited(TJS_W("Agent"))
 	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/mouseDown)
 	{
 		if (numparams < 2) return TJS_E_BADPARAMCOUNT;
-		TTVPWindowForm* form = AgentMainForm();
-		if (!form) return TJS_E_FAIL;
 		int x = (int)(tjs_int)*param[0];
 		int y = (int)(tjs_int)*param[1];
 		int button = (numparams >= 3) ? (int)(tjs_int)*param[2] : (int)mbLeft;
 		int shift  = (numparams >= 4) ? (int)(tjs_int)*param[3] : 0;
-		form->SendMouseMessage(AM_MOUSE_DOWN, button, shift, x, y);
+		if (!TVPAgentInjectMouseButton(true, button, shift, x, y)) return TJS_E_FAIL;
 		if (result) *result = (tjs_int)1;
 		return TJS_S_OK;
 	}
@@ -91,13 +75,11 @@ tTJSNC_Agent::tTJSNC_Agent() : inherited(TJS_W("Agent"))
 	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/mouseUp)
 	{
 		if (numparams < 2) return TJS_E_BADPARAMCOUNT;
-		TTVPWindowForm* form = AgentMainForm();
-		if (!form) return TJS_E_FAIL;
 		int x = (int)(tjs_int)*param[0];
 		int y = (int)(tjs_int)*param[1];
 		int button = (numparams >= 3) ? (int)(tjs_int)*param[2] : (int)mbLeft;
 		int shift  = (numparams >= 4) ? (int)(tjs_int)*param[3] : 0;
-		form->SendMouseMessage(AM_MOUSE_UP, button, shift, x, y);
+		if (!TVPAgentInjectMouseButton(false, button, shift, x, y)) return TJS_E_FAIL;
 		if (result) *result = (tjs_int)1;
 		return TJS_S_OK;
 	}
@@ -107,16 +89,14 @@ tTJSNC_Agent::tTJSNC_Agent() : inherited(TJS_W("Agent"))
 	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/click)
 	{
 		if (numparams < 2) return TJS_E_BADPARAMCOUNT;
-		TTVPWindowForm* form = AgentMainForm();
-		if (!form) return TJS_E_FAIL;
 		int x = (int)(tjs_int)*param[0];
 		int y = (int)(tjs_int)*param[1];
 		int button = (numparams >= 3) ? (int)(tjs_int)*param[2] : (int)mbLeft;
 		int shift  = (numparams >= 4) ? (int)(tjs_int)*param[3] : 0;
 		// hover を先に送ってから down/up (ホバー状態に依存する widget 対策)。
-		form->SendMouseMessage(AM_MOUSE_MOVE, 0,      shift, x, y);
-		form->SendMouseMessage(AM_MOUSE_DOWN, button, shift, x, y);
-		form->SendMouseMessage(AM_MOUSE_UP,   button, shift, x, y);
+		if (!TVPAgentInjectMouseMove(shift, x, y)) return TJS_E_FAIL;
+		TVPAgentInjectMouseButton(true,  button, shift, x, y);
+		TVPAgentInjectMouseButton(false, button, shift, x, y);
 		if (result) *result = (tjs_int)1;
 		return TJS_S_OK;
 	}
@@ -126,13 +106,11 @@ tTJSNC_Agent::tTJSNC_Agent() : inherited(TJS_W("Agent"))
 	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/wheel)
 	{
 		if (numparams < 3) return TJS_E_BADPARAMCOUNT;
-		TTVPWindowForm* form = AgentMainForm();
-		if (!form) return TJS_E_FAIL;
 		int delta = (int)(tjs_int)*param[0];
 		int x = (int)(tjs_int)*param[1];
 		int y = (int)(tjs_int)*param[2];
 		int shift = (numparams >= 4) ? (int)(tjs_int)*param[3] : 0;
-		form->SendMouseMessage(AM_MOUSE_WHEEL, delta, shift, x, y);
+		if (!TVPAgentInjectWheel(delta, shift, x, y)) return TJS_E_FAIL;
 		if (result) *result = (tjs_int)1;
 		return TJS_S_OK;
 	}
@@ -144,11 +122,9 @@ tTJSNC_Agent::tTJSNC_Agent() : inherited(TJS_W("Agent"))
 	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/keyDown)
 	{
 		if (numparams < 1) return TJS_E_BADPARAMCOUNT;
-		TTVPWindowForm* form = AgentMainForm();
-		if (!form) return TJS_E_FAIL;
 		tjs_int64 vk = (tjs_int)*param[0];
 		tjs_int64 shift = (numparams >= 2) ? (tjs_int)*param[1] : 0;
-		form->SendMessage(AM_KEY_DOWN, vk, shift);
+		if (!TVPAgentInjectKey(true, vk, shift)) return TJS_E_FAIL;
 		if (result) *result = (tjs_int)1;
 		return TJS_S_OK;
 	}
@@ -158,11 +134,9 @@ tTJSNC_Agent::tTJSNC_Agent() : inherited(TJS_W("Agent"))
 	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/keyUp)
 	{
 		if (numparams < 1) return TJS_E_BADPARAMCOUNT;
-		TTVPWindowForm* form = AgentMainForm();
-		if (!form) return TJS_E_FAIL;
 		tjs_int64 vk = (tjs_int)*param[0];
 		tjs_int64 shift = (numparams >= 2) ? (tjs_int)*param[1] : 0;
-		form->SendMessage(AM_KEY_UP, vk, shift);
+		if (!TVPAgentInjectKey(false, vk, shift)) return TJS_E_FAIL;
 		if (result) *result = (tjs_int)1;
 		return TJS_S_OK;
 	}
@@ -172,12 +146,10 @@ tTJSNC_Agent::tTJSNC_Agent() : inherited(TJS_W("Agent"))
 	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/keyPress)
 	{
 		if (numparams < 1) return TJS_E_BADPARAMCOUNT;
-		TTVPWindowForm* form = AgentMainForm();
-		if (!form) return TJS_E_FAIL;
 		tjs_int64 vk = (tjs_int)*param[0];
 		tjs_int64 shift = (numparams >= 2) ? (tjs_int)*param[1] : 0;
-		form->SendMessage(AM_KEY_DOWN, vk, shift);
-		form->SendMessage(AM_KEY_UP,   vk, shift);
+		if (!TVPAgentInjectKey(true, vk, shift)) return TJS_E_FAIL;
+		TVPAgentInjectKey(false, vk, shift);
 		if (result) *result = (tjs_int)1;
 		return TJS_S_OK;
 	}
@@ -340,7 +312,7 @@ tTJSNC_Agent::tTJSNC_Agent() : inherited(TJS_W("Agent"))
 		int h = (numparams >= 5) ? (int)(tjs_int)*param[4] : 0;
 		TVPRequestScreenCapture(path, x, y, w, h);
 		// アイドル時は Show() が呼ばれず要求が消化されないので、 再描画を促す。
-		if (Application) Application->RequestUpdate();
+		TVPAgentRequestRedraw();
 		if (result) *result = path;
 		return TJS_S_OK;
 	}

@@ -15,7 +15,21 @@
 | `Dialog.startFlow(manifest)` / `startFlowScreens(dict, entry)` | startup.tjs ジャンルメニュー | overlay + **非ブロッキング** 常駐フロー。 出しっぱなしで背景動作と併存。 `dlg.active` / `close()` で制御 |
 | `Dialog.showDict(dict)` / `showModalDict(dict [, title, w, h])` | — | 上記 showJson / showModalJson の **TJS Dictionary 版** (後述「TJS Dictionary レイアウト」) |
 
-独立 window 経路 (E) は krkrz 非依存ライブラリ [`external/elements/external/elements_modal/`](../external/elements/external/elements_modal/README.md) の `run_modal` をそのまま呼び出す。 overlay 経路 (D / O) は krkrz の DrawDevice にぶら下がる `tTVPElementsDialogManager` がライブラリの `overlay_session` を駆動する。
+独立 window 経路 (E) は、 SDL ビルドでは krkrz 非依存ライブラリ [`external/elements/external/elements_modal/`](../external/elements/external/elements_modal/README.md) の `run_modal` (SDL_Window/Renderer 内蔵) をそのまま呼び出す。 overlay 経路 (D / O) は krkrz の DrawDevice にぶら下がる `tTVPElementsDialogManager` がライブラリの `overlay_session` を駆動する。
+
+**WINVER (x64-windows-win)**: 独立ウィンドウ modal (`showModalJson(json, title, w, h)`) も
+**専用 Win32 ウィンドウ + `overlay_session` + GDI `StretchDIBits` で自前実装** する
+(`common/visual/elements/WinElementsModalRunner.cpp` の `TVPRunElementsModalWindow`)。
+SDL の `run_modal` に相当する処理を、 独立 `WNDCLASS` (`TVPElementsModalWindow`) を登録して
+親ゲームウィンドウを `EnableWindow(FALSE)` で無効化 → `overlay_session::start` →
+nested Win32 pump (`PeekMessage`/`TranslateMessage`/`DispatchMessage`、 入力は
+`win32_input.h` の VK→cycfi 変換で `on_mouse_*`/`on_key_*`/`on_text_input` へ、 描画は
+`render_to_buffer`→`StretchDIBits`) → `session.finished()` で結果取得 → 親を復帰、 という流れ。
+per-monitor DPI (`GetDpiForWindow`) に追従して物理密度でレンダする。 overlay-modal / flow の
+nested ループはゲームウィンドウ上の overlay を Win32 メッセージ pump で回し、 描画は
+`VSyncTimingThread` が `Show()` を毎フレーム駆動する
+(`win32/visual/D3D11DialogRenderer.cpp`)。 非モーダル show* / 独立ウィンドウ modal /
+overlay-modal / navigator フロー / テキスト入力 (WM_CHAR / サロゲート) はすべて WINVER で動作する。
 
 ## DrawDevice との接続
 
@@ -40,8 +54,8 @@
                                    ▼
                        ┌─ iTVPDialogRenderer 実装 ─┐
                        │  SDL3:  SDL_UpdateTexture │
-                       │  OGL:   krkrz Texture upload│
-                       │  Win:   (未実装、 Phase 5) │
+                       │  OGL:   krkrz GLTexture   │
+                       │  Win:   D3D11 DYNAMIC tex │
                        └────────────────────────────┘
 ```
 
@@ -70,8 +84,10 @@
 - `ActiveHandler()` = 最前面アクティブの `iTVPDialogEventHandler*`。
 - `TakeLastModalResult(handler, action, values)` で、 その handler のインスタンスが
   auto-finish した結果を取得 (`close_on_click` / ブロッキング pump 用、 handler ごと)。
-- `RegisterRenderer(device, renderer)` / `UnregisterRenderer(device)` で DrawDevice ごとの
-  `iTVPDialogRenderer` を登録 (unregister はその device のインスタンスを teardown)。
+- `RegisterDialogHost(device, host)` / `UnregisterDialogHost(device)` で DrawDevice ごとの
+  描画アダプタ提供口 (`iTVPDialogRendererHost`) を登録する (renderer は DrawDevice が所有し、
+  manager は host 経由で解決)。 unregister はその device のインスタンスを teardown する。
+  詳細は後述「`iTVPDialogRenderer` と提供口」。
 
 ### `iTVPDialogEventHandler`
 
@@ -121,21 +137,36 @@ const TVPSDLDialogAPI_v1* api = TVPGetSDLDialogAPI(TVP_SDL_DIALOG_API_VERSION);
 同じ entry point から返す。 利用例: krkrz_nx の `plugins/softkey`
 (Elements ベース英数字ソフトウェアキーボード)。
 
-### `iTVPDialogRenderer` (DrawDevice 適合)
+### `iTVPDialogRenderer` (DrawDevice 適合) と提供口 `iTVPDialogRendererHost`
+
+全 DrawDevice で実装済み (WINVER も対応):
 
 | 実装 | 場所 | 方式 |
 |---|---|---|
-| `tTVPSDLDialogRenderer` | `sdl3/visual/SDLDrawDevice.cpp` | `SDL_Texture (STREAMING)` + `SDL_UpdateTexture` + `SDL_RenderTexture` |
-| `tTVPOGLDialogRenderer` | `common/visual/opengl/OGLDrawDevice.cpp` | krkrz `Texture` + `Canvas::DrawTexture` |
-| WINVER `BasicDrawDevice` | 未実装 (WINVER 未対応) | D3D11 系を予定 |
+| `tTVPSDLDialogRenderer` | `sdl3/visual/SDLDialogRenderer.cpp` | `SDL_Texture (STREAMING, ARGB8888)` + `SDL_UpdateTexture` + `SDL_RenderTexture` |
+| `tTVPOGLDialogRenderer` | `common/visual/opengl/OGLDialogRenderer.cpp` | krkrz `GLTexture` (PBO 経由 UpdateTexture) + `GLTextureDrawer` straight-alpha 合成。SDL/WIN 両 OGL DrawDevice 共用 |
+| `tTVPD3D11DialogRenderer` | `win32/visual/D3D11DialogRenderer.cpp` | **WINVER (BasicDrawDevice/D3D11)**。CPU staging → DYNAMIC tex (`B8G8R8A8`) → クアッド α 合成。overlay 動画と同じ `tTVPVideoPresenterD3D` ブリッタを layer ごとに流用。Elements の overlay バッファ `0xAARRGGBB` はメモリ上 BGRA で `DXGI_FORMAT_B8G8R8A8_UNORM` と一致するため swizzle 不要 |
 
 `AcquireBuffer(layer, w, h)` / `ReleaseBuffer(layer)` / `PresentOverlay(layer, x, y, w, h)` /
-`ReleaseLayer(layer)` の 4 関数。 **`layer` は overlay インスタンスを一意に識別する不透明
-キー** (manager は `Instance` ポインタを渡す)。 複数の非モーダル UI を同一フレーム内で重ねて
-present できるよう、 テクスチャ + ステージングは layer ごとに `std::map` で保持する。
-`SDL_RenderTexture` 等はテクスチャを **参照キューイング** するため、 単一テクスチャを使い回すと
-先に present したレイヤ内容が壊れる — layer ごとに別テクスチャが必須。 `PaintOverlay` は
-z-order 奥→手前の順に layer ごとに present し、 インスタンス close 時に `ReleaseLayer` する。
+`ReleaseLayer(layer)` + `GetSurfaceSize` / `GetDestRect` の 6 関数。 **`layer` は overlay
+インスタンスを一意に識別する不透明キー** (manager は `Instance` ポインタを渡す)。 複数の
+非モーダル UI を同一フレーム内で重ねて present できるよう、 テクスチャ + ステージングは
+layer ごとに `std::map` で保持する。 `SDL_RenderTexture` 等はテクスチャを **参照キューイング**
+するため、 単一テクスチャを使い回すと先に present したレイヤ内容が壊れる — layer ごとに
+別テクスチャが必須。 `PaintOverlay` は z-order 奥→手前の順に layer ごとに present し、
+インスタンス close 時に `ReleaseLayer` する。
+
+**提供口の汎用化 (`iTVPDialogRendererHost`)**: renderer は **DrawDevice が所有** し、
+`iTVPDialogRendererHost::GetDialogRenderer()` 経由で貸し出す。 manager は具象 renderer 型を
+知らず host 経由で解決する (overlay 動画の `iTVPVideoPresenterHost` と同じ設計)。 各 DrawDevice
+は ctor / `InitContext` で `RegisterDialogHost(this, this)`、 dtor / `DoneContext` で
+`UnregisterDialogHost(this)`。 さらに TJS 読取専用プロパティ **`dialogRendererHost`** で自身の
+host ポインタを `tjs_int64` 公開する (`videoPresenterHost` と同規約)。 `iTVPDialogRenderer` /
+`iTVPDialogRendererHost` と登録 free 関数 `TVPRegisterDialogHost` / `TVPUnregisterDialogHost` は
+**tp_stub 公開済み** (`DialogRenderer.h` の抽出マーカー)。 IF は完全に PF 非依存の POD なので
+D3D11 等の型を tp_stub に持ち込まない。 → **プラグイン / 差し替え DrawDevice も、
+`iTVPDialogRendererHost` を実装 + renderer を所有 + `TVPRegisterDialogHost` で登録すれば
+overlay ダイアログ描画に参加できる**。
 
 ## 入力ルーティング (krkrz overlay)
 
@@ -183,10 +214,21 @@ DrawDevice / Window の入力ハンドラは `TVP_DIALOG_INTERCEPT` マクロで
 
 | 種別 | VK の例 | 配送先 |
 |---|---|---|
-| `key` | VK_RETURN / VK_TAB / VK_ESC / 方向キー / 英数字 | `overlay_session::on_key_down(SDL_Keycode, mods)` |
-| `pad_button` | VK_PAD1〜VK_PAD12 / VK_PADLEFT 等 / VK_PAD_L_LEFT 等 | `overlay_session::on_pad_button(SDL_GAMEPAD_BUTTON_*, down)` |
+| `key` | VK_RETURN / VK_TAB / VK_ESC / 方向キー / 英数字 | `overlay_session::on_key_down(cycfi::elements::key_code, mods)` |
+| `pad_button` | VK_PAD1〜VK_PAD12 / VK_PADLEFT 等 / VK_PAD_L_LEFT 等 | `overlay_session::on_pad_button(cycfi::elements::pad_button, down)` |
 
-VK_PAD↔SDL_GAMEPAD_BUTTON の対応は [Gamepad.md](Gamepad.md) を参照。 stick の 8 方向量子化 (VK_PAD_L_*) は DPAD 扱いに統合 (UI 操作上等価)。
+overlay_session の入力 API は **host 非依存の cycfi 中立型** (`mouse_button::what` / `key_code` /
+`pad_button` / `pad_axis` + `mod_*`) を受ける (SDL / Win32 のネイティブ enum は経由しない)。
+manager は krkrz ネイティブ入力 (Windows VK / `tTVPMouseButton` / `TVP_SS_*`) を `RouteVk` /
+`MouseButtonToElements` / `FlagsToElementsMods` で cycfi 型へ直接マップする。 VK_PAD↔pad_button の
+対応は [Gamepad.md](Gamepad.md) を参照。 stick の 8 方向量子化 (VK_PAD_L_*) は DPAD 扱いに統合。
+
+**テキスト入力**: `ForwardKeyPress(tjs_char)` が UTF-16 code unit を UTF-8 化して
+`overlay_session::on_text_input` へ渡す (input_box 等の文字入力)。 SDL は
+`SDL_EVENT_TEXT_INPUT` → `ForwardText`(完全 UTF-8)、 **WINVER は `WM_CHAR` →
+`OnKeyPress` → `ForwardKeyPress`** 経路。 BMP 外 (絵文字 / 拡張漢字) は WM_CHAR が
+high/low サロゲート 2 回に分けて配信するので、 `ForwardKeyPress` が high を保持して low と
+合成し 1 コードポイント (最大 4 byte UTF-8) にする。
 
 Elements 側はこれを受けて [keyboard / arrow / gamepad ナビゲーション](https://github.com/wamsoft/elements/blob/develop/docs/keyboard-navigation.md) で動く。 デフォルト bind は A=Enter / B=Esc / X=Shift+Tab / Y=Tab / D-Pad=矢印。
 
@@ -420,7 +462,8 @@ getter も `IsHandlerActive(this)` を返す。 ブロッキングモーダル�
 | 2 | DialogManager 骨組み + DrawDevice インターセプト + Show() フック | 完了 |
 | 3 | SDL3 アダプタで MVP | 完了 |
 | 4 | OGL アダプタ追加 | 完了 |
-| 5 | WINVER `BasicDrawDevice` アダプタ | 未着手 |
+| 5 | WINVER `BasicDrawDevice` アダプタ (`tTVPD3D11DialogRenderer` + `iTVPD3D11DialogHost`) + WM_CHAR テキスト入力 + overlay-modal (nested Win32 pump) + フォント埋込 (resources.rc の `BINARY` 型を `register_font_buffer`) | 完了 |
+| 5b | 描画アダプタ提供口の汎用化 (`iTVPDialogRendererHost` + `dialogRendererHost` TJS プロパティ + tp_stub 公開)。 プラグイン / 差し替え DrawDevice 対応 | 完了 |
 | 6a | JSON レイアウト構築層 (krkrz JsonLayout) | 完了 |
 | 6b | TJS バインディング (`Dialog.showJson` / `showFile` / `close` / `onAction`) | 完了 |
 | 6c | TJS `showModalJson` / `showModalFile` (独立 window + overlay 両モード) | 完了 |
@@ -446,8 +489,16 @@ getter も `IsHandlerActive(this)` を返す。 ブロッキングモーダル�
 | 色形式 | `"#RGB"` `"#RRGGBB"` `"#RRGGBBAA"` / 名前色対応 | 現状は `[r,g,b,a]` 配列のみ |
 | 拡張 | plugin sidecar JSON 自動 scan (UserConfig 拡張) | |
 
-## 残課題 (Elements 側で要検証)
+## 残課題
 
-- `selection_menu` でドロップダウン選択後にフォーカスが下のボタンに戻ってしまう
+- `selection_menu` でドロップダウン選択後にフォーカスが下のボタンに戻ってしまう (Elements 側)
 - 一部 widget で文字が重なる挙動 (font metrics 起因の可能性、 [feedback_elements_font_init_order] とも関係)
 - DPI 全体仕様再検討 ([project_dialog_dpi_spec_rework] 参照)
+- ~~WINVER: DPI スケーリングの異なるモニター間へ window を移動すると DestRect がオフセット~~
+  → **修正済** (`SetDrawDeviceDestRect` の windowed 分岐で layer×zoom を実クライアントへ letterbox
+  フィット。 `doc/D3D11Migration.md` 参照)。
+- ~~WINVER: 独立 OS ウィンドウ modal の本実装~~ → **実装済** (`TVPRunElementsModalWindow`、 上記参照)。
+- ~~WINVER: Agent 駆動 API~~ → **対応済** (`common/environ/AgentControlIntf.cpp` + `AgentInput` seam)。
+- WINVER の起動時 UserConfig UI (`-userconf`) は **Win32 ネイティブ版** (`ConfigFormUnit.cpp`) が既存で
+  動作する。 Elements 版 UserConfig (`SDLElementsUserConfig.cpp`) は SDL 専用のまま
+  (ゲーム窓生成前の独立ウィンドウ = 上記 modal 基盤とは別に UI 移植が要る)。

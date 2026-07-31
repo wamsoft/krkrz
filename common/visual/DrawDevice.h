@@ -426,19 +426,8 @@ public:
 	// Generic版用拡張メソッド
 	//---------------------------------------------------------------------------
 
-	//! @brief		(Window->DrawDevice) ビデオの更新
-	//! @param		w			ビデオの幅
-	//! @param		h			ビデオの高さ
-	//! @param		updator		ビデオの更新を行う関
-	virtual void UpdateVideo(int w, int h, std::function<void(char *dest, int pitch)> updator) = 0;
-
-	//! @brief		(Window->DrawDevice) ビデオのクリア
-	//! @note		ビデオの内容をクリアする。通常は黒でクリアされる。
-	//!				このメソッドはビデオ再生完了後に呼び出すことが想定される
-	//!				(ビデオの内容をクリアするため)。このメソッドを呼び出すと、
-	//!				ビデオの内容がクリアされ、次に UpdateVideo()
-	//!				が呼ばれるまでビデオの内容は更新されない。
-	virtual void ClearVideo() = 0;
+	// (overlay 動画は pull 型 presenter host へ移行済み。旧 push 型 UpdateVideo/ClearVideo は撤去。
+	//  各 DrawDevice は環境別 presenter host (iTVP{,SDL,GL}VideoPresenterHost) を実装する)
 
 	//! @brief		(Window->DrawDevice) VSync待ちを有効にするかどうかを設定する
 	//! @param		enable		有効にするかどうか
@@ -635,12 +624,10 @@ public:
 	virtual bool TJS_INTF_METHOD SwitchToFullScreen( HWND window, tjs_uint w, tjs_uint h, tjs_uint bpp, tjs_uint color, bool changeresolution );
 	virtual void TJS_INTF_METHOD RevertFromFullScreen( HWND window, tjs_uint w, tjs_uint h, tjs_uint bpp, tjs_uint color );
 
-#ifdef __GENERIC__	
+#ifdef __GENERIC__
 	//---------------------------------------------------------------------------
-	// Generic版用拡張メソッド
+	// Generic版用拡張メソッド (overlay 動画 UpdateVideo/ClearVideo は pull 型 presenter へ移行済で撤去)
 	//---------------------------------------------------------------------------
-	virtual void UpdateVideo(int w, int h, std::function<void(char *dest, int pitch)> updator){};
-	virtual void ClearVideo(){}
 	virtual void SetWaitVSync(bool enable) {}
 #endif
 

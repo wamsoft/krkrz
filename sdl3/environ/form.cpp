@@ -56,8 +56,17 @@ SDL3WindowForm::SDL3WindowForm(class tTJSNI_Window* win)
 		SDL_SetPointerProperty(SDL_GetWindowProperties(mWindow), "form", this);
 		// テキスト入力を有効化 (SDL_EVENT_TEXT_INPUT を発生させ、KAG の Edit
 		// レイヤ等へ文字入力を配送できるようにする。未呼出だと TEXT_INPUT が
-		// 一切発生せず、STEINS;GATE 8BIT の start 画面のタイプ入力が通らない)
-		SDL_StartTextInput(mWindow);
+		// 一切発生せず、STEINS;GATE 8BIT の start 画面のタイプ入力が通らない)。
+		// ただしオンスクリーンキーボードを持つ環境では SDL_StartTextInput が
+		// キーボード UI を即座に出してしまう (NX/Ounce ではブロッキングの
+		// swkbd アプレット起動、Android ではソフトキーボード表示) ため、
+		// 起動時のベースライン有効化は物理キーボード環境限定とする。
+		// これらの環境では Elements 側のフォーカス駆動
+		// (ElementsDialogManager::UpdateFocusDrivenTextInput) が
+		// テキスト欄に focus が入ったときにのみ開始する。
+		if (!SDL_HasScreenKeyboardSupport()) {
+			SDL_StartTextInput(mWindow);
+		}
 	} else {
 		const char *error = SDL_GetError();
 		TVPLOG_ERROR("SDL3WindowForm: Failed to create SDL Window: {}", error);

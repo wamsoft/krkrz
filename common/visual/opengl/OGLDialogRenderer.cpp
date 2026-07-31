@@ -26,7 +26,7 @@ void tTVPOGLDialogRenderer::DestroyLayer(Layer& layer)
 {
 	if (layer.texture) {
 		// GL context が生存しているうちにのみ glDeleteTextures を呼ぶ。
-		// host が UnregisterRenderer を DoneContext より前に呼んでいれば
+		// host が UnregisterDialogHost を DoneContext より前に呼んでいれば
 		// ここで context を MakeCurrent して安全に破棄できる。
 		iTVPGLContext * ctx = _host ? _host->DialogHost_GetGLContext() : nullptr;
 		if (ctx) {

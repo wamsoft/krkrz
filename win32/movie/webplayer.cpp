@@ -70,7 +70,7 @@ private:
 };
 
 
-tTVPWebpMovie::tTVPWebpMovie(HWND owner, bool overlayOutput)
+tTVPWebpMovie::tTVPWebpMovie(HWND owner, bool overlayOutput, bool preferI420)
 : RefCount(1)
 , Player(nullptr)
 , OwnerWindow(owner)
@@ -79,6 +79,8 @@ tTVPWebpMovie::tTVPWebpMovie(HWND owner, bool overlayOutput)
 , OverlayMode(overlayOutput)
 , Overlay(nullptr)
 , DispW(0), DispH(0)
+, PreferI420(preferI420 && !overlayOutput)   // overlayOutput が優先
+, I420W(0), I420H(0), I420Valid(false), I420Dirty(false)
 {
 }
 
@@ -100,8 +102,8 @@ tTVPWebpMovie::Open(const char *path)
 {
     IMoviePlayer::InitParam param;
     param.Init();
-    param.videoColorFormat = OverlayMode ? IMoviePlayer::ColorFormat::COLOR_NOCONV
-                                         : IMoviePlayer::ColorFormat::COLOR_BGRA;
+    param.videoColorFormat = (OverlayMode || PreferI420) ? IMoviePlayer::ColorFormat::COLOR_NOCONV
+                                                         : IMoviePlayer::ColorFormat::COLOR_BGRA;
 	param.audioSink        = &AudioSink;
 	Player = IMoviePlayer::CreateMoviePlayer(path, param);
 
@@ -109,6 +111,11 @@ tTVPWebpMovie::Open(const char *path)
 		if (OverlayMode) {
 			Player->SetOnVideoDecodedPlanes([this](const IMoviePlayer::VideoFrameInfo &frame) {
 				UpdatePlanes(frame);
+			});
+		} else if (PreferI420) {
+			// presenter 経路: I420 を内部保持し GetI420Frame で供給 (engine の D3D11 presenter が GPU で YUV→RGB)。
+			Player->SetOnVideoDecodedPlanes([this](const IMoviePlayer::VideoFrameInfo &frame) {
+				BufferI420(frame);
 			});
 		} else {
 			Player->SetOnVideoDecoded([this](int w, int h, IMoviePlayer::DestUpdater updater) {
@@ -131,8 +138,8 @@ tTVPWebpMovie::Open(IStream *stream)
 {
     IMoviePlayer::InitParam param;
     param.Init();
-    param.videoColorFormat = OverlayMode ? IMoviePlayer::ColorFormat::COLOR_NOCONV
-                                         : IMoviePlayer::ColorFormat::COLOR_BGRA;
+    param.videoColorFormat = (OverlayMode || PreferI420) ? IMoviePlayer::ColorFormat::COLOR_NOCONV
+                                                         : IMoviePlayer::ColorFormat::COLOR_BGRA;
 	param.audioSink        = &AudioSink;
 	Player = IMoviePlayer::CreateMoviePlayer(new MovieStream(stream), param);
 
@@ -140,6 +147,11 @@ tTVPWebpMovie::Open(IStream *stream)
 		if (OverlayMode) {
 			Player->SetOnVideoDecodedPlanes([this](const IMoviePlayer::VideoFrameInfo &frame) {
 				UpdatePlanes(frame);
+			});
+		} else if (PreferI420) {
+			// presenter 経路: I420 を内部保持し GetI420Frame で供給 (engine の D3D11 presenter が GPU で YUV→RGB)。
+			Player->SetOnVideoDecodedPlanes([this](const IMoviePlayer::VideoFrameInfo &frame) {
+				BufferI420(frame);
 			});
 		} else {
 			Player->SetOnVideoDecoded([this](int w, int h, IMoviePlayer::DestUpdater updater) {
@@ -212,7 +224,74 @@ void tTVPWebpMovie::UpdatePlanes(const IMoviePlayer::VideoFrameInfo &frame)
 	}
 }
 
-void 
+//----------------------------------------------------------------------------
+//! @brief presenter 経路: I420(planar YUV420) を内部バッファへ packed 保持する。
+//!   デコードスレッドから呼ばれる。plane データは呼び出し後に無効化されるので同期 copy する。
+//!   engine の D3D11 presenter が GetI420Frame で取り出し GPU で YUV→RGB する。
+//----------------------------------------------------------------------------
+void tTVPWebpMovie::BufferI420(const IMoviePlayer::VideoFrameInfo &frame)
+{
+	if (frame.planeCount < 3) return;
+	// coded 幅 (16 アライン padding 付き) を表示寸法へクロップ (右端の緑帯回避。UpdatePlanes 同様)。
+	if (DispW == 0 && Player) {
+		IMoviePlayer::VideoFormat fmt{};
+		Player->GetVideoFormat(&fmt);
+		DispW = (fmt.width  > 0 && fmt.width  <= frame.width ) ? fmt.width  : frame.width;
+		DispH = (fmt.height > 0 && fmt.height <= frame.height) ? fmt.height : frame.height;
+	}
+	int vw = (DispW > 0 && DispW <= frame.width ) ? DispW : frame.width;
+	int vh = (DispH > 0 && DispH <= frame.height) ? DispH : frame.height;
+	if (vw <= 0 || vh <= 0) return;
+	int cw = (vw + 1) / 2, ch = (vh + 1) / 2;
+
+	std::lock_guard<std::mutex> lk(I420Mtx);
+	I420Back.resize((size_t)vw * vh + 2 * (size_t)cw * ch);
+	uint8_t *dst = I420Back.data();
+	// Y
+	for (int y = 0; y < vh; ++y)
+		memcpy(dst + (size_t)y * vw, frame.planes[0].data + (size_t)y * frame.planes[0].stride, vw);
+	// U
+	uint8_t *du = dst + (size_t)vw * vh;
+	for (int y = 0; y < ch; ++y)
+		memcpy(du + (size_t)y * cw, frame.planes[1].data + (size_t)y * frame.planes[1].stride, cw);
+	// V
+	uint8_t *dv = du + (size_t)cw * ch;
+	for (int y = 0; y < ch; ++y)
+		memcpy(dv + (size_t)y * cw, frame.planes[2].data + (size_t)y * frame.planes[2].stride, cw);
+	I420W = vw; I420H = vh;
+	I420Valid = true; I420Dirty = true;
+
+	mUpdate = true;
+	if (OwnerWindow) ::PostMessage(OwnerWindow, WM_GRAPHNOTIFY, 0, 0);
+}
+//----------------------------------------------------------------------------
+//! @brief 描画スレッドから最新 I420 フレームを取得する。ロック下に Back→Front へ複製し、
+//!   Front のポインタを返す (以後 Front はこのスレッド専有 = presenter の upload 中に
+//!   デコードスレッドが Back を上書きしても安全)。
+//----------------------------------------------------------------------------
+bool __stdcall tTVPWebpMovie::GetI420Frame( const BYTE** y, int* yStride, const BYTE** u, int* uStride,
+	const BYTE** v, int* vStride, int* w, int* h )
+{
+	std::lock_guard<std::mutex> lk(I420Mtx);
+	if (!I420Valid || I420W <= 0 || I420H <= 0) return false;
+	if (I420Dirty || I420Front.size() != I420Back.size()) {
+		I420Front = I420Back;   // ロック下に複製
+		I420Dirty = false;
+	}
+	int vw = I420W, vh = I420H, cw = (vw + 1) / 2, ch = (vh + 1) / 2;
+	const uint8_t *base = I420Front.data();
+	if (y) *y = base;
+	if (yStride) *yStride = vw;
+	if (u) *u = base + (size_t)vw * vh;
+	if (uStride) *uStride = cw;
+	if (v) *v = base + (size_t)vw * vh + (size_t)cw * ch;
+	if (vStride) *vStride = cw;
+	if (w) *w = vw;
+	if (h) *h = vh;
+	return true;
+}
+//----------------------------------------------------------------------------
+void
 tTVPWebpMovie::OnState(IMoviePlayer::State state)
 {
 	switch (state) {

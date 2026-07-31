@@ -16,7 +16,7 @@ Web (krkrz_web) ではランチャの「システム情報」から起動。
 ■ 操作
 
   ESC : 終了
-  P   : Elements パネル再表示 (SDL3 ビルド + KRKRZ_USE_ELEMENTS=ON のみ)
+  P   : Elements パネル再表示 (KRKRZ_USE_ELEMENTS=ON のみ / SDL3・WINVER 両対応)
   F   : FPS 表示
   パネル: 情報再取得 / パネルを閉じる / デモ終了
 

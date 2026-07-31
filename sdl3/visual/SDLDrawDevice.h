@@ -6,11 +6,21 @@
 #include <SDL3/SDL.h>
 #include "SDLTextureUpdateRect.h"
 #include "WindowForm.h"
+#include "SDLVideoPresenter.h"        // iTVPSDLVideoPresenter / iTVPSDLVideoPresenterHost
+#ifdef KRKRZ_HAS_ELEMENTS
+#include "elements/DialogRenderer.h"   // iTVPDialogRendererHost
+#include <memory>
+class tTVPSDLDialogRenderer;
+#endif
 
 //---------------------------------------------------------------------------
 //! @brief		SDL3 Render APIを使用する描画デバイス
 //---------------------------------------------------------------------------
 class tTVPSDLDrawDevice : public tTVPDrawDevice
+	, public iTVPSDLVideoPresenterHost   // overlay 動画を pull 型で受ける登録口
+#ifdef KRKRZ_HAS_ELEMENTS
+	, public iTVPDialogRendererHost   // manager→DrawDevice: renderer 提供
+#endif
 {
 	typedef tTVPDrawDevice inherited;
 
@@ -28,6 +38,11 @@ public:
 	//! @brief Elements ダイアログレンダラ等から DestRect を借用するための accessor
 	const tTVPRect & GetDestRectExt() const { return DestRect; }
 
+#ifdef KRKRZ_HAS_ELEMENTS
+	// iTVPDialogRendererHost — manager が具象型を知らずに renderer を取得する口。
+	iTVPDialogRenderer * GetDialogRenderer() override;   // 実体は .cpp (renderer 完全型)
+#endif
+
 	tTVPSDLDrawDevice(iTJSDispatch2 *tjs_obj); //!< コンストラクタ
 
 private:
@@ -37,6 +52,11 @@ private:
 	void DestroyRenderer();
 	void CreateTexture();
 	void DestroyTexture();
+
+#ifdef KRKRZ_HAS_ELEMENTS
+	//! この DrawDevice が所有する SDL dialog renderer (host = this)。
+	std::unique_ptr<tTVPSDLDialogRenderer> DialogRenderer;
+#endif
 
 public:
 	//---- オブジェクト生存期間制御
@@ -63,12 +83,19 @@ public:
 	virtual void TJS_INTF_METHOD EndBitmapCompletion(iTVPLayerManager * manager);
 
 	// -----------------------------------------------------
-	// VideoOverlay Support
+	// VideoOverlay Support (pull 型: presenter host)
 	// -----------------------------------------------------
+	// 従来の push 型 (UpdateVideo/ClearVideo + 自前 mVideoBuffer) は廃止し、WINVER
+	// (BasicDrawDevice) と同じく overlay 動画側 (iTVPSDLVideoPresenter) を登録して
+	// Show() から pull する構造へ統一。base の UpdateVideo/ClearVideo は no-op を継承。
 
 public:
-	virtual void UpdateVideo(int w, int h, std::function<void(char *dest, int pitch)> updator);
-	virtual void ClearVideo();
+	//---- iTVPSDLVideoPresenterHost
+	virtual void TJS_INTF_METHOD AddVideoPresenter( iTVPSDLVideoPresenter * presenter );
+	virtual void TJS_INTF_METHOD RemoveVideoPresenter( iTVPSDLVideoPresenter * presenter );
+	//! 現在 presenter が稼働中か (稼働中はレイヤ描画を省き動画のみ描く)。
+	bool HasActiveVideoPresenter() const { return VideoPresenter != nullptr; }
+
 	virtual void SetWaitVSync(bool enable);
 
 private:
@@ -89,17 +116,10 @@ private:
 	// fast path (SDL_StretchSurface 直叩き) に乗り、中間 tmp2 サーフェス確保が消える。
 	SDL_PixelFormat mPreferredTextureFormat;
 
-	// 動画用テクスチャ
-	SDL_Texture *mVideoTexture;
-	SDL_FRect mVideoPosition;
-	char *mVideoBuffer;
-	bool mVideoBufferDirty;
-	int mVideoWidth;
-	int mVideoHeight;
-
-	std::mutex mVideoOverlayMutex;
-
-	void UpdateVideoPosition(int w, int h);
+	// overlay 動画 presenter (単一スロット、最後に登録した 1 つを pull する)。
+	// フレームバッファ / テクスチャは presenter 側 (SDLVideoPresenter.cpp) が持つ。
+	iTVPSDLVideoPresenter *VideoPresenter;
+	//! presenter 稼働中に動画を描く (Show() から)。何か描いたら true。
 	bool ShowVideo();
 
 	// ビューポート余白 (背景色 + 壁紙)。壁紙テクスチャは base の ViewportWallpaperGen

@@ -518,9 +518,32 @@ void TTVPWindowForm::SetDrawDeviceDestRect()
 		destrect.right = destrect.left + w;
 		destrect.bottom = destrect.top + h;
 	} else {
+		// ウィンドウの実クライアント (物理px) を取得し、layer×zoom (w,h) を
+		// アスペクト維持でクライアントにフィット (letterbox) させる。
+		// 異DPIモニタへの移動 (WM_DPICHANGED) 等でクライアントが layer×zoom と
+		// 食い違っても DestRect がクライアントに追従するので、描画・入力
+		// (TransformToPrimaryLayerManager は DestRect 幅でスケール)・ダイアログの
+		// オフセットを防ぐ。SDL の SetRenderLogicalPresentation 相当を WINVER 側の
+		// DestRect 計算で表現したもの。DPI 変更は縦横同率スケールなのでフィット後は
+		// クライアント全体を占め offset=0 になる。windowed の入力は生クライアント座標を
+		// DestRect 原点 (=0,0) 基準で扱うため、中央寄せはせず左上詰めにして整合を保つ。
+		tjs_int cw = GetInnerWidth();
+		tjs_int ch = GetInnerHeight();
+		if( cw < 1 ) cw = w;
+		if( ch < 1 ) ch = h;
+		tjs_int dw, dh;
+		if( (tjs_int64)cw * h <= (tjs_int64)ch * w ) {
+			dw = cw;
+			dh = MulDiv( h, cw, w );
+		} else {
+			dh = ch;
+			dw = MulDiv( w, ch, h );
+		}
+		if( dw < 1 ) dw = 1;
+		if( dh < 1 ) dh = 1;
 		destrect.left = destrect.top = 0;
-		destrect.right = w;
-		destrect.bottom = h;
+		destrect.right = dw;
+		destrect.bottom = dh;
 	}
 
 	if( LastSentDrawDeviceDestRect != destrect ) {

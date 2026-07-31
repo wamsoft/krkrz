@@ -653,7 +653,7 @@ config 読込時の alloc は pre-init 経路で素 malloc を通る。
 |---|---|---|
 | BitmapAllocator current_used | Sized mode 化済 (T2 で free(void*, size_t) 経由) | — |
 | グローバル `malloc`/`new` 捕捉 | 本体 exe 内 + SDL3 内部のみ実装済 (GlobalAllocStats) | `doc/legacy/GlobalAllocationStats.md`。残: C ライブラリ内部 / プラグイン DLL は捕捉外、必要なら案 B (mimalloc 全置換) |
-| WINVER (`BasicDrawDevice` = D3D9) 上のオーバレイ | 非対応 (描画フックなし) | 必要が出てから検討 |
+| WINVER (`BasicDrawDevice` = D3D11) 上のメモリ/パッドオーバレイ | 非対応 (描画フックなし) | 必要が出てから検討 |
 | プラグイン DLL 内の alloc | 各 DLL が独立 CRT のため捕捉外 (GlobalAllocStats でも到達不可能) | tp_stub 経由でプラグイン側にも override を撒く案を `doc/legacy/GlobalAllocationStats.md` で議論中 |
 | TJS2 ヒープ | per-allocator 化していない | `MemoryBudgetNegotiation.md §5.4.2` (将来候補、半端実装は罠) |
 | GraphicsLoader (libpng etc.) | per-allocator 化していない | `MemoryBudgetNegotiation.md §5.4.1` |

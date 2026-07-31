@@ -345,6 +345,81 @@ void TVPRegisterElementsFontsFromStorageDir(const ttstr& dir)
 		ttstr((tjs_int)registered) + TJS_W(" font(s) from ") + dir);
 }
 
+#ifdef __WINVER__
+//---------------------------------------------------------------------------
+// WINVER host: 埋め込みリソース ("BINARY" 型) から elements 用フォントを登録。
+//
+// SDL/generic は resource/ ディレクトリを storage 列挙 (TVPGetStorageListAt) で
+// 走査できるが、 WINVER はリソースが exe に "BINARY" 型で埋め込まれており
+// (CMakeLists.txt の resources.rc 生成部: `<filename> BINARY "<path>"`)、 既存の
+// storage media (bres = RT_RCDATA) では型が違って読めず、 列挙もできない。 そこで
+// Win32 リソース API で "BINARY" 型を直接列挙し、 .ttf/.otf をメモリバッファのまま
+// register_font_buffer で登録する (font.hpp が Win32 .rc 埋め込みフォント向けに
+// 用意している経路)。 family/weight/slant/stretch 推定は StorageDir 版と同一。
+//---------------------------------------------------------------------------
+namespace {
+
+// EnumResourceNamesW コールバック: 文字列名リソースのみ集める (フォントは
+// ファイル名で埋め込まれるので整数 ID は対象外)。
+BOOL CALLBACK CollectBinaryResName(HMODULE, LPCWSTR, LPWSTR name, LONG_PTR param)
+{
+	if (!IS_INTRESOURCE(name)) {
+		auto* out = reinterpret_cast<std::vector<std::wstring>*>(param);
+		out->emplace_back(name);
+	}
+	return TRUE;
+}
+
+} // anonymous
+
+void TVPRegisterElementsFontsFromWinResources()
+{
+	TVPInstallElementsResourceLoader();
+
+	HMODULE module = ::GetModuleHandleW(nullptr);   // exe 本体
+	std::vector<std::wstring> names;
+	// "BINARY" = resources.rc の型名 (CMakeLists.txt の生成規則と対応)。
+	// コールバックは CALLBACK (__stdcall) 定義だが、 x64 では呼出規約が単一化され
+	// 型システム上 __cdecl に正規化されて ENUMRESNAMEPROCW と一致判定されないため、
+	// 明示キャストで渡す (x86 は __stdcall 同士で ABI 一致、 x64 は規約単一で安全)。
+	::EnumResourceNamesW(module, L"BINARY",
+		reinterpret_cast<ENUMRESNAMEPROCW>(&CollectBinaryResName),
+		reinterpret_cast<LONG_PTR>(&names));
+
+	int registered = 0;
+	for (const auto& wname : names) {
+		std::string fname_utf8 = TtstrToUtf8(ttstr(wname.c_str()));
+		std::string stem, ext_lc;
+		SplitStemExt(fname_utf8, stem, ext_lc);
+		if (ext_lc != ".ttf" && ext_lc != ".otf") continue;
+
+		HRSRC hrsrc = ::FindResourceW(module, wname.c_str(), L"BINARY");
+		if (!hrsrc) continue;
+		DWORD   size  = ::SizeofResource(module, hrsrc);
+		HGLOBAL hglob = ::LoadResource(module, hrsrc);
+		if (!hglob || size == 0) continue;
+		const auto* data = static_cast<const std::uint8_t*>(::LockResource(hglob));
+		if (!data) continue;
+
+		FontFileInfo info = ParseFontFilename(stem);
+
+		// key は path 代替のキャッシュキー。 リソース名で一意にする。
+		// register_font_buffer は内部で stem_from_path(key) を ThorVG 登録名に使う
+		// (path 版 register_font と同規約) ので、 dir/拡張子付きの key を渡してよい。
+		std::string key = "winres://" + fname_utf8;
+		std::string embedded = cycfi::elements::register_font_buffer(
+			info.family, key, data, static_cast<std::size_t>(size),
+			info.weight, info.slant, info.stretch);
+		const std::string& canonical = !embedded.empty() ? embedded : info.family;
+		NoteRegisteredFamily(canonical);
+		++registered;
+	}
+
+	TVPAddLog(ttstr(TJS_W("ElementsResourceLoader: registered ")) +
+		ttstr((tjs_int)registered) + TJS_W(" font(s) from Win32 resources"));
+}
+#endif // __WINVER__
+
 ttstr TVPRegisterElementsFont(const ttstr& family, const ttstr& path,
 	int weight, int slant, int stretch)
 {

@@ -119,11 +119,7 @@ tTVPSDLDrawDevice::tTVPSDLDrawDevice(iTJSDispatch2 *self)
  , mRenderer(nullptr)
  , mUseFlipOnShow(true)
  , mPreferredTextureFormat(SDL_PIXELFORMAT_XRGB8888)
- , mVideoTexture(nullptr)
- , mVideoBuffer(nullptr)
- , mVideoWidth(0)
- , mVideoHeight(0)
- , mVideoBufferDirty(false)
+ , VideoPresenter(nullptr)
  , mWallpaperTexture(nullptr)
  , mWallpaperGen(0)
  , mWallpaperW(0)
@@ -132,19 +128,31 @@ tTVPSDLDrawDevice::tTVPSDLDrawDevice(iTJSDispatch2 *self)
 	if (Self) Self->AddRef();
 	TVPInitSDLDrawDeviceOptions();
 
+	// overlay 動画 presenter factory を登録 (VideoOverlay が pull 経路で使う)。冪等。
+	TVPRegisterSDLVideoOverlayPresenterFactory();
+
 #ifdef KRKRZ_HAS_ELEMENTS
-	tTVPElementsDialogManager::Instance().RegisterRenderer(
-		this, std::make_unique<tTVPSDLDialogRenderer>(this));
+	// dialog renderer を DrawDevice 自身が所有し、iTVPDialogRendererHost (this) として
+	// manager に登録する。renderer は host (this) から SDL_Renderer 等を借用する。
+	DialogRenderer = std::make_unique<tTVPSDLDialogRenderer>(this);
+	tTVPElementsDialogManager::Instance().RegisterDialogHost(this, this);
 #endif
 }
 //---------------------------------------------------------------------------
 tTVPSDLDrawDevice::~tTVPSDLDrawDevice()
 {
 #ifdef KRKRZ_HAS_ELEMENTS
-	tTVPElementsDialogManager::Instance().UnregisterRenderer(this);
+	tTVPElementsDialogManager::Instance().UnregisterDialogHost(this);
 #endif
 	DestroyRenderer();
 }
+#ifdef KRKRZ_HAS_ELEMENTS
+//---------------------------------------------------------------------------
+iTVPDialogRenderer * tTVPSDLDrawDevice::GetDialogRenderer()
+{
+	return DialogRenderer.get();
+}
+#endif
 //---------------------------------------------------------------------------
 void tTVPSDLDrawDevice::InitRenderer(SDL_Window *sdl_wnd)
 {
@@ -224,7 +232,8 @@ void tTVPSDLDrawDevice::InitRenderer(SDL_Window *sdl_wnd)
 void tTVPSDLDrawDevice::DestroyRenderer()
 {
 	if (mRenderer) {
-		ClearVideo();
+		// presenter が保持するテクスチャは renderer 破棄前に手放させる。
+		VideoPresenter = nullptr;
 		DestroyTexture();
 		if (mWallpaperTexture) {
 			SDL_DestroyTexture(mWallpaperTexture);
@@ -557,103 +566,46 @@ tTVPSDLDrawDevice::Render(std::function<void(SDL_Renderer *renserer)> func)
 bool
 tTVPSDLDrawDevice::ShowVideo()
 {
-	// ビデオ描画中はそれだけを描画
-	if (mVideoBuffer) {
-		if (mVideoBufferDirty) {
-			std::lock_guard<std::mutex> lock( mVideoOverlayMutex );
-			if (!mVideoTexture) {
-				mVideoTexture = CreateTexture(SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, mVideoWidth, mVideoHeight);
-				if (!mVideoTexture) {
-					const char *err = SDL_GetError();
-					TVPLOG_ERROR("tTVPSDLDrawDevice::ShowVideo() CreateTexture failed:{}", err);
-					mVideoBufferDirty = false; // 更新済みフラグをクリア
-					return false;
-				}
-			}
-			if (mVideoTexture) {
-				// テクスチャのピッチを取得
-				int spitch = mVideoWidth * 4;
-				int pitch = 0;
-				void *pixels = nullptr;
-				if (SDL_LockTexture(mVideoTexture, NULL, &pixels, &pitch)) {
-					// ピクセルデータを更新
-					if (pitch == spitch) {
-						// ピッチが正しい場合はデータをコピー
-						memcpy(pixels, mVideoBuffer, pitch * mVideoHeight);
-					} else {
-						// ピッチが異なる場合は行ごとにコピー
-						for (int y = 0; y < mVideoHeight; ++y) {
-							memcpy((char *)pixels + y * pitch, (char*)mVideoBuffer + y * spitch, spitch);
-						}
-					}
-					SDL_UnlockTexture(mVideoTexture);		
-				} else {
-					const char *err = SDL_GetError();
-					TVPLOG_ERROR("tTVPSDLDrawDevice::ShowVideo() LockTexture failed:{}", err);
-				}
-			}
-			mVideoBufferDirty = false; // 更新済みフラグをクリア
-		}
-		if (mVideoTexture) {
-			Render([&](SDL_Renderer *renderer) {
-				SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
-				{
-					KRKRZ_RENDER_STATS_SCOPE(TVPRenderStatsAddShowTex);
-					SDL_RenderTexture(renderer, mVideoTexture, NULL, &mVideoPosition);
-				}
-				{
-					KRKRZ_RENDER_STATS_SCOPE(TVPRenderStatsAddShowOverlay);
-					// メモリ状態オーバレイ (OFF 時は no-op)。ムービー再生中も
-					// FPS/メモリを観測したいので Show() と同じく末尾で呼ぶ。
-					TVPRenderMemoryOverlay(renderer);
-					TVPRenderPadOverlay(renderer);
-				}
-			});
-		}
-		return true;
+	// presenter 稼働中は動画のみを描く (動画が画面を覆う前提)。フレームの保持と
+	// テクスチャ管理は presenter 側 (SDLVideoPresenter.cpp) が行い、ここでは描画スレッドから
+	// pull するだけ。Render() が logical presentation + 背景クリア + present を担う。
+	if (!VideoPresenter || !NIWindow || !mRenderer) return false;
+	tTVPSDLVideoPresenterContext ctx;
+	ctx.Renderer     = mRenderer;
+	ctx.TargetWidth  = NIWindow->GetInnerWidth();
+	ctx.TargetHeight = NIWindow->GetInnerHeight();
+	ctx.DestRect     = DestRect;
+	{	// mixer 画像のプライマリ座標→描画先変換に使うプライマリレイヤ寸法
+		tjs_int sw = 0, sh = 0;
+		GetSrcSize( sw, sh );
+		ctx.SrcWidth  = sw;
+		ctx.SrcHeight = sh;
 	}
-	return false;
+	Render([&](SDL_Renderer *renderer) {
+		{
+			KRKRZ_RENDER_STATS_SCOPE(TVPRenderStatsAddShowTex);
+			VideoPresenter->RenderVideoFrame(ctx);
+		}
+		{
+			KRKRZ_RENDER_STATS_SCOPE(TVPRenderStatsAddShowOverlay);
+			// ムービー再生中も FPS/メモリを観測したいので Show() と同じく末尾で呼ぶ。
+			TVPRenderMemoryOverlay(renderer);
+			TVPRenderPadOverlay(renderer);
+		}
+	});
+	return true;
 }
 
-// VideoOverlay 対応
-void 
-tTVPSDLDrawDevice::UpdateVideo(int w, int h, std::function<void(char *dest, int pitch)> updator)
+// overlay 動画 presenter host (pull 型)。単一スロットで最後に登録した 1 つを保持する
+// (WINVER BasicDrawDevice と同じ規約)。
+void TJS_INTF_METHOD tTVPSDLDrawDevice::AddVideoPresenter( iTVPSDLVideoPresenter * presenter )
 {
-	std::lock_guard<std::mutex> lock( mVideoOverlayMutex );
-	if (!mVideoBuffer) {
-		// 動画バッファが無い場合は初期化
-		TVPLOG_DEBUG("SDLDrawDevice::UpdateVideo: initializing video buffer {}x{}", w, h);
-		mVideoBuffer = new char[w * h * 4]; // ARGB8888
-		mVideoWidth = w;
-		mVideoHeight = h;
-	} else if (mVideoWidth != w || mVideoHeight != h) {
-		TVPLOG_DEBUG("SDLDrawDevice::UpdateVideo: resizing video buffer from {}x{} to {}x{}", 
-			mVideoWidth, mVideoHeight, w, h);
-		// サイズが変わった場合は再初期化
-		delete[] mVideoBuffer;
-		mVideoBuffer = new char[w * h * 4]; // ARGB8888
-		mVideoWidth = w;
-		mVideoHeight = h;
-	}
-	if (mVideoBuffer) {
-		updator((char *)mVideoBuffer, w*4);
-		UpdateVideoPosition(w, h);
-		mVideoBufferDirty = true;
-	}
+	if( !presenter ) return;
+	VideoPresenter = presenter;
 }
-
-void
-tTVPSDLDrawDevice::ClearVideo()
+void TJS_INTF_METHOD tTVPSDLDrawDevice::RemoveVideoPresenter( iTVPSDLVideoPresenter * presenter )
 {
-	std::lock_guard<std::mutex> lock( mVideoOverlayMutex );
-	if (mVideoTexture) {
-		SDL_DestroyTexture(mVideoTexture);
-		mVideoTexture = nullptr;
-	}
-	if (mVideoBuffer) {
-		delete[] mVideoBuffer;
-		mVideoBuffer = nullptr;
-	}
+	if( VideoPresenter == presenter ) VideoPresenter = nullptr;
 }
 
 void tTVPSDLDrawDevice::SetWaitVSync(bool enable)
@@ -661,26 +613,6 @@ void tTVPSDLDrawDevice::SetWaitVSync(bool enable)
 	if (mRenderer) {
 		SDL_SetRenderVSync(mRenderer, enable ? 1 : 0);
 	}
-}
-
-void 
-tTVPSDLDrawDevice::UpdateVideoPosition(int w, int h)
-{
-    // 配置座標計算 (内接表示で補正)
-    int sw =  NIWindow->GetInnerWidth();
-    int sh =  NIWindow->GetInnerHeight();
-	if (sw > 0 && sh > 0) {
-        // 描画位置
-        double scale = std::min((double)sw/w, (double)sh/h);
-        int nw = w * scale;
-        int nh = h * scale;
-        int offx = (sw-nw)/2;
-        int offy = (sh-nh)/2;
-		mVideoPosition.x = (float)offx;
-		mVideoPosition.y = (float)offy;
-		mVideoPosition.w = (float)nw;
-		mVideoPosition.h = (float)nh;
-    }
 }
 
 //---------------------------------------------------------------------------
@@ -734,6 +666,44 @@ TJS_BEGIN_NATIVE_PROP_DECL(window)
 	TJS_DENY_NATIVE_PROP_SETTER
 }
 TJS_END_NATIVE_PROP_DECL(window)
+//----------------------------------------------------------------------
+// overlay 動画 presenter の登録口 (iTVPSDLVideoPresenterHost) をポインタ値として公開する
+// (WINVER の videoPresenterHost と同じ規約)。VideoOverlay はこのプロパティを Window の
+// DrawDevice TJS オブジェクトから読み、非 0 なら presenter を登録して pull 合成に載る。
+TJS_BEGIN_NATIVE_PROP_DECL(sdlVideoPresenterHost)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_SDLDrawDevice);
+		iTVPSDLVideoPresenterHost * host = static_cast<iTVPSDLVideoPresenterHost*>(_this->GetDevice());
+		*result = reinterpret_cast<tjs_int64>(host);
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_DENY_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_PROP_DECL(sdlVideoPresenterHost)
+//----------------------------------------------------------------------
+#ifdef KRKRZ_HAS_ELEMENTS
+// Elements ダイアログ overlay の描画アダプタ提供口 (iTVPDialogRendererHost) を
+// ポインタ値として公開する (videoPresenterHost と同じ規約)。 外部 (プラグイン等) が
+// Window の DrawDevice TJS オブジェクトから読み host->GetDialogRenderer() で取得可能。
+TJS_BEGIN_NATIVE_PROP_DECL(dialogRendererHost)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_SDLDrawDevice);
+		iTVPDialogRendererHost * host = static_cast<iTVPDialogRendererHost*>(_this->GetDevice());
+		*result = reinterpret_cast<tjs_int64>(host);
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_DENY_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_PROP_DECL(dialogRendererHost)
+#endif
 //----------------------------------------------------------------------
 // SDL固有機能を追加想定
 //----------------------------------------------------------------------

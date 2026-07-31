@@ -4,9 +4,13 @@
 
 #include "DrawDevice.h"
 #include "VideoPresenter.h"   // iTVPVideoPresenterHost / iTVPVideoPresenter
+#ifdef KRKRZ_HAS_ELEMENTS
+#include "D3D11DialogRenderer.h"   // iTVPD3D11DialogHost
+#endif
 #include <d3d11.h>
 #include <dxgi1_2.h>
 #include <vector>
+#include <memory>
 
 //---------------------------------------------------------------------------
 //! @brief		「Basic」デバイス(もっとも基本的な描画を行うのみのデバイス)
@@ -16,6 +20,10 @@
 //!				(旧実装は Direct3D9 固定機能パイプライン。D3D11Migration.md 参照)
 //---------------------------------------------------------------------------
 class tTVPBasicDrawDevice : public tTVPDrawDevice, public iTVPVideoPresenterHost
+#ifdef KRKRZ_HAS_ELEMENTS
+	, public iTVPD3D11DialogHost      // renderer→DrawDevice: D3D11 リソース借用
+	, public iTVPDialogRendererHost   // manager→DrawDevice: renderer 提供
+#endif
 {
 	typedef tTVPDrawDevice inherited;
 
@@ -146,6 +154,22 @@ public:
 	virtual void TJS_INTF_METHOD AddVideoPresenter( iTVPVideoPresenter * presenter );
 	//! presenter を登録解除する。
 	virtual void TJS_INTF_METHOD RemoveVideoPresenter( iTVPVideoPresenter * presenter );
+
+#ifdef KRKRZ_HAS_ELEMENTS
+//---- iTVPD3D11DialogHost (Elements ダイアログの D3D11 描画リソース貸出口)
+	virtual bool DialogHost_GetD3D( ID3D11Device *& dev, ID3D11DeviceContext *& ctx,
+	                                ID3D11RenderTargetView *& rtv,
+	                                int & targetW, int & targetH );
+	virtual void DialogHost_GetDestRect( int & x, int & y, int & w, int & h );
+
+//---- iTVPDialogRendererHost (manager が具象型を知らずに renderer を取得する口)
+	virtual iTVPDialogRenderer * GetDialogRenderer() override { return DialogRenderer.get(); }
+
+private:
+	//! この DrawDevice が所有する D3D11 dialog renderer (host = this)。
+	std::unique_ptr<tTVPD3D11DialogRenderer> DialogRenderer;
+public:
+#endif
 
 };
 //---------------------------------------------------------------------------

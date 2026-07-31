@@ -14,6 +14,7 @@
 #include <algorithm>
 #include "VideoOvlImpl.h"
 #include "DrawDevice.h"
+#include "VideoOverlayPresenter.h"
 #include "Application.h"
 #include "StorageIntf.h"
 #include "LayerIntf.h"
@@ -57,14 +58,20 @@ public:
 // tTJSNI_VideoOverlay
 //---------------------------------------------------------------------------
 tTJSNI_VideoOverlay::tTJSNI_VideoOverlay() 
-: mPlayer(nullptr) 
+: mPlayer(nullptr)
 , Layer1(nullptr)
 , Layer2(nullptr)
 , currentSurface(0)
 , updateSurface(false)
+, Presenter(nullptr)
+, PresenterRegistered(false)
+, mUseYUV(false)
+, mMixerAlpha(1.0)
+, mMixerBGColor(0)
 {
 	Mode = vomOverlay;
 	Visible = false;
+	mMixerRect.left = mMixerRect.top = mMixerRect.right = mMixerRect.bottom = 0;
 
 	Bitmap[0] = nullptr;
 	Bitmap[1] = nullptr;
@@ -89,9 +96,11 @@ void TJS_INTF_METHOD tTJSNI_VideoOverlay::Invalidate()
 	inherited::Invalidate();
 }
 
-bool tTJSNI_VideoOverlay::IsMixerPlaying() const 
-{ 
-	return Mode == vomMixer && mPlayer && mPlayer->IsPlaying(); 
+bool tTJSNI_VideoOverlay::IsMixerPlaying() const
+{
+	// overlay presenter モード (vomLayer 以外) で再生中か。WINVER の isOverlay=(Mode!=vomLayer)
+	// と揃える (vomOverlay/vomMixer/vomMFEVR は SDL では同じ presenter 経路)。
+	return Mode != vomLayer && mPlayer && mPlayer->IsPlaying();
 }
 
 void
@@ -159,6 +168,11 @@ void tTJSNI_VideoOverlay::Open(const ttstr &name)
 		path = newpath;
 	}
 
+	// presenter を先に用意 (Open 時に bind)。YUV 対応 presenter (SDL 等) なら movie player を
+	// YUV plane 出力で開き、GPU 側で YUV→RGB する (CPU libyuv 変換を削減)。
+	PreparePresenter();
+	bool preferYUV = mUseYUV;
+
 #ifdef KRKRZ_MOVIE_STREAM
 	// 吉里吉里のストレージ層からストリームを取得（XP3アーカイブ対応）
 	iTJSBinaryStream *tjsStream = TVPCreateStream(path);
@@ -169,25 +183,37 @@ void tTJSNI_VideoOverlay::Open(const ttstr &name)
 	IMovieReadStream *movieStream = new TJSMovieReadStream(tjsStream);
 	std::string utf8name;
 	TVPUtf16ToUtf8(utf8name, path.c_str());
-	mPlayer = TVPCreateMoviePlayer(movieStream, utf8name.c_str());
+	mPlayer = TVPCreateMoviePlayer(movieStream, utf8name.c_str(), preferYUV);
 	if (!mPlayer) {
 		movieStream->Release();
 	}
 #elif defined(__EMSCRIPTEN__)
 	// wasm: 正規化ストレージ名のまま渡す (web:// 等は localname を持たない。
 	// URL 解決/ストレージ読みは WebMoviePlayer 側で行う)
-	mPlayer = TVPCreateMoviePlayer(path.c_str());
+	mPlayer = TVPCreateMoviePlayer(path.c_str(), preferYUV);
 #else
 	// ファイルパス直接指定で開く
 	TVPGetLocalName(path);
-	mPlayer = TVPCreateMoviePlayer(path.c_str());
+	mPlayer = TVPCreateMoviePlayer(path.c_str(), preferYUV);
 #endif
-	if (mPlayer) {
+	// 実際に YUV plane を供給できるか (backend 依存) で最終判定。
+	mUseYUV = mUseYUV && mPlayer && mPlayer->SupportsPlanes();
+	if (mPlayer && mUseYUV) {
+		// YUV plane 経路: presenter へ plane を渡し、GPU で YUV→RGB。
+		mPlayer->SetOnVideoDecodedPlanes([this](const iTVPMoviePlayer::VideoPlaneFrame &frame) {
+			if (Presenter) Presenter->UpdateFrameYUV(frame);
+			SetStatusAsync( mPlayer->IsPlaying() ? tTVPVideoOverlayStatus::Play : tTVPVideoOverlayStatus::Stop );
+		});
+	}
+	if (mPlayer && !mUseYUV) {
 		mPlayer->SetLayerMode(Mode == vomLayer);
 		mPlayer->SetOnVideoDecoded([this](int w, int h, iTVPMoviePlayer::DestUpdater updater) {
-			if (Mode == vomMixer) {
-				// Mixer mode, update the window directly
-				Window->UpdateVideo(w, h, updater);
+			if (Mode != vomLayer) {
+				// overlay presenter モード (vomOverlay/vomMixer/vomMFEVR): pull 型 presenter へ
+				// ARGB フレームを渡す (WINVER の isOverlay 経路に相当)。
+				if (Presenter) {
+					Presenter->UpdateFrame(w, h, updater);
+				}
 			} else if (Mode == vomLayer) {
 				// フロー制御: 直前のフレームをまだ consumer (Update) が取り込んで
 				// いない (updateSurface==true) 間は、この新フレームを破棄する。
@@ -224,13 +250,16 @@ void tTJSNI_VideoOverlay::Open(const ttstr &name)
 			}
 			SetStatusAsync( mPlayer->IsPlaying() ? tTVPVideoOverlayStatus::Play : tTVPVideoOverlayStatus::Stop );
 		});
-	} else {
+	}
+	if (!mPlayer) {
 		SetStatus( tTVPVideoOverlayStatus::LoadError );
 	}
 }
 //---------------------------------------------------------------------------
-void tTJSNI_VideoOverlay::Close() 
+void tTJSNI_VideoOverlay::Close()
 {
+	// pull 経路を先に解放 (DrawDevice の登録解除 + フレーム/テクスチャ破棄)。
+	ReleasePresenter();
 	if (mPlayer) {
 		Window->DelVideoOverlay(this);
 		delete mPlayer;
@@ -257,8 +286,50 @@ void tTJSNI_VideoOverlay::Disconnect()
 	Shutdown();
 }
 //---------------------------------------------------------------------------
+//---------------------------------------------------------------------------
+void tTJSNI_VideoOverlay::PreparePresenter()
+{
+	// Open 時: 非 layer モードのみ、登録済み factory (SDL / GL) を試して現行 DrawDevice に
+	// 合う presenter を生成し bind する (pull はまだ開始しない)。presenter が YUV 対応なら
+	// movie player を YUV plane 出力で開ける (mUseYUV)。
+	mUseYUV = false;
+	if( Mode == vomLayer || !Window ) return;
+	if( !Presenter )
+		Presenter = TVPCreateBoundVideoOverlayPresenter( Window->GetDrawDeviceObject() );
+	if( Presenter ) mUseYUV = Presenter->SupportsYUV();
+}
+//---------------------------------------------------------------------------
+void tTJSNI_VideoOverlay::TryRegisterPresenter()
+{
+	// Play 時: bind 済み presenter の pull を開始 (Activate)。未 bind (Prepare 失敗) なら何もしない。
+	if( PresenterRegistered ) return;
+	if( Presenter ) { Presenter->Activate(); PresenterRegistered = true; }
+}
+//---------------------------------------------------------------------------
+void tTJSNI_VideoOverlay::UnregisterPresenter()
+{
+	// object / bind は保持 (replay で再 Activate)。pull を止めて DrawDevice をゲーム描画へ戻す。
+	if( Presenter && PresenterRegistered ) Presenter->Deactivate();
+	PresenterRegistered = false;
+}
+//---------------------------------------------------------------------------
+void tTJSNI_VideoOverlay::ReleasePresenter()
+{
+	if( Presenter ) {
+		Presenter->Deactivate();
+		Presenter->ClearFrame();
+		delete Presenter;
+		Presenter = nullptr;
+	}
+	PresenterRegistered = false;
+	mUseYUV = false;
+}
+//---------------------------------------------------------------------------
 void tTJSNI_VideoOverlay::Play() {
 	if (mPlayer) {
+		// pull 経路 (presenter) を先に確保してから再生開始 (decode コールバックが即来ても
+		// 最初のフレームから presenter へ渡せるように)。
+		TryRegisterPresenter();
 		mPlayer->Play();
 		Window->AddVideoOverlay(this);
 		// フレームコールバックが来ない実装 (wasm mixer = DOM 表示) でも
@@ -408,8 +479,11 @@ void tTJSNI_VideoOverlay::SetMode( tTVPVideoOverlayMode m ) {
 	// ビデオオープン後のモード変更は禁止
 	if( !mPlayer )
 	{
-		// 強制で vomMixer扱い
-		if (m != vomLayer) m = vomMixer;
+		// WINVER と揃える: 実モードは vomLayer(レイヤ描画) か、それ以外=overlay presenter。
+		// generic/SDL は HW(MF/EVR)経路が無いので vomOverlay/vomMixer/vomMFEVR は全て
+		// presenter 合成で同一挙動。vomMFEVR(EVR 廃止済)は vomOverlay に丸める。
+		// (WINVER では vomMixer だけ HW 抑止だが SDL は元々 presenter=CPU/GPU 固定)。
+		if( m == vomMFEVR ) m = vomOverlay;
 		Mode = m;
 	}
 }
@@ -473,34 +547,62 @@ tjs_int tTJSNI_VideoOverlay::GetEnabledVideoStream()
 //---------------------------------------------------------------------------
 void tTJSNI_VideoOverlay::SetMixingLayer( tTJSNI_BaseLayer *l )
 {
-	TJS_eTJSError(TJSNotImplemented);
+	// presenter 経路 (overlay/mixer) のみ有効。レイヤ画像のスナップショットを presenter へ渡し、
+	// 動画の上へ α 合成させる (WINVER の presenter mixer と同構造)。vomLayer では意味を持たない。
+	if( !Presenter ) return;
+	if( l && l->GetVisible() )
+	{
+		tTVPBaseBitmap *src = l->GetMainImage();
+		tTVPBitmap *raw = src ? src->GetBitmap() : nullptr;
+		if( raw )
+		{
+			int w = (int)raw->GetWidth();
+			int h = (int)raw->GetHeight();
+			if( w > 0 && h > 0 )
+			{
+				// レイヤバッファはボトムアップ格納。視覚的 top 行 (ScanLine 0) + 符号付きピッチ。
+				const void *top = raw->GetScanLine(0);
+				int pitch = w * 4;
+				if( h > 1 )
+					pitch = (int)( (const tjs_uint8*)raw->GetScanLine(1) - (const tjs_uint8*)top );
+				mMixerRect.left   = l->GetLeft() + l->GetImageLeft();
+				mMixerRect.top    = l->GetTop()  + l->GetImageTop();
+				mMixerRect.right  = mMixerRect.left + (tjs_int)l->GetImageWidth();
+				mMixerRect.bottom = mMixerRect.top  + (tjs_int)l->GetImageHeight();
+				mMixerAlpha = (tjs_real)l->GetOpacity() / 255.0;
+				Presenter->SetMixerImage( top, w, h, pitch, mMixerRect, (float)mMixerAlpha );
+				return;
+			}
+		}
+	}
+	// 非表示 / 画像無し → mixer 画像をクリア
+	Presenter->ClearMixerImage();
 }
 //---------------------------------------------------------------------------
 void tTJSNI_VideoOverlay::ResetMixingBitmap()
 {
-	TJS_eTJSError(TJSNotImplemented);
+	if( Presenter ) Presenter->ClearMixerImage();
 }
 //---------------------------------------------------------------------------
 void tTJSNI_VideoOverlay::SetMixingMovieAlpha( tjs_real a )
 {
-	TJS_eTJSError(TJSNotImplemented);
+	mMixerAlpha = a;
+	if( Presenter ) Presenter->SetMixerAlpha( (float)a );
 }
 //---------------------------------------------------------------------------
 tjs_real tTJSNI_VideoOverlay::GetMixingMovieAlpha()
 {
-	TJS_eTJSError(TJSNotImplemented);
-	return 0.0f;
+	return mMixerAlpha;
 }
 //---------------------------------------------------------------------------
 void tTJSNI_VideoOverlay::SetMixingMovieBGColor( tjs_uint col )
 {
-	TJS_eTJSError(TJSNotImplemented);
+	mMixerBGColor = col; // 保持のみ (presenter は現状未使用)
 }
 //---------------------------------------------------------------------------
 tjs_uint tTJSNI_VideoOverlay::GetMixingMovieBGColor()
 {
-	TJS_eTJSError(TJSNotImplemented);
-	return 0;
+	return mMixerBGColor;
 }
 //---------------------------------------------------------------------------
 tjs_real tTJSNI_VideoOverlay::GetContrastRangeMin()

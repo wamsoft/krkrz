@@ -93,7 +93,7 @@ libEGL 実ロードは当環境に ANGLE 非配置のため未検証、WM_DPICHA
 
 実装メモ:
 - 3-1: `TVPMinimizeFullScreenWindowAtInactivation` / `TVPRestoreFullScreenWindowAtActivation` を no-op 化 (排他モードを持たないので活性化/非活性化での画面モード復元・再適用は不要。特に活性化時の `ChangeDisplaySettings(...,CDS_FULLSCREEN)` はボーダレスでは有害だった)。参照されなくなった `TVPFullScreenWindow` (常に NULL だった) と到達不能な D3D9 初期化ブロックも撤去。mode 候補列挙は表示ウィンドウのサイズ/ズーム決定に引き続き使用。
-- 検証: WINVER (x64-windows-win) ビルド OK + 起動スモーク済。**フルスクリーン切替も REPL ファイルチャネル (`-replfile`) で実機確認済** — `win.fullScreen=true` で `innerWidth/Height` がモニタ native 解像度 (3840x2160) のボーダレスウィンドウになり (排他モード変更なし)、`false` で復帰、往復ともクラッシュ無し。※WINVER にも REPL 本体+`-replfile` チャネルは有効 (`KRKRZ_REPL=KRKRZ_DESKTOP` 既定)。SDL 専用なのは Agent API (入力注入/captureScreen/dialogs) と screencapture の Show フック (BasicDrawDevice 未実装) のみ。
+- 検証: WINVER (x64-windows-win) ビルド OK + 起動スモーク済。**フルスクリーン切替も REPL ファイルチャネル (`-replfile`) で実機確認済** — `win.fullScreen=true` で `innerWidth/Height` がモニタ native 解像度 (3840x2160) のボーダレスウィンドウになり (排他モード変更なし)、`false` で復帰、往復ともクラッシュ無し。※WINVER にも REPL 本体+`-replfile` チャネルは有効 (`KRKRZ_REPL=KRKRZ_DESKTOP` 既定)。`System.captureScreen` は WINVER でも動作する (`BasicDrawDevice::FulfillScreenCapture` 実装済、overlay 込みは present 直前のバックバッファから)。Elements ダイアログ (非モーダル/overlay モーダル/フロー/テキスト入力) も WINVER 対応済。**Agent クラスの駆動 API (入力注入 / captureScreen / dialogs 制御) も WINVER 対応済** — 本体は `common/environ/AgentControlIntf.cpp` に共通化し、入力注入だけ `AgentInput` seam (`generic/environ/AgentInput.cpp` = SendMouseMessage/SendMessage、`win32/environ/AgentInput.cpp` = OnMouse*/OnKey*) でプラットフォーム分離。SDL 専用として残るのは起動時 UserConfig UI (`-userconf`、ゲーム窓生成前の独立 OS ウィンドウが必須なため overlay 代替不可) のみ。
 
 ### Phase 4 — タイミング & 掃除 【✅完了 2026-07-30】
 | # | 項目 | ファイル | 依存 | 状態 |

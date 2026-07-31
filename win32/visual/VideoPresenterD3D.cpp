@@ -23,11 +23,34 @@ static const char PresenterShaderHLSL[] =
 	"    return c * gColor;\n"   // rgb もアルファも gColor で乗算 (premultiply でないので rgb は視覚的に同等)
 	"}\n";
 
+// I420(planar YUV420, BT.601 limited range)→RGB PS。VS は上の VSMain を共用するので
+// VSOut のシグネチャ (SV_POSITION + TEXCOORD) を一致させる。全体アルファは gColor.a。
+static const char PresenterYUVShaderHLSL[] =
+	"Texture2D texY : register(t0);\n"
+	"Texture2D texU : register(t1);\n"
+	"Texture2D texV : register(t2);\n"
+	"SamplerState smp : register(s0);\n"
+	"cbuffer CB : register(b0) { float4 gColor; };\n"
+	"struct VSOut { float4 pos : SV_POSITION; float2 uv : TEXCOORD; };\n"
+	"float4 PSYUV(VSOut i) : SV_TARGET {\n"
+	"    float Y = texY.Sample(smp, i.uv).r;\n"
+	"    float U = texU.Sample(smp, i.uv).r;\n"
+	"    float V = texV.Sample(smp, i.uv).r;\n"
+	"    float y = (Y - 0.0627451) * 1.164383;\n"
+	"    float u = U - 0.5019608;\n"
+	"    float v = V - 0.5019608;\n"
+	"    float r = y + 1.596027 * v;\n"
+	"    float g = y - 0.391762 * u - 0.812968 * v;\n"
+	"    float b = y + 2.017232 * u;\n"
+	"    return float4(saturate(r), saturate(g), saturate(b), gColor.a);\n"
+	"}\n";
+
 template<class T> static inline void SafeRelease( T *&p ) { if(p) { p->Release(); p = 0; } }
 }
 //---------------------------------------------------------------------------
 tTVPVideoPresenterD3D::tTVPVideoPresenterD3D()
 : Dev(0), VS(0), PS(0), IL(0), VB(0), CB(0), Samp(0), Blend(0), Tex(0), Srv(0), TexW(0), TexH(0)
+, PSYUV(0), TexY(0), TexU(0), TexV(0), SrvY(0), SrvU(0), SrvV(0), PlaneW(0), PlaneH(0)
 {
 }
 //---------------------------------------------------------------------------
@@ -38,6 +61,9 @@ tTVPVideoPresenterD3D::~tTVPVideoPresenterD3D()
 //---------------------------------------------------------------------------
 void tTVPVideoPresenterD3D::Release()
 {
+	SafeRelease(SrvY); SafeRelease(SrvU); SafeRelease(SrvV);
+	SafeRelease(TexY); SafeRelease(TexU); SafeRelease(TexV);
+	SafeRelease(PSYUV);
 	SafeRelease(Srv);
 	SafeRelease(Tex);
 	SafeRelease(Blend);
@@ -49,6 +75,7 @@ void tTVPVideoPresenterD3D::Release()
 	SafeRelease(VS);
 	Dev = 0;
 	TexW = TexH = 0;
+	PlaneW = PlaneH = 0;
 }
 //---------------------------------------------------------------------------
 bool tTVPVideoPresenterD3D::EnsurePipeline( ID3D11Device * dev )
@@ -176,7 +203,7 @@ bool tTVPVideoPresenterD3D::Render( const tTVPVideoPresenterContext & ctx,
 	}
 	ictx->Unmap(Tex, 0);
 
-	DrawQuad( ictx, Srv, ctx, dst, alpha );
+	DrawQuad( ictx, &Srv, 1, PS, ctx, dst, alpha );
 	return true;
 }
 //---------------------------------------------------------------------------
@@ -186,13 +213,92 @@ bool tTVPVideoPresenterD3D::RenderSRV( const tTVPVideoPresenterContext & ctx,
 {
 	if( !ctx.Device || !ctx.Context || !srv || w <= 0 || h <= 0 ) return false;
 	if( !EnsurePipeline(ctx.Device) ) return false;
-	DrawQuad( ctx.Context, srv, ctx, dst, alpha );
+	DrawQuad( ctx.Context, &srv, 1, PS, ctx, dst, alpha );
+	return true;
+}
+//---------------------------------------------------------------------------
+bool tTVPVideoPresenterD3D::EnsureYUVShader( ID3D11Device * dev )
+{
+	if( PSYUV ) return true;
+	HRESULT hr;
+	ID3DBlob *psBlob = 0, *errBlob = 0;
+	UINT flags = 0;
+#ifdef _DEBUG
+	flags |= D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+#endif
+	hr = D3DCompile(PresenterYUVShaderHLSL, sizeof(PresenterYUVShaderHLSL)-1, "vpresyuv", NULL, NULL,
+		"PSYUV", "ps_4_0", flags, 0, &psBlob, &errBlob);
+	if( FAILED(hr) ) { SafeRelease(errBlob); return false; }
+	SafeRelease(errBlob);
+	hr = dev->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), NULL, &PSYUV);
+	SafeRelease(psBlob);
+	return SUCCEEDED(hr);
+}
+//---------------------------------------------------------------------------
+bool tTVPVideoPresenterD3D::EnsurePlaneTextures( ID3D11Device * dev, int w, int h )
+{
+	if( TexY && TexU && TexV && PlaneW == w && PlaneH == h ) return true;
+	SafeRelease(SrvY); SafeRelease(SrvU); SafeRelease(SrvV);
+	SafeRelease(TexY); SafeRelease(TexU); SafeRelease(TexV);
+	PlaneW = PlaneH = 0;
+	if( w <= 0 || h <= 0 ) return false;
+
+	struct { ID3D11Texture2D** t; ID3D11ShaderResourceView** s; int pw, ph; } planes[3] = {
+		{ &TexY, &SrvY, w,      h      },
+		{ &TexU, &SrvU, (w+1)/2, (h+1)/2 },
+		{ &TexV, &SrvV, (w+1)/2, (h+1)/2 },
+	};
+	for( int i = 0; i < 3; ++i ) {
+		D3D11_TEXTURE2D_DESC td; ZeroMemory(&td, sizeof(td));
+		td.Width = planes[i].pw; td.Height = planes[i].ph;
+		td.MipLevels = 1; td.ArraySize = 1;
+		td.Format = DXGI_FORMAT_R8_UNORM;
+		td.SampleDesc.Count = 1;
+		td.Usage = D3D11_USAGE_DYNAMIC;
+		td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+		td.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+		if( FAILED(dev->CreateTexture2D(&td, NULL, planes[i].t)) ) { SafeRelease(SrvY);SafeRelease(SrvU);SafeRelease(SrvV);SafeRelease(TexY);SafeRelease(TexU);SafeRelease(TexV); return false; }
+		if( FAILED(dev->CreateShaderResourceView(*planes[i].t, NULL, planes[i].s)) ) { SafeRelease(SrvY);SafeRelease(SrvU);SafeRelease(SrvV);SafeRelease(TexY);SafeRelease(TexU);SafeRelease(TexV); return false; }
+	}
+	PlaneW = w; PlaneH = h;
+	return true;
+}
+//---------------------------------------------------------------------------
+bool tTVPVideoPresenterD3D::RenderI420( const tTVPVideoPresenterContext & ctx,
+	const void * y, int yStride, const void * u, int uStride,
+	const void * v, int vStride, int w, int h,
+	const tTVPRect & dst, float alpha )
+{
+	if( !ctx.Device || !ctx.Context || !y || !u || !v || w <= 0 || h <= 0 ) return false;
+	if( !EnsurePipeline(ctx.Device) ) return false;
+	if( !EnsureYUVShader(ctx.Device) ) return false;
+	if( !EnsurePlaneTextures(ctx.Device, w, h) ) return false;
+
+	ID3D11DeviceContext * ictx = ctx.Context;
+	int cw = (w+1)/2, ch = (h+1)/2;
+	// Y / U / V を各テクスチャへアップロード (行ごと。src stride と dst RowPitch が異なりうる)
+	struct { ID3D11Texture2D* t; const BYTE* src; int stride, pw, ph; } up[3] = {
+		{ TexY, (const BYTE*)y, yStride, w,  h  },
+		{ TexU, (const BYTE*)u, uStride, cw, ch },
+		{ TexV, (const BYTE*)v, vStride, cw, ch },
+	};
+	for( int i = 0; i < 3; ++i ) {
+		D3D11_MAPPED_SUBRESOURCE m;
+		if( FAILED(ictx->Map(up[i].t, 0, D3D11_MAP_WRITE_DISCARD, 0, &m)) ) return false;
+		BYTE* dstp = (BYTE*)m.pData;
+		for( int row = 0; row < up[i].ph; ++row )
+			memcpy( dstp + (size_t)row * m.RowPitch, up[i].src + (size_t)row * up[i].stride, up[i].pw );
+		ictx->Unmap(up[i].t, 0);
+	}
+
+	ID3D11ShaderResourceView * srvs[3] = { SrvY, SrvU, SrvV };
+	DrawQuad( ictx, srvs, 3, PSYUV, ctx, dst, alpha );
 	return true;
 }
 //---------------------------------------------------------------------------
 void tTVPVideoPresenterD3D::DrawQuad( ID3D11DeviceContext * ictx,
-	ID3D11ShaderResourceView * srv, const tTVPVideoPresenterContext & ctx,
-	const tTVPRect & dst, float alpha )
+	ID3D11ShaderResourceView * const * srv, int srvCount, ID3D11PixelShader * ps,
+	const tTVPVideoPresenterContext & ctx, const tTVPRect & dst, float alpha )
 {
 	// -- 定数バッファ (全体アルファ)
 	D3D11_MAPPED_SUBRESOURCE cm;
@@ -227,16 +333,16 @@ void tTVPVideoPresenterD3D::DrawQuad( ID3D11DeviceContext * ictx,
 	ictx->IASetVertexBuffers(0, 1, &VB, &stride, &offset);
 	ictx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
 	ictx->VSSetShader(VS, NULL, 0);
-	ictx->PSSetShader(PS, NULL, 0);
+	ictx->PSSetShader(ps, NULL, 0);
 	ictx->PSSetConstantBuffers(0, 1, &CB);
-	ictx->PSSetShaderResources(0, 1, &srv);
+	ictx->PSSetShaderResources(0, srvCount, srv);
 	ictx->PSSetSamplers(0, 1, &Samp);
 	const float bf[4] = { 0, 0, 0, 0 };
 	ictx->OMSetBlendState(Blend, bf, 0xffffffff);
 	ictx->Draw(4, 0);
 
 	// SRV を外す (次フレーム Map 時の hazard 回避)
-	ID3D11ShaderResourceView * nullsrv[1] = { NULL };
-	ictx->PSSetShaderResources(0, 1, nullsrv);
+	ID3D11ShaderResourceView * nullsrv[3] = { NULL, NULL, NULL };
+	ictx->PSSetShaderResources(0, srvCount, nullsrv);
 }
 //---------------------------------------------------------------------------

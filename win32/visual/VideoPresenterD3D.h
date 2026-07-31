@@ -41,15 +41,27 @@ public:
 	                ID3D11ShaderResourceView * srv, int w, int h,
 	                const tTVPRect & destClientPx, float alpha );
 
+	//! @brief I420 (planar YUV420, BT.601 limited range) の 1 フレームを destClientPx へ描く。
+	//! Y/U/V の 3 プレーンを R8 テクスチャへ上げ、シェーダで YUV→RGB 変換して alpha 合成する
+	//! (CPU での色変換を省き GPU で行う)。u/v プレーンは w/2 × h/2。
+	//! @return 描画できたら true
+	bool RenderI420( const tTVPVideoPresenterContext & ctx,
+	                 const void * y, int yStride, const void * u, int uStride,
+	                 const void * v, int vStride, int w, int h,
+	                 const tTVPRect & destClientPx, float alpha );
+
 	//! GPU リソースを解放する (Close / 破棄時)。
 	void Release();
 
 private:
 	bool EnsurePipeline( ID3D11Device * dev );
 	bool EnsureTexture( ID3D11Device * dev, int w, int h );
-	//! パイプライン設定 + クアッド描画 (Render/RenderSRV 共通)。srv を samp で dst へ描く。
-	void DrawQuad( ID3D11DeviceContext * ictx, ID3D11ShaderResourceView * srv,
-	               const tTVPVideoPresenterContext & ctx, const tTVPRect & dst, float alpha );
+	bool EnsureYUVShader( ID3D11Device * dev );
+	bool EnsurePlaneTextures( ID3D11Device * dev, int w, int h );
+	//! パイプライン設定 + クアッド描画。srv[0..count-1] を samp で dst へ描く (ps 指定)。
+	void DrawQuad( ID3D11DeviceContext * ictx, ID3D11ShaderResourceView * const * srv, int srvCount,
+	               ID3D11PixelShader * ps, const tTVPVideoPresenterContext & ctx,
+	               const tTVPRect & dst, float alpha );
 
 	ID3D11Device*             Dev;   //!< 現在リソースが属するデバイス (変化検出用、非所有)
 	ID3D11VertexShader*       VS;
@@ -62,6 +74,16 @@ private:
 	ID3D11Texture2D*          Tex;   //!< BGRA DYNAMIC
 	ID3D11ShaderResourceView* Srv;
 	int TexW, TexH;
+
+	// --- I420 (YUV) 経路 ---
+	ID3D11PixelShader*        PSYUV; //!< I420→RGB(BT.601) PS。VS は BGRA と共用。
+	ID3D11Texture2D*          TexY;  //!< R8 DYNAMIC (Y full / U,V half)
+	ID3D11Texture2D*          TexU;
+	ID3D11Texture2D*          TexV;
+	ID3D11ShaderResourceView* SrvY;
+	ID3D11ShaderResourceView* SrvU;
+	ID3D11ShaderResourceView* SrvV;
+	int PlaneW, PlaneH;
 };
 
 #endif // __VIDEO_PRESENTER_D3D_H__

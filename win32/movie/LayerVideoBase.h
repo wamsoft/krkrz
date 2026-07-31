@@ -24,12 +24,16 @@ Track V (DirectShow → Media Foundation 移行) の一環。
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
+#include <vector>
 
 class tTVPLayerVideoBase : public iTVPVideoOverlay
 {
 public:
 	//! overlayOutput=true で overlay 出力 (子ウィンドウ D3D11 present)、false で layer 出力。
-	tTVPLayerVideoBase( HWND owner, bool overlayOutput = false );
+	//! preferI420=true で presenter 経路向けに I420 プレーンを内部保持し GetI420Frame で供給する
+	//! (engine の D3D11 presenter が GPU で YUV→RGB。overlayOutput とは排他、overlayOutput 優先)。
+	//! バックエンドが DecoderGetI420Planes を実装している場合のみ有効。
+	tTVPLayerVideoBase( HWND owner, bool overlayOutput = false, bool preferI420 = false );
 	virtual ~tTVPLayerVideoBase();
 
 	//-- 開く (サブクラスの DecoderOpen を呼び、寸法/FPS 等を取得する)
@@ -66,6 +70,10 @@ protected:
 	//! overlay モード用: 直前に DecoderDecodeOverlay で保持したフレームを ov へ present。
 	//! (sync 待ちの後に呼ばれる)。
 	virtual void DecoderPresentOverlay( class tTVPD3D11OverlayWindow *ov ) {}
+	//! preferI420 モード用: 直前に DecoderDecodeOverlay で保持した I420 プレーンを返す。
+	//! (y/u/v は次デコードまで有効。基底が同期 copy する)。対応バックエンド (pl_mpeg) が override。
+	virtual bool DecoderGetI420Planes( const BYTE **y, int *yStride, const BYTE **u, int *uStride,
+		const BYTE **v, int *vStride, int *w, int *h ) { return false; }
 
 	//! バックエンドが DecoderOpen 内で呼び、音声シンクを生成する。成功で true。
 	bool CreateAudioSink( int channels, int sampleRate, int bitsPerSample, bool isFloat );
@@ -119,6 +127,16 @@ private:
 	bool   OverlayMode;
 	class tTVPD3D11OverlayWindow *Overlay;
 
+	//-- preferI420 出力 (presenter 経路)。I420 プレーンを内部 packed に front/back 二重保持し
+	//   GetI420Frame で描画スレッドへ供給 (engine D3D11 presenter が GPU で YUV→RGB)。
+	bool   PreferI420;
+	std::mutex I420Mtx;
+	std::vector<uint8_t> I420Back, I420Front;
+	int    I420W, I420H;
+	bool   I420Valid, I420Dirty;
+	//! 直前 DecoderDecodeOverlay の I420 を I420Back へ packed copy し更新通知する。
+	void   BufferI420FromDecoder();
+
 public:
 	//======================================================================
 	// iTVPVideoOverlay 実装
@@ -145,6 +163,8 @@ public:
 	virtual void __stdcall GetVideoSize( long *width, long *height );
 	virtual void __stdcall GetFrontBuffer( BYTE **buff );
 	virtual void __stdcall SetVideoBuffer( BYTE *buff1, BYTE *buff2, long size );
+	virtual bool __stdcall GetI420Frame( const BYTE **y, int *yStride, const BYTE **u, int *uStride,
+		const BYTE **v, int *vStride, int *w, int *h );
 
 	virtual void __stdcall SetAudioVolume( long volume );
 	virtual void __stdcall GetAudioVolume( long *volume );

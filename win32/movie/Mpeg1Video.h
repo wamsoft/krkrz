@@ -14,7 +14,7 @@ Track V。Media Foundation は MPEG-1 デコーダを持たないため、Direct
 class tTVPMpeg1Video : public tTVPLayerVideoBase
 {
 public:
-	tTVPMpeg1Video( HWND owner, bool overlayOutput = false );
+	tTVPMpeg1Video( HWND owner, bool overlayOutput = false, bool preferI420 = false );
 	virtual ~tTVPMpeg1Video();
 
 protected:
@@ -27,6 +27,8 @@ protected:
 	virtual void DecoderPumpAudio() override;
 	virtual bool DecoderDecodeOverlay( __int64 &pts, bool &eos ) override;
 	virtual void DecoderPresentOverlay( class tTVPD3D11OverlayWindow *ov ) override;
+	virtual bool DecoderGetI420Planes( const BYTE **y, int *yStride, const BYTE **u, int *uStride,
+		const BYTE **v, int *vStride, int *w, int *h ) override;
 
 private:
 	void   *Plm;        //!< plm_t* (pl_mpeg.h を本ヘッダに晒さないため void*)

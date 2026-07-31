@@ -64,6 +64,13 @@ public:
 	virtual void __stdcall GetFrontBuffer( BYTE **buff ) = 0;
 	virtual void __stdcall SetVideoBuffer( BYTE *buff1, BYTE *buff2, long size ) = 0;
 
+	// presenter が GPU で YUV→RGB する経路向けに、最新の I420(planar YUV420) フレームを
+	// 直接取得する。I420 出力に対応した実装 (かつ I420 優先で開かれた場合) のみ true を返し
+	// planes/strides/w/h を設定する。既定 false = 従来 BGRA(GetFrontBuffer) 経路。
+	// plane データは実装が内部バッファに保持し、次フレーム更新まで有効。
+	virtual bool __stdcall GetI420Frame( const BYTE** y, int* yStride, const BYTE** u, int* uStride,
+		const BYTE** v, int* vStride, int* w, int* h ) { return false; }
+
 	virtual void __stdcall SetStopFrame( int frame ) = 0;
 	virtual void __stdcall GetStopFrame( int *frame ) = 0;
 	virtual void __stdcall SetDefaultStopFrame() = 0;

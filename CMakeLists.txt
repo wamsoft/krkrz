@@ -528,6 +528,74 @@ if (KRKRZ_REPL AND KRKRZ_REPL_LINE_EDIT AND NOT TARGET icline)
 	set(KRKRZ_LIB_REPL icline)
 endif()
 
+# ----------------------------------------------------
+# Elements (汎用ダイアログ機構, ThorVG ベース)
+#
+# WIN / SDL 両 variant で組み込む (LIB は window / renderer が無いため対象外)。
+# host UI backend は variant で選ぶ (WIN→win32 / SDL→sdl)。 build 設定・overlay
+# 経路 (overlay_session) は host 非依存。 各 variant の target には
+# ${KRKRZ_LIB_ELEMENTS} をリンクし、 KRKRZ_HAS_ELEMENTS で consumer 側 (#ifdef) を
+# 有効化する。 KRKRZ_USE_ELEMENTS=OFF で完全に除外。
+set(KRKRZ_LIB_ELEMENTS "")
+if (KRKRZ_USE_ELEMENTS AND NOT KRKRZ_VARIANT STREQUAL "LIB")
+	if (NOT TARGET cycfi::elements)
+		# host UI backend を variant で選ぶ。
+		#   SDL variant → "sdl"  (krkrz-SDL は SDL3 ベース)
+		#   WIN variant → "win32" (WINVER は Win32 window + D3D11。SDL3 を引き込まない
+		#                 ため cycfi の native Win32 host を使う。overlay ダイアログは
+		#                 embedded モード = host 非経由の ce::view(extent) で描く)。
+		if (KRKRZ_VARIANT STREQUAL "WIN")
+			set(ELEMENTS_HOST_UI_LIBRARY "win32" CACHE STRING "Elements host UI library" FORCE)
+		else()
+			set(ELEMENTS_HOST_UI_LIBRARY "sdl" CACHE STRING "Elements host UI library" FORCE)
+		endif()
+		# サンプル/テストはビルド対象外
+		set(ELEMENTS_BUILD_EXAMPLES OFF CACHE BOOL "Build Elements examples" FORCE)
+		# ThorVG は krkrz に静的リンクする
+		set(TVG_BUILD_SHARED OFF CACHE BOOL "Build ThorVG as static" FORCE)
+		set(TVG_STATIC_MODULES ON CACHE BOOL "Use static modules in ThorVG" FORCE)
+		# 多言語テキストレンダリング: FreeType + HarfBuzz ローダを使う (TTF reader と
+		# 相互排他)。Elements 側のデフォルトと同じだが、cache を旧値で持ち越して
+		# しまうケースがあるため明示 force-set する。
+		set(TVG_LOADER_TTF OFF CACHE BOOL "Disable built-in TTF loader" FORCE)
+		set(TVG_LOADER_FT  ON  CACHE BOOL "Enable FT+HarfBuzz multilingual text loader" FORCE)
+		# Elements / ThorVG が直接ファイル I/O することを禁止する。 krkrz では
+		# 全てのリソース読み込み (フォント / 画像 / Dialog JSON) を Storages 経由に
+		# 統一する (XP3 / Switch サンドボックス対応)。 OFF で default resource_loader が
+		# null になり、 common/visual/elements/StoragesResourceLoader.cpp が TVPReadStream
+		# へ橋渡しする。
+		set(ELEMENTS_FILE_IO_SUPPORT OFF CACHE BOOL "Allow elements to read resources from disk" FORCE)
+		add_subdirectory(external/elements)
+
+		# ThorVG は自前で global operator new/delete を override するが、 krkrz も
+		# GlobalAllocStats で override するため LNK2005 で衝突する。 ThorVG 側の
+		# ガードを有効化し ThorVG 内部の new も krkrz の統計プールへ通す。
+		if (TARGET thorvg)
+			target_compile_definitions(thorvg PRIVATE THORVG_NO_GLOBAL_NEW_OVERRIDE=1)
+		endif()
+
+		# HarfBuzz の hb.hh は pragma で警告を error 化し、 新しめの clang (emsdk 等)
+		# で FetchContent ビルドが止まる。 ガードマクロで抑止。
+		if (EMSCRIPTEN AND TARGET harfbuzz)
+			target_compile_definitions(harfbuzz PRIVATE HB_NO_PRAGMA_GCC_DIAGNOSTIC_ERROR)
+		endif()
+	endif()
+
+	# 各 variant の target にリンクする Elements ライブラリ群。 elements_modal は
+	# cycfi::elements を PUBLIC 依存 (→ thorvg も推移) するので elements_modal を
+	# リンクすれば cycfi / thorvg の include・defines も伝播する。 cycfi も明示。
+	if (TARGET cycfi::elements)
+		list(APPEND KRKRZ_LIB_ELEMENTS cycfi::elements)
+	endif()
+	if (TARGET elements_modal)
+		list(APPEND KRKRZ_LIB_ELEMENTS elements_modal::elements_modal)
+	endif()
+
+	# Elements 機構が組み込まれていることを示すマクロ。 DrawDevice / Window / TJS の
+	# 共通コードは #ifdef KRKRZ_HAS_ELEMENTS でガードする。
+	list(APPEND KRKRZ_DEFINES KRKRZ_HAS_ELEMENTS)
+endif()
+
 if (KRKRZ_VARIANT STREQUAL "LIB")
 
 # ----------------------------------------------------
@@ -619,78 +687,9 @@ option(MOVIEPLAYER_EXTERNAL_MINIAUDIO "use external miniaudio" ON)
 add_subdirectory(external/movie-player)
 endif()
 
-# ----------------------------------------------------
-# Elements (汎用ダイアログ機構, ThorVG ベース)
-#
-# KRKRZ_USE_ELEMENTS=OFF で完全に除外する。OFF のときは:
-#   - external/elements を add_subdirectory しない (elements_modal はその配下で
-#     ビルドされる)
-#   - KRKRZ_LIB_SDL3 に cycfi::elements / elements_modal を足さない
-#   - KRKRZ_HAS_ELEMENTS が立たないので consumer 側コードが #ifdef で抜ける
-# (Elements 関連ソース自体の除外は sources.cmake 側で同じ option を見て分岐)
-
-if (KRKRZ_USE_ELEMENTS)
-	if (NOT TARGET cycfi::elements)
-		# Elements は SDL3 ホストモードで使う (krkrz は SDL3 ベース)
-		set(ELEMENTS_HOST_UI_LIBRARY "sdl" CACHE STRING "Elements host UI library" FORCE)
-		# サンプル/テストはビルド対象外
-		set(ELEMENTS_BUILD_EXAMPLES OFF CACHE BOOL "Build Elements examples" FORCE)
-		# ThorVG は krkrz に静的リンクする
-		set(TVG_BUILD_SHARED OFF CACHE BOOL "Build ThorVG as static" FORCE)
-		set(TVG_STATIC_MODULES ON CACHE BOOL "Use static modules in ThorVG" FORCE)
-		# 多言語テキストレンダリング: FreeType + HarfBuzz ローダを使う (TTF reader と
-		# 相互排他)。Elements 側のデフォルトと同じだが、cache を旧値で持ち越して
-		# しまうケースがあるため明示 force-set する。
-		set(TVG_LOADER_TTF OFF CACHE BOOL "Disable built-in TTF loader" FORCE)
-		set(TVG_LOADER_FT  ON  CACHE BOOL "Enable FT+HarfBuzz multilingual text loader" FORCE)
-		# Elements / ThorVG が直接ファイル I/O することを禁止する。 krkrz では
-		# 全てのリソース読み込み (フォント / 画像 / Dialog JSON) を Storages 経由に
-		# 統一したい (XP3 アーカイブ / Switch サンドボックスでも動かすため)。
-		# OFF にすると elements 側の default resource_loader が null_resource_loader
-		# になり、 アプリ側で set_resource_loader() を呼ぶ責務を負う。 krkrz では
-		# common/visual/elements/StoragesResourceLoader.cpp で TVPReadStream に橋渡し。
-		set(ELEMENTS_FILE_IO_SUPPORT OFF CACHE BOOL "Allow elements to read resources from disk" FORCE)
-		add_subdirectory(external/elements)
-
-		# ThorVG は自前で global operator new/delete を override しているが、
-		# krkrz は GlobalAllocStats で同じものを override しているため LNK2005 で
-		# 衝突する。ThorVG 側のガード (THORVG_NO_GLOBAL_NEW_OVERRIDE) を有効化して
-		# 抑止し、ThorVG 内部の new も krkrz の統計プールに通す。
-		if (TARGET thorvg)
-			target_compile_definitions(thorvg PRIVATE THORVG_NO_GLOBAL_NEW_OVERRIDE=1)
-		endif()
-
-		# HarfBuzz の hb.hh は pragma で -Wunused 等を error 化しており、
-		# 新しめの clang (emsdk 等) では -Wunused グループに含まれる
-		# -Wunused-template で FetchContent ビルドが止まる。用意されている
-		# ガードマクロで pragma error 群を無効化する。
-		if (EMSCRIPTEN AND TARGET harfbuzz)
-			target_compile_definitions(harfbuzz PRIVATE HB_NO_PRAGMA_GCC_DIAGNOSTIC_ERROR)
-		endif()
-	endif()
-
-	# elements_modal — 純粋 SDL + Elements + ThorVG ベース モーダル UI ライブラリ。
-	# krkrz 本体に依存しない独立ライブラリで、 SDL3 を使う任意のアプリから利用可能。
-	# krkrz 側はこれを薄くラップして TJS Dialog 等の機能を提供する。
-	#
-	# 実体は elements リポ管轄 (external/elements/external/elements_modal) に移動した。
-	# 上の add_subdirectory(external/elements) が ELEMENTS_BUILD_MODAL=ON のとき
-	# elements_modal / elements_modal::elements_modal target を生成するので、 krkrz
-	# 側で個別に add_subdirectory する必要はない。
-
-	# krkrz wrap (sdl3/visual/SDLElementsModalRunner.cpp) が elements_modal を
-	# include / link するため、 ここで PUBLIC include + リンクを足す。
-	# sources.cmake の KRKRZ_LIB_SDL3 リスト経由ではタイミング (sources.cmake が
-	# include される時点ではまだ TARGET 未生成) で取りこぼすので、 add_subdirectory
-	# 直後のこの位置で関連付ける。
-	if (TARGET elements_modal AND KRKRZ_VARIANT STREQUAL "SDL")
-		list(APPEND KRKRZ_LIB_SDL3 elements_modal::elements_modal)
-	endif()
-
-	# Elements ダイアログ機構が組み込まれていることを示すマクロ。
-	# DrawDevice 等の共通コードは #ifdef でガードする。
-	list(APPEND KRKRZ_DEFINES KRKRZ_HAS_ELEMENTS)
-endif()
+# Elements の build / link / KRKRZ_HAS_ELEMENTS は variant chain の前 (icline の直後)
+# で WIN / SDL 共通に処理済み (KRKRZ_LIB_ELEMENTS / KRKRZ_DEFINES)。 SDL target は
+# 下の target_link_libraries で ${KRKRZ_LIB_ELEMENTS} をリンクする。
 
 # ----------------------------------------------------
 # resource
@@ -998,6 +997,7 @@ target_link_libraries( ${EXENAME} PRIVATE
 	$<IF:$<TARGET_EXISTS:movieplayer>,movieplayer,>
 	${KRKRZ_LIB_REPL}
 	${KRKRZ_LIB_SDL3}
+	${KRKRZ_LIB_ELEMENTS}
 	${KRKRZ_LIB_ADD}
 	${KRKRZ_LIB_PLATFORM}
 	${KRKRZ_LIB_DAP}
@@ -1089,13 +1089,31 @@ add_subdirectory( win32/movie )
 # for LogImp.cpp
 find_package(plog CONFIG)
 
+# リソース埋め込み (WINVER)。既存の win32/vcproj/tvpwin32.rc は IDR_* の
+# SysInitScript / messages / license / optiondesc を埋め込むが、Elements dialog 用の
+# フォント (resource/*.otf,*.ttf) 等は含まない。SDL ブランチと同様に resource/ 配下を
+# "BINARY" 型リソースとして生成 rc で埋め込み、TVPRegisterElementsFontsFromWinResources
+# が EnumResourceNamesW("BINARY") で列挙して register_font_buffer で登録できるようにする。
+# (RESOURCE_DIR / RESOURCE_FILES は SDL ブランチ内ローカルなのでここで再定義する。)
+set(KRKRZ_RESOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/resource" CACHE PATH
+    "リソースフォルダ (既定=エンジン同梱。案件の nxresource で上書き可)")
+set(RESOURCE_DIR ${KRKRZ_RESOURCE_DIR})
+file(GLOB RESOURCE_FILES "${RESOURCE_DIR}/*")
+set(RC_FILE ${CMAKE_BINARY_DIR}/resources.rc)
+file(WRITE ${RC_FILE} "")
+foreach(RESOURCE ${RESOURCE_FILES})
+    get_filename_component(NAME ${RESOURCE} NAME)
+    file(APPEND ${RC_FILE} "${NAME} BINARY \"${RESOURCE}\"\n")
+endforeach()
+
 add_executable( ${EXENAME} WIN32
-	${KRKRZ_SRC} 
-	${KRKRZ_SRC_OPENGL} 
-	${KRKRZ_SRC_WIN32} 
-	${KRKRZ_SRC_WIN32_SSE} 
-	${KRKRZ_SRC_WIN32_OPENGL} 
+	${KRKRZ_SRC}
+	${KRKRZ_SRC_OPENGL}
+	${KRKRZ_SRC_WIN32}
+	${KRKRZ_SRC_WIN32_SSE}
+	${KRKRZ_SRC_WIN32_OPENGL}
 	${KRKRZ_SRC_ADD}
+	${RC_FILE}
 )
 
 target_include_directories( ${EXENAME} PRIVATE 
@@ -1135,6 +1153,7 @@ target_link_libraries( ${EXENAME} PRIVATE
 	shlwapi
 	krmovie
 	${KRKRZ_LIB_REPL}
+	${KRKRZ_LIB_ELEMENTS}
 	${KRKRZ_LIB_ADD}
 	${KRKRZ_LIB_DAP}
 )

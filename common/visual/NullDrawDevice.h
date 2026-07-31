@@ -67,9 +67,9 @@ public:
 	void TJS_INTF_METHOD RevertFromFullScreen( HWND window, tjs_uint w, tjs_uint h, tjs_uint bpp, tjs_uint color ) override {}
 	bool TJS_INTF_METHOD WaitForVBlank( tjs_int* in_vblank, tjs_int* delayed ) override { return false; }
 
-#ifdef __GENERIC__	
-	virtual void UpdateVideo(int w, int h, std::function<void(char *dest, int pitch)> updator) override {};
-	virtual void ClearVideo() override {}
+#ifdef __GENERIC__
+	// overlay 動画 UpdateVideo/ClearVideo は撤去 (pull 型 presenter へ移行)。Null は presenter host
+	// を公開しないので VideoOverlay 側で push フォールバックも無く、動画は単に描かれない。
 	virtual void SetWaitVSync(bool enable) override {}
 #endif
 

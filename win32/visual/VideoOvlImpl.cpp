@@ -38,6 +38,7 @@ extern "C" {
 	void    __stdcall GetAPIVersion( DWORD *ver );
 	void    __stdcall GetVideoOverlayObject( HWND, IStream*, const tjs_char*, const tjs_char*, unsigned __int64, iTVPVideoOverlay** );
 	void    __stdcall GetVideoLayerObject( HWND, IStream*, const tjs_char*, const tjs_char*, unsigned __int64, iTVPVideoOverlay** );
+	void    __stdcall GetVideoPresenterObject( HWND, IStream*, const tjs_char*, const tjs_char*, unsigned __int64, iTVPVideoOverlay** );
 	void    __stdcall GetMFVideoOverlayObject( HWND, IStream*, const tjs_char*, const tjs_char*, unsigned __int64, iTVPVideoOverlay** );
 	HRESULT __stdcall V2Link( iTVPFunctionExporter *exporter );
 	HRESULT __stdcall V2Unlink();
@@ -52,6 +53,7 @@ class tTVPVideoModule
 	tGetAPIVersion procGetAPIVersion;
 	tGetVideoOverlayObject procGetVideoOverlayObject;
 	tGetVideoOverlayObject procGetVideoLayerObject; // krmovie.dll only
+	tGetVideoOverlayObject procGetVideoPresenterObject; // presenter 経路 (I420 対応形式は YUV 直渡し)
 	tGetVideoOverlayObject procGetMFVideoOverlayObject; // krmovie.dll only
 	tTVPV2LinkProc procV2Link;
 	tTVPV2UnlinkProc procV2Unlink;
@@ -74,6 +76,16 @@ public:
 	{
 		procGetVideoLayerObject(callbackwin, stream, streamname, type, size, out);
 	}
+	void GetVideoPresenterObject(HWND callbackwin, IStream *stream,
+		const wchar_t * streamname, const wchar_t *type, unsigned __int64 size,
+		iTVPVideoOverlay **out)
+	{
+		// presenter 経路。proc が無い (krflash DLL 等) 場合は通常レイヤ(BGRA)へフォールバック。
+		if( procGetVideoPresenterObject )
+			procGetVideoPresenterObject(callbackwin, stream, streamname, type, size, out);
+		else
+			procGetVideoLayerObject(callbackwin, stream, streamname, type, size, out);
+	}
 	void GetMFVideoOverlayObject(HWND callbackwin, IStream *stream,
 		const wchar_t * streamname, const wchar_t *type, unsigned __int64 size,
 		iTVPVideoOverlay **out)
@@ -90,9 +102,10 @@ tTVPVideoModule::tTVPVideoModule()
 {
 	Holder = NULL;
 	Handle = NULL;
-	procGetVideoOverlayObject   = (tGetVideoOverlayObject)&::GetVideoOverlayObject;
-	procGetVideoLayerObject     = (tGetVideoOverlayObject)&::GetVideoLayerObject;
-	procGetMFVideoOverlayObject = (tGetVideoOverlayObject)&::GetMFVideoOverlayObject;
+	procGetVideoOverlayObject    = (tGetVideoOverlayObject)&::GetVideoOverlayObject;
+	procGetVideoLayerObject      = (tGetVideoOverlayObject)&::GetVideoLayerObject;
+	procGetVideoPresenterObject  = (tGetVideoOverlayObject)&::GetVideoPresenterObject;
+	procGetMFVideoOverlayObject  = (tGetVideoOverlayObject)&::GetMFVideoOverlayObject;
 	procGetAPIVersion           = (tGetAPIVersion)&::GetAPIVersion;
 	procV2Link                  = (tTVPV2LinkProc)&::V2Link;
 	procV2Unlink                = (tTVPV2UnlinkProc)&::V2Unlink;
@@ -122,6 +135,10 @@ tTVPVideoModule::tTVPVideoModule(const ttstr &name)
 
 		procGetVideoLayerObject = (tGetVideoOverlayObject)
 			GetProcAddress(Handle, "GetVideoLayerObject");
+
+		// krflash DLL 等は presenter export を持たない → null 可 (使用側で layer へフォールバック)。
+		procGetVideoPresenterObject = (tGetVideoOverlayObject)
+			GetProcAddress(Handle, "GetVideoPresenterObject");
 
 		procGetMFVideoOverlayObject = (tGetVideoOverlayObject)
 			GetProcAddress(Handle, "GetMFVideoOverlayObject");
@@ -426,7 +443,13 @@ void tTJSNI_VideoOverlay::Open(const ttstr &_name)
 			{
 				UsePresenter = isOverlay && ( PresenterHost != NULL );
 				ActivePresenter = static_cast<iTVPVideoPresenter*>(this);
-				if( Mode == vomLayer || UsePresenter )
+				if( UsePresenter )
+					// presenter 経路: I420 対応形式 (webm) は YUV 直渡し (GPU で YUV→RGB)、
+					// 非対応形式は内部で通常レイヤ(BGRA)へフォールバック。
+					mod->GetVideoPresenterObject(EventQueue.GetOwner(),
+						istream, (const wchar_t*)name.c_str(), (const wchar_t*)ext.c_str(),
+						size, &VideoOverlay);
+				else if( Mode == vomLayer )
 					mod->GetVideoLayerObject(EventQueue.GetOwner(),
 						istream, (const wchar_t*)name.c_str(), (const wchar_t*)ext.c_str(),
 						size, &VideoOverlay);
@@ -613,25 +636,41 @@ bool TJS_INTF_METHOD tTJSNI_VideoOverlay::RenderVideoFrame( const tTVPVideoPrese
 	// D3D11 テクスチャへ上げ、ゲーム画面領域 (DestRect) 全面へ描く (動画が画面を覆う前提)。
 	if( !UsePresenter || !VideoOverlay || !Visible || !HasFrame ) return false;
 
-	BYTE *buff = NULL;
-	VideoOverlay->GetFrontBuffer( &buff );
-	if( !buff ) return false;
-	tTVPBaseBitmap *bmp = ( buff == BmpBits[1] ) ? Bitmap[1] : Bitmap[0];
-	if( !bmp ) return false;
-	tTVPBitmap *raw = bmp->GetBitmap();
-	if( !raw ) return false;
-
-	int w = (int)raw->GetWidth();
-	int h = (int)raw->GetHeight();
-	if( w <= 0 || h <= 0 ) return false;
-	// レイヤバッファはボトムアップ格納。視覚的 top 行 (ScanLine 0) と符号付きピッチを求める。
-	const BYTE *top = (const BYTE*)raw->GetScanLine(0);
-	int pitch = w * 4;
-	if( h > 1 )
-		pitch = (int)( (const BYTE*)raw->GetScanLine(1) - top );
-
 	if( !VideoBlit ) VideoBlit = new tTVPVideoPresenterD3D();
-	VideoBlit->Render( ctx, top, pitch, w, h, ctx.DestRect, (float)MovieAlpha );
+
+	// I420 対応形式 (webm) は YUV プレーンを直接受け取り GPU で YUV→RGB する (CPU 変換省略)。
+	const BYTE *iy = NULL, *iu = NULL, *iv = NULL;
+	int ys = 0, us = 0, vs = 0, iw = 0, ih = 0;
+	bool renderedI420 = false;
+	if( VideoOverlay->GetI420Frame( &iy, &ys, &iu, &us, &iv, &vs, &iw, &ih ) &&
+	    iy && iu && iv && iw > 0 && ih > 0 )
+	{
+		VideoBlit->RenderI420( ctx, iy, ys, iu, us, iv, vs, iw, ih, ctx.DestRect, (float)MovieAlpha );
+		renderedI420 = true;
+	}
+
+	if( !renderedI420 )
+	{
+		// 従来 BGRA 経路 (I420 非対応形式)。
+		BYTE *buff = NULL;
+		VideoOverlay->GetFrontBuffer( &buff );
+		if( !buff ) return false;
+		tTVPBaseBitmap *bmp = ( buff == BmpBits[1] ) ? Bitmap[1] : Bitmap[0];
+		if( !bmp ) return false;
+		tTVPBitmap *raw = bmp->GetBitmap();
+		if( !raw ) return false;
+
+		int w = (int)raw->GetWidth();
+		int h = (int)raw->GetHeight();
+		if( w <= 0 || h <= 0 ) return false;
+		// レイヤバッファはボトムアップ格納。視覚的 top 行 (ScanLine 0) と符号付きピッチを求める。
+		const BYTE *top = (const BYTE*)raw->GetScanLine(0);
+		int pitch = w * 4;
+		if( h > 1 )
+			pitch = (int)( (const BYTE*)raw->GetScanLine(1) - top );
+
+		VideoBlit->Render( ctx, top, pitch, w, h, ctx.DestRect, (float)MovieAlpha );
+	}
 
 	// mixer 追加画像 (旧 setMixingLayer の後継)。動画の上へアルファ合成で重ねる。
 	if( MixerBitmap )

@@ -54,15 +54,17 @@ REPL 特殊コマンド:
 
 ## エージェント駆動 (Agent API + ファイルチャネル)
 
-エージェント / 自動テストから krkrz を「外から」操作するための機構 (SDL3 ビルド
-専用)。 入力イベント注入・画面キャプチャ・Elements ダイアログ制御を、 REPL
-(対話) または `-replfile` ファイルチャネル (非対話) のどちらからでも使える。
+エージェント / 自動テストから krkrz を「外から」操作するための機構 (SDL3 /
+WINVER 両対応)。 入力イベント注入・画面キャプチャ・Elements ダイアログ制御を、
+REPL (対話) または `-replfile` ファイルチャネル (非対話) のどちらからでも使える。
+`KRKRZ_USE_ELEMENTS` + `KRKRZ_USE_REPL` が有効なときに `Agent` クラスが登録される。
 
 ### `Agent` TJS クラス
 
 `System` 同様にインスタンス不要でクラスメソッドを呼ぶ。 入力注入は実入力と
-同じ `TTVPWindowForm::Send*` 経路を通るので、 ゲームにも Elements ダイアログにも
-届く (DrawDevice / Window の dialog intercept を経由)。
+同じウィンドウ入力ハンドラ経路 (SDL3 = `SendMouseMessage/SendMessage`、
+WINVER = `OnMouse*/OnKey*`) を `AgentInput` seam 経由で通すので、 ゲームにも
+Elements ダイアログにも届く (DrawDevice / Window の dialog intercept を経由)。
 
 | メソッド | 説明 |
 |---|---|

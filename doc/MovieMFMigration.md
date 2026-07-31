@@ -183,9 +183,67 @@ webm=movie-player / mpg=pl_mpeg) が presenter 経路で色・向き・全画面
   直接 include する運用 (host ポインタは TJS プロパティで取得可)。必要になれば WIN ガードで公開する。
 - `voMode.h` はコメントのみ変更 (enum 値不変) なので tp_stub.h の同 enum は再生成不要 (値一致)。
 
-### Generic(SDL) は別計画 (今回スコープ外)
-SDL も同構造へ寄せる (現行の DrawDevice 直メソッド `UpdateVideo` をやめ、Window 側 presenter
-フォールバック + DrawDevice GPU 転送口の二段構え)。→ 別途「Generic 動画 presenter 統一」計画。
+### Generic(SDL) 側 (別計画として実施済)
+SDL/OGL も同じ pull 型 presenter 構造へ統一済 (DrawDevice 直メソッド `UpdateVideo`/`ClearVideo` を
+撤去し、`Show()` から presenter を pull)。presenter インターフェースは環境別
+(SDL=`iTVPSDLVideoPresenter`(SDL_Renderer)、OGL=`iTVPGLVideoPresenter`(GLTextureDrawer))、
+generic 側 VideoOverlay からは中立 IF (`common/visual/VideoOverlayPresenter.h`) 経由。overlay 動画は
+YUV(I420) plane 直渡し + presenter 側 GPU YUV→RGB に対応 (**SDL** presenter=`SDL_UpdateYUVTexture` 内蔵、
+**GL** presenter=自前 YUV→RGB シェーダ (BT.601, 3×R8 テクスチャ, `GLShaderUtil::CompileProgram`。既定 SDL
+DrawDevice は GL 版なのでこれが実経路))。詳細は「Generic 動画 presenter 統一」計画。
+- **coded 幅クロップ (緑帯回避)**: movie-player の I420 frame.width は coded (16 アライン padding) なので
+  `generic/app/movie.cpp` の plane callback で `GetVideoFormat` の表示寸法へクロップ (plane stride は保持)。
+  crop しないと右端に未定義 chroma 由来の緑帯が出る (GL/SDL 両 presenter 共通の中央修正)。
+
+**MPEG-1 (`.mpg`/`.mpeg`) — generic/SDL でも内蔵対応**: `external/movie-player` は webm 専用のため、
+WIN 版と同じ `pl_mpeg` (パブリックドメイン単一ヘッダ) で MPEG-1 を再生する
+`generic/app/Mpeg1MoviePlayer.cpp` (`iTVPMoviePlayer` 実装) を新設。`generic/app/movie.cpp` の
+`TVPCreateMoviePlayer` が拡張子で振り分ける (`.mpg`/`.mpeg`→pl_mpeg、それ以外→movie-player)。
+pl_mpeg は I420 native なので YUV presenter 経路にそのまま載る (CPU 変換なし)。音声 (MP2) は
+generic 共通の miniaudio シンクアダプタ (`tTVPMovieAudioSinkAdapter`) へ出力し、その再生済み
+サンプル数を A/V 同期のマスタクロックに使う (WIN 版 `LayerVideoBase` と同方式。音声なしは
+フレーム間 delta)。**検証 (SDL x64-windows, REPL+captureScreen)**: MPEG-1 PS を vomMixer 再生 →
+YUV テクスチャで色・向き正常、position 前進 (実時間ペース)、stop でゲーム画面復帰。
+
+**SDL 動画 mode を WINVER と整合 + mixer 追加画像の状況**:
+- **mode 整合**: generic の `SetMode` は従来「非 vomLayer は全て vomMixer に丸める」だったが、WINVER の
+  `isOverlay = (Mode != vomLayer)` に合わせ、`vomOverlay(0)`/`vomMixer(2)`/`vomMFEVR(3)` を全て overlay
+  presenter 経路として扱う (SDL は HW/EVR 経路が無いので同一挙動。`vomMFEVR` は `vomOverlay` へ丸め)。
+  `IsMixerPlaying()` と Open の decode 分岐の `Mode == vomMixer` 判定を `Mode != vomLayer` へ変更。既定は
+  `vomOverlay`。これで `vomOverlay` 指定でも presenter で再生される (従来は vomMixer に矯正されていた)。
+- **mixer 追加画像 (`setMixingLayer` 等) を generic/SDL でも実装済**: 中立 presenter IF
+  (`VideoOverlayPresenter.h`) に `SetMixerImage`/`SetMixerAlpha`/`ClearMixerImage` を追加 (既定 no-op)。
+  generic VideoOvlImpl の `SetMixingLayer` がレイヤ画像を BGRA スナップショット (プライマリ座標の矩形 +
+  opacity) して presenter へ渡す (WINVER の presenter mixer と同構造)。presenter は動画描画後に mixer
+  テクスチャを作り、プライマリ座標 → `DestRect` へマップして α 合成で上へ描く。**SDL presenter** は
+  `SDL_RenderTexture`+`SDL_SetTextureAlphaModFloat`、**GL presenter** は mixer GLTexture (α を pixel×全体
+  α で焼く)+`GLTextureDrawer::DrawTexture(blend=true)`。GL の描画先矩形は `ctx.DestRect`/`SrcSize` から
+  clip 座標へ変換 (Y は本体描画と同じく反転、texture の上下も頂点 UV で整合)。context (SDL/GL とも)
+  に `DestRect`/`SrcWidth`/`SrcHeight` を追加し DrawDevice が `GetSrcSize()` で埋める。**検証 (SDL 既定
+  =GL presenter, REPL+captureScreen)**: vomMixer 動画の上に赤箱+黄文字レイヤが正位置・正立で α 合成表示、
+  stop/close で mixer も消えてゲーム復帰。※既定 SDL DrawDevice は GL 版 (`glVideoPresenterHost`)。純
+  SDL_Renderer 版 presenter (`sdlVideoPresenterHost`) にも同等実装 (起動時オプションで選択時に有効)。
+
+### WINVER presenter の YUV(I420) 対応 (Phase 4c 部分)
+overlay presenter 経路 (`BasicDrawDevice` の D3D11 バックバッファへ pull 合成) で、**I420 対応形式は
+GPU で YUV→RGB する**ようにした (従来は全形式 CPU で BGRA 変換してから D3D11 DYNAMIC へ upload)。
+- **ブリッタ** `tTVPVideoPresenterD3D` に `RenderI420()` を追加 (Y/U/V を R8 テクスチャ 3 枚へ upload +
+  BT.601 limited-range YUV→RGB PS。VS/IL/VB/CB/Sampler/Blend は既存 BGRA 経路と共用)。
+- **フレーム供給**: krmovie 内部 IF `iTVPVideoOverlay` に非 pure の `GetI420Frame()` を追加 (既定 false =
+  従来 BGRA)。webm (`tTVPWebpMovie`) に `preferI420` モードを追加し、presenter 経路では I420(COLOR_NOCONV)
+  でデコード→plane を内部 packed バッファに front/back 二重で保持 (描画スレッド安全)。新 factory
+  `GetVideoPresenterObject` (krlmovie.cpp) が webm を preferI420 で開き、非対応形式は通常レイヤ(BGRA)へ委譲。
+- **VideoOvlImpl**: presenter 経路は `GetVideoPresenterObject` を使い、`RenderVideoFrame` で `GetI420Frame`
+  成功時は `RenderI420`、失敗時は従来の BGRA (`GetFrontBuffer`→`Render`) にフォールバック。
+- **対象**: **webm + mpg**。webm=movie-player の I420 native (`tTVPWebpMovie` preferI420)。
+  mpg=pl_mpeg の I420 native → `tTVPLayerVideoBase` に **preferI420 バッファモード**を追加
+  (overlay/layer とは別に I420 を内部 front/back 二重保持し `GetI420Frame` で供給。バックエンドは
+  `DecoderGetI420Planes` を実装、`tTVPMpeg1Video` が pl_mpeg の y/cb/cr を返す)。`GetVideoPresenterObject`
+  が mpg も preferI420 で開く。**MF SourceReader(wmv/mp4 CPU) は YUV 未対応 (BGRA のまま)**、
+  HW MediaEngine は元々 GPU なので YUV 化不要。
+- **検証 (WINVER x64-windows-win, REPL+System.captureScreen)**: webm/mpg を `vomOverlay` で再生 →
+  D3D11 YUV シェーダで色・向き正常にフルスクリーン描画、position 前進、BGRA 経路 (vomLayer) と無回帰。
+  ※冒頭の黒フェードイン数秒は Y=16 の黒フレームで正常。
 
 ## HW 動画 (IMFMediaEngine フレームサーバ) — Track V-E 本命 (2026-07-30 実装完了)
 
@@ -371,10 +429,10 @@ overlay(子ウィンドウ) へ自動フォールバックする層を設ける�
 
 - テスト動画: `D:\work\kirikiri\movietest\`(リポジトリ外)に各形式 1 本
   (`bg.mpg`=MPEG-1, `bg.wmv`, `alpha.webm`, `movie.mp4`, 任意 `test.avi`)。
-- WINVER は `Agent.captureScreen` 非対応(SDL 専用)。検証補助として V-C 前に
-  `BasicDrawDevice` へ D3D11 バックバッファ読み戻しの capture フックを追加予定
-  (`ScreenCapture.h` は common/`KRKRZ_REPL` で既に WINVER にリンク済、Show 内フックと
-  トリガのみ不足)。それでも A/V 同期・体感は最終的にユーザ目視確認。
+- WINVER でも `System.captureScreen` / `Agent.captureScreen` が動作する
+  (`BasicDrawDevice::FulfillScreenCapture[FromBackBuffer]` 実装済、overlay/動画込みは
+  present 直前のバックバッファから読み戻し)。Agent 駆動 API 自体も WINVER 対応済
+  (入力注入は `AgentInput` seam 経由)。それでも A/V 同期・体感は最終的にユーザ目視確認。
 - 各段階で REPL(`-replfile`)による数値確認(status/position/frame 前進)+ スクショ。
 
 ## 実装テンプレート:`tTVPWebpMovie` (webplayer.cpp)

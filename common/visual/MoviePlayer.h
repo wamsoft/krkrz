@@ -33,10 +33,29 @@ public:
 
   // --------------------------------------------------------------------
 
-  // Video Decoded Frame
+  // Video Decoded Frame (ARGB 系: updater が dest を packed RGBA で埋める最速経路)
   typedef std::function<void(char *dest, int pitch)> DestUpdater;
   typedef std::function<void(int w, int h, DestUpdater updater)> OnVideoDecoded;
   virtual void SetOnVideoDecoded(OnVideoDecoded callback) = 0;
+
+  // Video Decoded Frame (YUV plane 経路: GPU 側で YUV→RGB する presenter 向け)。
+  // planes[i].data はコールバックから return した時点で無効になるので同期的に copy すること。
+  // I420: planeCount=3 (Y=w×h / U=w/2×h/2 / V=w/2×h/2)。NV12: planeCount=2 (Y / UV interleaved)。
+  static const int TVP_VIDEO_PLANE_MAX = 4;
+  enum VideoPlaneFormat { VPF_UNKNOWN = 0, VPF_I420, VPF_NV12, VPF_NV21 };
+  struct VideoPlaneFrame {
+    int width;
+    int height;
+    VideoPlaneFormat format;
+    int planeCount;
+    struct PlaneRef { const uint8_t *data; int width; int height; int stride; } planes[TVP_VIDEO_PLANE_MAX];
+  };
+  typedef std::function<void(const VideoPlaneFrame &frame)> OnVideoDecodedPlanes;
+  // 既定 no-op (YUV 非対応の実装は SetOnVideoDecoded のみ実装すればよい)。SetOnVideoDecoded と
+  // 排他 (最後に呼んだ方のみ有効)。videoColorFormat を YUV に設定した player でのみ呼ばれる。
+  virtual void SetOnVideoDecodedPlanes(OnVideoDecodedPlanes callback) {}
+  // この player が YUV plane 経路 (SetOnVideoDecodedPlanes) を実際に供給できるか。
+  virtual bool SupportsPlanes() const { return false; }
 
   // audio info
   virtual bool IsAudioAvailable() const = 0;
@@ -64,7 +83,9 @@ public:
 
 };
 
-extern iTVPMoviePlayer*TVPCreateMoviePlayer(const tjs_char *filename);
-extern iTVPMoviePlayer*TVPCreateMoviePlayer(IMovieReadStream *stream, const char *filename);
+// preferYUV=true で、可能なら YUV plane 出力 (COLOR_I420) の player を作る (mixer/presenter 経路用)。
+// YUV 非対応の decoder / backend では自動的に ARGB にフォールバックする (SupportsPlanes()=false)。
+extern iTVPMoviePlayer*TVPCreateMoviePlayer(const tjs_char *filename, bool preferYUV=false);
+extern iTVPMoviePlayer*TVPCreateMoviePlayer(IMovieReadStream *stream, const char *filename, bool preferYUV=false);
 
 #endif

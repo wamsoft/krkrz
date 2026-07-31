@@ -39,7 +39,26 @@ class tTJSNI_VideoOverlay : public tTJSNI_BaseVideoOverlay
 	tTJSCriticalSection surfaceLock;
 	bool updateSurface;
 
+	// overlay 動画 (非 layer) を DrawDevice へ pull 型で渡す presenter。現在の DrawDevice が
+	// 対応 host を公開していれば登録して使い (SDL 等)、無ければ従来 push (UpdateVideo) へ
+	// フォールバックする。実体は環境別 (sdl3/visual/SDLVideoPresenter.cpp 等)。
+	class iTVPVideoOverlayPresenter* Presenter;
+	bool PresenterRegistered;
+	bool mUseYUV;               // YUV plane 経路で開いたか (presenter が YUV 対応 && backend が供給)
+
+	// mixer 追加画像 (setMixingLayer の後継。presenter へ渡して動画上へ α 合成)
+	tTVPRect mMixerRect;        // プライマリレイヤ座標での配置矩形
+	tjs_real mMixerAlpha;       // 全体アルファ (0..1)
+	tjs_uint mMixerBGColor;     // 保持のみ (背景色。現状 presenter 未使用)
+	void PreparePresenter();    // Open 時: presenter を生成し device へ bind、YUV 対応を判定
+	void TryRegisterPresenter();// Play 時: presenter の pull を開始 (Activate)
+	void ReleasePresenter();
+
 public:
+	//! presenter を登録解除する (mixer 停止で Window から呼ばれ、ゲーム画面へ復帰させる)。
+	//! object は保持するので replay で再登録できる。
+	void UnregisterPresenter();
+
 	tTJSNI_VideoOverlay();
 	~tTJSNI_VideoOverlay();
 
