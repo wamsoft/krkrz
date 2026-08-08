@@ -17,6 +17,15 @@ Window.enableTouchをfalseとします。
 ### TJS\_64BIT\_OS
 64bit環境かどうかを切り分けるために内部で使用されています。
 
+### PICOJSON\_USE\_INT64
+picojson の int64 サポート。CMakeLists.txt の `add_compile_definitions` で
+**ビルド全体 (elements_modal 含む) に常時定義**されます。picojson はヘッダオンリーで
+inline メソッドが COMDAT 統合されるため、TU ごとに定義有無が混在すると型 enum の
+値ズレによる ODR 違反となり、リンク順依存で type mismatch 例外が発生します
+(NX リンクで実際に発火)。TU ローカルで `#define` しないこと。
+整数リテラルは `int64_t` で保持され `is<double>()` が false になるので、数値読取りは
+両型を見る (`ReadOptionDescUtil.cpp` / elements_modal `number_of` 参照)。
+
 ### KRKRZ\_ENABLE\_DAP (Phase 2 以降で導入予定)
 VSCode Debug Adapter Protocol サーバを内蔵してビルドします。
 デフォルトは ON。`-dap=<port>` コマンドラインオプションでサーバを起動。

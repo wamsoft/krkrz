@@ -20,13 +20,13 @@ static void TVPCreateToVertexBuffer( GLVertexBufferObject& vtxBuff, const tTJSVa
 	tTJSVariantClosure clo = param->AsObjectClosureNoAddRef();
 	if( clo.Object ) {
 		tjs_int count = TJSGetArrayElementCount( clo.Object );
-		if( count == 0 ) TVPThrowExceptionMessage( TJS_W( "Array is zero." ) );
+		if( count == 0 ) TVPThrowExceptionMessage(TVPArrayIsZero );
 		tjs_int size = (tjs_int)(sizeof(TType)*count);
 		std::unique_ptr<TType[]> buffer(new TType[count]);
 		tTJSVariant tmp;
 		for( tjs_int i = 0; i < count; i++ ) {
 			if( TJS_FAILED( clo.Object->PropGetByNum( TJS_MEMBERMUSTEXIST, i, &tmp, clo.ObjThis ) ) )
-				TVPThrowExceptionMessage( TJS_W( "Insufficient number of arrays." ) );
+				TVPThrowExceptionMessage(TVPInsufficientNumberOfArrays );
 			buffer[i] = (TType)(tjs_int)tmp;
 		}
 		vtxBuff.createVertexBuffer( size, updateType, isIndex, (const void*)buffer.get() );
@@ -60,13 +60,13 @@ tjs_error TJS_INTF_METHOD tTJSNI_VertexBuffer::Construct(tjs_int numparams, tTJS
 			tTJSVariantClosure clo = param[0]->AsObjectClosureNoAddRef();
 			if( clo.Object ) {
 				tjs_int count = TJSGetArrayElementCount( clo.Object );
-				if( count == 0 ) TVPThrowExceptionMessage( TJS_W( "Array is zero." ) );
+				if( count == 0 ) TVPThrowExceptionMessage(TVPArrayIsZero );
 				tjs_int size = (tjs_int)(sizeof(GLfloat)*count);
 				std::unique_ptr<GLfloat[]> buffer(new GLfloat[count]);
 				tTJSVariant tmp;
 				for( tjs_int i = 0; i < count; i++ ) {
 					if( TJS_FAILED( clo.Object->PropGetByNum( TJS_MEMBERMUSTEXIST, i, &tmp, clo.ObjThis ) ) )
-						TVPThrowExceptionMessage( TJS_W( "Insufficient number of arrays." ) );
+						TVPThrowExceptionMessage(TVPInsufficientNumberOfArrays );
 					buffer[i] = (GLfloat)(tjs_real)tmp;
 				}
 				VertexBufferObject.createVertexBuffer( size, updateType, isIndex, (const void*)buffer.get() );
@@ -74,7 +74,7 @@ tjs_error TJS_INTF_METHOD tTJSNI_VertexBuffer::Construct(tjs_int numparams, tTJS
 			break;
 		}
 		default:
-			TVPThrowExceptionMessage( TJS_W( "Unknown data type." ) );
+			TVPThrowExceptionMessage(TVPUnknownDataType );
 			break;
 		}
 	} else {
@@ -102,7 +102,7 @@ static void TVPCopyToVertexBuffer( GLVertexBufferObject& vtxBuff, const tTJSVari
 	tTJSVariantClosure clo = param->AsObjectClosureNoAddRef();
 	for( tjs_int i = 0; i < count; i++ ) {
 		if( TJS_FAILED( clo.Object->PropGetByNum( TJS_MEMBERMUSTEXIST, i, &tmp, clo.ObjThis ) ) )
-			TVPThrowExceptionMessage( TJS_W( "Insufficient number of arrays." ) );
+			TVPThrowExceptionMessage(TVPInsufficientNumberOfArrays );
 		buffer[i] = (TType)(tjs_int)tmp;
 	}
 	vtxBuff.copyBuffer( sizeof(TType)*offset, sizeof(TType)*count, (const void*)buffer.get() );
@@ -110,7 +110,7 @@ static void TVPCopyToVertexBuffer( GLVertexBufferObject& vtxBuff, const tTJSVari
 //---------------------------------------------------------------------------
 void tTJSNI_VertexBuffer::SetVertex( const tTJSVariant *param, tjs_int offset ) {
 	if( VertexBufferObject.usage() == GL_STATIC_DRAW ) {
-		TVPThrowExceptionMessage( TJS_W( "This vertex buffer is constant." ) );
+		TVPThrowExceptionMessage(TVPThisVertexBufferIsConstant );
 	}
 	tTJSVariantClosure clo = param->AsObjectClosureNoAddRef();
 	if( clo.Object ) {
@@ -140,7 +140,7 @@ void tTJSNI_VertexBuffer::SetVertex( const tTJSVariant *param, tjs_int offset ) 
 				tTJSVariant tmp;
 				for( tjs_int i = 0; i < count; i++ ) {
 					if( TJS_FAILED( clo.Object->PropGetByNum( TJS_MEMBERMUSTEXIST, i, &tmp, clo.ObjThis ) ) )
-						TVPThrowExceptionMessage( TJS_W( "Insufficient number of arrays." ) );
+						TVPThrowExceptionMessage(TVPInsufficientNumberOfArrays );
 					buffer[i] = (GLfloat)(tjs_real)tmp;
 				}
 				VertexBufferObject.copyBuffer( sizeof(GLfloat)*offset, sizeof(GLfloat)*count, buffer.get() );

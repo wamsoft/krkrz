@@ -53,6 +53,7 @@
 #include "OGLDrawDevice.h"
 #include "CanvasIntf.h"
 #include "OffscreenIntf.h"
+#include "GLCompositorIntf.h"
 #include "TextureIntf.h"
 #include "Matrix44Intf.h"
 #include "Matrix32Intf.h"
@@ -74,6 +75,11 @@
 // include パス非依存のため前方宣言。
 #if defined(KRKRZ_HAS_ELEMENTS) && defined(KRKRZ_USE_REPL)
 extern tTJSNativeClass* TVPCreateNativeClass_Agent();
+#endif
+// WebServer クラス (-replweb サーバへのハンドラ登録口)。KRKRZ_REPL_WEB=OFF では
+// 完全に除外される。実装は common/utils/ReplWebIntf.cpp。
+#ifdef KRKRZ_REPL_WEB
+extern tTJSNativeClass* TVPCreateNativeClass_WebServer();
 #endif
 
 //---------------------------------------------------------------------------
@@ -238,9 +244,13 @@ void TVPInitScriptEngine()
 #if defined(KRKRZ_HAS_ELEMENTS) && defined(KRKRZ_USE_REPL)
 	REGISTER_OBJECT(Agent, TVPCreateNativeClass_Agent());
 #endif
+#ifdef KRKRZ_REPL_WEB
+	REGISTER_OBJECT(WebServer, TVPCreateNativeClass_WebServer());
+#endif
 
 #ifdef TVP_USE_OPENGL
 	REGISTER_OBJECT(Canvas, TVPCreateNativeClass_Canvas());
+	REGISTER_OBJECT(GLCompositor, TVPCreateNativeClass_GLCompositor());
 	REGISTER_OBJECT(Texture, TVPCreateNativeClass_Texture());
 	REGISTER_OBJECT(TextureLayerTreeOwner, TVPCreateNativeClass_TextureLayerTreeOwner());
 	REGISTER_OBJECT(Offscreen, TVPCreateNativeClass_Offscreen());
@@ -259,6 +269,9 @@ void TVPInitScriptEngine()
 	dsp->Release();
 	waveclass->PropSet(TJS_MEMBERENSURE|TJS_IGNOREPROP|TJS_STATICMEMBER,
 		TJS_W("PhaseVocoder"), NULL, &val, waveclass);
+
+	/* SoundListener (3D 定位のリスナ、engine グローバル) */
+	REGISTER_OBJECT( SoundListener, TVPCreateNativeClass_SoundListener() );
 
 	/* Window and its drawdevices */
 	iTJSDispatch2 * windowclass = NULL;

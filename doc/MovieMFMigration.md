@@ -12,7 +12,7 @@ krmovie は現状 `krmovie.dll`(tp_stub ベースのプラグイン構造)とし
 
 | エクスポート | 実装 | 対応形式 | モダン度 |
 |---|---|---|---|
-| `GetVideoLayerObject`(レイヤ, `.webm`) | `tTVPWebpMovie` (webplayer.cpp + external/movie-player + XAudio2) | VP8/9・**α対応** | ✅ モダン・クロスPF |
+| `GetVideoLayerObject`(レイヤ, `.webm`) | `tTVPWebpMovie` (webplayer.cpp + external/movie-player + miniaudio) | VP8/9・**α対応** | ✅ モダン・クロスPF |
 | `GetVideoLayerObject`(レイヤ, その他) | `tTVPDSLayerVideo` (dslayerd + BufferRenderer) | .wmv/.mpg/.avi | ❌ DirectShow |
 | `GetVideoOverlayObject`(オーバレイ既定) | `tTVPDSVideoOverlay` (dsoverlay + dsmovie) | .wmv/.mpg 等 | ❌ DirectShow |
 | `GetMFVideoOverlayObject`(オーバレイ MF) | `tTVPMFPlayer` (MF MediaSession + EVR + 子ウィンドウ) | .mp4/H.264/HEVC | ✅ MF |
@@ -110,6 +110,41 @@ krmovie は現状 `krmovie.dll`(tp_stub ベースのプラグイン構造)とし
     追加、`install(TARGETS krmovie)` 撤去。
   - **検証**: krmovie.dll を exe 隣から除去した状態で overlay 4形式 + layer 再生を確認
     (DLL 非依存 = 真の統合)。
+- **V-A' de-プラグイン化 (tp_stub 境界撤去) ✅完了 (2026-08-02)**: V-A の STATIC ライブラリ +
+  tp_stub 間接層は「exe 統合済みなのに engine を関数ポインタ表越しに呼ぶ」半端な状態だった
+  ため、境界ごと撤去して engine の実シンボルを直接参照する形に整理。
+  - `win32/movie/*.cpp` を独立 STATIC ターゲットから **`KRKRZ_SRC_WIN32` に畳み込み**
+    (`sources.cmake`)、`win32/movie/CMakeLists.txt` を削除。動画デコーダの
+    `external/movie-player` (webm) だけ static lib として取り込み `${EXENAME}` へ PRIVATE
+    リンク (`pl_mpeg` はヘッダオンリで `KRKRZ_INC_WIN32` に追加)。`xaudio2` も exe へ直リンク
+    (この時点では動画音声が XAudio2 のため。V-A'' で miniaudio 化し撤去)。
+  - 各 `.cpp` の `#include "tp_stub.h"` を engine 実ヘッダ (`tjsCommHead.h` + `MsgIntf.h`) へ
+    差し替え。krmovie が engine から使う API は実質 `TVPThrowExceptionMessage` のみで、
+    リンクは exe 内実シンボルへ直接解決される。`tp_stub.cpp` / `V2Link` / `V2Unlink` /
+    `TVPInitImportStub` / `GetAPIVersion` / `/EXPORT` pragma を全撤去。
+  - `VideoOvlImpl.cpp`: `tTVPVideoModule` を「エントリ関数を束ねる薄いラッパ」に簡約
+    (Holder/Handle/V2Link/version check/DLL ローダを撤去)。
+  - **krflash.dll (旧 `.swf` 対応) を廃止**: DLL ロード用コンストラクタ・`.swf` 分岐・
+    `TVPGetFlashVideoModule` を撤去。
+  - **検証 (WINVER 実機)**: webm/mpg/mp4/wmv + alpha.webm を overlay(presenter/HW MediaEngine)
+    / layer で captureScreen 目視、全形式で正常描画・エラー無しを確認。
+- **V-A'' 動画音声を miniaudio へ統合 ✅完了 (2026-08-02)**: 境界撤去で `common/sound` の
+  `TVPCreateAudioStream` / `iTVPAudioStream` を krmovie から直接使えるようになったため、
+  WINVER の動画音声だけ残っていた **XAudio2 を廃止し miniaudio に統合** (generic/SDL/Android は
+  既に統合済み)。engine 単一 miniaudio エンジンを共有 (マスタ音量 / `TVPSoundChannels` /
+  SoundAllocator プール / 3D 定位と同じ土俵)。
+  - **webplayer (webm, movie-player 駆動)**: `WebpXAudio2Sink` を廃止し、generic と同じ common の
+    `tTVPMovieAudioSinkAdapter` (IAudioSink, borrow 意味論) を使用。`WebpXAudio2Sink.h` 削除。
+  - **layer 経路 (MF SourceReader / pl_mpeg / webm-layer)**: `tTVPMovieAudioSink` を
+    `iTVPAudioStream` 上に再実装 (`MovieAudioSink.h`)。デコーダが渡す PCM は借り物なので
+    **内部コピー + フリーリスト再利用**し、`QueuedBuffers()` バックプレッシャと `GetPlayedMs()`
+    マスタクロックを維持 (公開 API 不変 → LayerVideoBase/MF/Mpeg backend は無改造)。
+  - `xaudio2` リンクを撤去。★アンダーラン時は `MiniAudioStream::ReadData` がゼロ埋め (無音) する
+    ので停止/供給途切れで buzz は出ない。
+  - **検証 (WINVER 実機)**: 全形式再生・エラー無し。layer 経路は音声クロックに映像を同期する
+    ため「フレーム進行」で音声デバイス稼働を非可聴確認 (mp4/MediaEngine 再生の前後とも生存)。
+    ★mp4/wmv **overlay は HW=IMFMediaEngine が音声も内部処理**するので本統合の対象外
+    (このシンクを経由しない)。音の実聴 A/V 同期はユーザ確認事項。
 - **V-E (任意) 新モード `vomD3D11`**: exe 統合後、`IMFMediaEngine` フレームサーバ +
   `TransferVideoFrame` で BasicDrawDevice の D3D11 へ直接 present(全画面合成・HDR・
   HEVC/AV1 の GPU 全経路)。(B) の本命。
@@ -147,6 +182,16 @@ D3D11 テクスチャへ upload → 描画する。
 - 実モードは `vomLayer` / `vomOverlay` の 2 つ。`vomMixer` / `vomMFEVR` は TJS 定数 (値 2/3) を
   互換のため残すが挙動は `vomOverlay` に統合 (旧 EVR 依存の `Mode != vomMFEVR` status 抑止を
   撤去、Open 分岐を collapse)。追加画像合成は「モード」でなく overlay の機能に格上げ。
+
+### visible の扱い (全環境共通仕様)
+`VideoOverlay.visible` は **映像表示のオン/オフのみ**を制御する (既定 **false**)。再生 (デコード + 音声)
+は visible に依らず継続するので、**`visible=false` で `play()` すると「音は鳴るが映像は出ずゲーム画面のまま」**
+になる (音も止めるなら `stop()`/`pause()`)。これは吉里吉里2/Z 以来の仕様で、旧 DirectShow/子ウィンドウ
+時代 (`VideoOverlay->SetVisible(Visible)` で overlay 窓の表示制御) から一貫している。
+- **overlay/mixer** (`vomOverlay`/`vomMixer`): WINVER は `RenderVideoFrame` 内で `!Visible` なら描画しない
+  (ゲーム backbuffer に合成しない=ゲーム画面が見える)。**visible=true が必須**。
+- **vomLayer**: `Visible` を対象 Layer(`layer1`/`layer2`) の visible へ伝播 (レイヤ自身の表示で制御)。
+- **Generic(SDL/GL)** も同仕様に統一済 (下記「Generic(SDL) 側」参照)。
 
 ### 動作 (`tTJSNI_VideoOverlay`)
 - **Open**: overlay かつ host 有り → `GetVideoLayerObject` (buffer 出力) + `Bitmap[0/1]` 確保 +
@@ -194,6 +239,16 @@ DrawDevice は GL 版なのでこれが実経路))。詳細は「Generic 動画 
 - **coded 幅クロップ (緑帯回避)**: movie-player の I420 frame.width は coded (16 アライン padding) なので
   `generic/app/movie.cpp` の plane callback で `GetVideoFormat` の表示寸法へクロップ (plane stride は保持)。
   crop しないと右端に未定義 chroma 由来の緑帯が出る (GL/SDL 両 presenter 共通の中央修正)。
+- **visible 尊重 (WINVER 整合, 2026-08-01)**: 統一初期の generic presenter は `visible` を見ておらず、
+  未設定 (既定 false) でも overlay 動画が表示されていた (WINVER と乖離)。中立 IF に `SetVisible()`、
+  環境別 IF (`iTVPSDLVideoPresenter`/`iTVPGLVideoPresenter`) に `IsVisible()` を追加し、各 DrawDevice の
+  `ShowVideo()` が非表示なら false を返して**通常のゲーム描画へフォールバック**するようにした
+  (WINVER が `RenderVideoFrame` 内で Visible を毎フレーム判定するのと等価。SDL は「presenter 登録中は
+  動画が画面を占有」する設計なので、判定は presenter を pull する手前=`ShowVideo()` で行う)。対象 3 デバイス:
+  `SDLOGLDrawDevice`(既定 GL)/`SDLDrawDevice`(SDL_Renderer)/`OGLDrawDevice`。`presenter->mVisible` は
+  `std::atomic<bool>` (描画スレッドが読む)。generic `VideoOvlImpl` は presenter 生成時と `SetVisible` 時に
+  `Visible` を presenter へ伝播する。**検証 (SDL x64-windows, 既定 GL, REPL+captureScreen)**: 再生中に
+  `visible=false`→ゲーム画面 (音のみ)、`true`→動画全画面、再度 `false`→ゲーム復帰、のトグルが正常。
 
 **MPEG-1 (`.mpg`/`.mpeg`) — generic/SDL でも内蔵対応**: `external/movie-player` は webm 専用のため、
 WIN 版と同じ `pl_mpeg` (パブリックドメイン単一ヘッダ) で MPEG-1 を再生する
@@ -293,7 +348,7 @@ overlay かつ **`Mode != vomMixer`** + host 有り + `TVPUseMediaEngine()` (既
 HW 経路は mixer 追加画像 (`setMixingLayer`) を**描画しない** (動画側オブジェクトが presenter を
 持ち、mixer を合成する engine 側 `tTJSNI_VideoOverlay::RenderVideoFrame` が呼ばれないため)。
 mixer が必要な場合は **`vomMixer` を明示指定**すると、HW を使わず必ず CPU presenter 経路になり
-mixer が確実に合成される。この経路は音声も**自前処理 (MovieAudioSink → XAudio2)** なので
+mixer が確実に合成される。この経路は音声も**自前処理 (MovieAudioSink → miniaudio)** なので
 overlay の音量制御が engine 統合で効く。契約: `vomOverlay`(既定)=HW デコード優先 (mixer 無)、
 `vomMixer`=CPU 合成 (mixer + 自前音声)。HW 経路への mixer 直接描画は将来検討 (中規模)。
 

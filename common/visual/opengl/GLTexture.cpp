@@ -340,6 +340,7 @@ bool GLTexture::_support_inited = false;
 bool GLTexture::_support_bgra = false;
 bool GLTexture::_support_swizzle = false;
 bool GLTexture::_support_copy_image = false;
+bool GLTexture::_support_srgb_write_control = false;
 
 void 
 GLTexture::InitSupported()
@@ -349,6 +350,7 @@ GLTexture::InitSupported()
         bool ext_texture_bgra = false;
         bool ext_texture_storage = false;
         bool ext_copy_image = false;
+        bool ext_srgb_write_control = false;
 
         int NumberOfExtensions;
         glGetIntegerv(GL_NUM_EXTENSIONS, &NumberOfExtensions);
@@ -362,10 +364,13 @@ GLTexture::InitSupported()
                 ext_texture_storage = true;
             } else if (strcmp(name, "GL_EXT_copy_image") == 0) {
                 ext_copy_image = true;
+            } else if (strcmp(name, "GL_EXT_sRGB_write_control") == 0) {
+                ext_srgb_write_control = true;
             }
         }
         _support_bgra = ext_texture_bgra && ext_texture_storage;
         _support_copy_image = ext_copy_image;
+        _support_srgb_write_control = ext_srgb_write_control;
 
         GLint swizzleR;
         glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R, &swizzleR);
@@ -380,6 +385,9 @@ GLTexture::InitSupported()
 		}
 		if (_support_copy_image) {
 			TVPLOG_INFO("GLES: Copy Image Extension Supported");
+		}
+		if (_support_srgb_write_control) {
+			TVPLOG_INFO("GLES: sRGB Write Control Supported");
 		}
     }
 }

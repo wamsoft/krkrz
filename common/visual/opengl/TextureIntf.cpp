@@ -154,7 +154,7 @@ tjs_error TJS_INTF_METHOD tTJSNI_Texture::Construct(tjs_int numparams, tTJSVaria
 				return TJS_E_INVALIDPARAM;
 			}
 		}
-		if(!bmp) TVPThrowExceptionMessage(TJS_W("Parameter require Bitmap class instance."));
+		if(!bmp) TVPThrowExceptionMessage(TVPParameterRequireClassInstance, TJS_W("Bitmap"));
 		tTVPTextureColorFormat color = tTVPTextureColorFormat::RGBA;
 		if( numparams > 1 ) {
 			color = (tTVPTextureColorFormat)(tjs_int)*param[1];
@@ -275,7 +275,7 @@ void tTJSNI_Texture::SetMarginRectObject( const tTJSVariant & val ) {
 		if( clo.Object ) {
 			if( TJS_FAILED( clo.Object->NativeInstanceSupport( TJS_NIS_GETINSTANCE, tTJSNC_Rect::ClassID, (iTJSNativeInstance**)&MarginRectInstance ) ) ) {
 				MarginRectInstance = nullptr;
-				TVPThrowExceptionMessage( TJS_W( "Cannot retrive rect instance." ) );
+				TVPThrowExceptionMessage(TVPCannotRetriveInstance, TJS_W("rect"));
 			}
 		}
 	}

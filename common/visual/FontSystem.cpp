@@ -7,6 +7,10 @@
 #include "MsgIntf.h"
 #include <vector>
 #include "FontRasterizer.h"
+#include "StorageIntf.h"   // TVPCreateStream / TVPIsExistentStorage
+#include "tjs.h"           // iTJSBinaryStream / TVPReadBuffer
+// PICOJSON_USE_INT64 は CMakeLists.txt でビルド全体に定義される
+#include "picojson/picojson.h"
 
 
 extern void TVPGetAllFontList( std::vector<tjs_string>& list );
@@ -26,6 +30,66 @@ void FontSystem::InitFontNames() {
 	}
 
 	FontNamesInit = true;
+
+	// data/fonts.json のメタデータを読み、遅延ロード対象を登録する
+	LoadFontMetadata();
+}
+//---------------------------------------------------------------------------
+void FontSystem::LoadFontMetadata() {
+	if( FontMetadataLoaded ) return;
+	FontMetadataLoaded = true;
+
+	ttstr metaname( TJS_W("fonts.json") );
+	if( !TVPIsExistentStorage( metaname ) ) return;
+
+	std::string text;
+	try {
+		iTJSBinaryStream* st = TVPCreateStream( metaname, TJS_BS_READ );
+		if( !st ) return;
+		tjs_uint64 sz = st->GetSize();
+		if( sz > 0 && sz < 16u*1024u*1024u ) {
+			text.resize( (size_t)sz );
+			TVPReadBuffer( st, &text[0], (tjs_uint)sz );
+		}
+		delete st;
+	} catch( ... ) { return; }
+	if( text.empty() ) return;
+
+	picojson::value root;
+	std::string err = picojson::parse( root, text );
+	if( !err.empty() || !root.is<picojson::object>() ) return;
+	const picojson::value& fonts = root.get("fonts");
+	if( !fonts.is<picojson::array>() ) return;
+
+	// family / aliases を name->storage の遅延テーブルへ登録する
+	// (ここでは FreeType パースはせず、初回使用時に EnsureLazyFontLoaded で読む)
+	for( const auto& fv : fonts.get<picojson::array>() ) {
+		if( !fv.is<picojson::object>() ) continue;
+		const picojson::value& file = fv.get("file");
+		const picojson::value& fam  = fv.get("family");
+		if( !file.is<std::string>() || !fam.is<std::string>() ) continue;
+		// family 名は当面 ASCII 前提 (非 ASCII は将来 UTF-8 変換を要検討)
+		tjs_string storage = ttstr( file.get<std::string>().c_str() ).AsStdString();
+		LazyFontFiles[ ttstr( fam.get<std::string>().c_str() ).AsStdString() ] = storage;
+		const picojson::value& al = fv.get("aliases");
+		if( al.is<picojson::array>() ) {
+			for( const auto& a : al.get<picojson::array>() )
+				if( a.is<std::string>() )
+					LazyFontFiles[ ttstr( a.get<std::string>().c_str() ).AsStdString() ] = storage;
+		}
+	}
+}
+//---------------------------------------------------------------------------
+bool FontSystem::EnsureLazyFontLoaded( const tjs_string &name ) {
+	InitFontNames();
+	auto it = LazyFontFiles.find( name );
+	if( it == LazyFontFiles.end() ) return false;
+	tjs_string storage = it->second;
+	LazyFontFiles.erase( it );  // 一度だけ試行
+	try {
+		AddExtraFont( storage, nullptr );  // 実 family 名で TVPFontNames へ登録される
+	} catch( ... ) { return false; }
+	return FontExists( name );
 }
 //---------------------------------------------------------------------------
 void FontSystem::AddFont( const tjs_string& name ) {

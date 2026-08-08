@@ -5,8 +5,13 @@
 #include "LogIntf.h"
 #include "SysInitIntf.h"
 #include "app.h"
+#ifdef KRKRZ_HAS_ELEMENTS
+#include "ElementsModalRunner.h"   // TVPInputStringElements
+#endif
 
 #include <SDL3/SDL_platform_defines.h>
+#include <SDL3/SDL_dialog.h>   // SelectFile (SDL_ShowOpenFileDialog)
+#include <SDL3/SDL_misc.h>     // ShellExecute (SDL_OpenURL)
 
 #if defined(SDL_PLATFORM_WINDOWS)
 	#include <windows.h>
@@ -60,6 +65,9 @@ SDL3Application::SDL3Application()
 	// 失敗時は (Uint32)-1 が返り、_SendAppEvent は SDL_PushEvent 失敗で
 	// リトライキューに回るだけなので致命的ではない。
 	mAppEventType = SDL_RegisterEvents(1);
+
+	// ゲームパッド論理管理に物理プロバイダ (= 自分自身) を接続。
+	PadManager_.SetProvider(this);
 
 	_language = "ja";
 	_country = "jp";
@@ -212,6 +220,251 @@ SDL3Application::MessageDlg(const tjs_string& string, const tjs_string& caption,
 		parent = static_cast<SDL_Window*>(mainForm->NativeWindowHandle());
 	}
 	SDL_ShowSimpleMessageBox(flags, cap_utf8.c_str(), str_utf8.c_str(), parent);
+}
+
+// ---------------------------------------------------------------------------
+// Yes/No 確認ダイアログ (System.confirm)。SDL_ShowMessageBox は同期 (ブロッキング)。
+// ---------------------------------------------------------------------------
+bool
+SDL3Application::ConfirmYesNo(const tjs_string& string, const tjs_string& caption)
+{
+	std::string str_utf8, cap_utf8;
+	TVPUtf16ToUtf8(str_utf8, string);
+	TVPUtf16ToUtf8(cap_utf8, caption);
+
+	SDL_Window* parent = nullptr;
+	if (auto* mainForm = (SDL3WindowForm*)MainWindowForm()) {
+		parent = static_cast<SDL_Window*>(mainForm->NativeWindowHandle());
+	}
+
+	// ボタンは配列順。Yes(id=1) を Enter 既定、No(id=0) を Esc 既定に割り当てる。
+	const SDL_MessageBoxButtonData buttons[2] = {
+		{ SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, "\xE3\x81\xAF\xE3\x81\x84" },       // "はい"
+		{ SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "\xE3\x81\x84\xE3\x81\x84\xE3\x81\x88" }, // "いいえ"
+	};
+	SDL_MessageBoxData data = {};
+	data.flags = SDL_MESSAGEBOX_INFORMATION;
+	data.window = parent;
+	data.title = cap_utf8.c_str();
+	data.message = str_utf8.c_str();
+	data.numbuttons = 2;
+	data.buttons = buttons;
+
+	int buttonid = 0;
+	if (!SDL_ShowMessageBox(&data, &buttonid)) {
+		return false; // 表示失敗時は No 扱い
+	}
+	return buttonid == 1;
+}
+
+// ---------------------------------------------------------------------------
+// テキスト入力 (System.inputString)。既定は Elements 実装。OS のソフトウェア
+// キーボード等を使うプラットフォームは、このメソッドを override して差し替える。
+// ---------------------------------------------------------------------------
+bool
+SDL3Application::InputString(const tjs_string& caption, const tjs_string& prompt,
+	const tjs_string& def, tjs_string& result)
+{
+#ifdef KRKRZ_HAS_ELEMENTS
+	ttstr r;
+	if (TVPInputStringElements(ttstr(caption.c_str()), ttstr(prompt.c_str()),
+		ttstr(def.c_str()), r)) {
+		result = r.AsStdString();
+		return true;
+	}
+	return false;
+#else
+	return false; // Elements 無効ビルドは未対応 (void)
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// ファイル選択ダイアログ (Storages.selectFile)
+//   SDL_ShowOpenFileDialog / SDL_ShowSaveFileDialog は非同期 API なので、
+//   コールバック完了まで SDL イベントポンプで同期的に待つ (フォルダ選択ダイアログ
+//   ShowProjectFolderDialog と同方式)。WINVER の GetOpenFileName 相当。
+// ---------------------------------------------------------------------------
+namespace {
+struct FileDialogResult {
+	bool done = false;
+	bool selected = false;
+	std::string path;
+	int filter = -1;
+};
+static void SDLCALL FileDialogCallback(void *userdata, const char * const *filelist, int filter)
+{
+	auto *r = static_cast<FileDialogResult *>(userdata);
+	if (filelist && *filelist) { r->selected = true; r->path = *filelist; }
+	r->filter = filter;
+	r->done = true;
+}
+// 吉里吉里のワイルド指定 "*.mp4;*.webm" を SDL の pattern "mp4;webm" へ変換する。
+// "*.*" / "*" は全許可 "*"。拡張子の "*." / "." 前置は取り除く。
+static std::string TVPKrkrzWildToSdlPattern(const tjs_string &wild)
+{
+	std::string w; TVPUtf16ToUtf8(w, wild);
+	std::string out;
+	size_t i = 0;
+	while (i < w.size()) {
+		size_t e = w.find(';', i);
+		std::string tok = (e == std::string::npos) ? w.substr(i) : w.substr(i, e - i);
+		i = (e == std::string::npos) ? w.size() : e + 1;
+		while (!tok.empty() && tok.front() == ' ') tok.erase(tok.begin());
+		while (!tok.empty() && tok.back() == ' ')  tok.pop_back();
+		if (tok.empty()) continue;
+		if (tok == "*.*" || tok == "*") { return std::string("*"); }
+		if (tok.rfind("*.", 0) == 0)     tok = tok.substr(2);
+		else if (tok.rfind(".", 0) == 0) tok = tok.substr(1);
+		if (!out.empty()) out += ";";
+		out += tok;
+	}
+	return out.empty() ? std::string("*") : out;
+}
+} // namespace
+
+bool
+SDL3Application::SelectFile( iTJSDispatch2 *params )
+{
+	if (!params) return false;
+	tTJSVariant val;
+
+	// --- filter ("表示名|*.ext;*.ext" の文字列 or その配列) ---
+	std::vector<std::string> names, patterns; // c_str() を SDL 呼び出しまで生かす
+	if (TJS_SUCCEEDED(params->PropGet(TJS_MEMBERMUSTEXIST, TJS_W("filter"), 0, &val, params))) {
+		auto pushOne = [&](const tjs_string &f) {
+			tjs_string name, wild;
+			tjs_string::size_type vpos = f.find_first_of(TJS_W("|"));
+			if (vpos != tjs_string::npos) { name = f.substr(0, vpos); wild = f.substr(vpos + 1); }
+			else { name = f; wild = f; }
+			std::string n8; TVPUtf16ToUtf8(n8, name);
+			names.push_back(n8);
+			patterns.push_back(TVPKrkrzWildToSdlPattern(wild));
+		};
+		if (val.Type() != tvtObject) {
+			pushOne(ttstr(val).AsStdString());
+		} else {
+			iTJSDispatch2 *arr = val.AsObjectNoAddRef();
+			tjs_int count = 0; tTJSVariant tmp;
+			if (TJS_SUCCEEDED(arr->PropGet(TJS_MEMBERMUSTEXIST, TJS_W("count"), 0, &tmp, arr)))
+				count = (tjs_int)tmp;
+			for (tjs_int i = 0; i < count; i++)
+				if (TJS_SUCCEEDED(arr->PropGetByNum(TJS_MEMBERMUSTEXIST, i, &tmp, arr)))
+					pushOne(ttstr(tmp).AsStdString());
+		}
+	}
+	std::vector<SDL_DialogFileFilter> filters;
+	for (size_t i = 0; i < names.size(); i++)
+		filters.push_back(SDL_DialogFileFilter{ names[i].c_str(), patterns[i].c_str() });
+
+	// --- default location (initialDir 優先、無ければ name のパス) ---
+	std::string defloc;
+	auto readLocal = [&](const tjs_char *key) -> bool {
+		if (TJS_SUCCEEDED(params->PropGet(TJS_MEMBERMUSTEXIST, key, 0, &val, params))) {
+			ttstr d(val);
+			if (!d.IsEmpty()) {
+				d = TVPNormalizeStorageName(d);
+				TVPGetLocalName(d);
+				TVPUtf16ToUtf8(defloc, d.AsStdString());
+				return true;
+			}
+		}
+		return false;
+	};
+	if (!readLocal(TJS_W("initialDir"))) readLocal(TJS_W("name"));
+
+	bool issave = false;
+	if (TJS_SUCCEEDED(params->PropGet(TJS_MEMBERMUSTEXIST, TJS_W("save"), 0, &val, params)))
+		issave = val.operator bool();
+
+	SDL_Window *parent = nullptr;
+	if (auto *mainForm = (SDL3WindowForm *)MainWindowForm())
+		parent = static_cast<SDL_Window *>(mainForm->NativeWindowHandle());
+
+	FileDialogResult result;
+	const SDL_DialogFileFilter *pf = filters.empty() ? nullptr : filters.data();
+	int nf = (int)filters.size();
+	const char *dl = defloc.empty() ? nullptr : defloc.c_str();
+	if (issave)
+		SDL_ShowSaveFileDialog(FileDialogCallback, &result, parent, pf, nf, dl);
+	else
+		SDL_ShowOpenFileDialog(FileDialogCallback, &result, parent, pf, nf, dl, false);
+
+	// コールバックが呼ばれるまでイベントポンプで待機 (ProjectFolderDialog と同方式)
+	while (!result.done) { SDL_PumpEvents(); SDL_Delay(10); }
+
+	if (!result.selected) return false;
+
+	// 選択パスを正規化ストレージ名で name に書き戻す (WINVER 版と同じ契約)
+	tjs_string sel16; TVPUtf8ToUtf16(sel16, result.path);
+	val = TVPNormalizeStorageName(ttstr(sel16.c_str()));
+	params->PropSet(TJS_MEMBERENSURE, TJS_W("name"), 0, &val, params);
+	if (result.filter >= 0) {
+		val = (tjs_int)result.filter;
+		params->PropSet(TJS_MEMBERENSURE, TJS_W("filterIndex"), 0, &val, params);
+	}
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// フォルダ選択ダイアログ (Storages.selectDirectory)
+//   SDL_ShowOpenFolderDialog は非同期なので SelectFile と同様にイベントポンプで
+//   同期待ちする。params は %[ name, title, window, rootDir ]。選択されると
+//   params["name"] に正規化パスを書き戻す (title は SDL 側に指定口が無いため無視)。
+// ---------------------------------------------------------------------------
+bool
+SDL3Application::SelectDirectory( iTJSDispatch2 *params )
+{
+	if (!params) return false;
+	tTJSVariant val;
+
+	// default location: name 優先、無ければ rootDir
+	std::string defloc;
+	auto readLocal = [&](const tjs_char *key) -> bool {
+		if (TJS_SUCCEEDED(params->PropGet(TJS_MEMBERMUSTEXIST, key, 0, &val, params))) {
+			ttstr d(val);
+			if (!d.IsEmpty()) {
+				d = TVPNormalizeStorageName(d);
+				TVPGetLocalName(d);
+				TVPUtf16ToUtf8(defloc, d.AsStdString());
+				return true;
+			}
+		}
+		return false;
+	};
+	if (!readLocal(TJS_W("name"))) readLocal(TJS_W("rootDir"));
+
+	SDL_Window *parent = nullptr;
+	if (auto *mainForm = (SDL3WindowForm *)MainWindowForm())
+		parent = static_cast<SDL_Window *>(mainForm->NativeWindowHandle());
+
+	FileDialogResult result;
+	const char *dl = defloc.empty() ? nullptr : defloc.c_str();
+	SDL_ShowOpenFolderDialog(FileDialogCallback, &result, parent, dl, false);
+
+	// コールバックが呼ばれるまでイベントポンプで待機
+	while (!result.done) { SDL_PumpEvents(); SDL_Delay(10); }
+
+	if (!result.selected) return false;
+
+	tjs_string sel16; TVPUtf8ToUtf16(sel16, result.path);
+	val = TVPNormalizeStorageName(ttstr(sel16.c_str()));
+	params->PropSet(TJS_MEMBERENSURE, TJS_W("name"), 0, &val, params);
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// シェル実行 (System.shellExecute) — URL / ファイルを OS 既定ハンドラで開く。
+//   SDL_OpenURL は URL のほか、Windows では ShellExecute、Linux では xdg-open 等で
+//   ローカルファイルも開ける。引数付き実行 (param) は SDL_OpenURL に無いので無視する
+//   (URL/ファイルを開く一般用途をカバー)。
+// ---------------------------------------------------------------------------
+bool
+SDL3Application::ShellExecute(const tjs_char *target, const tjs_char * /*param*/)
+{
+	if (!target || target[0] == 0) return false;
+	std::string url_utf8;
+	TVPUtf16ToUtf8(url_utf8, tjs_string(target));
+	return SDL_OpenURL(url_utf8.c_str());
 }
 
 #ifdef __EMSCRIPTEN__

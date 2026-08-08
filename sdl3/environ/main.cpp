@@ -51,22 +51,23 @@
 #endif
 
 SDL_Joystick *joystick = NULL;
-SDL_Gamepad *gamepad = NULL;   // 現在のメイン (アクティブ) パッド。GetPadState 等が読む
 int gamepad_count = 0;
 
-// 接続中に「開いている」全ゲームパッド。SDL はここに登録 (= SDL_OpenGamepad) した
-// パッドのボタンイベントしか生成しないため、「最後に押したパッドをメインにする」
-// には全機を開いたまま保持する必要がある (アクティブ機だけを開くと他機のボタンが
-// イベント化されず切り替わらない)。
+// 接続中に「開いている」全ゲームパッド。物理 index (接続順) はこの並び。
+// SDL はここに登録 (= SDL_OpenGamepad) したパッドのボタンイベントしか生成しない
+// ため、複数パッドを扱うには全機を開いたまま保持する。論理層 (0=最後に操作した
+// パッド / 1..N=実パッド) と last-operated 追従は tTVPPadManager が担う。
 static std::vector<SDL_Gamepad *> g_open_gamepads;
 
-// メイン (アクティブ) パッドを差し替え、TJS 側へ変更通知する。gp==NULL でクリア。
-static void SetActiveGamepad(SDL_Gamepad *gp)
+// tTVPPadManager (物理プロバイダ = SDL3Application) から参照する物理パッドアクセス。
+SDL_Gamepad *TVPGetOpenGamepad(int idx)
 {
-    gamepad = gp;
-    tjs_string name;
-    if (gp) TVPUtf8ToUtf16(name, SDL_GetGamepadName(gp));
-    TVPFireOnJoypadChange(0, gp ? name.c_str() : TJS_W(""));
+    if (idx < 0 || idx >= (int)g_open_gamepads.size()) return nullptr;
+    return g_open_gamepads[idx];
+}
+int TVPGetOpenGamepadCount()
+{
+    return (int)g_open_gamepads.size();
 }
 
 // which のパッドを (未オープンなら) 開いて g_open_gamepads に登録し、ハンドルを返す。
@@ -89,53 +90,10 @@ static SDL_Gamepad *EnsureGamepadOpen(SDL_JoystickID which)
     return gp;
 }
 
-tjs_string SDL3Application::GetJoypadType(int no)
-{
-    if (gamepad == NULL) {
-        return TJS_W("");
-    }
-    tjs_string name;
-    TVPUtf8ToUtf16(name, SDL_GetGamepadName(gamepad));
-    return name;
-}
-
-bool SDL3Application::RumbleGamepad(int no, int low, int high, int duration_ms)
-{
-    if (gamepad == NULL) {
-        return false;
-    }
-    // 0〜255 を 0〜0xFFFF にスケール
-    Uint16 low16 = (Uint16)((low * 0xFFFF) / 255);
-    Uint16 high16 = (Uint16)((high * 0xFFFF) / 255);
-    return SDL_RumbleGamepad(gamepad, low16, high16, (Uint32)duration_ms);
-}
-
-bool SDL3Application::StopRumbleGamepad(int no)
-{
-    if (gamepad == NULL) {
-        return false;
-    }
-    return SDL_RumbleGamepad(gamepad, 0, 0, 0);
-}
-
-tjs_int SDL3Application::GetJoypadCount()
-{
-    int count = 0;
-    SDL_JoystickID *ids = SDL_GetGamepads(&count);
-    if (ids) {
-        SDL_free(ids);
-    }
-    return count;
-}
-
-bool SDL3Application::HasJoypad(int no)
-{
-    // 現状は no=0 のメインゲームパッドのみ対応
-    if (no == 0) {
-        return gamepad != NULL;
-    }
-    return false;
-}
+// ジョイパッドの論理アクセサ (GetJoypadType / GetJoypadCount / HasJoypad /
+// RumbleGamepad / StopRumbleGamepad / GetPadState / GetPadAxis) は tTVPApplication
+// 基底が tTVPPadManager へ委譲する。SDL3Application は物理プロバイダ
+// (iTVPPhysicalPadProvider) を sdl3/environ/pad.cpp で実装する。
 
 static void ShowGamepadInfo(const char *state)
 {
@@ -260,11 +218,9 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event)
         // 全ゲームパッドを開いたまま保持する (開いていないパッドは SDL がボタン
         // イベントを生成せず、「最後に押したパッドへ切替」が効かないため)。
         {
-            SDL_Gamepad *gp = EnsureGamepadOpen(event->gdevice.which);
-            // まだメインが無ければ、最初に来たものをメインにする。
-            if (gp && gamepad == NULL) {
-                SetActiveGamepad(gp);
-            }
+            // 接続された全ゲームパッドを開いて保持する。論理層 (active/last-operated)
+            // は tTVPPadManager が毎フレームのポーリングで追従する。
+            EnsureGamepadOpen(event->gdevice.which);
         }
         ShowGamepadInfo("added"); // Show connected gamepads info
         break;
@@ -272,9 +228,9 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event)
     case SDL_EVENT_GAMEPAD_REMOVED:
         {
             SDL_JoystickID which = event->gdevice.which;
-            bool was_active = (gamepad && SDL_GetGamepadID(gamepad) == which);
             // 保持リストから該当ハンドルを探して除去 + クローズ (SDL の削除後 ID
             // 検索に頼らず、開済みハンドルの instance id を突き合わせる)。
+            // active の再選択は tTVPPadManager が次フレームのポーリングで行う。
             for (auto it = g_open_gamepads.begin(); it != g_open_gamepads.end(); ++it) {
                 if (SDL_GetGamepadID(*it) == which) {
                     SDL_CloseGamepad(*it);
@@ -282,36 +238,9 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event)
                     break;
                 }
             }
-            // メインが抜かれたら、残っている開済みパッドへフォールバック (無ければ null)。
-            if (was_active) {
-                SetActiveGamepad(g_open_gamepads.empty() ? nullptr
-                                                         : g_open_gamepads.front());
-            }
         }
         ShowGamepadInfo("removed"); // Show connected gamepads info
         break;
-
-#if USE_LAST_PUSHDOWN_PAD
-
-    case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
-    case SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN:
-        // 最後にボタン / タッチパッドを押したパッドをメインにする。全機を開いた
-        // まま保持しているので、既存ハンドルへ「差し替えるだけ」でよい (旧実装の
-        // ように旧メインを Close しない — 閉じると以後そのパッドのイベントが
-        // 来なくなり、押しても戻れなくなる)。button / touchpad どちらの共用体
-        // メンバも which は同一オフセットなので gbutton.which で読める。
-        {
-            SDL_JoystickID which = event->gbutton.which;
-            if (!gamepad || SDL_GetGamepadID(gamepad) != which) {
-                SDL_Gamepad *gp = EnsureGamepadOpen(which);
-                if (gp) {
-                    SetActiveGamepad(gp);
-                    SDL_Log("change main gamepad ID %u", (unsigned int) which);
-                }
-            }
-        }
-        break;
-#endif
 
 
     }

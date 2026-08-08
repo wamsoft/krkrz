@@ -24,6 +24,17 @@
 #include "VideoOvlIntf.h"
 #include "DrawDevice.h"
 
+#ifdef TVP_USE_OPENGL
+#include "OpenGLContext.h"   // iTVPGLContext / InitGLES
+#include "OpenGLHeader.h"    // TVPGLGetProcAddress
+#include "WindowImpl.h"      // tTJSNI_Window::GetForm()
+#ifdef __WINVER__
+#include "WindowFormUnit.h"
+#else
+#include "WindowForm.h"
+#endif
+#endif
+
 #include "Application.h"
 
 #ifdef KRKRZ_HAS_ELEMENTS
@@ -33,6 +44,8 @@
 #define TVP_DIALOG_INTERCEPT(forward_call) \
 	do { \
 		if (tTVPElementsDialogManager::Instance().IsModalActive()) { \
+			/* cursor-warp ナビ用に入力元 window (this) を記録 */ \
+			tTVPElementsDialogManager::Instance().NoteInputWindow(this); \
 			if (tTVPElementsDialogManager::Instance().forward_call) \
 				return; \
 		} \
@@ -215,6 +228,14 @@ tTJSNI_BaseWindow::Invalidate()
 	// remove from list
 	TVPUnregisterWindowToList(static_cast<tTJSNI_Window*>(this));
 
+#ifdef TVP_USE_OPENGL
+	// GLGetProcAddress で遅延取得した GL コンテキストを解放
+	if( PluginGLContext ) {
+		PluginGLContext->Release();
+		PluginGLContext = nullptr;
+	}
+#endif
+
 	// remove all events
 	TVPCancelSourceEvents(Owner);
 	TVPCancelInputEvents(this);
@@ -351,7 +372,7 @@ void tTJSNI_BaseWindow::SetLayerEventTargetObject(const tTJSVariant & val)
 		tTJSVariant iface_v;
 		if(TJS_FAILED(clo.PropGet(0, TJS_W("layerEventTargetInterface"), NULL, &iface_v, NULL)))
 			// XXX エラーメッセージ割当
-			TVPThrowExceptionMessage( TJS_W("cannot get layerEventTargetInterface") );
+			TVPThrowExceptionMessage(TVPCannotGetLayerEventTargetInterface );
 		LayerEventTarget =
 			reinterpret_cast<tTVPLayerTreeOwner *>((tjs_intptr_t)(tjs_int64)iface_v);
 
@@ -964,6 +985,47 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/update)
 	return TJS_S_OK;
 }
 TJS_END_NATIVE_METHOD_DECL(/*func. name*/update)
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_PROP_DECL(GLGetProcAddress)
+{
+	// GLES 系プラグイン (EffekseerDevice 等) の oglbase として使う、GL エントリ
+	// ポイント解決関数のポインタ。初回アクセス時に GL コンテキストが未初期化なら
+	// 遅延生成してカレントにする (OGLDrawDevice を使わない状況でも取得可能)。
+	// GL を取得できない環境では 0 (null) を返す。
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Window);
+		tjs_int64 ret = 0;
+#ifdef TVP_USE_OPENGL
+		try {
+			if( !_this->PluginGLContext ) {
+#ifdef __WINVER__
+				void *nw = _this->GetForm() ? _this->GetForm()->GetHandle() : nullptr;
+#else
+				void *nw = _this->GetForm() ? _this->GetForm()->NativeWindowHandle() : nullptr;
+#endif
+				iTVPGLContext *ctx = nw ? iTVPGLContext::GetContext( nw ) : nullptr;
+				if( ctx ) {
+					ctx->MakeCurrent();
+					InitGLES();
+					_this->PluginGLContext = ctx;
+				}
+			} else {
+				_this->PluginGLContext->MakeCurrent();
+			}
+			if( _this->PluginGLContext )
+				ret = (tjs_int64)(void*)( &TVPGLGetProcAddress );
+		} catch( ... ) {
+			ret = 0;  // GL 非対応環境等では null
+		}
+#endif
+		*result = ret;
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+	TJS_DENY_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_PROP_DECL(GLGetProcAddress)
 //----------------------------------------------------------------------
 TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/requestUpdate)
 {
@@ -2125,27 +2187,21 @@ TJS_END_NATIVE_PROP_DECL(imeMode)
 //----------------------------------------------------------------------
 TJS_BEGIN_NATIVE_PROP_DECL(mouseCursorState)
 {
+	// generic (SDL) 側も tTJSNI_Window::Get/SetMouseCursorState を実装済み
+	// (SetCursorVisible → SDL_Hide/ShowCursor) なので WINVER 限定を撤廃。
 	TJS_BEGIN_NATIVE_PROP_GETTER
 	{
-#ifdef __WINVER__
 		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Window);
 		*result = (tjs_int)_this->GetMouseCursorState();
 		return TJS_S_OK;
-#else
-		return TJS_E_NOTIMPL;
-#endif
 	}
 	TJS_END_NATIVE_PROP_GETTER
 
 	TJS_BEGIN_NATIVE_PROP_SETTER
 	{
-#ifdef __WINVER__
 		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Window);
 		_this->SetMouseCursorState((tTVPMouseCursorState)(tjs_int)*param);
 		return TJS_S_OK;
-#else
-		return TJS_E_NOTIMPL;
-#endif
 	}
 	TJS_END_NATIVE_PROP_SETTER
 }

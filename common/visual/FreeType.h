@@ -35,6 +35,7 @@
 #define TVP_FACE_OPTIONS_NO_HINTING			0x00020000 //!< ヒンティングを行わない
 #define TVP_FACE_OPTIONS_FORCE_AUTO_HINTING	0x00020000 //!< 強制的に auto hinting を行う
 #define TVP_FACE_OPTIONS_NO_ANTIALIASING	0x00040000 //!< アンチエイリアスを行わない
+#define TVP_FACE_OPTIONS_COLOR				0x00080000 //!< カラーグリフ(COLR/CBDT等)を FT_LOAD_COLOR で BGRA 読み込みする
 
 //---------------------------------------------------------------------------
 /**
@@ -138,6 +139,10 @@ public:
 	bool GetOption( tjs_uint32 opt ) const {
 		return (Options&opt) == opt;
 	}
+	// VS16 (絵文字プレゼンテーション) 時に、連鎖末尾の絵文字 face を最優先で
+	// 引くためのフラグ。原フォントにも字形がある文字 (★❤等) を絵文字側で出す。
+	bool PreferLastFace = false;
+	void SetPreferLastFace( bool b ) { PreferLastFace = b; }
 	tjs_char GetDefaultChar() const {
 		return Faces[0]->Face->GetDefaultChar();
 	}
@@ -152,13 +157,13 @@ public:
 		tjs_int upe = face->units_per_EM;
 		return face->ascender * ppem / upe;
 	}
-	tTVPCharacterData * GetGlyphFromCharcode(tjs_char code);
-	bool GetGlyphRectFromCharcode(struct tTVPRect& rt, tjs_char code, tjs_int& advancex, tjs_int& advancey );
-	bool GetGlyphSizeFromCharcode(tjs_char code, tGlyphMetrics & metrics);
+	tTVPCharacterData * GetGlyphFromCharcode(tjs_uint32 code);
+	bool GetGlyphRectFromCharcode(struct tTVPRect& rt, tjs_uint32 code, tjs_int& advancex, tjs_int& advancey );
+	bool GetGlyphSizeFromCharcode(tjs_uint32 code, tGlyphMetrics & metrics);
 
 private:
-	tjs_int GetGlyphMetricsFromCharcode(tjs_char code, tGlyphMetrics & metrics);
-	tjs_int LoadGlyphSlotFromCharcode(tjs_char code);
+	tjs_int GetGlyphMetricsFromCharcode(tjs_uint32 code, tGlyphMetrics & metrics);
+	tjs_int LoadGlyphSlotFromCharcode(tjs_uint32 code);
 };
 //---------------------------------------------------------------------------
 

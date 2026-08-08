@@ -20,6 +20,8 @@
 #include "tjsNative.h"
 #include "DialogEventHandler.h"
 
+#include <map>
+
 class tTJSNI_Dialog : public tTJSNativeInstance, public iTVPDialogEventHandler
 {
 	typedef tTJSNativeInstance inherited;
@@ -62,13 +64,20 @@ public:
 
 	// Phase 6c step2: 既存ゲーム window 上にオーバーレイ表示するモーダル。
 	// 戻り値仕様は ShowModalJson / ShowModalFile と同じ。
-	iTJSDispatch2* ShowModalOverlayJson(const ttstr& json_utf16);
-	iTJSDispatch2* ShowModalOverlayFile(const ttstr& path);
+	// initialVars (任意): build 直後・pump 前に変数 store へ流し込む初期値。
+	// index_var / enabled_var / selected_var 等の subscribe 済 widget が
+	// 反映する (静的 JSON への動的初期値注入。 TJS 側は
+	// showModalFile(path, %[name => value, ...]) の形で渡す)。
+	iTJSDispatch2* ShowModalOverlayJson(const ttstr& json_utf16,
+		const std::map<ttstr, ttstr>* initialVars = nullptr);
+	iTJSDispatch2* ShowModalOverlayFile(const ttstr& path,
+		const std::map<ttstr, ttstr>* initialVars = nullptr);
 
 	// ShowModal(Overlay)Json の Dictionary 版。 戻り値仕様は同じ。
 	iTJSDispatch2* ShowModalDict(iTJSDispatch2* dict,
 		const ttstr& title, int width, int height);
-	iTJSDispatch2* ShowModalOverlayDict(iTJSDispatch2* dict);
+	iTJSDispatch2* ShowModalOverlayDict(iTJSDispatch2* dict,
+		const std::map<ttstr, ttstr>* initialVars = nullptr);
 
 	// navigator フロー (複数画面遷移) をオーバーレイでブロッキング実行。
 	// 戻り値は最後に閉じた画面の `%[ action, values ]` (ShowModal* と同形式)。

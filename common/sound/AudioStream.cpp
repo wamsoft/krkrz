@@ -131,6 +131,31 @@ ma_engine *GetMiniAudioEngine()
 	return gEngine;
 }
 
+//---------------------------------------------------------------------------
+// 3D 定位リスナ (engine グローバル、listener index 0)。GetMiniAudioEngine() が
+// engine 初期化を保証するので、サウンド再生前に設定しても安全。
+//---------------------------------------------------------------------------
+void TVPSetSoundListenerEnabled(bool enabled) {
+	if (ma_engine *e = GetMiniAudioEngine())
+		ma_engine_listener_set_enabled(e, 0, enabled ? MA_TRUE : MA_FALSE);
+}
+void TVPSetSoundListenerPosition(float x, float y, float z) {
+	if (ma_engine *e = GetMiniAudioEngine()) ma_engine_listener_set_position(e, 0, x, y, z);
+}
+void TVPSetSoundListenerDirection(float x, float y, float z) {
+	if (ma_engine *e = GetMiniAudioEngine()) ma_engine_listener_set_direction(e, 0, x, y, z);
+}
+void TVPSetSoundListenerWorldUp(float x, float y, float z) {
+	if (ma_engine *e = GetMiniAudioEngine()) ma_engine_listener_set_world_up(e, 0, x, y, z);
+}
+void TVPSetSoundListenerVelocity(float x, float y, float z) {
+	if (ma_engine *e = GetMiniAudioEngine()) ma_engine_listener_set_velocity(e, 0, x, y, z);
+}
+void TVPSetSoundListenerCone(float innerAngleRad, float outerAngleRad, float outerGain) {
+	if (ma_engine *e = GetMiniAudioEngine())
+		ma_engine_listener_set_cone(e, 0, innerAngleRad, outerAngleRad, outerGain);
+}
+
 // -wsfreq 等のサウンドオプションを反映する (QueueSoundBuffer 生成時にも呼ばれる)。
 extern void TVPInitSoundOptions();
 
@@ -483,6 +508,30 @@ public:
 		}
 	}
 	virtual tjs_int GetFrequency() const override { return AudioFrequency; }
+
+	// -- 3D 定位 (miniaudio spatializer へ直接マッピング) --
+	virtual void SetSpatializationEnabled(bool enabled) override {
+		ma_sound_set_spatialization_enabled(&sound, enabled ? MA_TRUE : MA_FALSE);
+	}
+	virtual void Set3DPosition(float x, float y, float z) override {
+		ma_sound_set_position(&sound, x, y, z);
+	}
+	virtual void Set3DVelocity(float x, float y, float z) override {
+		ma_sound_set_velocity(&sound, x, y, z);
+	}
+	virtual void Set3DConeDirection(float x, float y, float z) override {
+		ma_sound_set_direction(&sound, x, y, z);
+	}
+	virtual void Set3DCone(float innerAngleRad, float outerAngleRad, float outerGain) override {
+		ma_sound_set_cone(&sound, innerAngleRad, outerAngleRad, outerGain);
+	}
+	virtual void Set3DMinDistance(float d) override { ma_sound_set_min_distance(&sound, d); }
+	virtual void Set3DMaxDistance(float d) override { ma_sound_set_max_distance(&sound, d); }
+	virtual void Set3DRolloff(float rolloff) override { ma_sound_set_rolloff(&sound, rolloff); }
+	virtual void Set3DDopplerFactor(float factor) override { ma_sound_set_doppler_factor(&sound, factor); }
+	virtual void Set3DAttenuationModel(int model) override {
+		ma_sound_set_attenuation_model(&sound, (ma_attenuation_model)model);
+	}
 
 	// 再生用データの読み出し（再生ライブラリから吸い上げ）
 	// 注意: miniaudio の audio callback スレッドから呼ばれる。

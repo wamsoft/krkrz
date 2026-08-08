@@ -17,7 +17,6 @@
 #include "PluginImpl.h"
 #include "Random.h"
 #include "SystemImpl.h"
-#include "DInputMgn.h"
 #include "tvpinputdefs.h"
 
 #include "Application.h"
@@ -28,6 +27,11 @@
 // CompatibleNativeFuncs は撤去 (touch API は Win10 で常在、直接リンク)
 
 #pragma comment (lib, "imm32")
+
+// マウスホイール検出方式。既定は WM_MOUSEWHEEL (ウィンドウメッセージ) 経由。
+// D3D11 flip-model 化で排他フルスクリーンが無くなり、旧 DirectInput 回避策は
+// 不要になったため DirectInput 経路は撤去した。
+tTVPWheelDetectionType TVPWheelDetectionType = wdtWindowMessage;
 
 
 tjs_uint32 TVP_TShiftState_To_uint32(TShiftState state) {
@@ -149,24 +153,16 @@ void TVPInitWindowOptions()
 	if(TVPGetCommandLine(TJS_W("-wheel"), &val) )
 	{
 		ttstr str(val);
-		if(str == TJS_W("dinput"))
-			TVPWheelDetectionType = wdtDirectInput;
-		else if(str == TJS_W("message"))
-			TVPWheelDetectionType = wdtWindowMessage;
-		else
+		// DirectInput は撤去済み。"no" のみ無効化、その他 (dinput/message 含む) は
+		// WM_MOUSEWHEEL 経由で有効。
+		if(str == TJS_W("no") || str == TJS_W("off") || str == TJS_W("false"))
 			TVPWheelDetectionType = wdtNone;
+		else
+			TVPWheelDetectionType = wdtWindowMessage;
 	}
 
-#ifndef DISABLE_EMBEDDED_GAME_PAD
-	if(TVPGetCommandLine(TJS_W("-joypad"), &val) )
-	{
-		ttstr str(val);
-		if(str == TJS_W("dinput"))
-			TVPJoyPadDetectionType = jdtDirectInput;
-		else
-			TVPJoyPadDetectionType = jdtNone;
-	}
-#endif
+	// ゲームパッドは XInput (Application 内 tTVPPadManager) が常時扱う。
+	// 旧 -joypad=dinput/none オプションは廃止。
 
 	if(TVPGetCommandLine(TJS_W("-controlime"), &val) )
 	{
@@ -236,13 +232,6 @@ TTVPWindowForm::TTVPWindowForm( tTJSNI_Window* ni, tTJSNI_Window* parent ) : tTV
 	CurrentMouseCursor = crDefault;
 	MouseCursorManager.SetCursorIndex( CurrentMouseCursor, NULL );
 
-	DIWheelDevice = NULL;
-#ifndef DISABLE_EMBEDDED_GAME_PAD
-	DIPadDevice = NULL;
-#endif
-	ReloadDevice = false;
-	ReloadDeviceTick = 0;
-	
 	LastRecheckInputStateSent = 0;
 	SetBorderStyle( bsSizeable );
 
@@ -258,16 +247,6 @@ TTVPWindowForm::~TTVPWindowForm() {
 		delete AttentionFont;
 		AttentionFont = NULL;
 	}
-	if( DIWheelDevice ) {
-		delete DIWheelDevice;
-		DIWheelDevice = NULL;
-	}
-#ifndef DISABLE_EMBEDDED_GAME_PAD
-	if( DIPadDevice ) {
-		delete DIPadDevice;
-		DIPadDevice = NULL;
-	}
-#endif
 	Application->RemoveWindow( this );
 }
 void TTVPWindowForm::OnDestroy() {
@@ -276,8 +255,6 @@ void TTVPWindowForm::OnDestroy() {
 	CleanupFullScreen();
 	TJSNativeInstance = NULL;
 	TVPRemoveModalWindow(this);
-
-	FreeDirectInputDevice();
 
 	if( AttentionFont ) {
 		delete AttentionFont, AttentionFont = NULL;
@@ -438,61 +415,19 @@ void TTVPWindowForm::TickBeat(){
 		GenerateMouseEvent(false, false, false, false);
 	}
 
-	// device reload
-	if( ReloadDevice && (int)(tickcount - ReloadDeviceTick) > 0) {
-		ReloadDevice = false;
-		FreeDirectInputDevice();
-		CreateDirectInputDevice();
-	}
-
-	// wheel rotation detection
+	// マウスホイールは WM_MOUSEWHEEL → OnMouseWheel (ウィンドウメッセージ) で
+	// 処理する (DirectInput 経路は撤去済み)。
 	tjs_uint32 shift = TVPGetCurrentShiftKeyState();
-	if( TVPWheelDetectionType == wdtDirectInput ) {
-		CreateDirectInputDevice();
-		if( focused && TJSNativeInstance && DIWheelDevice ) {
-			tjs_int delta = DIWheelDevice->GetWheelDelta();
-			if( delta ) {
-				POINT origin = {0,0};
-				::ClientToScreen( GetHandle(), &origin );
-
-				POINT mp = {0, 0};
-				::GetCursorPos(&mp);
-				tjs_int x = mp.x - origin.x;
-				tjs_int y = mp.y - origin.y;
-				TranslateWindowToDrawArea( x, y);
-				TVPPostInputEvent(new tTVPOnMouseWheelInputEvent(TJSNativeInstance, shift, delta, x, y));
-			}
-		}
-	}
 
 #ifndef DISABLE_EMBEDDED_GAME_PAD
-	// pad detection
-	if( TVPJoyPadDetectionType == jdtDirectInput ) {
-		CreateDirectInputDevice();
-		if( DIPadDevice && TJSNativeInstance ) {
-			if( focused )
-				DIPadDevice->UpdateWithCurrentState();
-			else
-				DIPadDevice->UpdateWithSuspendedState();
-
-			const std::vector<WORD> & uppedkeys  = DIPadDevice->GetUppedKeys();
-			const std::vector<WORD> & downedkeys = DIPadDevice->GetDownedKeys();
-			const std::vector<WORD> & repeatkeys = DIPadDevice->GetRepeatKeys();
-			std::vector<WORD>::const_iterator i;
-
-			// for upped pad buttons
-			for(i = uppedkeys.begin(); i != uppedkeys.end(); i++) {
-				InternalKeyUp(*i, shift);
-			}
-			// for downed pad buttons
-			for(i = downedkeys.begin(); i != downedkeys.end(); i++) {
-				InternalKeyDown(*i, shift);
-			}
-			// for repeated pad buttons
-			for(i = repeatkeys.begin(); i != repeatkeys.end(); i++) {
-				InternalKeyDown(*i, shift|TVP_SS_REPEAT);
-			}
-		}
+	// ゲームパッド (XInput)。Application 内の tTVPPadManager が全パッドを走査し、
+	// 論理 0 (= 最後に操作したパッド) のキーイベントを生成する。パッドは単一の
+	// 論理デバイスなので、フォーカスのあるウィンドウだけが毎フレーム駆動する。
+	if( focused && TJSNativeInstance && Application ) {
+		Application->PadPoll(true);
+		for(int key : Application->PadUppedKeys())  InternalKeyUp((WORD)key, shift);
+		for(int key : Application->PadDownedKeys()) InternalKeyDown((WORD)key, shift);
+		for(int key : Application->PadRepeatKeys()) InternalKeyDown((WORD)key, shift|TVP_SS_REPEAT);
 	}
 #endif
 
@@ -1281,10 +1216,10 @@ void TTVPWindowForm::GenerateMouseEvent(bool fl, bool fr, bool fu, bool fd) {
 	}
 
 	bool shift = 0!=(GetAsyncKeyState(VK_SHIFT) & 0x8000);
-	bool left = fl || GetAsyncKeyState(VK_LEFT) & 0x8000 || TVPGetJoyPadAsyncState(VK_PADLEFT, true);
-	bool right = fr || GetAsyncKeyState(VK_RIGHT) & 0x8000 || TVPGetJoyPadAsyncState(VK_PADRIGHT, true);
-	bool up = fu || GetAsyncKeyState(VK_UP) & 0x8000 || TVPGetJoyPadAsyncState(VK_PADUP, true);
-	bool down = fd || GetAsyncKeyState(VK_DOWN) & 0x8000 || TVPGetJoyPadAsyncState(VK_PADDOWN, true);
+	bool left = fl || GetAsyncKeyState(VK_LEFT) & 0x8000 || (Application && Application->GetPadKeyAsyncState(VK_PADLEFT));
+	bool right = fr || GetAsyncKeyState(VK_RIGHT) & 0x8000 || (Application && Application->GetPadKeyAsyncState(VK_PADRIGHT));
+	bool up = fu || GetAsyncKeyState(VK_UP) & 0x8000 || (Application && Application->GetPadKeyAsyncState(VK_PADUP));
+	bool down = fd || GetAsyncKeyState(VK_DOWN) & 0x8000 || (Application && Application->GetPadKeyAsyncState(VK_PADDOWN));
 
 	DWORD flags = 0;
 	if(left || right || up || down) flags |= MOUSEEVENTF_MOVE;
@@ -1527,25 +1462,6 @@ void TTVPWindowForm::SetAttentionPoint(tjs_int left, tjs_int top, const tTVPFont
 void TTVPWindowForm::DisableAttentionPoint() {
 	AttentionPointEnabled = false;
 }
-void TTVPWindowForm::CreateDirectInputDevice() {
-	if( !DIWheelDevice ) DIWheelDevice = new tTVPWheelDirectInputDevice(GetHandle());
-#ifndef DISABLE_EMBEDDED_GAME_PAD
-	if( !DIPadDevice ) DIPadDevice = new tTVPPadDirectInputDevice(GetHandle());
-#endif
-}
-void TTVPWindowForm::FreeDirectInputDevice() {
-	if( DIWheelDevice ) {
-		delete DIWheelDevice;
-		DIWheelDevice = NULL;
-	}
-#ifndef DISABLE_EMBEDDED_GAME_PAD
-	if( DIPadDevice ) {
-		delete DIPadDevice;
-		DIPadDevice = NULL;
-	}
-#endif
-}
-
 void TTVPWindowForm::OnKeyDown( WORD vk, int shift, int repeat, bool prevkeystate ) {
 	if(TJSNativeInstance) {
 		tjs_uint32 s = TVP_TShiftState_To_uint32( shift );
@@ -1873,11 +1789,8 @@ void TTVPWindowForm::OnEnable( bool enabled ) {
 	}
 }
 void TTVPWindowForm::OnDeviceChange( UINT_PTR event, void *data ) {
-	if( event == DBT_DEVNODES_CHANGED ) {
-		// reload DInput device
-		ReloadDevice = true; // to reload device
-		ReloadDeviceTick = GetTickCount() + 4000; // reload at 4secs later
-	}
+	// DirectInput 撤去済み。マウスホイールは WM_MOUSEWHEEL、ゲームパッドは
+	// XInput (毎フレームのホットプラグ検出) で扱うため、ここでの再ロードは不要。
 }
 void TTVPWindowForm::OnNonClientMouseDown( int button, UINT_PTR hittest, int x, int y ) {
 	if(!CanSendPopupHide()) {
@@ -1919,9 +1832,6 @@ void TTVPWindowForm::OnFocus(HWND hFocusLostWnd) {
 
 	::CreateCaret( GetHandle(), NULL, 1, 1);
 
-#ifndef DISABLE_EMBEDDED_GAME_PAD
-	if(DIPadDevice && TJSNativeInstance ) DIPadDevice->WindowActivated();
-#endif
 	if(TJSNativeInstance) TJSNativeInstance->FireOnActivate(true);
 }
 void TTVPWindowForm::OnFocusLost(HWND hFocusingWnd) {
@@ -1929,7 +1839,11 @@ void TTVPWindowForm::OnFocusLost(HWND hFocusingWnd) {
 	UnacquireImeControl();
 
 #ifndef DISABLE_EMBEDDED_GAME_PAD
-	if(DIPadDevice && TJSNativeInstance ) DIPadDevice->WindowDeactivated();
+	// フォーカス喪失時はパッド入力を解放し、押しっぱなしのキーを離す。
+	if( TJSNativeInstance && Application ) {
+		Application->PadPoll(false);
+		for(int key : Application->PadUppedKeys()) InternalKeyUp((WORD)key, 0);
+	}
 #endif
 	if(TJSNativeInstance) TJSNativeInstance->FireOnActivate(false);
 }

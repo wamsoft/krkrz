@@ -24,6 +24,9 @@
 #include "XP3Archive.h"
 #include "SusieArchive.h"
 #include "FileSelector.h"
+#ifdef KRKRZ_USE_REPL_FILECHANNEL
+#include "ReplModal.h"   // TVPReplTrySelect
+#endif
 #include "Random.h"
 
 #include <time.h>
@@ -373,14 +376,15 @@ bool TVPMoveFile(const ttstr &oldname, const ttstr &newname)
 //---------------------------------------------------------------------------
 tjs_uint64 TVPLastModifiedFileTime(const ttstr &name)
 {
-	tjs_uint64 ret = 0;
-	struct __stat64 stbuf;
-	if(_wstat64( (const wchar_t*)name.c_str(), &stbuf) != 0 ) {
-		TVPThrowExceptionMessage(TVPSeekError);
+	// fstat プラグインと同一仕様: 生の Windows FILETIME 64bit 値
+	// (1601-01-01 UTC 起点・100ns 刻み) を返す。取得失敗時は 0。
+	WIN32_FILE_ATTRIBUTE_DATA fad;
+	if(!GetFileAttributesExW((const wchar_t*)name.c_str(), GetFileExInfoStandard, &fad)) {
+		return 0;
 	}
-	ret = stbuf.st_mtime;
-	// FILETIME 互換に変換
-	ret += 11644473600LL; // 1970-01-01T00
+	tjs_uint64 ret = fad.ftLastWriteTime.dwHighDateTime;
+	ret <<= 32;
+	ret |= fad.ftLastWriteTime.dwLowDateTime;
 	return ret;
 }
 
@@ -1243,6 +1247,13 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/selectFile)
 
 	iTJSDispatch2 * dsp =  param[0]->AsObjectNoAddRef();
 
+#ifdef KRKRZ_USE_REPL_FILECHANNEL
+	if(TVPReplActive) {
+		int r = TVPReplTrySelect(dsp, false);
+		if(r >= 0) { if(result) *result = (tjs_int)(r == 1); return TJS_S_OK; }
+	}
+#endif
+
 	bool res = TVPSelectFile(dsp);
 
 	if(result) *result = (tjs_int)res;
@@ -1251,6 +1262,49 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/selectFile)
 }
 TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
 	/*func. name*/selectFile)
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/selectDirectory)
+{
+	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
+
+	iTJSDispatch2 * dsp = param[0]->AsObjectNoAddRef();
+
+#ifdef KRKRZ_USE_REPL_FILECHANNEL
+	if(TVPReplActive) {
+		int r = TVPReplTrySelect(dsp, true);
+		if(r >= 0) { if(result) *result = (tjs_int)(r == 1); return TJS_S_OK; }
+	}
+#endif
+
+	bool res = TVPSelectDirectory(dsp);
+
+	if(result) *result = (tjs_int)res;
+
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
+	/*func. name*/selectDirectory)
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/getLastModifiedFileTime)
+{
+	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
+
+	tTJSVariant *path = param[0];
+
+	tjs_uint64 ret = 0;
+	if (path && path->Type() == tvtString) {
+		// 正規パス
+		ttstr pathFile = TVPNormalizeStorageName(path->AsString());
+		ret = TVPLastModifiedFileTimeStorage(pathFile);
+	}
+
+	if (result) {
+		*result = (tTVInteger)ret;
+	}
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
+	/*func. name*/getLastModifiedFileTime)
 //----------------------------------------------------------------------
 
 

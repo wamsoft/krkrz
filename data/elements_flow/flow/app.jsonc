@@ -1,0 +1,12 @@
+// elements_flow デモ — 画面マニフェスト
+//   entry:   起点画面名 (= screens のキー)
+//   screens: 画面名 → JSON ファイルの相対パス (このファイル起点)
+{
+    "entry": "home",
+    "screens": {
+        "home":   "home.jsonc",
+        "fade":   "fade.jsonc",
+        "wipe":   "wipe.jsonc",
+        "circle": "circle.jsonc"
+    }
+}

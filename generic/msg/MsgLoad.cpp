@@ -1,10 +1,12 @@
-// generated from gentext.pl Messages.xlsx
+// generated from gen_messages.py messages.csv
 #include "tjsCommHead.h"
 #include "tjsError.h"
 #include "MsgImpl.h"
 #include "SysInitIntf.h"
 #include "MsgLoad.h"
 #include "CharacterSet.h"
+#include <stdexcept>
+#include <string>
 
 static bool IS_LOAD_MESSAGE = false;
 
@@ -435,10 +437,59 @@ enum {
 	NUM_TVP_EXCEPTION_UNWIND_CCONSOLIDATE,
 	NUM_TVP_CANNOT_SHOW_MODAL_AREADY_SHOWED,
 	NUM_TVP_CANNOT_SHOW_MODAL_SINGLE_WINDOW,
+	NUM_TVP_INSUFFICIENT_NUMBER_OF_ARRAYS,
+	NUM_TVP_CAPTURE_AREA_OVER,
+	NUM_TVP_ARRAY_IS_ZERO,
+	NUM_TVP_FAILED_TO_OPEN_STORAGE_READONLY_MEDIA,
+	NUM_TVP_NOT_HAVE_PRIMARY_LAYER,
+	NUM_TVP_SET_VIDEO_BUFFER_PARAMETER_ERROR,
+	NUM_TVP_CANNOT_ALLOCATE_SDLTEXTURE,
+	NUM_TVP_CANNOT_RETRIVE_LAYER_TREE_OWNER_INTERFACE,
+	NUM_TVP_CANNOT_CREATE_LOW_LEVEL_GRAPHICS_SYSTEM_MAYBE_LOW_MEMORY,
+	NUM_TVP_CANNOT_EXCHANGE_TEXTURE,
+	NUM_TVP_CANVAS_BEGIN_EFFECT_NO_CANVAS_SIZE_CALL_WHILE_DRAWING,
+	NUM_TVP_CANVAS_BEGIN_STENCIL_CLIP_NO_CANVAS_SIZE_CALL_WHILE_DRAWING,
+	NUM_TVP_FBOCREATE_ERROR,
+	NUM_TVP_FAILD_TO_CREATE_AUDIO_STREAM,
+	NUM_TVP_FAILED_TO_CREATE_THREAD,
+	NUM_TVP_FAILED_TO_OPEN_USER_STORAGE,
+	NUM_TVP_FILENAME_EXTENSION_NOT_FOUND,
+	NUM_TVP_GLCOMPOSITOR1ST_ARGUMENT_MUST_BE_AWINDOW,
+	NUM_TVP_GLCOMPOSITOR_FAILED_TO_GET_GLCONTEXT,
+	NUM_TVP_INCOMPATIBLE_TEXTURE,
+	NUM_TVP_INDEX_TYPE_IS_INVALID,
+	NUM_TVP_INVALID_FORMAT_BITS_PER_SAMPLE,
+	NUM_TVP_INVALID_FORMAT,
+	NUM_TVP_MODAL_WINDOW_IS_NOT_SUPPORTED,
+	NUM_TVP_REPLMODAL_TIMEOUT_NO_MODALRESP_WAS_WRITTEN_WITHIN_THE_TIMEOUT_REPL,
+	NUM_TVP_SHADER_COMPILE_ERROR,
+	NUM_TVP_THIS_METHOD_REQUIRE_VBO,
+	NUM_TVP_THIS_VERTEX_BUFFER_IS_CONSTANT,
+	NUM_TVP_UNABLE_TO_INITIALIZE_OPEN_GL,
+	NUM_TVP_UNABLE_TO_INITIALIZE_GLAD_EGL,
+	NUM_TVP_UNABLE_TO_LOAD_GLAD_GLESN,
+	NUM_TVP_UNKNOWN_DATA_TYPE,
+	NUM_TVP_VERTEX_BINDER_IS_EMPTY,
+	NUM_TVP_CANNOT_GET_LAYER_EVENT_TARGET_INTERFACE,
+	NUM_TVP_CANNOT_SERIALIZE_CYCLIC_REFERENCE_TO_JSON,
+	NUM_TVP_CANNOT_SERIALIZE_NON_FINITE_REAL_INF_NAN_TO_JSON,
+	NUM_TVP_CANNOT_SERIALIZE_OBJECT_TO_JSONONLY_DICTIONARY_ARRAY_SUPPORTED,
+	NUM_TVP_CANNOT_SERIALIZE_OCTET_TO_JSON,
+	NUM_TVP_SET_VIEWPORT_WALLPAPER_WALLPAPER_MUST_BE_ASTRING_LAYER_OR_BITMAP,
+	NUM_TVP_NOT_FOUND_IN_SHADER,
+	NUM_TVP_CANNOT_RETRIVE_INSTANCE,
+	NUM_TVP_PARAMETER_REQUIRE_CLASS_INSTANCE,
+	NUM_TVP_UNIMPLEMENTED_CHARACTER_DATA_FOR_FULL_COLORED,
 	NUM_MESSAGE_MAX
 };
 void TVPLoadMessage( picojson::array &array ) {
 	if( IS_LOAD_MESSAGE ) return;
+	if( array.size() < NUM_MESSAGE_MAX ) {
+		throw std::runtime_error(
+			"messages.json is outdated: " + std::to_string(array.size()) +
+			" entries, engine expects " + std::to_string((size_t)NUM_MESSAGE_MAX) +
+			" (regenerate with common/msg/text/gen_messages.py)" );
+	}
 	IS_LOAD_MESSAGE = true;
 
 	const tjs_char* mes;
@@ -863,5 +914,48 @@ void TVPLoadMessage( picojson::array &array ) {
 	TVPExceptionUnwindCconsolidate.AssignMessage( conv(array[NUM_TVP_EXCEPTION_UNWIND_CCONSOLIDATE].get<std::string>()).c_str() );
 	TVPCannotShowModalAreadyShowed.AssignMessage( conv(array[NUM_TVP_CANNOT_SHOW_MODAL_AREADY_SHOWED].get<std::string>()).c_str() );
 	TVPCannotShowModalSingleWindow.AssignMessage( conv(array[NUM_TVP_CANNOT_SHOW_MODAL_SINGLE_WINDOW].get<std::string>()).c_str() );
+	TVPInsufficientNumberOfArrays.AssignMessage( conv(array[NUM_TVP_INSUFFICIENT_NUMBER_OF_ARRAYS].get<std::string>()).c_str() );
+	TVPCaptureAreaOver.AssignMessage( conv(array[NUM_TVP_CAPTURE_AREA_OVER].get<std::string>()).c_str() );
+	TVPArrayIsZero.AssignMessage( conv(array[NUM_TVP_ARRAY_IS_ZERO].get<std::string>()).c_str() );
+	TVPFailedToOpenStorageReadonlyMedia.AssignMessage( conv(array[NUM_TVP_FAILED_TO_OPEN_STORAGE_READONLY_MEDIA].get<std::string>()).c_str() );
+	TVPNotHavePrimaryLayer.AssignMessage( conv(array[NUM_TVP_NOT_HAVE_PRIMARY_LAYER].get<std::string>()).c_str() );
+	TVPSetVideoBufferParameterError.AssignMessage( conv(array[NUM_TVP_SET_VIDEO_BUFFER_PARAMETER_ERROR].get<std::string>()).c_str() );
+	TVPCannotAllocateSDLTexture.AssignMessage( conv(array[NUM_TVP_CANNOT_ALLOCATE_SDLTEXTURE].get<std::string>()).c_str() );
+	TVPCannotRetriveLayerTreeOwnerInterface.AssignMessage( conv(array[NUM_TVP_CANNOT_RETRIVE_LAYER_TREE_OWNER_INTERFACE].get<std::string>()).c_str() );
+	TVPCannotCreateLowLevelGraphicsSystemMaybeLowMemory.AssignMessage( conv(array[NUM_TVP_CANNOT_CREATE_LOW_LEVEL_GRAPHICS_SYSTEM_MAYBE_LOW_MEMORY].get<std::string>()).c_str() );
+	TVPCannotExchangeTexture.AssignMessage( conv(array[NUM_TVP_CANNOT_EXCHANGE_TEXTURE].get<std::string>()).c_str() );
+	TVPCanvasBeginEffectNoCanvasSizeCallWhileDrawing.AssignMessage( conv(array[NUM_TVP_CANVAS_BEGIN_EFFECT_NO_CANVAS_SIZE_CALL_WHILE_DRAWING].get<std::string>()).c_str() );
+	TVPCanvasBeginStencilClipNoCanvasSizeCallWhileDrawing.AssignMessage( conv(array[NUM_TVP_CANVAS_BEGIN_STENCIL_CLIP_NO_CANVAS_SIZE_CALL_WHILE_DRAWING].get<std::string>()).c_str() );
+	TVPFBOCreateError.AssignMessage( conv(array[NUM_TVP_FBOCREATE_ERROR].get<std::string>()).c_str() );
+	TVPFaildToCreateAudioStream.AssignMessage( conv(array[NUM_TVP_FAILD_TO_CREATE_AUDIO_STREAM].get<std::string>()).c_str() );
+	TVPFailedToCreateThread.AssignMessage( conv(array[NUM_TVP_FAILED_TO_CREATE_THREAD].get<std::string>()).c_str() );
+	TVPFailedToOpenUserStorage.AssignMessage( conv(array[NUM_TVP_FAILED_TO_OPEN_USER_STORAGE].get<std::string>()).c_str() );
+	TVPFilenameExtensionNotFound.AssignMessage( conv(array[NUM_TVP_FILENAME_EXTENSION_NOT_FOUND].get<std::string>()).c_str() );
+	TVPGLCompositor1stArgumentMustBeAWindow.AssignMessage( conv(array[NUM_TVP_GLCOMPOSITOR1ST_ARGUMENT_MUST_BE_AWINDOW].get<std::string>()).c_str() );
+	TVPGLCompositorFailedToGetGLContext.AssignMessage( conv(array[NUM_TVP_GLCOMPOSITOR_FAILED_TO_GET_GLCONTEXT].get<std::string>()).c_str() );
+	TVPIncompatibleTexture.AssignMessage( conv(array[NUM_TVP_INCOMPATIBLE_TEXTURE].get<std::string>()).c_str() );
+	TVPIndexTypeIsInvalid.AssignMessage( conv(array[NUM_TVP_INDEX_TYPE_IS_INVALID].get<std::string>()).c_str() );
+	TVPInvalidFormatBitsPerSample.AssignMessage( conv(array[NUM_TVP_INVALID_FORMAT_BITS_PER_SAMPLE].get<std::string>()).c_str() );
+	TVPInvalidFormat.AssignMessage( conv(array[NUM_TVP_INVALID_FORMAT].get<std::string>()).c_str() );
+	TVPModalWindowIsNotSupported.AssignMessage( conv(array[NUM_TVP_MODAL_WINDOW_IS_NOT_SUPPORTED].get<std::string>()).c_str() );
+	TVPREPLModalTimeoutNoModalrespWasWrittenWithinTheTimeoutRepl.AssignMessage( conv(array[NUM_TVP_REPLMODAL_TIMEOUT_NO_MODALRESP_WAS_WRITTEN_WITHIN_THE_TIMEOUT_REPL].get<std::string>()).c_str() );
+	TVPShaderCompileError.AssignMessage( conv(array[NUM_TVP_SHADER_COMPILE_ERROR].get<std::string>()).c_str() );
+	TVPThisMethodRequireVBO.AssignMessage( conv(array[NUM_TVP_THIS_METHOD_REQUIRE_VBO].get<std::string>()).c_str() );
+	TVPThisVertexBufferIsConstant.AssignMessage( conv(array[NUM_TVP_THIS_VERTEX_BUFFER_IS_CONSTANT].get<std::string>()).c_str() );
+	TVPUnableToInitializeOpenGL.AssignMessage( conv(array[NUM_TVP_UNABLE_TO_INITIALIZE_OPEN_GL].get<std::string>()).c_str() );
+	TVPUnableToInitializeGladEGL.AssignMessage( conv(array[NUM_TVP_UNABLE_TO_INITIALIZE_GLAD_EGL].get<std::string>()).c_str() );
+	TVPUnableToLoadGladGLESN.AssignMessage( conv(array[NUM_TVP_UNABLE_TO_LOAD_GLAD_GLESN].get<std::string>()).c_str() );
+	TVPUnknownDataType.AssignMessage( conv(array[NUM_TVP_UNKNOWN_DATA_TYPE].get<std::string>()).c_str() );
+	TVPVertexBinderIsEmpty.AssignMessage( conv(array[NUM_TVP_VERTEX_BINDER_IS_EMPTY].get<std::string>()).c_str() );
+	TVPCannotGetLayerEventTargetInterface.AssignMessage( conv(array[NUM_TVP_CANNOT_GET_LAYER_EVENT_TARGET_INTERFACE].get<std::string>()).c_str() );
+	TVPCannotSerializeCyclicReferenceToJSON.AssignMessage( conv(array[NUM_TVP_CANNOT_SERIALIZE_CYCLIC_REFERENCE_TO_JSON].get<std::string>()).c_str() );
+	TVPCannotSerializeNonFiniteRealInfNanToJSON.AssignMessage( conv(array[NUM_TVP_CANNOT_SERIALIZE_NON_FINITE_REAL_INF_NAN_TO_JSON].get<std::string>()).c_str() );
+	TVPCannotSerializeObjectToJSONOnlyDictionaryArraySupported.AssignMessage( conv(array[NUM_TVP_CANNOT_SERIALIZE_OBJECT_TO_JSONONLY_DICTIONARY_ARRAY_SUPPORTED].get<std::string>()).c_str() );
+	TVPCannotSerializeOctetToJSON.AssignMessage( conv(array[NUM_TVP_CANNOT_SERIALIZE_OCTET_TO_JSON].get<std::string>()).c_str() );
+	TVPSetViewportWallpaperWallpaperMustBeAStringLayerOrBitmap.AssignMessage( conv(array[NUM_TVP_SET_VIEWPORT_WALLPAPER_WALLPAPER_MUST_BE_ASTRING_LAYER_OR_BITMAP].get<std::string>()).c_str() );
+	TVPNotFoundInShader.AssignMessage( conv(array[NUM_TVP_NOT_FOUND_IN_SHADER].get<std::string>()).c_str() );
+	TVPCannotRetriveInstance.AssignMessage( conv(array[NUM_TVP_CANNOT_RETRIVE_INSTANCE].get<std::string>()).c_str() );
+	TVPParameterRequireClassInstance.AssignMessage( conv(array[NUM_TVP_PARAMETER_REQUIRE_CLASS_INSTANCE].get<std::string>()).c_str() );
+	TVPUnimplementedCharacterDataForFullColored.AssignMessage( conv(array[NUM_TVP_UNIMPLEMENTED_CHARACTER_DATA_FOR_FULL_COLORED].get<std::string>()).c_str() );
 
 }

@@ -136,6 +136,17 @@ extern tTVPGLGammaAdjustData TVPIntactGammaAdjustData;
 extern tjs_int TVPDrawThreadNum;
 extern tjs_int TVPGetProcessorNum(void);
 //---------------------------------------------------------------------------
+// 絵文字モード (グローバル既定 / 実効モード解決 / 絵文字 face 名)。
+// 値は tvpfontstruc.h の TVP_EMOJI_* を参照。TJS からは Font.emojiMode /
+// Font.defaultEmojiMode で参照/設定する。
+extern void           TVPSetDefaultEmojiMode( tjs_int mode );
+extern tjs_int        TVPGetDefaultEmojiMode();
+extern tjs_int        TVPResolveEmojiMode( tjs_int fontmode );
+extern const tjs_char* TVPGetEmojiFaceName( tjs_int mode );
+// 絵文字フォントの face 名を設定 (mode= TVP_EMOJI_MONO / TVP_EMOJI_COLOR)。
+// Font.addFont で任意の絵文字フォントを登録し、その face 名をここに指定すれば使える。
+extern void           TVPSetEmojiFaceName( tjs_int mode, const tjs_char* name );
+//---------------------------------------------------------------------------
 
 
 

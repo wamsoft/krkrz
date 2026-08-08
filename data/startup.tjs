@@ -666,6 +666,27 @@ class MyWindow extends Window
     var videolay;
     var video;
 
+    // --- 動画プレイヤサンプル (ファイル選択して視聴) 用 ---
+    var mpVideo;         // 再生中の VideoOverlay
+    var mpPaused = false; // 一時停止中か
+
+    // --- 3D 音声デモ用 ---
+    var snd3d;          // WaveSoundBuffer (3D 音源)
+    var snd3dTimer;     // 位置更新タイマ
+    var snd3dLayer;     // 可視化レイヤ (リスナ + 音源)
+    var snd3dX = -15.0; // 音源のワールド X (フライバイで -15→+15 を往復)
+    var snd3dZ = -3.0;  // 音源のワールド Z (リスナ前方に固定。前方 = -Z)
+    var snd3dSpeed = 7.5;   // X 方向速度 (units/sec)。ドップラー用速度にも使う
+    var snd3dDoppler = true;
+    var snd3dModel = amInverse;
+    var snd3dMode = 0;      // 0=フライバイ(左右往復), 1=周回(リスナの周りをぐるぐる)
+    var snd3dAngle = 0.0;   // 周回モードの角度 (rad)
+    var snd3dRadius = 8.0;  // 周回半径 (units)
+    // 周回時の前後距離バイアス (前=近, 後=遠)。マルチチャンネル(5.1/7.1)出力では
+    // spatializer が前後を実スピーカーへ定位できるので 0=真円が正しい。ステレオ出力は
+    // 前後を区別できない(中央パン)ので、その環境では >0 にすると距離差で前後感を補える。
+    var snd3dFrontBias = 0.0;
+
     var saveDataLocation;
 
     function createBaseLayer() {
@@ -933,6 +954,7 @@ class MyWindow extends Window
             } incontextof video;
             video.mode = vomMixer;
             video.open("title.webm");
+            video.visible = true;   // overlay/mixer は visible=true で表示 (既定 false)
             video.play();
         }
     }
@@ -946,6 +968,7 @@ class MyWindow extends Window
             video = new VideoOverlay(this);
             video.mode = vomMixer;
             video.open("title.mp4");
+            video.visible = true;   // overlay/mixer は visible=true で表示 (既定 false)
             video.play();
         }
     }
@@ -978,6 +1001,223 @@ class MyWindow extends Window
         video.layer1 = videolay;
         video.open("title.webm");
         video.play();
+    }
+
+    // ------------------------------------------------------------------
+    // 動画プレイヤサンプル: 標準ファイル選択ダイアログで動画を選び全画面再生
+    //   Storages.selectFile (WINVER=GetOpenFileName / SDL=SDL_ShowOpenFileDialog)
+    //   ホットキー 7=開く / 8=停止 / 9=一時停止トグル
+    // ------------------------------------------------------------------
+    function moviePlayerOpen() {
+        var params = %[
+            "filter" => [
+                "動画ファイル|*.mp4;*.webm;*.mpg;*.mpeg;*.wmv;*.avi;*.m4v;*.mov;*.asf",
+                "すべてのファイル|*.*"
+            ],
+            "title" => "再生する動画ファイルを選択"
+        ];
+        if (Storages.selectFile(params)) {
+            moviePlayerPlay(params.name);
+        } else {
+            dm("moviePlayer: 選択キャンセル");
+        }
+    }
+
+    function moviePlayerPlay(path) {
+        moviePlayerStop();
+        mpVideo = new VideoOverlay(this);
+        mpVideo.onStatusChanged = function(status) {
+            dm(@"moviePlayer status:${status}");
+        } incontextof mpVideo;
+        mpVideo.mode = vomMixer;        // overlay 全画面合成 (presenter/HW 経路)
+        mpVideo.open(path);
+        mpVideo.visible = true;         // overlay は visible=true で表示 (既定 false)
+        mpVideo.play();
+        mpPaused = false;
+        dm(@"moviePlayer play: ${path}");
+    }
+
+    function moviePlayerStop() {
+        if (typeof(mpVideo) == "Object") {
+            mpVideo.stop();
+            mpVideo.close();
+            mpVideo = void;
+        }
+        mpPaused = false;
+    }
+
+    function moviePlayerTogglePause() {
+        if (typeof(mpVideo) != "Object") return;
+        if (mpPaused) {
+            mpVideo.play();
+            mpPaused = false;
+            dm("moviePlayer: 再開");
+        } else {
+            mpVideo.pause();
+            mpPaused = true;
+            dm("moviePlayer: 一時停止");
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 3D 音声デモ (miniaudio spatializer)
+    //   リスナを画面中央 (ワールド原点、前方 = -Z) に固定し、音源を左右に
+    //   フライバイさせる。左右パン + 距離減衰 + (任意で) ドップラーを実聴できる。
+    //   可視化レイヤにリスナ(中央)と音源(点)を描く。
+    //   座標系は miniaudio 準拠 (右手系・Y up・任意単位)。X=右, Z=手前(+)/奥(-)。
+    // ------------------------------------------------------------------
+    var SND3D_CX = 480, SND3D_CZ = 320; // 可視化レイヤ中心 (px)
+    var SND3D_SCALE = 22;               // ワールド単位 → px
+
+    function sound3dTest() {
+        if (snd3d !== void && snd3d !== null) { sound3dStop(); return; }
+
+        // リスナ (聴取者) を原点・前方 -Z・上 +Y に設定して有効化
+        SoundListener.enabled = true;
+        SoundListener.setPosition(0, 0, 0);
+        SoundListener.setDirection(0, 0, -1);
+        SoundListener.setWorldUp(0, 1, 0);
+        SoundListener.setVelocity(0, 0, 0);
+
+        // 3D 音源を用意 (ループ再生)
+        snd3d = new WaveSoundBuffer(this);
+        snd3d.use3D = true;
+        snd3d.attenuationModel = snd3dModel;
+        snd3d.minDistance = 2.0;    // 2 単位以内は減衰なし (最接近時に大きく)
+        snd3d.maxDistance = 40.0;
+        snd3d.rolloffFactor = 1.0;
+        snd3d.dopplerFactor = snd3dDoppler ? 1.0 : 0.0;
+        snd3dX = -15.0;
+        snd3d.set3DPosition(snd3dX, 0, snd3dZ);
+        snd3d.set3DVelocity(snd3dSpeed, 0, 0);
+        snd3d.open(soundStorage);
+        snd3d.looping = true;
+        snd3d.play();
+
+        // 可視化レイヤ
+        snd3dLayer = new Layer(this, primaryLayer);
+        snd3dLayer.setSize(960, 640);
+        snd3dLayer.setPos(80, 120);
+        snd3dLayer.type = ltOpaque;
+        snd3dLayer.visible = true;
+        add(snd3dLayer);
+        sound3dDraw();
+
+        // 位置更新タイマ (60fps)
+        snd3dTimer = new Timer(this, "onSound3DTimer");
+        snd3dTimer.interval = 1000/60;
+        snd3dTimer.enabled = true;
+        dm("3D sound demo started (fly-by)");
+    }
+
+    function sound3dStop() {
+        if (snd3dTimer !== void && snd3dTimer !== null) {
+            snd3dTimer.enabled = false;
+            invalidate snd3dTimer; snd3dTimer = null;
+        }
+        if (snd3d !== void && snd3d !== null) {
+            snd3d.stop();
+            snd3d = null;
+        }
+        if (snd3dLayer !== void && snd3dLayer !== null) {
+            invalidate snd3dLayer; snd3dLayer = null;
+        }
+        SoundListener.enabled = false;
+        dm("3D sound demo stopped");
+    }
+
+    function onSound3DTimer() {
+        if (snd3d === void || snd3d === null) return;
+        var dt = (snd3dTimer.interval) / 1000.0;
+        if (snd3dMode == 1) {
+            // 周回モード: リスナの周りを回る (前→右→後→左)。
+            // ※ miniaudio 内蔵 spatializer は HRTF 非対応で前後を区別できない
+            //   (前方も後方も中央パン)。真円だと「前に来た」感が出ないため、
+            //   前方で半径を小さく(=近く=大きく)・後方で大きく(=遠く=小さく)する
+            //   楕円にして距離差で前後感を補う。距離はステレオでも表現できる。
+            var omega = snd3dSpeed / snd3dRadius; // 角速度 (rad/s)
+            snd3dAngle += omega * dt;
+            if (snd3dAngle > 2*Math.PI) snd3dAngle -= 2*Math.PI;
+            var a = snd3dAngle;
+            // 半径: 前方(cos=1)で小さく、後方(cos=-1)で大きく
+            var r = snd3dRadius - snd3dFrontBias * Math.cos(a);
+            snd3dX = r * Math.sin(a);
+            snd3dZ = -r * Math.cos(a); // a=0 → 前方(-Z) かつ最も近い
+            snd3d.set3DPosition(snd3dX, 0, snd3dZ);
+            // 接線+動径成分の速度 (r が角度依存なので動径成分も出る=前後でドップラーも付く)
+            var drda = snd3dFrontBias * Math.sin(a);         // dr/da
+            var vx = (drda * Math.sin(a) + r * Math.cos(a)) * omega;
+            var vz = -(drda * Math.cos(a) - r * Math.sin(a)) * omega;
+            snd3d.set3DVelocity(vx, 0, vz);
+        } else {
+            // フライバイ: X を一定速度で進め、右端を越えたら左端へ戻す
+            snd3dZ = -3.0;
+            snd3dX += snd3dSpeed * dt;
+            var wrapped = false;
+            if (snd3dX > 15.0) { snd3dX = -15.0; wrapped = true; }
+            snd3d.set3DPosition(snd3dX, 0, snd3dZ);
+            // ドップラー用の速度 (右方向へ移動)。折り返し時は 0 で不自然なピッチ飛びを回避
+            snd3d.set3DVelocity(wrapped ? 0 : snd3dSpeed, 0, 0);
+        }
+        sound3dDraw();
+    }
+
+    // フライバイ ⇔ 周回 モード切替
+    function sound3dToggleMode() {
+        snd3dMode = (snd3dMode + 1) % 2;
+        if (snd3dMode == 1) { snd3dAngle = 0.0; }
+        else { snd3dX = -15.0; snd3dZ = -3.0; }
+        sound3dDraw();
+    }
+
+    // 可視化: リスナ (中央) + 音源 (点) + 情報テキスト
+    function sound3dDraw() {
+        if (snd3dLayer === void || snd3dLayer === null) return;
+        var L = snd3dLayer;
+        L.font.height = 24;
+        L.fillRect(0, 0, L.width, L.height, 0xff101820);
+        // グリッド十字
+        L.fillRect(SND3D_CX, 40, 1, L.height-80, 0xff2a3a4a);
+        L.fillRect(80, SND3D_CZ, L.width-160, 1, 0xff2a3a4a);
+        // リスナ (中央、前方 -Z = 画面上向き) を黄色の四角で
+        L.fillRect(SND3D_CX-8, SND3D_CZ-8, 16, 16, 0xffffe000);
+        L.drawText(SND3D_CX+12, SND3D_CZ-6, "Listener", 0xffe000, 255);
+        // 音源位置 → px。Z は手前(+)が下、奥(-)が上になるよう素直にマップ
+        var sx = SND3D_CX + (int)(snd3dX * SND3D_SCALE);
+        var sz = SND3D_CZ + (int)(snd3dZ * SND3D_SCALE);
+        L.fillRect(sx-10, sz-10, 20, 20, 0xff40c0ff);
+        // 距離
+        var dist = Math.sqrt(snd3dX*snd3dX + snd3dZ*snd3dZ);
+        var pan = snd3dX < -0.5 ? "L" : (snd3dX > 0.5 ? "R" : "C");
+        L.drawText(30, 30, @"3D Sound  x=${(int)(snd3dX*10)/10.0}  dist=${(int)(dist*10)/10.0}  pan=${pan}", 0xffffff, 255);
+        L.drawText(30, 70, @"mode=${snd3dMode == 1 ? "orbit(周回)" : "fly-by(左右)"}  doppler=${snd3dDoppler ? "ON" : "OFF"}  model=${sound3dModelName(snd3dModel)}", 0xa0d0ff, 255);
+        L.drawText(30, L.height-40, "keys: [3]開始/停止 [4]モード [5]ドップラー [6]減衰モデル", 0x80a0c0, 255);
+    }
+
+    function sound3dModelName(m) {
+        switch (m) {
+        case amNone:        return "none";
+        case amInverse:     return "inverse";
+        case amLinear:      return "linear";
+        case amExponential: return "exponential";
+        }
+        return "?";
+    }
+
+    // ドップラー ON/OFF トグル (再生中でも即反映)
+    function sound3dToggleDoppler() {
+        snd3dDoppler = !snd3dDoppler;
+        if (snd3d !== void && snd3d !== null)
+            snd3d.dopplerFactor = snd3dDoppler ? 1.0 : 0.0;
+        sound3dDraw();
+    }
+
+    // 減衰モデルを順に切り替え (none→inverse→linear→exponential→none)
+    function sound3dCycleModel() {
+        snd3dModel = (snd3dModel + 1) % 4;
+        if (snd3d !== void && snd3d !== null)
+            snd3d.attenuationModel = snd3dModel;
+        sound3dDraw();
     }
 
     function fontText() {
@@ -1091,6 +1331,10 @@ class MyWindow extends Window
         case "univ":   transTest(%[method:"universal", rule:"map07.png", time:2000]); break;
         case "bgm":    soundTest();        break;
         case "se":     seTest();           break;
+        case "sound3d":   sound3dTest();          break;
+        case "s3d_mode":  sound3dToggleMode();    break;
+        case "s3d_dop":   sound3dToggleDoppler(); break;
+        case "s3d_model": sound3dCycleModel();    break;
         case "spd_up": updateSoundSpeed(0.1);  break;
         case "spd_dn": updateSoundSpeed(-0.1); break;
         case "webm":   videoTest0();       break;
@@ -1205,6 +1449,29 @@ class MyWindow extends Window
         case VK_K:
         case VK_PAD9:   // ゲームパッド SELECT (BACK/マイナス) でソフトキーボード
             softkeyTest();
+            break;
+        // --- 3D 音声デモのホットキー (メニューを開かず直接操作) ---
+        case VK_3:      // 3D 音声デモ 開始/停止
+            sound3dTest();
+            break;
+        case VK_4:      // モード切替 (左右フライバイ ⇔ 周回)
+            sound3dToggleMode();
+            break;
+        case VK_5:      // ドップラー ON/OFF
+            sound3dToggleDoppler();
+            break;
+        case VK_6:      // 減衰モデル切替 (none/inverse/linear/exponential)
+            sound3dCycleModel();
+            break;
+        // --- 動画プレイヤサンプル (ファイル選択して視聴) ---
+        case VK_7:      // 動画ファイルを選んで再生
+            moviePlayerOpen();
+            break;
+        case VK_8:      // 停止
+            moviePlayerStop();
+            break;
+        case VK_9:      // 一時停止/再開トグル
+            moviePlayerTogglePause();
             break;
         }
     }

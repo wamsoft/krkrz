@@ -800,6 +800,8 @@ public:
 	ttstr GetFontFace() const;
 	void SetFontHeight(tjs_int height);
 	tjs_int GetFontHeight() const;
+	void SetFontEmojiMode(tjs_int mode);
+	tjs_int GetFontEmojiMode() const;
 	void SetFontAngle(tjs_int angle);
 	tjs_int GetFontAngle() const;
 	void SetFontBold(bool b);
@@ -1045,6 +1047,8 @@ public:
 	ttstr GetFontFace() const;
 	void SetFontHeight(tjs_int height);
 	tjs_int GetFontHeight() const;
+	void SetFontEmojiMode(tjs_int mode);
+	tjs_int GetFontEmojiMode() const;
 	void SetFontAngle(tjs_int angle);
 	tjs_int GetFontAngle() const;
 	void SetFontBold(bool b);

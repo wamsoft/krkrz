@@ -15,8 +15,11 @@
 
 #include "REPL.h"
 #include "ReplMainQueue.h"
-#include "ReplFileChannel.h"
+#ifdef KRKRZ_USE_REPL_FILECHANNEL
+#include "ReplFileChannel.h"    // -replfile= file channel + file-based modal (KRKRZ_REPL_FILE 時のみ実体)
+#endif
 #include "ReplSocketChannel.h"
+#include "ReplWebServer.h"      // -replweb=<port> (KRKRZ_REPL_WEB 時のみ実体)
 #include "ScriptMgnIntf.h"
 #include "SysInitIntf.h"
 #include "DebugIntf.h"
@@ -239,6 +242,176 @@ void tTVPReplThread::DrainMain()
 }
 
 //---------------------------------------------------------------------------
+// printf 形式 → std::string (dot コマンド出力の整形用)
+static std::string ReplFmt(const char *fmt, ...)
+{
+	char buf[1024];
+	va_list ap;
+	va_start(ap, fmt);
+	vsnprintf(buf, sizeof(buf), fmt, ap);
+	va_end(ap);
+	return std::string(buf);
+}
+
+//---------------------------------------------------------------------------
+// 入力 1 行の共有処理 (icline / FTXUI split 双方から呼ばれる)。
+// ドットコマンド / 複数行継続 / TJS 評価を扱い、出力は sink.emit へ渡す。
+// フロント固有の表示 (色付け・入力エコー・プロンプト) は呼び出し側の責務。
+//---------------------------------------------------------------------------
+bool tTVPReplThread::ProcessLine(const std::string& input_in,
+	std::string& multiline_input, const LineSink& sink)
+{
+	std::string input = input_in;
+	auto emit = [&](int lv, const std::string& s) { if (sink.emit) sink.emit(lv, s); };
+
+	if (input.empty() && multiline_input.empty()) return true;
+
+	if (multiline_input.empty()) {
+		if (input == "exit" || input == "quit") return false;
+		if (input == ".help") {
+			emit(LL_HELP, "Available commands:");
+			emit(LL_HELP, "  exit, quit       - Exit the REPL");
+			emit(LL_HELP, "  .help            - Show this help");
+			emit(LL_HELP, "  .clear           - Clear multiline input");
+			emit(LL_HELP, ReplFmt("  .depth [N]       - Show/set pretty-print depth (current: %d)", g_repl_pp_depth));
+			emit(LL_HELP, ReplFmt("  .compact [on|off]- Show/toggle compact mode (current: %s)", g_repl_pp_compact ? "on" : "off"));
+			emit(LL_HELP, "  .mem             - Show one-line memory summary");
+			emit(LL_HELP, "  .memdump         - Dump full memory stats to log (TVPHeapDump)");
+			emit(LL_HELP, "  .sysalloc        - Show system allocator info (free/allocatable)");
+			emit(LL_HELP, "  .memoverlay [on|off] - Toggle on-screen memory graph (SDL3 build only)");
+			emit(LL_HELP, "  .padoverlay [on|off] - Toggle on-screen gamepad button matrix (SDL3 build only)");
+			emit(LL_HELP, "  .mempeakclear    - Reset peak_used on File/Bitmap/Sound allocators");
+			emit(LL_HELP, "  .filecache       - Dump StorageCache (file cache) entries to log");
+			emit(LL_HELP, "  .imagecache      - Dump TVPGraphicCache (decoded image cache) entries to log");
+			emit(LL_HELP, "  .cap [path]      - Capture screen (overlay incl.) to PNG (Agent.captureScreen)");
+			emit(LL_HELP, "  .dlg             - List active Elements dialogs (Agent.dialogs)");
+			emit(LL_HELP, "  .dlgclose        - Close all Elements dialogs (Agent.closeAllDialogs)");
+			emit(LL_HELP, "  .click X Y       - Inject a mouse click at (X,Y) (Agent.click)");
+			emit(LL_HELP, "Enter TJS expressions or statements to evaluate.");
+			return true;
+		}
+		if (input == ".mem") {
+			emit(LL_NORMAL, TVPSummarizeAllocator("File", TVPGetFileAllocator()));
+			emit(LL_NORMAL, TVPSummarizeAllocator("Bitmap", tTVPBitmapBitsAlloc::GetAllocator()));
+			emit(LL_NORMAL, TVPSummarizeAllocator("Sound", TVPGetSoundAllocator()));
+			emit(LL_NORMAL, TVPGlobalAllocStats::Summarize());
+			emit(LL_NORMAL, TVPSummarizeProcessMemory());
+			emit(LL_NORMAL, TVPSummarizeSystemAllocatorInfo());
+			return true;
+		}
+		if (input == ".sysalloc") {
+			emit(LL_NORMAL, TVPSummarizeSystemAllocatorInfo());
+			return true;
+		}
+		if (input == ".memdump") {
+			TVPHeapDump();
+			emit(LL_NORMAL, "(memory stats dumped to log)");
+			return true;
+		}
+		if (input == ".mempeakclear") {
+			if (auto *fa = TVPGetFileAllocator())               fa->resetPeak();
+			if (auto *ba = tTVPBitmapBitsAlloc::GetAllocator()) ba->resetPeak();
+			if (auto *sa = TVPGetSoundAllocator())              sa->resetPeak();
+			TVPGlobalAllocStats::ResetKrkrzPeak();
+			TVPGlobalAllocStats::ResetSdlPeak();
+			emit(LL_NORMAL, "(File/Bitmap/Sound/GlobalAlloc peak_used reset)");
+			return true;
+		}
+		if (input == ".filecache") {
+			TVPDumpFileCacheList();
+			emit(LL_NORMAL, "(file cache list dumped to log)");
+			return true;
+		}
+		if (input == ".imagecache") {
+			TVPDumpImageCacheList();
+			emit(LL_NORMAL, "(image cache list dumped to log)");
+			return true;
+		}
+		if (input.rfind(".memoverlay", 0) == 0) {
+			std::string arg = input.size() > 11 ? input.substr(11) : "";
+			while (!arg.empty() && arg.front() == ' ') arg.erase(arg.begin());
+			if (arg.empty())                                    TVPMemoryOverlay::SetEnabled(!TVPMemoryOverlay::IsEnabled());
+			else if (arg == "on" || arg == "true" || arg == "1")  TVPMemoryOverlay::SetEnabled(true);
+			else if (arg == "off" || arg == "false" || arg == "0") TVPMemoryOverlay::SetEnabled(false);
+			emit(LL_NORMAL, ReplFmt("memoverlay = %s", TVPMemoryOverlay::IsEnabled() ? "on" : "off"));
+			return true;
+		}
+		if (input.rfind(".padoverlay", 0) == 0) {
+			std::string arg = input.size() > 11 ? input.substr(11) : "";
+			while (!arg.empty() && arg.front() == ' ') arg.erase(arg.begin());
+			if (arg.empty())                                    TVPPadOverlay::SetEnabled(!TVPPadOverlay::IsEnabled());
+			else if (arg == "on" || arg == "true" || arg == "1")  TVPPadOverlay::SetEnabled(true);
+			else if (arg == "off" || arg == "false" || arg == "0") TVPPadOverlay::SetEnabled(false);
+			emit(LL_NORMAL, ReplFmt("padoverlay = %s", TVPPadOverlay::IsEnabled() ? "on" : "off"));
+			return true;
+		}
+		if (input == ".clear") { multiline_input.clear(); return true; }
+		if (input.rfind(".depth", 0) == 0) {
+			std::string arg = input.size() > 6 ? input.substr(6) : "";
+			while (!arg.empty() && arg.front() == ' ') arg.erase(arg.begin());
+			if (!arg.empty()) { int n = atoi(arg.c_str()); g_repl_pp_depth = n < 0 ? 0 : n; }
+			emit(LL_NORMAL, ReplFmt("depth = %d", g_repl_pp_depth));
+			return true;
+		}
+		if (input.rfind(".compact", 0) == 0) {
+			std::string arg = input.size() > 8 ? input.substr(8) : "";
+			while (!arg.empty() && arg.front() == ' ') arg.erase(arg.begin());
+			if (arg.empty())                                    g_repl_pp_compact = !g_repl_pp_compact;
+			else if (arg == "on" || arg == "true" || arg == "1")  g_repl_pp_compact = true;
+			else if (arg == "off" || arg == "false" || arg == "0") g_repl_pp_compact = false;
+			emit(LL_NORMAL, ReplFmt("compact = %s", g_repl_pp_compact ? "on" : "off"));
+			return true;
+		}
+		// エージェント駆動ショートカット (Agent.* に変換して評価フローへ)
+		{
+			auto trim = [](std::string s) {
+				while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(s.begin());
+				while (!s.empty() && (s.back()  == ' ' || s.back()  == '\t')) s.pop_back();
+				return s;
+			};
+			if (input.rfind(".cap", 0) == 0 && (input.size() == 4 || input[4] == ' ')) {
+				std::string arg = trim(input.substr(4));
+				if (arg.empty()) arg = "agent_cap.png";
+				input = "Agent.captureScreen(\"" + arg + "\")";
+			} else if (input == ".dlg") {
+				input = "Agent.dialogs()";
+			} else if (input == ".dlgclose") {
+				input = "Agent.closeAllDialogs()";
+			} else if (input.rfind(".click", 0) == 0 && (input.size() == 6 || input[6] == ' ')) {
+				std::string arg = trim(input.substr(6));
+				for (char& c : arg) if (c == ' ' || c == '\t') c = ',';
+				input = "Agent.click(" + arg + ")";
+			}
+		}
+	}
+
+	if (!multiline_input.empty()) { multiline_input += "\n"; multiline_input += input; }
+	else                          multiline_input = input;
+
+	if (!IsCompleteStatement(multiline_input)) return true; // 継続入力
+
+	if (sink.addHistory) sink.addHistory(multiline_input);
+
+	tjs_string script_u16;
+	TVPUtf8ToUtf16(script_u16, multiline_input);
+	tTJSVariant result;
+	ttstr error;
+	bool ok = TVPReplMainQueue::Submit(ttstr(script_u16.c_str()), result, error);
+	if (ok) {
+		ttstr resultStr = TVPPrettyPrint(result, g_repl_pp_depth, g_repl_pp_compact);
+		std::string u8;
+		TVPUtf16ToUtf8(u8, resultStr.AsStdString());
+		emit(LL_RESULT, "=> " + u8);
+	} else {
+		std::string u8;
+		TVPUtf16ToUtf8(u8, error.AsStdString());
+		emit(LL_ERROR, u8);
+	}
+	multiline_input.clear();
+	return true;
+}
+
+//---------------------------------------------------------------------------
 // worker thread 本体
 //---------------------------------------------------------------------------
 void tTVPReplThread::Execute()
@@ -255,6 +428,18 @@ void tTVPReplThread::Execute()
 	} catch (...) {
 		return;
 	}
+
+	// icline 用 sink: bbcode で色付け、履歴は ic_history_add。
+	LineSink sink;
+	sink.emit = [](int level, const std::string& s) {
+		std::string esc = BBEscape(s);
+		switch (level) {
+			case LL_RESULT: ic_printf("[green]%s[/]\n", esc.c_str()); break;
+			case LL_ERROR:  ic_printf("[red]%s[/]\n",   esc.c_str()); break;
+			default:        ic_printf("%s\n",           esc.c_str()); break;
+		}
+	};
+	sink.addHistory = [](const std::string& s) { ic_history_add(s.c_str()); };
 
 	std::string multiline_input;
 
@@ -273,185 +458,11 @@ void tTVPReplThread::Execute()
 		std::string input(line);
 		ic_free(line);
 
-		if (input.empty() && multiline_input.empty()) continue;
-
-		if (multiline_input.empty()) {
-			if (input == "exit" || input == "quit") {
-				TVPTerminateAsync(0);
-				break;
-			}
-			if (input == ".help") {
-				ic_printf("Available commands:\n");
-				ic_printf("  exit, quit       - Exit the REPL\n");
-				ic_printf("  .help            - Show this help\n");
-				ic_printf("  .clear           - Clear multiline input\n");
-				ic_printf("  .depth [N]       - Show/set pretty-print depth (current: %d)\n", g_repl_pp_depth);
-				ic_printf("  .compact [on|off]- Show/toggle compact mode (current: %s)\n",
-					g_repl_pp_compact ? "on" : "off");
-				ic_printf("  .mem             - Show one-line memory summary\n");
-				ic_printf("  .memdump         - Dump full memory stats to log (TVPHeapDump)\n");
-				ic_printf("  .sysalloc        - Show system allocator info (free/allocatable)\n");
-				ic_printf("  .memoverlay [on|off] - Toggle on-screen memory graph (SDL3 build only)\n");
-				ic_printf("  .padoverlay [on|off] - Toggle on-screen gamepad button matrix (SDL3 build only)\n");
-				ic_printf("  .mempeakclear    - Reset peak_used on File/Bitmap/Sound allocators\n");
-				ic_printf("  .filecache       - Dump StorageCache (file cache) entries to log\n");
-				ic_printf("  .imagecache      - Dump TVPGraphicCache (decoded image cache) entries to log\n");
-				ic_printf("  .cap [path]      - Capture screen (overlay incl.) to PNG (Agent.captureScreen)\n");
-				ic_printf("  .dlg             - List active Elements dialogs (Agent.dialogs)\n");
-				ic_printf("  .dlgclose        - Close all Elements dialogs (Agent.closeAllDialogs)\n");
-				ic_printf("  .click X Y       - Inject a mouse click at (X,Y) (Agent.click)\n");
-				ic_printf("\nEnter TJS expressions or statements to evaluate.\n");
-				continue;
-			}
-			if (input == ".mem") {
-				ic_printf("%s\n", TVPSummarizeAllocator("File", TVPGetFileAllocator()).c_str());
-				ic_printf("%s\n", TVPSummarizeAllocator("Bitmap", tTVPBitmapBitsAlloc::GetAllocator()).c_str());
-				ic_printf("%s\n", TVPSummarizeAllocator("Sound", TVPGetSoundAllocator()).c_str());
-				ic_printf("%s\n", TVPGlobalAllocStats::Summarize().c_str());
-				ic_printf("%s\n", TVPSummarizeProcessMemory().c_str());
-				ic_printf("%s\n", TVPSummarizeSystemAllocatorInfo().c_str());
-				continue;
-			}
-			if (input == ".sysalloc") {
-				ic_printf("%s\n", TVPSummarizeSystemAllocatorInfo().c_str());
-				continue;
-			}
-			if (input == ".memdump") {
-				TVPHeapDump();
-				ic_printf("(memory stats dumped to log)\n");
-				continue;
-			}
-			if (input == ".mempeakclear") {
-				if (auto *fa = TVPGetFileAllocator())            fa->resetPeak();
-				if (auto *ba = tTVPBitmapBitsAlloc::GetAllocator()) ba->resetPeak();
-				if (auto *sa = TVPGetSoundAllocator())           sa->resetPeak();
-				TVPGlobalAllocStats::ResetKrkrzPeak();
-				TVPGlobalAllocStats::ResetSdlPeak();
-				ic_printf("(File/Bitmap/Sound/GlobalAlloc peak_used reset)\n");
-				continue;
-			}
-			if (input == ".filecache") {
-				TVPDumpFileCacheList();
-				ic_printf("(file cache list dumped to log)\n");
-				continue;
-			}
-			if (input == ".imagecache") {
-				TVPDumpImageCacheList();
-				ic_printf("(image cache list dumped to log)\n");
-				continue;
-			}
-			if (input.rfind(".memoverlay", 0) == 0) {
-				std::string arg = input.size() > 11 ? input.substr(11) : "";
-				while (!arg.empty() && arg.front() == ' ') arg.erase(arg.begin());
-				if (arg.empty()) {
-					TVPMemoryOverlay::SetEnabled(!TVPMemoryOverlay::IsEnabled());
-				} else if (arg == "on" || arg == "true" || arg == "1") {
-					TVPMemoryOverlay::SetEnabled(true);
-				} else if (arg == "off" || arg == "false" || arg == "0") {
-					TVPMemoryOverlay::SetEnabled(false);
-				}
-				ic_printf("memoverlay = %s\n", TVPMemoryOverlay::IsEnabled() ? "on" : "off");
-				continue;
-			}
-			if (input.rfind(".padoverlay", 0) == 0) {
-				std::string arg = input.size() > 11 ? input.substr(11) : "";
-				while (!arg.empty() && arg.front() == ' ') arg.erase(arg.begin());
-				if (arg.empty()) {
-					TVPPadOverlay::SetEnabled(!TVPPadOverlay::IsEnabled());
-				} else if (arg == "on" || arg == "true" || arg == "1") {
-					TVPPadOverlay::SetEnabled(true);
-				} else if (arg == "off" || arg == "false" || arg == "0") {
-					TVPPadOverlay::SetEnabled(false);
-				}
-				ic_printf("padoverlay = %s\n", TVPPadOverlay::IsEnabled() ? "on" : "off");
-				continue;
-			}
-			if (input == ".clear") { multiline_input.clear(); continue; }
-			if (input.rfind(".depth", 0) == 0) {
-				std::string arg = input.size() > 6 ? input.substr(6) : "";
-				while (!arg.empty() && arg.front() == ' ') arg.erase(arg.begin());
-				if (arg.empty()) {
-					ic_printf("depth = %d\n", g_repl_pp_depth);
-				} else {
-					int n = atoi(arg.c_str());
-					if (n < 0) n = 0;
-					g_repl_pp_depth = n;
-					ic_printf("depth = %d\n", g_repl_pp_depth);
-				}
-				continue;
-			}
-			if (input.rfind(".compact", 0) == 0) {
-				std::string arg = input.size() > 8 ? input.substr(8) : "";
-				while (!arg.empty() && arg.front() == ' ') arg.erase(arg.begin());
-				if (arg.empty()) {
-					g_repl_pp_compact = !g_repl_pp_compact;
-				} else if (arg == "on" || arg == "true" || arg == "1") {
-					g_repl_pp_compact = true;
-				} else if (arg == "off" || arg == "false" || arg == "0") {
-					g_repl_pp_compact = false;
-				}
-				ic_printf("compact = %s\n", g_repl_pp_compact ? "on" : "off");
-				continue;
-			}
-			// --- エージェント駆動ショートカット (Agent.* に変換して評価) ---
-			// continue せず input を書き換えて通常の式評価フローに流す。
-			{
-				auto trim = [](std::string s) {
-					while (!s.empty() && (s.front()==' '||s.front()=='\t')) s.erase(s.begin());
-					while (!s.empty() && (s.back()==' '||s.back()=='\t')) s.pop_back();
-					return s;
-				};
-				if (input.rfind(".cap", 0) == 0 &&
-				    (input.size() == 4 || input[4] == ' ')) {
-					std::string arg = trim(input.substr(4));
-					if (arg.empty()) arg = "agent_cap.png";
-					input = "Agent.captureScreen(\"" + arg + "\")";
-				} else if (input == ".dlg") {
-					input = "Agent.dialogs()";
-				} else if (input == ".dlgclose") {
-					input = "Agent.closeAllDialogs()";
-				} else if (input.rfind(".click", 0) == 0 &&
-				           (input.size() == 6 || input[6] == ' ')) {
-					// ".click X Y" → "Agent.click(X,Y)" (空白区切りをカンマに)
-					std::string arg = trim(input.substr(6));
-					for (char& c : arg) if (c == ' ' || c == '\t') c = ',';
-					input = "Agent.click(" + arg + ")";
-				}
-			}
-		}
-
-		if (!multiline_input.empty()) {
-			multiline_input += "\n";
-			multiline_input += input;
-		} else {
-			multiline_input = input;
-		}
-
-		if (!IsCompleteStatement(multiline_input)) continue;
-
-		tjs_string script_u16;
-		TVPUtf8ToUtf16(script_u16, multiline_input);
-
-		ic_history_add(multiline_input.c_str());
-
-		tTJSVariant result;
-		ttstr error;
-		bool ok = SubmitAndWait(ttstr(script_u16.c_str()), result, error);
-
+		// 行処理は共有の ProcessLine へ (ドットコマンド/複数行/評価)。
+		// 出力は sink 経由で bbcode 色付けされる。
+		bool cont = ProcessLine(input, multiline_input, sink);
 		if (terminating_.load(std::memory_order_acquire)) break;
-
-		if (ok) {
-			ttstr resultStr = TVPPrettyPrint(result, g_repl_pp_depth, g_repl_pp_compact);
-			std::string resultUTF8;
-			TVPUtf16ToUtf8(resultUTF8, resultStr.AsStdString());
-			ic_printf("[green]=>[/] %s\n", BBEscape(resultUTF8).c_str());
-		} else {
-			std::string errorUTF8;
-			TVPUtf16ToUtf8(errorUTF8, error.AsStdString());
-			ic_printf("[red]%s[/]\n", BBEscape(errorUTF8).c_str());
-		}
-
-		multiline_input.clear();
+		if (!cont) { TVPTerminateAsync(0); break; }
 	}
 }
 
@@ -473,20 +484,88 @@ bool tTVPReplThread::ShouldStartREPL()
 // きちんと stdio をつなぎ直す。-repl 指定時にだけ呼ばれる。
 //---------------------------------------------------------------------------
 #ifdef _WIN32
+// -repl=new / -repl=window 指定時は、親や継承した既存コンソールに attach せず
+// 必ず新規コンソールウィンドウを開く。ターミナル(や別アプリ)から GUI を起動しつつ
+// REPL を起動元のコンソールに食い込ませたくない場合に使う。
+static bool ReplWantNewConsole()
+{
+	tTJSVariant val;
+	if (!TVPGetCommandLine(TJS_W("-repl"), &val)) return false;
+	ttstr s(val);
+	// new/window/separate はいずれも新規コンソールを強制する
+	// (起動元端末=CLI/シェルに食い込ませない)。
+	return (s == TJS_W("new") || s == TJS_W("window") || s == TJS_W("separate"));
+}
+
 // REPL 起動時に console が無ければ (アプリ起動時の TVPAttachWindowsConsole で
 // 親プロセスに attach できなかったケース) 最後の砦として AllocConsole を試みる。
 // stdio を CONIN$/CONOUT$ に張り直すのは icline が C stdin で isatty を見るため。
 static void ReplEnsureWindowsConsole()
 {
-	if (::GetConsoleWindow() == NULL) {
+	bool allocated = false; // 新規コンソールを作った(=conhost の可能性大)か
+	if (ReplWantNewConsole()) {
+		// 既存(親/継承)コンソールから切り離してから新規を割り当てる。
+		// FreeConsole はコンソール未所持なら no-op。起動元コンソールは他プロセス
+		// (シェル/CLI)所有のままなので影響しない。
+		::FreeConsole();
+		if (!::AllocConsole()) return;
+		allocated = true;
+	} else if (::GetConsoleWindow() == NULL) {
+		// 親(端末: WT の擬似コンソール等)に attach できればそれを使う。
+		// attach できない(端末から起動されていない)ときのみ新規確保。
 		if (!::AttachConsole(ATTACH_PARENT_PROCESS)) {
 			if (!::AllocConsole()) return;
+			allocated = true;
 		}
 	}
 	FILE *dummy;
 	freopen_s(&dummy, "CONIN$",  "r", stdin);
 	freopen_s(&dummy, "CONOUT$", "w", stdout);
 	freopen_s(&dummy, "CONOUT$", "w", stderr);
+
+	// 新規 AllocConsole したコンソールは既定で VT(ANSI) 処理が無効なため、
+	// isocline の色付け・入力行の最下部固定(カーソル制御)がデグレする
+	// (色が出ない / プロンプトが上に流れる)。VT を明示的に有効化し、
+	// さらに COLORTERM を立てて isocline に高カラーパレット=VT 経路を使わせる。
+#ifndef ENABLE_VIRTUAL_TERMINAL_PROCESSING
+#define ENABLE_VIRTUAL_TERMINAL_PROCESSING 0x0004
+#endif
+	HANDLE hOut = ::GetStdHandle(STD_OUTPUT_HANDLE);
+	if (hOut != NULL && hOut != INVALID_HANDLE_VALUE) {
+		DWORD m = 0;
+		if (::GetConsoleMode(hOut, &m))
+			::SetConsoleMode(hOut, m | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+	}
+	HANDLE hErr = ::GetStdHandle(STD_ERROR_HANDLE);
+	if (hErr != NULL && hErr != INVALID_HANDLE_VALUE) {
+		DWORD m = 0;
+		if (::GetConsoleMode(hErr, &m))
+			::SetConsoleMode(hErr, m | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+	}
+	// isocline は COLORTERM を getenv(CRT) で読む。未設定なら truecolor を与えて
+	// VT パレット経路(色 + カーソル制御)を選ばせる。既存値は尊重する。
+	// (SetEnvironmentVariable は CRT の getenv キャッシュに載らないため _putenv_s)
+	if (::getenv("COLORTERM") == nullptr)
+		::_putenv_s("COLORTERM", "truecolor");
+
+	// 新規コンソール(split/new)は既定でスクロールバック用に表示窓より大きい
+	// スクリーンバッファを持ち、レガシー conhost だとスクロール바ーが出て
+	// 最下行(入力欄)が隠れ、座標(キャレット)もずれる。バッファを表示窓サイズへ
+	// 合わせてスクロールバックを無くし、窓==バッファにする。
+	// (attach 継承コンソール=WT 等は相手の設定を壊さないよう対象外。新規確保時のみ)
+	if (allocated && hOut != NULL && hOut != INVALID_HANDLE_VALUE) {
+		CONSOLE_SCREEN_BUFFER_INFO info;
+		if (::GetConsoleScreenBufferInfo(hOut, &info)) {
+			SHORT winW = (SHORT)(info.srWindow.Right  - info.srWindow.Left + 1);
+			SHORT winH = (SHORT)(info.srWindow.Bottom - info.srWindow.Top  + 1);
+			COORD size = { winW, winH };
+			// まず窓を左上原点へ寄せてからバッファを縮める (縮小はこの順でないと失敗する)
+			SMALL_RECT rect = { 0, 0, (SHORT)(winW - 1), (SHORT)(winH - 1) };
+			::SetConsoleWindowInfo(hOut, TRUE, &rect);
+			::SetConsoleScreenBufferSize(hOut, size);
+			::SetConsoleWindowInfo(hOut, TRUE, &rect);
+		}
+	}
 }
 #else
 static void ReplEnsureWindowsConsole() {}
@@ -549,7 +628,9 @@ bool tTVPReplThread::IsCompleteStatement(const std::string& script)
 //---------------------------------------------------------------------------
 
 static tTVPReplThread *TVPScriptREPL = nullptr;
+#ifdef KRKRZ_USE_REPL_FILECHANNEL
 static tTVPReplFileChannel *TVPReplFileChan = nullptr;
+#endif
 static tTVPReplSocketChannel *TVPReplSocketChan = nullptr;
 
 void TVPCreateREPL()
@@ -558,9 +639,16 @@ void TVPCreateREPL()
 	// (-replsocket または env KRKRZ_REPL_SOCKET) は独立に起動できる。
 	// いずれか有効ならメインスレッド実行キューを使うので Reset する。
 	bool wantConsole = (TVPScriptREPL == nullptr) && tTVPReplThread::ShouldStartREPL();
-	bool wantFile    = (TVPReplFileChan == nullptr) && tTVPReplFileChannel::ShouldStart();
+	bool wantFile    = false;
+#ifdef KRKRZ_USE_REPL_FILECHANNEL
+	wantFile = (TVPReplFileChan == nullptr) && tTVPReplFileChannel::ShouldStart();
+#endif
 	bool wantSocket  = (TVPReplSocketChan == nullptr) && tTVPReplSocketChannel::ShouldStart();
-	if (!wantConsole && !wantFile && !wantSocket) return;
+	bool wantWeb     = false;
+#ifdef KRKRZ_REPL_WEB
+	wantWeb = TVPReplWeb::Wanted();
+#endif
+	if (!wantConsole && !wantFile && !wantSocket && !wantWeb) return;
 
 	TVPReplMainQueue::Reset();
 
@@ -568,12 +656,19 @@ void TVPCreateREPL()
 		ReplEnsureWindowsConsole();
 		TVPScriptREPL = new tTVPReplThread();
 	}
+#ifdef KRKRZ_USE_REPL_FILECHANNEL
 	if (wantFile) {
 		TVPReplFileChan = new tTVPReplFileChannel();
 	}
+#endif
 	if (wantSocket) {
 		TVPReplSocketChan = new tTVPReplSocketChannel();
 	}
+#ifdef KRKRZ_REPL_WEB
+	if (wantWeb) {
+		TVPReplWeb::Start();   // HTTP+SSE ブラウザビューワー (-replweb=<port>)
+	}
+#endif
 
 	// 例外で即終了しない / inform・MessageDlg を REPL コンソールへ流すための
 	// グローバルフラグを立てる ([[project_dap_pause_blocks_app]] 系の agent 駆動)。
@@ -584,14 +679,22 @@ void TVPDestroyREPL()
 {
 	// 先にキューを shutdown して、 ブロック中の worker / channel を起こす。
 	TVPReplMainQueue::Shutdown();
+#ifdef KRKRZ_REPL_WEB
+	TVPReplWeb::Stop();   // HTTP+SSE サーバ停止 (accept スレッド join / SSE 切断)
+	// 登録ハンドラの TJS クロージャをスクリプトエンジン終了前に解放する。
+	// サーバ未起動でも WebServer.register による登録は存在しうるので Stop とは別に呼ぶ。
+	TVPReplWeb::ClearHandlers();
+#endif
 	if (TVPReplSocketChan) {
 		delete TVPReplSocketChan;
 		TVPReplSocketChan = nullptr;
 	}
+#ifdef KRKRZ_USE_REPL_FILECHANNEL
 	if (TVPReplFileChan) {
 		delete TVPReplFileChan;
 		TVPReplFileChan = nullptr;
 	}
+#endif
 	if (TVPScriptREPL) {
 		delete TVPScriptREPL;
 		TVPScriptREPL = nullptr;
@@ -601,6 +704,12 @@ void TVPDestroyREPL()
 
 void TVPDrainREPL()
 {
+#ifdef TVP_USE_LOGCORE
+	// REPL がイベントポンプ外で main を回している間 (modal 等) も、
+	// チャネルスレッド発ログの TJS logging handler 配送を止めない。
+	// 投げた handler は TVPDeliverLoggingEvent 側で登録解除済みなので握りつぶしてよい。
+	try { TVPFlushQueuedLoggingEvents(); } catch(...) {}
+#endif
 	// console / file channel いずれの提出も共有キューが処理する。
 	TVPReplMainQueue::Drain();
 }

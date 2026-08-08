@@ -3,7 +3,9 @@
 @brief レイヤ再生用ビデオプレイヤ共通基底の実装
 *****************************************************************************/
 #include <windows.h>
-#include "tp_stub.h"
+// Track V-A: exe へ直接統合 (tp_stub 境界を撤去)。engine の実ヘッダを直接参照する。
+#include "tjsCommHead.h"
+#include "MsgIntf.h"       // TVPThrowExceptionMessage
 #include "LayerVideoBase.h"
 #include "MovieAudioSink.h"
 #include "D3D11OverlayWindow.h"
@@ -441,7 +443,7 @@ void __stdcall tTVPLayerVideoBase::SetVisible( bool b )
 void __stdcall tTVPLayerVideoBase::SetVideoBuffer( BYTE *buff1, BYTE *buff2, long size )
 {
 	if( buff1 == nullptr )
-		TVPThrowExceptionMessage( TJS_W("SetVideoBuffer Parameter Error") );
+		TVPThrowExceptionMessage(TVPSetVideoBufferParameterError );
 	// buff1/buff2 の 2 枚でダブルバッファ (エンジンが表を表示中に裏へ書いて
 	// ティアリングを避ける)。buff2 が無ければ単一バッファにフォールバック。
 	Buf[0] = buff1;

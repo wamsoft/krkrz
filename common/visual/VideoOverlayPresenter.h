@@ -37,6 +37,12 @@ public:
 	//! @brief pull を停止する (host から自身を登録解除)。object は保持 (replay 可)。
 	virtual void Deactivate() = 0;
 
+	//! @brief overlay の表示可否を設定する (WINVER の VideoOverlay.visible と同仕様。既定 false)。
+	//!        false の間、DrawDevice は presenter を pull せずゲーム画面を描く。再生ライフサイクル
+	//!        (Activate/Deactivate) とは独立で、再生中でも visible を切り替えると表示が切り替わる。
+	//!        WINVER は RenderVideoFrame 内で Visible を毎フレーム判定するのと等価。
+	virtual void SetVisible(bool visible) {}
+
 	//! @brief この presenter が YUV plane 経路 (UpdateFrameYUV + GPU 側 YUV→RGB) に対応するか。
 	//!        false の場合、呼び側は ARGB 経路 (UpdateFrame) を使う。
 	virtual bool SupportsYUV() const { return false; }

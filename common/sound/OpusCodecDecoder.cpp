@@ -183,9 +183,12 @@ class tTVPWD_Opus : public tTVPWaveDecoder
 	// 全体フォーマット (出力 PCM 用)
 	tTVPWaveFormat   Format{};
 
-	// 出力 gain (output_gain_q78 + -opus_gain 合算後の 16-bit Q7.8 値を
-	// opus_multistream_decoder_ctl(OPUS_SET_GAIN) で渡す)
+	// 出力 gain (output_gain_q78 + -opus_gain + 曲別コールバック を合算した
+	// 16-bit Q7.8 値を opus_multistream_decoder_ctl(OPUS_SET_GAIN) で渡す)
 	int              GainQ78Total = 0;
+	// 曲別ゲイン取得コールバック (WaveSoundBuffer.setGainQueryCallback) 由来の
+	// 追加ゲイン (Q7.8 dB)。Create 時にメインスレッドで解決して保持。
+	int              ExtraGainQ78 = 0;
 
 	// デコード中間バッファ (1 packet ぶん)。最大フレームサイズは 5760 (120ms @ 48kHz)
 	static constexpr int kMaxFrameSize = 5760;
@@ -219,6 +222,10 @@ public:
 		TeardownStream();
 		if (SyncInited) ogg_sync_clear(&Sync);
 	}
+
+	// 曲別ゲイン取得コールバック由来の追加ゲイン(dB)を設定する。
+	// InitDecoderFor が参照するので CheckFormat() より前に呼ぶこと。
+	void SetExtraGainDB(float db) { ExtraGainQ78 = (int)std::lround(db * 256.0); }
 
 	bool CheckFormat() {
 		// 最初の Ogg ページ群を読んで OpusHead / OpusTags を取得する。
@@ -464,9 +471,9 @@ private:
 			h.mapping);
 		if (err != OPUS_OK) return false;
 
-		// gain 設定 (Q7.8 dB)。head に書かれた gain + CLI -opus_gain を加算。
+		// gain 設定 (Q7.8 dB)。head の gain + CLI -opus_gain + 曲別コールバックを加算。
 		int cli_gain_q78 = (int)std::lround(gOpusGainDb * 256.0);
-		int total_q78 = (int)h.output_gain_q78 + cli_gain_q78;
+		int total_q78 = (int)h.output_gain_q78 + cli_gain_q78 + ExtraGainQ78;
 		if (total_q78 < -32768) total_q78 = -32768;
 		if (total_q78 >  32767) total_q78 =  32767;
 		opus_multistream_decoder_ctl(dec, OPUS_SET_GAIN(total_q78));
@@ -770,6 +777,7 @@ tTVPWaveDecoder *tTVPWDC_Opus::Create(const ttstr &storagename, const ttstr &ext
 	if (!stream) return nullptr;
 	try {
 		std::unique_ptr<tTVPWD_Opus> dec(new tTVPWD_Opus(std::move(stream)));
+		dec->SetExtraGainDB(TVPQueryUserSoundGainDB(storagename)); // 曲別コールバック (CheckFormat 前に設定)
 		if (!dec->CheckFormat()) return nullptr;
 		return dec.release();
 	} catch (...) {

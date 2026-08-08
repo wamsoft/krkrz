@@ -268,7 +268,7 @@ void tTVPSDLDrawDevice::CreateTexture()
 			if( !Texture ) {
 				const char *err = SDL_GetError();
 				TVPLOG_ERROR("tTVPSDLDrawDevice::CreateTexture() failed:{}", err);
-				TVPThrowExceptionMessage(TJS_W("Cannot Allocate SDL Texture"));
+				TVPThrowExceptionMessage(TVPCannotAllocateSDLTexture);
 				return;
 			}
 			void *textureBuffers;
@@ -569,7 +569,11 @@ tTVPSDLDrawDevice::ShowVideo()
 	// presenter 稼働中は動画のみを描く (動画が画面を覆う前提)。フレームの保持と
 	// テクスチャ管理は presenter 側 (SDLVideoPresenter.cpp) が行い、ここでは描画スレッドから
 	// pull するだけ。Render() が logical presentation + 背景クリア + present を担う。
+	// overlay の Visible=false (WINVER 仕様: 既定 false) の間は画面を占有せず、false を返して
+	// 通常のゲーム描画へ戻す。WINVER が RenderVideoFrame 内で Visible を判定するのと等価
+	// (SDL は presenter 登録中は画面占有なので、判定は presenter を pull する手前で行う)。
 	if (!VideoPresenter || !NIWindow || !mRenderer) return false;
+	if (!VideoPresenter->IsVisible()) return false;
 	tTVPSDLVideoPresenterContext ctx;
 	ctx.Renderer     = mRenderer;
 	ctx.TargetWidth  = NIWindow->GetInnerWidth();

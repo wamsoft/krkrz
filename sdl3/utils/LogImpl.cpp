@@ -27,7 +27,9 @@ static SDL_LogPriority TVPLogLevelToSDLPriority(TVPLogLevel level)
     }
 }
 
-#ifdef TVP_USE_LOGCORE
+// SDL_LogPriority → TVPLogLevel。LogCore 経路 (TVPSDLLogOutput) と、非 LogCore の
+// コンソール sink 転送 (TVPSDLLogOutputSink, REPLWEB 時のみ) の双方で使う。
+#if defined(TVP_USE_LOGCORE) || defined(KRKRZ_REPL_WEB)
 static TVPLogLevel TVPSDLPriorityToLogLevel(SDL_LogPriority pri)
 {
     switch (pri) {
@@ -197,9 +199,70 @@ void TVPLogDispatchLine(TVPLogLevel /*level*/, const char * /*utf8_line*/)
     // モバイル環境では SDL_SetLogOutputFunction を差し替えないため呼ばれない
 }
 
-// コンソール sink - モバイルでは REPL 不使用
+//---------------------------------------------------------------------------
+// コンソール sink
+//
+// LogCore を持たない環境 (端末を持たない一部プラットフォーム等) では全ログが
+// SDL_Log* 直行で、LogCore の g_console_sink dispatch を通らない。そのため -replweb
+// のブラウザ REPL にログが届かない。REPLWEB 有効時のみ SDL のログ出力関数を差し替え
+// て sink へ転送し、既定の SDL 出力 (プラットフォーム標準のログ出力等) へは引き続き
+// チェーンする (コンソール ⇄
+// ブラウザの両方に出る)。sink が実際にセットされたとき (replweb 起動時) だけ
+// 差し替えるので、通常時のログ挙動には影響しない。
+// REPLWEB 無効ビルド (MASTER 等) では従来どおり no-op スタブ。
+//---------------------------------------------------------------------------
+#ifdef KRKRZ_REPL_WEB
+
+#include <atomic>
+
+static std::atomic<TVPLogConsoleSinkFn> g_console_sink{nullptr};
+static SDL_LogOutputFunction           g_prev_log_output = nullptr;
+static void                           *g_prev_log_userdata = nullptr;
+static std::atomic<bool>               g_sink_installed{false};
+
+static void SDLCALL TVPSDLLogOutputSink(void *userdata, int category,
+                                        SDL_LogPriority priority, const char *message)
+{
+    if (message) {
+        if (auto hook = g_console_sink.load(std::memory_order_acquire)) {
+            // 戻り値は無視: 既定出力もそのまま継続させる (コンソール ⇄ web ミラー)。
+            hook(TVPSDLPriorityToLogLevel(priority), message);
+        }
+    }
+    // 差し替え前の SDL 既定出力 (プラットフォーム標準のログ出力等) へチェーン。
+    if (g_prev_log_output) {
+        g_prev_log_output(g_prev_log_userdata, category, priority, message);
+    }
+}
+
+void TVPLogSetConsoleSink(TVPLogConsoleSinkFn hook)
+{
+    g_console_sink.store(hook, std::memory_order_release);
+    // 初回の非 null hook セット時 (=replweb 起動時) にのみ SDL 出力関数を差し替える。
+    // 差し替え前の出力を退避して TVPSDLLogOutputSink からチェーン呼び出しする。
+    if (hook && !g_sink_installed.load(std::memory_order_acquire)) {
+        SDL_LogOutputFunction cur = nullptr; void *ud = nullptr;
+        SDL_GetLogOutputFunction(&cur, &ud);
+        if (cur != TVPSDLLogOutputSink) {
+            g_prev_log_output   = cur;
+            g_prev_log_userdata = ud;
+        }
+        SDL_SetLogOutputFunction(TVPSDLLogOutputSink, nullptr);
+        g_sink_installed.store(true, std::memory_order_release);
+    }
+}
+
+TVPLogConsoleSinkFn TVPLogGetConsoleSink()
+{
+    return g_console_sink.load(std::memory_order_acquire);
+}
+
+#else  // !KRKRZ_REPL_WEB : コンソール sink 消費者が無いので no-op スタブ
+
 void TVPLogSetConsoleSink(TVPLogConsoleSinkFn /*hook*/) {}
 TVPLogConsoleSinkFn TVPLogGetConsoleSink() { return nullptr; }
+
+#endif // KRKRZ_REPL_WEB
 
 // TJS logging handler - モバイルでは不使用
 void TVPAddLoggingHandler(tTJSVariantClosure /*clo*/) {}

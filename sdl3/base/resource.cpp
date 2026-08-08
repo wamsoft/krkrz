@@ -59,7 +59,7 @@ public:
     	    TVPUtf16ToUtf8(fname, q+1); // skip "/"
 			TVPAddLog(ttstr(TJS_W("Resource path: ")) + ttstr(fname.c_str()));
 		} else {
-			TVPThrowExceptionMessage(TJS_W("invalid path:%1"), name);
+			TVPThrowExceptionMessage(TVPInvalidPathName, name);
 		}
     }
 
@@ -78,7 +78,7 @@ public:
 			return CreateStreamFromSDL(path.c_str(), flags);
         }
 
-        TVPThrowExceptionMessage(TJS_W("Failed to open storage:readonly media"));
+        TVPThrowExceptionMessage(TVPFailedToOpenStorageReadonlyMedia);
 	}
 
     virtual void TJS_INTF_METHOD GetListAt(const ttstr &name, iTVPStorageLister * lister) override {

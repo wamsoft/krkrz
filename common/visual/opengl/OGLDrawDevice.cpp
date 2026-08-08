@@ -55,6 +55,7 @@ tTVPOGLDrawDevice::tTVPOGLDrawDevice(iTJSDispatch2 *self)
  , TextureInstance(nullptr)
  , MatrixInstance(nullptr)
  , GLContext(nullptr)
+ , InitGLESContext(nullptr)
  , DoCreateCanvas(false)
 #ifndef __WINVER__
  , VideoPresenter(nullptr)
@@ -105,7 +106,7 @@ tTVPOGLDrawDevice::tTVPOGLDrawDevice(iTJSDispatch2 *self)
 				if(TJS_FAILED(clo.Object->NativeInstanceSupport(TJS_NIS_GETINSTANCE, tTJSNC_Matrix32::ClassID, (iTJSNativeInstance**)&MatrixInstance)))
 				{
 					MatrixInstance = nullptr;
-					TVPThrowExceptionMessage(TJS_W("Cannot retrive matrix instance."));
+					TVPThrowExceptionMessage(TVPCannotRetriveInstance, TJS_W("matrix"));
 				}
 			}
 		}
@@ -180,7 +181,7 @@ void tTVPOGLDrawDevice::SetCanvasObject(const tTJSVariant & val)
 			if(TJS_FAILED(clo.Object->NativeInstanceSupport(TJS_NIS_GETINSTANCE, tTJSNC_Canvas::ClassID, (iTJSNativeInstance**)&CanvasInstance)))
 			{
 				CanvasInstance = nullptr;
-				TVPThrowExceptionMessage(TJS_W("Cannot retrive canvas instance."));
+				TVPThrowExceptionMessage(TVPCannotRetriveInstance, TJS_W("canvas"));
 			}
 		}
 	}
@@ -326,7 +327,7 @@ void tTVPOGLDrawDevice::CreateTexture() {
 					if(TJS_FAILED(clo.Object->NativeInstanceSupport(TJS_NIS_GETINSTANCE, tTJSNC_Texture::ClassID, (iTJSNativeInstance**)&TextureInstance)))
 					{
 						TextureInstance = nullptr;
-						TVPThrowExceptionMessage(TJS_W("Cannot retrive texture instance."));
+						TVPThrowExceptionMessage(TVPCannotRetriveInstance, TJS_W("texture"));
 					}
 				}
 			}
@@ -465,6 +466,10 @@ void tTVPOGLDrawDevice::DoneContext()
 void TJS_INTF_METHOD tTVPOGLDrawDevice::Destruct()
 {
 	DoneContext();
+	if (InitGLESContext) {
+		InitGLESContext->Release();
+		InitGLESContext = nullptr;
+	}
 	WindowObject.Clear();
 	if (Owner) Owner->Release(); Owner = nullptr;
 	if (Self) Self->Release(); Self = nullptr;
@@ -498,7 +503,10 @@ void TJS_INTF_METHOD tTVPOGLDrawDevice::SetWindowInterface(iTVPWindow * window)
 	if (context) {
 		context->MakeCurrent();
 		InitGLES();
-		context->Release();
+		// ここで Release すると (他に参照が無い場合) context が即破棄され
+		// カレントコンテキストが消えるため、デバイス寿命まで保持する
+		if (InitGLESContext) InitGLESContext->Release();
+		InitGLESContext = context;
 	}
 }
 
@@ -639,7 +647,10 @@ tTVPOGLDrawDevice::ShowVideo()
 	// presenter 稼働中は動画のみを描く (動画が画面を覆う前提)。フレームの保持と GLTexture 管理は
 	// presenter 側 (GLVideoPresenter.cpp) が行い、ここでは描画スレッド (GL context current) から
 	// pull するだけ。
+	// overlay の Visible=false (WINVER 仕様: 既定 false) の間は画面を占有せず、false を返して
+	// 通常のゲーム描画へ戻す。WINVER が RenderVideoFrame 内で Visible を判定するのと等価。
 	if( !VideoPresenter ) return false;
+	if( !VideoPresenter->IsVisible() ) return false;
 	glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 	tTVPGLVideoPresenterContext ctx;

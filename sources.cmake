@@ -32,10 +32,11 @@ win32/msg
 win32/utils
 win32/visual
 win32/movie
+external/pl_mpeg
 common/visual/IA32
 )
 
-set( KRKRZ_SRC 
+set( KRKRZ_SRC
 common/tjs2/tjs.cpp
 common/tjs2/tjs.tab.cpp
 common/tjs2/tjsArray.cpp
@@ -96,6 +97,7 @@ common/base/UtilStreams.cpp
 common/base/XP3Archive.cpp
 common/base/StorageCache.cpp
 common/environ/TouchPoint.cpp
+common/environ/PadManager.cpp
 common/extension/Extension.cpp
 common/msg/MsgIntf.cpp
 common/msg/ReadOptionDescUtil.cpp
@@ -174,15 +176,37 @@ common/visual/gl/WeightFunctor.cpp
 common/base/FuncStubs.cpp
 )
 
-if (KRKRZ_REPL)
+if (KRKRZ_REPL_CORE)
 list(APPEND KRKRZ_SRC
 	common/utils/REPL.cpp
-	# REPL メインスレッド実行キュー (console / file channel 共用) と
-	# -replfile= ファイル監視チャネル (エージェント駆動)。
+	# REPL メインスレッド実行キュー (console / file / web / socket 各チャネル共用)。
 	common/utils/ReplMainQueue.cpp
 	common/utils/ReplMainQueue.h
+)
+# -replfile= ファイル監視コマンドチャネル (エージェント駆動) と、その応答口を使う
+# file-based modal (confirm / ファイル選択 等を REPL 経由で応答)。ローカル
+# ファイルシステムを使うデスクトップ限定機能。KRKRZ_REPL_FILE=OFF (web-only 等)
+# では非コンパイル = リンク外。web REPL の modal は別実装 (ブラウザ側+web I/F 側)。
+if (KRKRZ_REPL_FILE)
+list(APPEND KRKRZ_SRC
 	common/utils/ReplFileChannel.cpp
 	common/utils/ReplFileChannel.h
+	common/utils/ReplModal.cpp
+	common/utils/ReplModal.h
+)
+endif()
+# ブラウザ REPL ビューワー (HTTP+SSE サーバ。-replweb=<port>)。
+# KRKRZ_REPL_WEB=OFF で完全除外 (ソースも非コンパイル)。
+# ReplWebIntf = TJS WebServer クラス (スクリプト/プラグインからのハンドラ登録口)。
+if (KRKRZ_REPL_WEB)
+list(APPEND KRKRZ_SRC
+	common/utils/ReplWebServer.cpp
+	common/utils/ReplWebServer.h
+	common/utils/ReplWebIntf.cpp
+	common/utils/ReplWebIntf.h
+)
+endif()
+list(APPEND KRKRZ_SRC
 	# abstract unix socket チャネル (Android/Linux)。CLI 引数の無い Android から
 	# adb 経由で REPL を叩く。-replsocket=<name> か env KRKRZ_REPL_SOCKET で有効化。
 	common/utils/ReplSocketChannel.cpp
@@ -205,6 +229,8 @@ common/visual/opengl/GLVideoPresenter.cpp
 common/visual/opengl/GLVideoPresenter.h
 common/visual/opengl/OGLViewportBackground.h
 common/visual/opengl/CanvasIntf.cpp
+common/visual/opengl/GLCompositorIntf.cpp
+common/visual/opengl/GLCompositorIntf.h
 common/visual/opengl/GLTexture.cpp
 common/visual/opengl/GLFrameBufferObject.cpp
 common/visual/opengl/GLEffect.cpp
@@ -248,13 +274,16 @@ win32/environ/TVPWindow.cpp
 win32/environ/VersionFormUnit.cpp
 win32/environ/WindowFormUnit.cpp
 win32/environ/WindowsUtil.cpp
+win32/environ/XInputPad.cpp
 win32/base/EventImpl.cpp
 win32/base/FileSelector.cpp
+win32/base/InputDialog.cpp
 win32/base/NativeEventQueue.cpp
 win32/base/PluginImpl.cpp
 win32/base/SusieArchive.cpp
 win32/base/ScriptMgnImpl.cpp
 win32/base/StorageImpl.cpp
+win32/base/ResourceBinaryMedia.cpp
 win32/base/SysInitImpl.cpp
 win32/base/SystemImpl.cpp
 win32/msg/MsgImpl.cpp
@@ -266,7 +295,6 @@ win32/utils/ClipboardImpl.cpp
 win32/utils/ThreadImpl.cpp
 win32/visual/BasicDrawDevice.cpp
 win32/visual/BitmapBitsAlloc.cpp
-win32/visual/DInputMgn.cpp
 win32/visual/DrawDeviceImpl.cpp
 win32/visual/GDIFontRasterizer.cpp
 win32/visual/GraphicsLoaderImpl.cpp
@@ -276,6 +304,16 @@ win32/visual/TVPScreen.cpp
 win32/visual/TVPSysFont.cpp
 win32/visual/VideoOvlImpl.cpp
 win32/visual/VideoPresenterD3D.cpp
+# Track V-A: krmovie を exe へ直接統合 (旧 STATIC lib + tp_stub 境界を撤去)。
+# 動画デコーダ本体は movie-player (webm) / pl_mpeg (mpeg) / MF SourceReader / MediaEngine。
+win32/movie/krmovie.cpp
+win32/movie/krlmovie.cpp
+win32/movie/LayerVideoBase.cpp
+win32/movie/MFSourceReaderVideo.cpp
+win32/movie/Mpeg1Video.cpp
+win32/movie/MediaEngineVideo.cpp
+win32/movie/D3D11OverlayWindow.cpp
+win32/movie/webplayer.cpp
 win32/visual/D3D11DialogRenderer.cpp
 win32/visual/D3D11DialogRenderer.h
 win32/visual/VSyncTimingThread.cpp
@@ -591,7 +629,10 @@ if (KRKRZ_USE_ELEMENTS)
 	# Agent クラス本体は common 化 (SDL3 / WINVER 両対応)。入力注入だけ AgentInput
 	# seam でプラットフォーム分離する (sdl3 = SendMouseMessage/SendMessage、
 	# win32 = OnMouse*/OnKey*)。ダイアログ制御・text・captureScreen は共通。
-	if (KRKRZ_REPL)
+	# web 専用ビルド (KRKRZ_REPL_WEB のみ) でも KRKRZ_USE_REPL が立ち、
+	# ScriptMgnIntf が #if defined(KRKRZ_HAS_ELEMENTS) && defined(KRKRZ_USE_REPL)
+	# で Agent 登録を参照するため、REPL コア有効時は常にビルドする。
+	if (KRKRZ_REPL_CORE)
 		list(APPEND KRKRZ_SRC
 			common/environ/AgentControlIntf.cpp
 			common/environ/AgentControlIntf.h

@@ -42,6 +42,10 @@ public:
 	//! @brief 現在の動画フレームを ctx.Renderer へ描画する。
 	//! @return 何か描いたら true。まだフレームが無い等で描かなければ false。
 	virtual bool TJS_INTF_METHOD RenderVideoFrame( const tTVPSDLVideoPresenterContext & ctx ) = 0;
+
+	//! @brief overlay が表示状態か (WINVER 仕様: 既定 false)。false の間は DrawDevice が
+	//!        presenter を pull せずゲーム画面を描く。既定実装は true (後方互換)。
+	virtual bool TJS_INTF_METHOD IsVisible() const { return true; }
 };
 
 //! @brief SDLDrawDevice 側が実装する presenter 登録インターフェース

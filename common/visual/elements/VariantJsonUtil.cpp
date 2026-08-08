@@ -77,8 +77,7 @@ void SerializeObject(iTJSDispatch2* obj, std::string& out,
 
 	for (iTJSDispatch2* p : stack) {
 		if (p == obj) {
-			TVPThrowExceptionMessage(
-				TJS_W("cannot serialize cyclic reference to JSON"));
+			TVPThrowExceptionMessage(TVPCannotSerializeCyclicReferenceToJSON);
 		}
 	}
 
@@ -121,8 +120,7 @@ void SerializeObject(iTJSDispatch2* obj, std::string& out,
 		return;
 	}
 
-	TVPThrowExceptionMessage(
-		TJS_W("cannot serialize object to JSON (only Dictionary/Array supported)"));
+	TVPThrowExceptionMessage(TVPCannotSerializeObjectToJSONOnlyDictionaryArraySupported);
 }
 
 void SerializeVariant(const tTJSVariant& v, std::string& out,
@@ -141,8 +139,7 @@ void SerializeVariant(const tTJSVariant& v, std::string& out,
 	case tvtReal: {
 		double d = (double)v.AsReal();
 		if (!std::isfinite(d)) {
-			TVPThrowExceptionMessage(
-				TJS_W("cannot serialize non-finite real (inf/nan) to JSON"));
+			TVPThrowExceptionMessage(TVPCannotSerializeNonFiniteRealInfNanToJSON);
 		}
 		// 往復可能な最短表現: まず %.15g、 復元値がずれるときだけ %.17g
 		char buf[64];
@@ -160,8 +157,7 @@ void SerializeVariant(const tTJSVariant& v, std::string& out,
 		SerializeObject(v.AsObjectNoAddRef(), out, stack);
 		break;
 	default: // tvtOctet
-		TVPThrowExceptionMessage(
-			TJS_W("cannot serialize octet to JSON"));
+		TVPThrowExceptionMessage(TVPCannotSerializeOctetToJSON);
 	}
 }
 

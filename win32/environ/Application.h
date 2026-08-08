@@ -10,6 +10,9 @@
 #include <cstdint>
 #include <functional>
 
+#include "PadManager.h"
+#include "XInputPad.h"
+
 //---------------------------------------------------------------------------
 // memory allocation class
 //---------------------------------------------------------------------------
@@ -219,8 +222,6 @@ public:
 		return windows_list_.empty() ? nullptr : windows_list_[0];
 	}
 
-	void FreeDirectInputDeviceForWindows();
-
 	bool ProcessMessage( MSG &msg );
 	void ProcessMessages();
 	void HandleMessage();
@@ -326,6 +327,46 @@ public:
 
 	// キー押し下げ状態取得
 	bool GetAsyncKeyState(tjs_uint keycode, bool getcurrent);
+
+	// -------------------------------------------------------------
+	// ゲームパッド (XInput バックエンド。0=最後に操作したパッドの別名 / 1..N=実パッド)
+	// -------------------------------------------------------------
+
+	// パッド軸 ID (doc/Gamepad.md §3。値は SDL_GamepadAxis と同値)
+	enum {
+		TVP_PAD_AXIS_LEFTX         = 0,
+		TVP_PAD_AXIS_LEFTY         = 1,
+		TVP_PAD_AXIS_RIGHTX        = 2,
+		TVP_PAD_AXIS_RIGHTY        = 3,
+		TVP_PAD_AXIS_LEFT_TRIGGER  = 4,
+		TVP_PAD_AXIS_RIGHT_TRIGGER = 5,
+		TVP_PAD_AXIS_COUNT         = 6,
+	};
+
+	tjs_uint32 GetPadState(int no) { return PadManager_.GetPadState(no); }
+	float GetPadAxis(int no, int axisId) { return PadManager_.GetPadAxis(no, axisId); }
+	tjs_string GetJoypadType(int no) { return PadManager_.GetJoypadType(no); }
+	tjs_int GetJoypadCount() { return PadManager_.GetJoypadCount(); }
+	bool HasJoypad(int no) { return PadManager_.HasJoypad(no); }
+	bool RumbleGamepad(int no, int low, int high, int duration_ms) { return PadManager_.Rumble(no, low, high, duration_ms); }
+	bool StopRumbleGamepad(int no) { return PadManager_.StopRumble(no); }
+
+	// パッド機能の有効/無効 (System.padEnabled)。CLI -joypad より優先。
+	void SetJoypadEnabled(bool b) { PadManager_.SetEnabled(b); }
+	bool GetJoypadEnabled() { return PadManager_.IsEnabled(); }
+
+	// パッド状態を取り込みキーイベント (VK_PAD*) を生成する。毎フレーム呼ぶ。
+	// windowActive=false の間は全キー解放扱い。
+	void PadPoll(bool windowActive);
+	const std::vector<int>& PadUppedKeys()  const { return PadManager_.GetUppedKeys(); }
+	const std::vector<int>& PadDownedKeys() const { return PadManager_.GetDownedKeys(); }
+	const std::vector<int>& PadRepeatKeys() const { return PadManager_.GetRepeatKeys(); }
+	// パッドキーの押下状態 (論理 0 = 最後に操作したパッド基準)
+	bool GetPadKeyAsyncState(tjs_uint keycode) { return PadManager_.GetAsyncKeyState(keycode); }
+
+private:
+	tTVPPadManager PadManager_;
+	tTVPXInputPadProvider PadProvider_;
 };
 std::vector<std::string>* LoadLinesFromFile( const tjs_string& path );
 

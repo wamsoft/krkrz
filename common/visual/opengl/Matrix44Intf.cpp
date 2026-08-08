@@ -229,7 +229,7 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/set)
 					tTJSVariant tmp;
 					for( tjs_int i = 0; i < 16; i++ ) {
 						if(TJS_FAILED(clo.Object->PropGetByNum(TJS_MEMBERMUSTEXIST, i, &tmp, clo.ObjThis)))
-							TVPThrowExceptionMessage( TJS_W("Insufficient number of arrays.") );
+							TVPThrowExceptionMessage(TVPInsufficientNumberOfArrays );
 						a[i] = (tjs_real)tmp;
 					}
 					_this->Set( a );

@@ -101,17 +101,18 @@ struct tTVPFontAndCharacterData
 {
 	tTVPFont Font;
 	tjs_uint32 FontHash;
-	tjs_char Character;
+	tjs_uint32 Character; //!< Unicode コードポイント (astral 面=サロゲート結合済み)
 	tjs_int BlurLevel;
 	tjs_int BlurWidth;
 	bool Antialiased;
 	bool Blured;
 	bool Hinting;
+	tjs_int EmojiPresentation = TVP_EMOJI_PRESENTATION_DEFAULT; //!< 文字単位の VS15/VS16 指定
 	bool operator == (const tTVPFontAndCharacterData &rhs) const {
 		return Character == rhs.Character && Font == rhs.Font &&
 			Antialiased == rhs.Antialiased && BlurLevel == rhs.BlurLevel &&
 			BlurWidth == rhs.BlurWidth && Blured == rhs.Blured &&
-			Hinting == rhs.Hinting;
+			Hinting == rhs.Hinting && EmojiPresentation == rhs.EmojiPresentation;
 	}
 };
 //---------------------------------------------------------------------------
@@ -126,6 +127,7 @@ public:
 		v ^= val.Character;
 		v ^= val.Blured?1:0;
 		v ^= val.BlurLevel ^ val.BlurWidth;
+		v ^= val.EmojiPresentation << 6;
 		return v;
 	}
 };

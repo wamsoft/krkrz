@@ -18,6 +18,11 @@
 #include "PluginImpl.h"
 #include "SysInitIntf.h"
 #include "ThreadIntf.h"
+#include "RealFFT.h"
+#include "tjsDictionary.h"   // TJSCreateDictionaryObject
+#include "tjsArray.h"        // TJSCreateArrayObject
+#include <math.h>
+#include <vector>
 #include "Random.h"
 #include "UtilStreams.h"
 #include "TickCount.h"
@@ -105,6 +110,17 @@ tTJSNI_QueueSoundBuffer::tTJSNI_QueueSoundBuffer() : Paused(false)
 	Volume = 100000;
 	Volume2 = 100000;
 	Pan = 0;
+	// 3D 定位 (既定は無効=非空間化。miniaudio の既定値に合わせる)
+	Use3D = false;
+	PosX = PosY = PosZ = 0.0f;
+	VelX = VelY = VelZ = 0.0f;
+	ConeDirX = 0.0f; ConeDirY = 0.0f; ConeDirZ = -1.0f; // miniaudio 既定の前方向
+	ConeInnerRad = 6.283185f; ConeOuterRad = 6.283185f; ConeOuterGain = 0.0f; // 2π=全方位(コーン無効相当)
+	MinDistance = 1.0f;
+	MaxDistance = 3.402823466e+38f; // FLT_MAX (miniaudio 既定)
+	RolloffFactor = 1.0f;
+	DopplerFactor = 1.0f;
+	AttenuationModel = 1; // inverse (miniaudio 既定)
 	for( tjs_uint i = 0; i < BufferCount; i++ ) {
 		Buffer[i] = nullptr;
 	}
@@ -444,11 +460,11 @@ void tTJSNI_QueueSoundBuffer::StartPlay()
 			} else if( param.BitsPerSample == 16 ) {
 				param.SampleType = astInt16;
 			} else {
-				TVPThrowExceptionMessage(TJS_W("Invalid format(BitsPerSample)."));
+				TVPThrowExceptionMessage(TVPInvalidFormatBitsPerSample);
 			}
 			Stream = TVPCreateAudioStream( param );
 			if( Stream == nullptr ) {
-				TVPThrowExceptionMessage(TJS_W("Faild to create audio stream."));
+				TVPThrowExceptionMessage(TVPFaildToCreateAudioStream);
 			}
 			// audio thread が完了 buffer を consumed ring に積んだら decode thread を起こす。
 			// 起こされた側 (Execute ループ) は Owner->DrainConsumedBuffers() で取り出す。
@@ -461,6 +477,7 @@ void tTJSNI_QueueSoundBuffer::StartPlay()
 			// reset volume, sound position and frequency
 			SetVolumeToStream();
 			SetFrequencyToStream();
+			Set3DParamsToStream(); // キャッシュ済み 3D 状態を新 Stream へ適用
 		}
 
 		// reset filter chain
@@ -735,8 +752,75 @@ void tTJSNI_QueueSoundBuffer::SetPan(tjs_int v) {
 	if(v < -100000) v = -100000;
 	if(v > 100000) v = 100000;
 	if( Pan != v ) {
+		Pan = v;
 		SetVolumeToStream();
 	}
+}
+//---------------------------------------------------------------------------
+// 3D 定位: キャッシュ済みパラメータを Stream (ma_sound) へ一括適用する。
+// Stream 生成後 (Play 時) と、各 setter で Stream が既にある場合に呼ばれる。
+void tTJSNI_QueueSoundBuffer::Set3DParamsToStream() {
+	if( !Stream ) return;
+	Stream->SetSpatializationEnabled( Use3D );
+	if( !Use3D ) return; // 無効時は位置等を送らない (非空間化パススルー)
+	Stream->Set3DAttenuationModel( AttenuationModel );
+	Stream->Set3DMinDistance( MinDistance );
+	Stream->Set3DMaxDistance( MaxDistance );
+	Stream->Set3DRolloff( RolloffFactor );
+	Stream->Set3DDopplerFactor( DopplerFactor );
+	Stream->Set3DPosition( PosX, PosY, PosZ );
+	Stream->Set3DVelocity( VelX, VelY, VelZ );
+	Stream->Set3DConeDirection( ConeDirX, ConeDirY, ConeDirZ );
+	Stream->Set3DCone( ConeInnerRad, ConeOuterRad, ConeOuterGain );
+}
+//---------------------------------------------------------------------------
+void tTJSNI_QueueSoundBuffer::SetUse3D(bool b) {
+	if( Use3D != b ) {
+		Use3D = b;
+		Set3DParamsToStream();
+	}
+}
+//---------------------------------------------------------------------------
+void tTJSNI_QueueSoundBuffer::SetPos(float x, float y, float z) {
+	PosX = x; PosY = y; PosZ = z;
+	if( Stream && Use3D ) Stream->Set3DPosition( x, y, z );
+}
+void tTJSNI_QueueSoundBuffer::SetPosX(float v) { SetPos( v, PosY, PosZ ); }
+void tTJSNI_QueueSoundBuffer::SetPosY(float v) { SetPos( PosX, v, PosZ ); }
+void tTJSNI_QueueSoundBuffer::SetPosZ(float v) { SetPos( PosX, PosY, v ); }
+//---------------------------------------------------------------------------
+void tTJSNI_QueueSoundBuffer::Set3DVelocity(float x, float y, float z) {
+	VelX = x; VelY = y; VelZ = z;
+	if( Stream && Use3D ) Stream->Set3DVelocity( x, y, z );
+}
+void tTJSNI_QueueSoundBuffer::Set3DConeDirection(float x, float y, float z) {
+	ConeDirX = x; ConeDirY = y; ConeDirZ = z;
+	if( Stream && Use3D ) Stream->Set3DConeDirection( x, y, z );
+}
+void tTJSNI_QueueSoundBuffer::Set3DCone(float innerAngleRad, float outerAngleRad, float outerGain) {
+	ConeInnerRad = innerAngleRad; ConeOuterRad = outerAngleRad; ConeOuterGain = outerGain;
+	if( Stream && Use3D ) Stream->Set3DCone( innerAngleRad, outerAngleRad, outerGain );
+}
+void tTJSNI_QueueSoundBuffer::SetMinDistance(float v) {
+	MinDistance = v;
+	if( Stream && Use3D ) Stream->Set3DMinDistance( v );
+}
+void tTJSNI_QueueSoundBuffer::SetMaxDistance(float v) {
+	MaxDistance = v;
+	if( Stream && Use3D ) Stream->Set3DMaxDistance( v );
+}
+void tTJSNI_QueueSoundBuffer::SetRolloffFactor(float v) {
+	RolloffFactor = v;
+	if( Stream && Use3D ) Stream->Set3DRolloff( v );
+}
+void tTJSNI_QueueSoundBuffer::SetDopplerFactor(float v) {
+	DopplerFactor = v;
+	if( Stream && Use3D ) Stream->Set3DDopplerFactor( v );
+}
+void tTJSNI_QueueSoundBuffer::SetAttenuationModel(tjs_int m) {
+	if( m < 0 ) m = 0; if( m > 3 ) m = 3;
+	AttenuationModel = m;
+	if( Stream && Use3D ) Stream->Set3DAttenuationModel( m );
 }
 //---------------------------------------------------------------------------
 void tTJSNI_QueueSoundBuffer::SetGlobalVolume(tjs_int v) {
@@ -871,6 +955,152 @@ tjs_int tTJSNI_QueueSoundBuffer::GetVisBuffer(tjs_int16 *dest, tjs_int numsample
 	return writtensamples;
 }
 //---------------------------------------------------------------------------
+// lip-sync / 解析系。GetVisBuffer(...,1,...) のモノラルダウンミックス+再生位置
+// 同期を流用し、C++ 側で RMS / スペクトル / 母音推定を行う。
+//---------------------------------------------------------------------------
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+static const tjs_int TVP_LIPSYNC_FFT = 1024; // 解析 FFT サイズ (~23ms @44.1kHz)
+
+//---------------------------------------------------------------------------
+bool tTJSNI_QueueSoundBuffer::GetSoundLevel(float &rms, float &peak,
+	tjs_int windowsamples, tjs_int aheadsamples)
+{
+	rms = 0.0f; peak = 0.0f;
+	if(!UseVisBuffer) { SetUseVisBuffer(true); return false; } // 次フレームから有効
+	if(windowsamples <= 0) windowsamples = TVP_LIPSYNC_FFT;
+	if(windowsamples > 16384) windowsamples = 16384;
+
+	std::vector<tjs_int16> tmp(windowsamples);
+	tjs_int got = GetVisBuffer(tmp.data(), windowsamples, 1, aheadsamples);
+	if(got <= 0) return false;
+
+	double sum = 0.0;
+	tjs_int pk = 0;
+	for(tjs_int i = 0; i < got; i++) {
+		tjs_int s = tmp[i];
+		tjs_int a = (s < 0) ? -s : s;
+		if(a > pk) pk = a;
+		double f = tmp[i] / 32768.0;
+		sum += f * f;
+	}
+	rms  = (float)sqrt(sum / got);
+	peak = (float)(pk / 32768.0);
+	return true;
+}
+//---------------------------------------------------------------------------
+bool tTJSNI_QueueSoundBuffer::ComputeMagnitude(float *mag, tjs_int fftsize, tjs_int aheadsamples)
+{
+	if(!UseVisBuffer) { SetUseVisBuffer(true); return false; }
+
+	// FFT ワークの遅延確保 (サイズ変化時のみ再確保。ip[0]=0 で rdft が初回に内部初期化)
+	if((tjs_int)AnalyzeWork.size() != fftsize) {
+		AnalyzeWork.assign(fftsize, 0.0f);
+		AnalyzeIp.assign(2 + (int)sqrt((double)fftsize) + 2, 0);
+		AnalyzeW.assign(fftsize / 2, 0.0f);
+		AnalyzeWindow.assign(fftsize, 0.0f);
+		for(tjs_int i = 0; i < fftsize; i++)
+			AnalyzeWindow[i] = (float)(0.5 - 0.5 * cos(2.0 * M_PI * i / (fftsize - 1))); // Hann
+	}
+
+	std::vector<tjs_int16> tmp(fftsize);
+	tjs_int got = GetVisBuffer(tmp.data(), fftsize, 1, aheadsamples);
+	if(got <= 0) return false;
+
+	for(tjs_int i = 0; i < fftsize; i++) {
+		float s = (i < got) ? (tmp[i] / 32768.0f) : 0.0f; // 不足分はゼロ詰め
+		AnalyzeWork[i] = s * AnalyzeWindow[i];
+	}
+
+	// Ooura 実 FFT。出力パッキング: a[0]=Re[0](DC), a[1]=Re[N/2](Nyq),
+	// a[2k]=Re[k], a[2k+1]=Im[k] (k=1..N/2-1)。
+#if defined(_M_IX86) || defined(_M_X64) || defined(__i386__) || defined(__x86_64__)
+	rdft_sse(fftsize, 1, AnalyzeWork.data(), AnalyzeIp.data(), AnalyzeW.data());
+#elif defined(__ARM_NEON) || defined(__aarch64__)
+	rdft_neon(fftsize, 1, AnalyzeWork.data(), AnalyzeIp.data(), AnalyzeW.data());
+#else
+	rdft(fftsize, 1, AnalyzeWork.data(), AnalyzeIp.data(), AnalyzeW.data());
+#endif
+
+	tjs_int half = fftsize / 2;
+	float inv = 1.0f / fftsize;
+	mag[0] = (float)fabs(AnalyzeWork[0]) * inv; // DC
+	for(tjs_int k = 1; k < half; k++) {
+		float re = AnalyzeWork[2 * k];
+		float im = AnalyzeWork[2 * k + 1];
+		mag[k] = sqrtf(re * re + im * im) * inv;
+	}
+	return true;
+}
+//---------------------------------------------------------------------------
+tjs_int tTJSNI_QueueSoundBuffer::GetSoundSpectrum(float *bands, tjs_int numbands, tjs_int aheadsamples)
+{
+	for(tjs_int i = 0; i < numbands; i++) bands[i] = 0.0f;
+	if(numbands <= 0) return 0;
+
+	const tjs_int fftsize = TVP_LIPSYNC_FFT;
+	tjs_int half = fftsize / 2;
+	std::vector<float> mag(half);
+	if(!ComputeMagnitude(mag.data(), fftsize, aheadsamples)) return 0;
+
+	// bin 1..half-1 を対数配置で numbands に集約 (RMS)
+	double minb = 1.0, maxb = (double)half;
+	for(tjs_int b = 0; b < numbands; b++) {
+		double lo = minb * pow(maxb / minb, (double)b / numbands);
+		double hi = minb * pow(maxb / minb, (double)(b + 1) / numbands);
+		tjs_int i0 = (tjs_int)lo;
+		tjs_int i1 = (tjs_int)hi;
+		if(i0 < 1) i0 = 1;
+		if(i1 <= i0) i1 = i0 + 1;
+		if(i1 > half) i1 = half;
+		double e = 0.0;
+		for(tjs_int i = i0; i < i1; i++) e += (double)mag[i] * mag[i];
+		bands[b] = (float)sqrt(e / (i1 - i0));
+	}
+	return numbands;
+}
+//---------------------------------------------------------------------------
+bool tTJSNI_QueueSoundBuffer::GetVowel(float *weights, tjs_int aheadsamples)
+{
+	for(int i = 0; i < 5; i++) weights[i] = 0.0f;
+
+	const tjs_int fftsize = TVP_LIPSYNC_FFT;
+	tjs_int half = fftsize / 2;
+	std::vector<float> mag(half);
+	if(!ComputeMagnitude(mag.data(), fftsize, aheadsamples)) return false;
+
+	tjs_int sr = (tjs_int)InputFormat.SamplesPerSec;
+	if(sr <= 0) sr = 44100;
+
+	// 日本語 5 母音の代表フォルマント (F1, F2) [Hz]: a, i, u, e, o
+	static const float F1[5] = { 800.0f, 300.0f, 350.0f, 500.0f, 500.0f };
+	static const float F2[5] = { 1200.0f, 2300.0f, 1200.0f, 1900.0f, 900.0f };
+
+	// 指定周波数近傍 (±15%+50Hz) のエネルギー総和
+	auto energyAround = [&](float hz) -> double {
+		float bw = hz * 0.15f + 50.0f;
+		tjs_int i0 = (tjs_int)((hz - bw) * fftsize / sr);
+		tjs_int i1 = (tjs_int)((hz + bw) * fftsize / sr);
+		if(i0 < 1) i0 = 1;
+		if(i1 > half) i1 = half;
+		if(i1 <= i0) return 0.0;
+		double e = 0.0;
+		for(tjs_int i = i0; i < i1; i++) e += (double)mag[i] * mag[i];
+		return e;
+	};
+
+	double sc[5], total = 0.0;
+	for(int v = 0; v < 5; v++) {
+		sc[v] = energyAround(F1[v]) + energyAround(F2[v]);
+		total += sc[v];
+	}
+	if(total <= 1e-9) return false; // 無音 / フォルマント帯域にエネルギー無し
+
+	for(int v = 0; v < 5; v++) weights[v] = (float)(sc[v] / total);
+	return true;
+}
+//---------------------------------------------------------------------------
 
 
 //---------------------------------------------------------------------------
@@ -955,6 +1185,85 @@ TJS_BEGIN_NATIVE_PROP_DECL(useVisBuffer)
 	TJS_END_NATIVE_PROP_SETTER
 }
 TJS_END_NATIVE_PROP_DECL_OUTER(cls, useVisBuffer)
+//----------------------------------------------------------------------
+// lip-sync / 解析 API。いずれも要 useVisBuffer (未設定なら自動有効化し、その回は
+// 初期値を返す)。ahead は出力レイテンシ補正用の先読みサンプル数 (既定 0)。
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/getSoundLevel)
+{
+	// 再生カーソル付近の音量。%[ rms:.., peak:.. ] (0.0〜1.0) を返す。
+	TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_QueueSoundBuffer);
+
+	tjs_int ahead  = (numparams >= 1) ? (tjs_int)*param[0] : 0;
+	tjs_int window = (numparams >= 2) ? (tjs_int)*param[1] : 0; // 0 = 既定
+
+	float rms = 0.0f, peak = 0.0f;
+	_this->GetSoundLevel(rms, peak, window, ahead);
+
+	if(result) {
+		iTJSDispatch2 *dic = TJSCreateDictionaryObject();
+		tTJSVariant v;
+		v = (tjs_real)rms;  dic->PropSet(TJS_MEMBERENSURE, TJS_W("rms"),  NULL, &v, dic);
+		v = (tjs_real)peak; dic->PropSet(TJS_MEMBERENSURE, TJS_W("peak"), NULL, &v, dic);
+		*result = tTJSVariant(dic, dic);
+		dic->Release();
+	}
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_METHOD_DECL_OUTER(/*object to register*/cls, /*func. name*/getSoundLevel)
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/getSoundSpectrum)
+{
+	// ログ配置 numbands バンドのスペクトルエネルギーを配列で返す。
+	TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_QueueSoundBuffer);
+
+	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
+	tjs_int numbands = (tjs_int)*param[0];
+	if(numbands < 1) numbands = 1;
+	if(numbands > 256) numbands = 256;
+	tjs_int ahead = (numparams >= 2) ? (tjs_int)*param[1] : 0;
+
+	std::vector<float> bands(numbands);
+	_this->GetSoundSpectrum(bands.data(), numbands, ahead);
+
+	if(result) {
+		iTJSDispatch2 *arr = TJSCreateArrayObject();
+		for(tjs_int i = 0; i < numbands; i++) {
+			tTJSVariant v; v = (tjs_real)bands[i];
+			arr->PropSetByNum(TJS_MEMBERENSURE, i, &v, arr);
+		}
+		*result = tTJSVariant(arr, arr);
+		arr->Release();
+	}
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_METHOD_DECL_OUTER(/*object to register*/cls, /*func. name*/getSoundSpectrum)
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/getVowel)
+{
+	// 日本語 5 母音の推定重み %[ a:,i:,u:,e:,o:, voiced: ] を返す (合計 ~1.0)。
+	TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_QueueSoundBuffer);
+
+	tjs_int ahead = (numparams >= 1) ? (tjs_int)*param[0] : 0;
+
+	float w[5];
+	bool voiced = _this->GetVowel(w, ahead);
+
+	if(result) {
+		iTJSDispatch2 *dic = TJSCreateDictionaryObject();
+		static const tjs_char *names[5] = { TJS_W("a"), TJS_W("i"), TJS_W("u"), TJS_W("e"), TJS_W("o") };
+		for(int i = 0; i < 5; i++) {
+			tTJSVariant v; v = (tjs_real)w[i];
+			dic->PropSet(TJS_MEMBERENSURE, names[i], NULL, &v, dic);
+		}
+		tTJSVariant vv; vv = (tjs_int)(voiced ? 1 : 0);
+		dic->PropSet(TJS_MEMBERENSURE, TJS_W("voiced"), NULL, &vv, dic);
+		*result = tTJSVariant(dic, dic);
+		dic->Release();
+	}
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_METHOD_DECL_OUTER(/*object to register*/cls, /*func. name*/getVowel)
 //----------------------------------------------------------------------
 	return cls;
 }

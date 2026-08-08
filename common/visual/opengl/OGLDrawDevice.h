@@ -37,6 +37,11 @@ class tTVPOGLDrawDevice : public tTVPDrawDevice
 	tTJSVariant WindowObject;
 
 	class iTVPGLContext *GLContext;
+	// SetWindowInterface (InitGLES) 時に取得した context の保持用。
+	// tTVPEGLContext は参照が尽きると即破棄されるため、保持しないと
+	// SetTargetWindow 前にスクリプトが Texture 等を生成した時点で
+	// カレントコンテキストが消えていて GL 呼び出しが全て失敗する
+	class iTVPGLContext *InitGLESContext;
 	GLTextureDrawer TextureDrawer;
 
 	// primaryLayer 描画用テクスチャ

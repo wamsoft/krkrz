@@ -66,7 +66,7 @@ tTVPCharacterData::tTVPCharacterData( const tjs_uint8 * indata,
 void tTVPCharacterData::Expand()
 {
 	if( FullColored )
-		TVPThrowExceptionMessage( TJS_W("unimplemented: tTVPCharacterData::Expand for FullColored") );
+		TVPThrowExceptionMessage(TVPUnimplementedCharacterDataForFullColored, TJS_W("Expand"));
 
 	// expand the bitmap stored in 1bpp, to 8bpp
 	tjs_int newpitch = CalcAlignSize( BlackBoxX );
@@ -90,7 +90,7 @@ void tTVPCharacterData::Expand()
 void tTVPCharacterData::Blur(tjs_int blurlevel, tjs_int blurwidth)
 {
 	if( FullColored )
-		TVPThrowExceptionMessage( TJS_W("unimplemented: tTVPCharacterData::Blur for FullColored") );
+		TVPThrowExceptionMessage(TVPUnimplementedCharacterDataForFullColored, TJS_W("Blur"));
 
 	// blur the bitmap with given parameters
 	// blur the bitmap
@@ -139,7 +139,7 @@ void tTVPCharacterData::Blur()
 void tTVPCharacterData::Bold(tjs_int size)
 {
 	if( FullColored )
-		TVPThrowExceptionMessage( TJS_W("unimplemented: tTVPCharacterData::Bold for FullColored") );
+		TVPThrowExceptionMessage(TVPUnimplementedCharacterDataForFullColored, TJS_W("Bold"));
 
 	// enbold the bitmap for 65-level grayscale bitmap
 	if(size < 0) size = -size;
@@ -184,7 +184,7 @@ void tTVPCharacterData::Bold(tjs_int size)
 void tTVPCharacterData::Bold2(tjs_int size)
 {
 	if( FullColored )
-		TVPThrowExceptionMessage( TJS_W("unimplemented: tTVPCharacterData::Bold2 for FullColored") );
+		TVPThrowExceptionMessage(TVPUnimplementedCharacterDataForFullColored, TJS_W("Bold2"));
 
 	// enbold the bitmap for black/white monochrome bitmap
 	if(size < 0) size = -size;
@@ -233,7 +233,7 @@ void tTVPCharacterData::Bold2(tjs_int size)
 void tTVPCharacterData::Resample4()
 {
 	if( FullColored )
-		TVPThrowExceptionMessage( TJS_W("unimplemented: tTVPCharacterData::Resample4 for FullColored") );
+		TVPThrowExceptionMessage(TVPUnimplementedCharacterDataForFullColored, TJS_W("Resample4"));
 
 	// down-sampling 4x4
 
@@ -310,7 +310,7 @@ void tTVPCharacterData::Resample4()
 void tTVPCharacterData::Resample8()
 {
 	if( FullColored )
-		TVPThrowExceptionMessage( TJS_W("unimplemented: tTVPCharacterData::Resample8 for FullColored") );
+		TVPThrowExceptionMessage(TVPUnimplementedCharacterDataForFullColored, TJS_W("Resample8"));
 
 	// down-sampling 8x8
 
@@ -382,7 +382,7 @@ void tTVPCharacterData::Resample8()
 //---------------------------------------------------------------------------
 void tTVPCharacterData::AddHorizontalLine( tjs_int liney, tjs_int thickness, tjs_uint8 val ) {
 	if( FullColored )
-		TVPThrowExceptionMessage( TJS_W("unimplemented: tTVPCharacterData::AddHorizontalLine for FullColored") );
+		TVPThrowExceptionMessage(TVPUnimplementedCharacterDataForFullColored, TJS_W("AddHorizontalLine"));
 
 	tjs_int linetop = liney - thickness/2;
 	if( linetop < 0 ) linetop = 0;
@@ -392,8 +392,15 @@ void tTVPCharacterData::AddHorizontalLine( tjs_int liney, tjs_int thickness, tjs
 	tjs_int newheight = BlackBoxY;
 	tjs_int overlapx = 0;
 	if( OriginX < 0 ) overlapx = -OriginX;	// 前の文字にかぶるように描画されることがある
-	if( BlackBoxX != (Metrics.CellIncX+overlapx) ) {
-		newwidth = Metrics.CellIncX+overlapx;
+	tjs_int glyphleft = OriginX > 0 ? OriginX : 0;	// 複製先でのグリフ左端 (下の offsetx と一致)
+	tjs_int wantwidth = Metrics.CellIncX + overlapx;
+	// 斜体などでグリフ黒box幅(BlackBoxX)が送り幅(CellIncX)を超える場合でも、
+	// グリフ全体が収まる幅を確保する。収めないと下の複製ループが x を
+	// 0..BlackBoxX まで書くのに newpitch (<BlackBoxX) しか無く、各行が次行へ
+	// ずれ込んで斜めに破損する (かつバッファ外書き込みになる)。
+	if( wantwidth < glyphleft + BlackBoxX ) wantwidth = glyphleft + BlackBoxX;
+	if( BlackBoxX != wantwidth ) {
+		newwidth = wantwidth;
 	}
 	int top = OriginY;
 	int bottom = top + BlackBoxY;

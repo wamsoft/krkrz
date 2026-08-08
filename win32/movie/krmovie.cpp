@@ -16,36 +16,18 @@
 //---------------------------------------------------------------------------
 
 #include <windows.h>
-#include "tp_stub.h"
+// Track V-A: exe へ直接統合 (tp_stub 境界を撤去)。engine の実ヘッダを直接参照する。
+#include "tjsCommHead.h"
+#include "MsgIntf.h"       // TVPThrowExceptionMessage
 #include "krmovie.h"
 #include "Mpeg1Video.h"
 #include "MFSourceReaderVideo.h"
 #include "webplayer.h"
 #include "OverlayVideo.h"
 
-// exe へ静的統合 (Track V-A) 時 (krmovie_EXPORTS 未定義) はエクスポート不要。
-#if defined(_MSC_VER) && defined(krmovie_EXPORTS)
-#if defined(_M_AMD64) || defined(_M_X64)
-#pragma comment(linker, "/EXPORT:GetAPIVersion")
-#pragma comment(linker, "/EXPORT:GetMFVideoOverlayObject")
-// GetMixingVideoOverlayObject export は撤去 (VMR9/D3D9 廃止)
-#pragma comment(linker, "/EXPORT:GetVideoOverlayObject")
-#pragma comment(linker, "/EXPORT:GetVideoLayerObject")
-#pragma comment(linker, "/EXPORT:V2Link")
-#pragma comment(linker, "/EXPORT:V2Unlink")
-#else
-#pragma comment(linker, "/EXPORT:GetAPIVersion=_GetAPIVersion@4")
-#pragma comment(linker, "/EXPORT:GetMFVideoOverlayObject=_GetMFVideoOverlayObject@28")
-// GetMixingVideoOverlayObject export は撤去 (VMR9/D3D9 廃止, x86)
-#pragma comment(linker, "/EXPORT:GetVideoOverlayObject=_GetVideoOverlayObject@28")
-#pragma comment(linker, "/EXPORT:GetVideoLayerObject=_GetVideoLayerObject@28")
-#pragma comment(linker, "/EXPORT:V2Link=_V2Link@4")
-#pragma comment(linker, "/EXPORT:V2Unlink=_V2Unlink@0")
-#endif
-#endif
-
-// 注: exe へ静的統合 (Track V-A) したため DllMain / リソース版 About 文字列
-// (旧 krmovie.rc) は撤去。ライセンスは license.txt を参照。
+// Track V-A: krmovie は exe へ直接統合済み (DLL ではない)。旧 DLL エクスポート
+// (/EXPORT pragma・DllMain・リソース版 About) は撤去。engine 側 (VideoOvlImpl) は
+// これらの関数を extern "C" 宣言で直接呼ぶ。ライセンスは license.txt を参照。
 
 //---------------------------------------------------------------------------
 // TVPGetOverlayVideoObject : overlay 動画 object の形式ルート (mode 非依存)
@@ -126,45 +108,8 @@ EXPORT(void) GetMFVideoOverlayObject(
 
 
 //---------------------------------------------------------------------------
-// GetAPIVersion
-//---------------------------------------------------------------------------
-EXPORT(void) GetAPIVersion(DWORD *ver)
-{
-	*ver = TVP_KRMOVIE_VER;
-}
-//---------------------------------------------------------------------------
-
-
-
-//---------------------------------------------------------------------------
-// V2Link : Initialize TVP plugin interface
-//---------------------------------------------------------------------------
-EXPORT(HRESULT) V2Link(iTVPFunctionExporter *exporter)
-{
-// メモリ確保位置でブレークを貼るには以下のメソッドで確保番号を指定する。
-// ブレークがかかった後は、呼び出し履歴(コールスタック)を見て、どこで確保されたメモリがリークしているか探る。
-// _CrtDumpMemoryLeaks でデバッグ出力にリークしたメモリの確保番号が出るので、それを入れればOK
-// 確保順が不確定な場合は辛いが、スクリプトを固定すればほぼ同じ順で確保されるはず。
-//	_CrtSetBreakAlloc(53);	// 指定された回数目のメモリ確保時にブレークを貼る
-
-	TVPInitImportStub(exporter);
-
-	// (旧: リソース版 About 文字列ログは exe 静的統合で撤去。ライセンスは license.txt)
-
-	return S_OK;
-}
-//---------------------------------------------------------------------------
-// V2Unlink : Uninitialize TVP plugin interface
-//---------------------------------------------------------------------------
-EXPORT(HRESULT) V2Unlink()
-{
-	TVPUninitImportStub();
-
-#ifdef _DEBUG
-	_CrtDumpMemoryLeaks();
-#endif
-
-	return S_OK;
-}
+// Track V-A: 旧 DLL プラグイン契約 (GetAPIVersion / V2Link / V2Unlink /
+// TVPInitImportStub) は exe 直接統合で不要となり撤去。engine の TVP* 関数は
+// tp_stub 経由ではなく実シンボルへ直接リンクされる。
 //---------------------------------------------------------------------------
 

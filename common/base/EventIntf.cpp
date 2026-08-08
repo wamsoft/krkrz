@@ -15,6 +15,7 @@
 #include "EventIntf.h"
 #include "WindowIntf.h"
 #include "DebugIntf.h"
+#include "LogIntf.h"   // TVPFlushQueuedLoggingEvents
 #include "tjsDictionary.h"
 #include "MsgIntf.h"
 #include "ScriptMgnIntf.h"
@@ -628,6 +629,10 @@ void TVPDeliverAllEvents()
 	{
 	   try
 		{
+#ifdef TVP_USE_LOGCORE
+			// 非 main スレッド発ログの TJS logging handler 配送保留分を main で流す
+			TVPFlushQueuedLoggingEvents();
+#endif
 			r = _TVPDeliverAllEvents();
 		}
 		TJS_CONVERT_TO_TJS_EXCEPTION

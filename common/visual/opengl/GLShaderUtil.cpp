@@ -53,9 +53,13 @@ GLuint CompileShader(GLenum type, const std::string &source)
 
 GLuint CheckLinkStatusAndReturnProgram(GLuint program, bool outputErrorMessages)
 {
-    if (glGetError() != GL_NO_ERROR) {
+    GLenum preErr = glGetError();
+    if (preErr != GL_NO_ERROR) {
         // 既に GL エラーが立っている場合でも、確保済みの program は解放しないと
         // GL 側でリークする。
+        // [計装] 今まで沈黙して 0 を返していた経路。GL エラー値を出力する
+        TVPAddLog( TJS_W("GL : link skipped, pre-existing GL error = 0x")
+            + ttstr((tjs_int)preErr, 16) );
         glDeleteProgram(program);
         return 0;
     }

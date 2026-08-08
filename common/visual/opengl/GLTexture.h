@@ -159,6 +159,7 @@ public:
 	static bool _support_bgra;
 	static bool _support_swizzle;
 	static bool _support_copy_image;
+	static bool _support_srgb_write_control;
 	static void InitSupported();
 
 	static bool SupportBGRAFormat() { 
@@ -174,6 +175,14 @@ public:
 	static bool SupportCopyImage() {
 		InitSupported();
 		return _support_copy_image;
+	}
+
+	// GL_EXT_sRGB_write_control (GLES 拡張)。未対応環境で
+	// glEnable/glDisable(GL_FRAMEBUFFER_SRGB_EXT) を呼ぶと GL_INVALID_ENUM に
+	// なるため、対応時のみ呼ぶ判定に使う。
+	static bool SupportSRGBWriteControl() {
+		InitSupported();
+		return _support_srgb_write_control;
 	}
 };
 

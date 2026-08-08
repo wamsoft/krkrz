@@ -1,0 +1,25 @@
+// クロスフェード遷移先の画面。戻りも fade。
+{
+    "size": [960, 600],
+    "background": [20, 72, 72, 255],
+    "input": { "arrow_focus_nav": true },
+    "transitions": {
+        "back": { "target": "<back>", "effect": "fade", "duration": 400 },
+        "": { "target": "<back>", "effect": "fade", "duration": 400 }
+    },
+    "content": {
+        "type": "align_center_middle",
+        "child": { "type": "vtile", "children": [
+            { "type": "label", "text": "FADE", "size": 64, "color": [200, 255, 240, 255],
+              "animate": { "type": "scale", "from": [0.6, 0.6], "to": [1.0, 1.0],
+                           "frames": 16, "easing": "out_back" } },
+            { "type": "vspacer", "height": 12 },
+            { "type": "label", "text": "旧画面の最終フレームと新画面を時間で混色",
+              "size": 22, "color": [170, 210, 200, 255] },
+            { "type": "vspacer", "height": 36 },
+            { "type": "hsize", "width": 240, "child":
+                { "type": "button", "id": "back", "text": "戻る (fade)",
+                  "close_on_click": true, "initial_focus": true } }
+        ]}
+    }
+}

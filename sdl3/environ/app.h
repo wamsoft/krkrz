@@ -43,6 +43,10 @@ public:
 	virtual void GetCursorPos(tjs_int &x, tjs_int &y);
 	virtual void SetCursorPos(tjs_int x, tjs_int y);
 
+	// マウスカーソル表示/非表示 (SetMouseCursorState mcsTempHidden/mcsHidden の
+	// 実体)。 基底は空実装なので SDL 側で SDL_HideCursor/ShowCursor に接続する。
+	virtual void SetCursorVisible(bool visible);
+
 	virtual void SetEnableTouch( bool b );
 	virtual bool GetEnableTouch() const;
 
@@ -54,7 +58,7 @@ public:
 };
 
 
-class SDL3Application : public tTVPApplication {
+class SDL3Application : public tTVPApplication, public iTVPPhysicalPadProvider {
 
 public:
     SDL3Application();
@@ -119,6 +123,14 @@ public:
 	// for exception showing
 	virtual void MessageDlg(const tjs_string& string, const tjs_string& caption, int type, int button) override;
 
+	// Yes/No モーダル確認 (System.confirm)。SDL_ShowMessageBox で同期表示。
+	virtual bool ConfirmYesNo(const tjs_string& string, const tjs_string& caption) override;
+
+	// テキスト入力 (System.inputString)。既定は Elements 実装。OS のソフトウェア
+	// キーボード等へ差し替えたいプラットフォームはこのメソッドを override する。
+	virtual bool InputString(const tjs_string& caption, const tjs_string& prompt,
+		const tjs_string& def, tjs_string& result) override;
+
 #ifdef __EMSCRIPTEN__
 	// wasm: ネイティブモーダルダイアログ (SDL_ShowMessageBox) はメインスレッドを
 	// ブロックして音がぶつれ、TVPTerminateSync でアプリごと固まるため使わない。
@@ -128,11 +140,6 @@ public:
 #endif
 
 	virtual bool GetAsyncKeyState(tjs_uint keycode, bool getcurrent) override;
-
-	virtual tjs_uint32 GetPadState(int no) override;
-
-	/// @brief  パッド軸アナログ値取得 (-1.0〜+1.0、トリガは 0.0〜+1.0)
-	virtual float GetPadAxis(int no, int axisId) override;
 
 	// 解像度情報
 	virtual tjs_int GetDensity() const override;
@@ -166,21 +173,27 @@ public:
 	// ----------------------------------------------------------------------
 
 	//< システムフォント一覧取得
-	virtual void GetSystemFontList(std::vector<tjs_string>& fontFiles) override; 
+	virtual void GetSystemFontList(std::vector<tjs_string>& fontFiles) override;
+
+	//< ファイル選択ダイアログ (Storages.selectFile)。SDL_ShowOpenFileDialog で実装。
+	virtual bool SelectFile( class iTJSDispatch2 *params ) override;
+
+	//< フォルダ選択ダイアログ (Storages.selectDirectory)。SDL_ShowOpenFolderDialog で実装。
+	virtual bool SelectDirectory( class iTJSDispatch2 *params ) override;
+
+	//< シェル実行 (System.shellExecute)。SDL_OpenURL で URL/ファイルを既定ハンドラで開く。
+	virtual bool ShellExecute(const tjs_char *target, const tjs_char *param) override;
 
 	// -----------------------------------------------------------------------
 
-	/// @brief  ジョイパッドの種別
-	virtual tjs_string GetJoypadType(int no) override;
-	/// @brief  接続されているゲームパッドの数
-	virtual tjs_int GetJoypadCount() override;
-	/// @brief  指定番号のゲームパッドが有効か
-	virtual bool HasJoypad(int no) override;
-
-	/// @brief  振動開始
-	virtual bool RumbleGamepad(int no, int low, int high, int duration_ms) override;
-	/// @brief  振動停止
-	virtual bool StopRumbleGamepad(int no) override;
+	// --- iTVPPhysicalPadProvider (物理パッドアクセス) ---
+	// 物理 index は接続順 (g_open_gamepads の並び)。論理層は tTVPPadManager が担う。
+	virtual int GetPhysicalPadCount() override;
+	virtual tjs_uint32 GetPhysicalPadState(int phys) override;
+	virtual float GetPhysicalPadAxis(int phys, int axisId) override;
+	virtual tjs_string GetPhysicalPadName(int phys) override;
+	virtual bool RumblePhysical(int phys, int low, int high, int duration_ms) override;
+	virtual bool StopRumblePhysical(int phys) override;
 
 	/**
 	 * アプリ終了通知の開始と終了

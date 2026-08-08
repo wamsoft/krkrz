@@ -46,6 +46,8 @@ class tTJSNI_Canvas : public tTJSNativeInstance
 	static const ttstr DefaultFragmentShaderText;
 	static const ttstr DefaultFillVertexShaderText;
 	static const ttstr DefaultFillFragmentShaderText;
+	static const ttstr TransitionCrossfadeFragmentShaderText;
+	static const ttstr TransitionUniversalFragmentShaderText;
 	static const float DefaultUVs[];
 
 	bool InDrawing;
@@ -79,6 +81,14 @@ class tTJSNI_Canvas : public tTJSNativeInstance
 	tTJSVariant EmbeddedDefaultFillShaderObject;
 	tTJSVariant DefaultFillShaderObject;
 	class tTJSNI_ShaderProgram* DefaultFillShaderInstance;
+
+	// 内蔵トランジションシェーダ (drawTransition 用、 初回使用時に遅延生成)。
+	// crossfade = 表裏 2 テクスチャの混色、 universal = rule 画像 (tcfAlpha) による
+	// ユニバーサルトランジション。 ユーザ差し替えは無し (defaultShader とは独立)。
+	tTJSVariant TransitionCrossfadeShaderObject;
+	class tTJSNI_ShaderProgram* TransitionCrossfadeShaderInstance = nullptr;
+	tTJSVariant TransitionUniversalShaderObject;
+	class tTJSNI_ShaderProgram* TransitionUniversalShaderInstance = nullptr;
 public:
 	void SetRenderTargetObject( const tTJSVariant & val );
 	const tTJSVariant& GetRenderTargetObject() const { return RenterTaretObject; }
@@ -121,6 +131,9 @@ private:
 	void CreateDefaultMatrix();
 	void SetupEachDrawing();
 
+	// 内蔵トランジションシェーダの遅延生成 (universal=true で rule 付き 3 テクスチャ版)
+	class tTJSNI_ShaderProgram* EnsureTransitionShader( bool universal );
+
 	// 描画に必要な設定と1個目のテクスチャまで設定する
 	void SetupTextureDrawing( class tTJSNI_ShaderProgram* shader, const class iTVPTextureInfoIntrface* tex, class tTJSNI_Matrix32* mat, const tTVPPoint& vpSize );
 
@@ -148,6 +161,10 @@ public:
 
 	// method
 	void Capture( class tTJSNI_Bitmap* bmp, int x, int y, int w, int h);
+	// 現在バインドされている FBO を直接 tTVPBaseBitmap へ読み戻す (Layer の
+	// メインイメージ等、TJS Bitmap を介さない書き戻し用)。bmp は w,h に合った
+	// サイズであること。GLCompositor から利用。
+	void Capture( class tTVPBaseBitmap* bmp, int x, int y, int w, int h);
 	void Capture( const class iTVPTextureInfoIntrface* texture, int x, int y, int w, int h);
 	void Clear( tjs_uint32 color );
 
@@ -155,6 +172,13 @@ public:
 	void DrawTexture( const class iTVPTextureInfoIntrface* texture, class tTJSNI_ShaderProgram* shader = nullptr );
 	void DrawTexture( const class iTVPTextureInfoIntrface* texture0, const class iTVPTextureInfoIntrface* texture1, class tTJSNI_ShaderProgram* shader );
 	void DrawTexture( const class iTVPTextureInfoIntrface* texture0, const class iTVPTextureInfoIntrface* texture1, const class iTVPTextureInfoIntrface* texture2, class tTJSNI_ShaderProgram* shader );
+
+	// 表 (front) → 裏 (back) のトランジション描画。 phase = 進行度 0.0-1.0。
+	// rule 指定 (tcfAlpha テクスチャ) でユニバーサルトランジション、 省略 (nullptr)
+	// でクロスフェード。 vague は境界ぼかし幅 (rule 値スケール 0-255)。
+	// 配置/変形/ブレンドは drawTexture と同じ規約 (Matrix32 / blendMode に従う)。
+	void DrawTransition( const class iTVPTextureInfoIntrface* front, const class iTVPTextureInfoIntrface* back,
+		tjs_real phase, const class iTVPTextureInfoIntrface* rule = nullptr, tjs_int vague = 64 );
 	void DrawText( class tTJSNI_Font* font, tjs_int x, tjs_int y, const ttstr& text, tjs_uint32 color );
 	void DrawTextureAtlas( const class tTJSNI_Rect* rect, const class iTVPTextureInfoIntrface* texture, class tTJSNI_ShaderProgram* shader = nullptr );
 

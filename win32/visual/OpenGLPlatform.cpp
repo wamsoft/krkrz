@@ -8,7 +8,9 @@
 
 static HMODULE TVPhModuleLibEGL = nullptr;
 
-typedef void *GetProcAddressFunc(const char * procname);
+// EGLAPIENTRY (= __stdcall on Win32 x86)。cdecl で呼ぶと esp がずれて
+// 呼び出し元の ret が引数文字列へ飛ぶ (x64 は呼出規約が無いので顕在化しない)
+typedef void *(__stdcall GetProcAddressFunc)(const char * procname);
 static GetProcAddressFunc * _eglGetProcAddress = nullptr;
 
 //---------------------------------------------------------------------------
@@ -75,12 +77,12 @@ iTVPGLContext::GetContext(void *nativeWindow)
 {
 	if (!oglInited) {
 		if (!TVPInitializeOpenGLPlatform()) {
-			TVPThrowExceptionMessage( TJS_W("Unable to initialize OpenGL.") );
+			TVPThrowExceptionMessage(TVPUnableToInitializeOpenGL );
 		}
 		tTVPEGLContext::InitEGL();
 		oglInited = true;
 	}
 	auto ctx = tTVPEGLContext::GetContext(nativeWindow);
-	if( !ctx ) TVPThrowExceptionMessage( TJS_W("Cannot create low level graphics system(maybe low memory).") );
+	if( !ctx ) TVPThrowExceptionMessage(TVPCannotCreateLowLevelGraphicsSystemMaybeLowMemory );
 	return ctx;
 }

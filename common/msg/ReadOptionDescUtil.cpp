@@ -41,7 +41,10 @@ class OptionDescReader {
 		auto v = obj.find(std::string(name));
 		if (v != obj.end()) {
 			const picojson::value& val = v->second;
+			// PICOJSON_USE_INT64 ビルドでは整数リテラルは int64_t で保持され
+			// is<double>() が false になるので両方を見る
 			if (val.is<double>()) return val.get<double>();
+			if (val.is<int64_t>()) return (double)val.get<int64_t>();
 		}
 		return 0;
 	}
@@ -53,6 +56,10 @@ class OptionDescReader {
 				TVPUtf8ToUtf16(out, val.get<std::string>());
 			} else if (val.is<double>()) {
 				int vi = (int)val.get<double>();
+				out = to_tjs_string(vi);
+			} else if (val.is<int64_t>()) {
+				// PICOJSON_USE_INT64 ビルドの整数リテラル
+				int vi = (int)val.get<int64_t>();
 				out = to_tjs_string(vi);
 			} else if (val.is<bool>()) {
 				out = val.get<bool>() ? TJS_W("true") : TJS_W("false");

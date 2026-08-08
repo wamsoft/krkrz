@@ -92,7 +92,7 @@ tNativeFreeTypeFace::tNativeFreeTypeFace(const tjs_string &fontname,
 		if(result == GDI_ERROR)
 		{
 			// エラー; GetFontData では扱えなかった
-			TVPThrowExceptionMessage( TJS_W("Font '%1$s' cannot be used"), fontname );
+			TVPThrowExceptionMessage(TVPFontCannotBeUsed, fontname );
 		}
 
 		//- この時点で result は name タグの内容が入るのに必要なバイト数
@@ -105,7 +105,7 @@ tNativeFreeTypeFace::tNativeFreeTypeFace(const tjs_string &fontname,
 		if(result == GDI_ERROR)
 		{
 			// エラー; メモリに読み込むことが出来なかった
-			TVPThrowExceptionMessage( TJS_W("Font '%1$s' cannot be used"), fontname );
+			TVPThrowExceptionMessage(TVPFontCannotBeUsed, fontname );
 		}
 
 		// フォントファイルのサイズを取得する
@@ -133,7 +133,7 @@ tNativeFreeTypeFace::tNativeFreeTypeFace(const tjs_string &fontname,
 		if(result == GDI_ERROR)
 		{
 			// エラー; GetFontData では扱えなかった
-			TVPThrowExceptionMessage( TJS_W("Font '%1$s' cannot be used"), fontname );
+			TVPThrowExceptionMessage(TVPFontCannotBeUsed, fontname );
 		}
 		fontsize = result;
 
@@ -153,7 +153,7 @@ tNativeFreeTypeFace::tNativeFreeTypeFace(const tjs_string &fontname,
 		int index = 0;
 		if(!OpenFaceByIndex(index))
 		{
-			TVPThrowExceptionMessage( TJS_W("Font '%1$s' cannot be used"), fontname );
+			TVPThrowExceptionMessage(TVPFontCannotBeUsed, fontname );
 		}
 
 		// GDIが現在選択しているファイルとFreeTypeがアクセスしているファイルが
@@ -167,7 +167,7 @@ tNativeFreeTypeFace::tNativeFreeTypeFace(const tjs_string &fontname,
 			FT_Error err = FT_Load_Sfnt_Table(Face, TTAG_name, 0, NULL, &length);
 			if(err)
 			{
-				TVPThrowExceptionMessage( TJS_W("Font '%1$s' cannot be used"), fontname );
+				TVPThrowExceptionMessage(TVPFontCannotBeUsed, fontname );
 			}
 
 			// FreeType から得た name タグの長さを Windows から得た長さと比較
@@ -177,7 +177,7 @@ tNativeFreeTypeFace::tNativeFreeTypeFace(const tjs_string &fontname,
 				err = FT_Load_Sfnt_Table(Face, TTAG_name, 0, name_content_ft, &length);
 				if(err)
 				{
-					TVPThrowExceptionMessage( TJS_W("Font '%1$s' cannot be used"), fontname );
+					TVPThrowExceptionMessage(TVPFontCannotBeUsed, fontname );
 				}
 				// FreeType から読み込んだ name タグの内容と、Windows から読み込んだ
 				// name タグの内容を比較する。
@@ -201,7 +201,7 @@ tNativeFreeTypeFace::tNativeFreeTypeFace(const tjs_string &fontname,
 				index = 0;
 				if(!OpenFaceByIndex(index))
 				{
-					TVPThrowExceptionMessage( TJS_W("Font '%1$s' cannot be used"), fontname );
+					TVPThrowExceptionMessage(TVPFontCannotBeUsed, fontname );
 				}
 				break;
 			}

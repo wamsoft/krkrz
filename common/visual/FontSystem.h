@@ -6,6 +6,7 @@
 #include "tvpfontstruc.h"
 #include "tjsHashSearch.h"
 #include <string>
+#include <unordered_map>
 
 class tTVPWStringHash {
 public:
@@ -42,6 +43,13 @@ class FontSystem {
 
 	void ConstructDefaultFont();
 
+	// data/fonts.json 由来の遅延ロード対象: フォント名(family/alias) -> ストレージ名。
+	// 起動時にメタデータを読んでここへ登録するだけ(FreeType パースはしない)。
+	// 実ファイルは EnsureLazyFontLoaded() で初回使用時に AddExtraFont される。
+	std::unordered_map<tjs_string, tjs_string> LazyFontFiles;
+	bool FontMetadataLoaded = false;
+	void LoadFontMetadata();
+
 public:
 	FontSystem();
 	tjs_string GetBeingFont(tjs_string fonts);
@@ -49,6 +57,9 @@ public:
 		return DefaultFont;
 	}
 	bool FontExists( const tjs_string &name );
+	// メタデータ(data/fonts.json)登録名なら初回だけ実ファイルを遅延ロードする。
+	// ロードして登録できたら true。既ロード/対象外は false。
+	bool EnsureLazyFontLoaded( const tjs_string &name );
 	// Font.addFont でストレージ内のフォントを追加する
 	// faces が期待通り動作するのは FreeType のみ、GDI では読み込まれたフェイス名は現在正しく取得出来ない
 	void AddExtraFont( const tjs_string& storage, std::vector<ttstr>* faces );

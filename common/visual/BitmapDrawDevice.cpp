@@ -84,7 +84,7 @@ void tTVPBitmapDrawDevice::CreateBitmap() {
 					if(TJS_FAILED(clo.Object->NativeInstanceSupport(TJS_NIS_GETINSTANCE, tTJSNC_Bitmap::ClassID, (iTJSNativeInstance**)&BitmapInstance)))
 					{
 						BitmapInstance = nullptr;
-						TVPThrowExceptionMessage(TJS_W("Cannot retrive Bitmap instance."));
+						TVPThrowExceptionMessage(TVPCannotRetriveInstance, TJS_W("Bitmap"));
 					}
 				}
 			}

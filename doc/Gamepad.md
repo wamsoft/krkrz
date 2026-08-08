@@ -1,53 +1,76 @@
 # Gamepad (ゲームパッド)
 
-SDL3 ビルドのゲームパッド入力 API。WINVER ビルドは `tTVPApplication`
-のパッド系仮想関数を override していないため、本書の API は実質
-SDL3 ビルド (および LIB ビルド) 限定です。
+全ビルド共通のゲームパッド入力 API。物理バックエンドは SDL3 / LIB ビルドが
+`SDL_Gamepad`、WINVER ビルドが XInput (最大 4 台) で、その上に
+プラットフォーム非依存の論理管理層 `tTVPPadManager`
+(`common/environ/PadManager.{h,cpp}`) を載せている。各プラットフォームは
+物理パッドアクセスを `iTVPPhysicalPadProvider` として実装するだけで、論理層
+(下記のインデックス規約・last-operated 追従・キーイベント生成) は共通。
+
+## 論理インデックス (パッド番号)
+
+全 API のパッド番号 `no` は次の意味を持つ:
+
+- `0` : **最後に操作したパッド** (last-operated) への仮想エイリアス
+- `1..N` : 実パッド (接続順で安定。`N = getJoypadCount()`)
+
+キーイベント (`VK_PAD*`) は常に `0` 番 (= 最後に操作したパッド) を発生源とする。
+「最後に操作した」の判定は実ボタン / 十字キーの新規押下で切り替わり、アナログ
+スティックのドリフトでは切り替わらない。同じ物理パッドは `0` と実番号の両方で
+参照できる (例: 1 台だけ接続なら `0` と `1` が同じパッド)。
 
 ## 1. 全体構造
 
-3 層に分かれます。
+物理層 → 論理層 (共通) → TJS の 3 層。
 
 ```
-SDL3 イベント (sdl3/environ/main.cpp)
-    │  グローバル `SDL_Gamepad *gamepad` を SDL_EVENT_GAMEPAD_ADDED/REMOVED で抱える
+物理パッド backend (iTVPPhysicalPadProvider 実装)
+    │  SDL3/LIB: SDL3Application       (sdl3/environ/pad.cpp, main.cpp)
+    │  WINVER  : tTVPXInputPadProvider (win32/environ/XInputPad.cpp)
     │
-SDL3Application::GetPadState / GetPadAxis / RumbleGamepad …
-    │  (sdl3/environ/pad.cpp, main.cpp)
+tTVPPadManager (common/environ/PadManager.cpp)
+    │  論理 index 変換 (0=最後に操作 / 1..N=実パッド) + last-operated 追従
+    │  + 論理 0 のボタン差分を VK_PAD* キーイベント化 (KeyRepeat 込み)
     │
-tTVPApplication::SendPadEvent → AM_KEY_DOWN/UP として MainWindow へ
-    │  (generic/environ/JoyPad.cpp)
+各ビルドのグルー → MainWindowForm へキー送出
+    │  SDL/LIB: tTVPApplication::SendPadEvent  (generic/environ/JoyPad.cpp)
+    │  WINVER  : TTVPWindowForm 連続ハンドラ    (win32/environ/WindowFormUnit.cpp)
     │
-TJS: System.getPadAxis / getPadState 相当はキーイベント / System.onJoypadChange など
+TJS: System.getPadState/getPadAxis/getJoypadType/… + Window.onKeyDown(VK_PAD*)
 ```
 
-毎フレーム `SDL_AppIterate` から `app->SendPadEvent()` が走り、ボタン
-状態の差分をキーイベント化します (`sdl3/environ/main.cpp:447`)。
-連射 (KeyRepeat) は十字キー系とトリガ系で別グループ管理 (`JoyPad.cpp`)。
+毎フレーム、フォーカスのあるウィンドウ (WINVER) または `SDL_AppIterate`
+(SDL) から pad のポーリング + キーイベント生成が走る。連射 (KeyRepeat) は
+十字キー系とトリガ系で別グループ管理 (`PadManager.cpp`)。
 
-## 2. 接続管理
+## 2. 接続管理と last-operated 追従
 
-現状はメインパッド 1 台のみ運用です (API シグネチャは `int no` を取りますが
-内部では `no == 0` 以外は無効値を返します)。
+複数パッドに対応する。`tTVPPadManager` が毎フレーム全物理パッドを走査し、
+実ボタン / 十字キーの新規押下があったパッドを「最後に操作したパッド」
+(= 論理 0) に切り替える。切替はボタン入力ベースなのでスティックドリフトでは
+起きない。論理 0 の識別名が変わると `onJoypadChange(0, name)` を発火する。
 
-- `SDL_EVENT_GAMEPAD_ADDED`: 既存 `gamepad` が NULL のときだけ
-  `SDL_OpenGamepad()` で開き、`TVPFireOnJoypadChange(0, name)` を発火
-- `SDL_EVENT_GAMEPAD_REMOVED`: 自分の所持しているパッドが外れたら
-  close + `TVPFireOnJoypadChange(0, "")` を発火
-- 接続中の全パッド一覧は `SDL_GetGamepads()` で取れる (`getJoypadCount`)
+- **SDL3/LIB**: `SDL_EVENT_GAMEPAD_ADDED/REMOVED` で全パッドを開閉し
+  `g_open_gamepads` に接続順で保持 (`sdl3/environ/main.cpp`)。物理 index は
+  この並び。`gamecontrollerdb.txt` 読込は `pad.cpp:InitPadMaiing()` にあるが
+  現状未配線。
+- **WINVER**: XInput のユーザスロット 0..3 を毎フレームポーリング
+  (`win32/environ/XInputPad.cpp`)。未接続スロットの走査は約 1 秒間引く。
+  接続中スロットを接続順に詰めたものが物理 index。XInput 仕様上 Xbox 系
+  コントローラのみ・最大 4 台 (汎用 DirectInput パッドは非対応)。
 
-`USE_LAST_PUSHDOWN_PAD` で「最後にボタン / タッチパッド DOWN が来たパッドを
-メインに切替える」モードを ON/OFF できます (`sdl3/environ/main.cpp:20`)。
-**既定は ON (=1)**。OFF にすると旧挙動 (最初に認識したパッドを保持、それが
-切断されるまで他パッドに切替わらない) に戻ります。
+`getJoypadCount()` は実パッド台数 N、`hasJoypad(no)` は指定番号が有効か
+(`no=0` は 1 台以上あれば true、`no` は 1..N が有効) を返す。同じ物理パッドは
+`0` (最後に操作) と実番号 (1..N) の両方で参照できる。
 
-ボタン入力ベースでの切替なのでスティックドリフトでは切替わりません。複数
-パッド同時制御は別課題で、本フラグはあくまで「メイン 1 枚を最後に触ったもの
-に追従させる」だけの機能です。
+パッド機能は全体無効化できる (サポート用: 他デバイスの誤パッド認識による誤動作の
+回避)。無効時は状態取得・キーイベント生成をいずれも行わない。
 
-`gamecontrollerdb.txt` を読み込むコードは `sdl3/environ/pad.cpp` に
-`InitPadMaiing()` として書かれていますが、現状呼び出し元がありません
-(未配線)。
+- CLI **`-joypad=no`** (`off`/`false`/`0` も可) で起動時から無効化。判定は
+  `tTVPPadManager` が `TVPGetCommandLine` で行うため全バリアント共通。
+- TJS **`System.padEnabled`** (読み書き) で実行時に切替。明示設定は CLI より優先。
+- C++ からは `PadManager` の `SetEnabled/IsEnabled` (Application 経由
+  `SetJoypadEnabled/GetJoypadEnabled`)。
 
 ## 3. ボタン状態と軸状態
 
@@ -114,32 +137,38 @@ TJS グローバルは `resource/SysInitScript.tjs` の `const` ブロックで�
 定数値は意図的に `SDL_GamepadAxis` (`LEFTX=0` 〜 `RIGHT_TRIGGER=5`) と同値で
 そろえてあります (`pad.cpp` で `static_assert` 検証)。
 
-未接続パッド、`no != 0`、範囲外の axisId はすべて `0.0` を返します。
-Y 軸は SDL3 と同じく **下方向が正** です (画面座標と一致)。
+未接続パッド、無効な番号、範囲外の axisId はすべて `0.0` を返します。
+Y 軸は **下方向が正** です (画面座標と一致。WINVER/XInput は内部で符号反転して
+そろえている)。
 
 C++ 側からは `Application->GetPadAxis(no, axisId)` で同じ値が取れます。
 ID は `tTVPApplication::TVP_PAD_AXIS_LEFTX` 等の enum を使用。
 
 ## 4. TJS API 一覧
 
-| API                                            | 機能                                  | ソース                  |
-|------------------------------------------------|---------------------------------------|-------------------------|
-| `System.getJoypadType(no=0)`                   | SDL 認識名 (例 `Xbox Series X Controller`) | `pad`/`main.cpp`     |
-| `System.getJoypadCount()`                      | 接続中のパッド総数                    | `main.cpp`              |
-| `System.hasJoypad(no=0)`                       | 指定番号が有効か (現状 0 のみ true 可) | `main.cpp`             |
-| `System.getPadAxis(no, axisId)`                | アナログ軸値 (§3.2)                   | `pad.cpp`               |
-| `System.rumblePad(no, low, high, durationMs)`  | 振動開始 (low/high は 0〜255)         | `main.cpp`              |
-| `System.stopRumblePad(no=0)`                   | 振動停止                              | `main.cpp`              |
-| `System.setPadOverlay([bool])`                 | デバッグオーバレイ切替 (PadOverlay.md) | `SystemImpl.cpp`       |
-| `System.padAxis*` (定数)                       | 軸 ID 定数 6 個 (§3.2)               | `SystemImpl.cpp`        |
-| `paLeftX` .. `paRightTrigger` (TJS グローバル)  | 軸 ID 定数 6 個 (§3.2)               | `resource/SysInitScript.tjs` |
-| `System.onJoypadChange(no, name)` (callback)   | 接続/切断通知 (切断時は name="")      | `SystemIntf.cpp`        |
-| CLI `-padoverlay=1` / `config.cf`              | 起動時から PadOverlay ON (§5)        | `common/base/PadOverlay.cpp` |
+全 API 共通で `no` は §「論理インデックス」に従う (`0` = 最後に操作したパッド、
+`1..N` = 実パッド)。全ビルド (SDL3 / LIB / WINVER) で利用可能。
+
+| API                                            | 機能                                  |
+|------------------------------------------------|---------------------------------------|
+| `System.getJoypadType(no=0)`                   | 機種名 (SDL=認識名 / WINVER=`"XInput Controller"`) |
+| `System.getJoypadCount()`                      | 接続中の実パッド台数 N                |
+| `System.hasJoypad(no=0)`                       | 指定番号が有効か (0=1台以上でtrue / 1..N) |
+| `System.getPadAxis(no, axisId)`                | アナログ軸値 (§3.2)                   |
+| `System.rumblePad(no, low, high, durationMs)`  | 振動開始 (low/high は 0〜255)         |
+| `System.stopRumblePad(no=0)`                   | 振動停止                              |
+| `System.setPadOverlay([bool])`                 | デバッグオーバレイ切替 (PadOverlay.md) |
+| `System.padAxis*` (定数)                       | 軸 ID 定数 6 個 (§3.2)               |
+| `paLeftX` .. `paRightTrigger` (TJS グローバル)  | 軸 ID 定数 6 個 (§3.2)               |
+| `System.onJoypadChange(no, name)` (callback)   | 論理0の識別名変化を通知 (無し時 name="") |
+| `System.padEnabled` (読み書き)                 | パッド機能の有効/無効 (実行時切替、CLI優先度低) |
+| CLI `-joypad=no`                               | 起動時からパッド機能を無効化 (§2)     |
+| CLI `-padoverlay=1` / `config.cf`              | 起動時から PadOverlay ON (§5)        |
 
 ボタン押下は直接 API では取れず、`Window.onKeyDown / onKeyUp` で
 `VK_PAD1`〜`VK_PAD12` / `VK_PADLEFT`〜`VK_PADDOWN` / `VK_PAD_L_*` / `VK_PAD_R_*`
-として受けます。`System.getKeyState(VK_PADn)` 相当も `GetAsyncKeyState` 経由で
-動きます (`generic/environ/JoyPad.cpp:57`)。
+として受けます (発生源は常に論理 0 = 最後に操作したパッド)。
+`System.getKeyState(VK_PADn)` 相当も動きます (`PadManager::GetAsyncKeyState`)。
 
 ## 5. デバッグオーバレイ
 
@@ -154,27 +183,25 @@ LT/RT は 0.00〜+1.00) を 3 行 × 2 列で描画するので、デッドゾ�
 
 | ファイル                                  | 役割                                          |
 |-------------------------------------------|-----------------------------------------------|
-| `generic/environ/Application.h`           | 抽象 IF (`GetPadState`/`GetPadAxis`/`TVP_PAD_AXIS_*` enum 他) |
-| `generic/environ/JoyPad.cpp`              | ビット → VK_PAD* キーイベント変換 + キーリピート |
-| `sdl3/environ/main.cpp`                   | SDL Gamepad 接続管理 + RumbleGamepad / onJoypadChange |
-| `sdl3/environ/pad.cpp`                    | `GetPadState` / `GetPadAxis` の SDL3 実装      |
-| `sdl3/environ/joystick.cpp`               | 旧 SDL_Joystick 実装 (sources.cmake で OFF、未ビルド) |
-| `generic/base/SystemImpl.cpp`             | TJS バインディング (`getPadAxis` メソッド + `padAxis*` 定数 + 既存) |
+| `common/environ/PadManager.{h,cpp}`       | **論理層 (共通)**。`iTVPPhysicalPadProvider` IF + `tTVPPadManager` (index変換 / last-operated / VK_PAD* キー変換 + キーリピート) |
+| `common/visual/KeyRepeat.{h,cpp}`         | キーリピート (十字系 / トリガ系)              |
+| `generic/environ/Application.h`           | 抽象 IF (`GetPadState`/`GetPadAxis`/`TVP_PAD_AXIS_*` enum) が `PadManager_` へ委譲。`PadManager_` を保持 |
+| `generic/environ/JoyPad.cpp`              | SDL/LIB: `SendPadEvent` (manager 駆動 + MainWindowForm へ送出) / `GetAsyncKeyState` |
+| `sdl3/environ/main.cpp`                   | SDL Gamepad 接続管理 (`g_open_gamepads`) + 物理アクセサ |
+| `sdl3/environ/pad.cpp`                    | SDL3 物理プロバイダ (`GetPhysicalPadState/Axis/Name/Rumble`) |
+| `win32/environ/XInputPad.{h,cpp}`         | **WINVER 物理プロバイダ (XInput)**。最大4台・振動対応 |
+| `win32/environ/Application.{h,cpp}`       | WINVER: パッド IF + `PadManager_` + `PadProvider_` + `PadPoll` |
+| `win32/environ/WindowFormUnit.cpp`        | WINVER: フォーカスウィンドウで `PadPoll` 駆動 + キー送出 |
+| `{generic,win32}/base/SystemImpl.cpp`     | TJS バインディング (getJoypadType/Count/hasJoypad/rumblePad/stopRumblePad/getPadAxis + padAxis* 定数) |
 | `common/base/SystemIntf.cpp`              | `TVPFireOnJoypadChange` ← `System.onJoypadChange` |
 | `resource/gamecontrollerdb.txt`           | SDL コントローラマッピング (現状未配線)       |
 
 ## 7. 将来拡張のメモ
 
-- **N 台対応**: `main.cpp` のグローバル `SDL_Gamepad *gamepad` を
-  `std::vector<SDL_Gamepad*>` に置き換え、`HasJoypad(no)` / `GetPadState(no)` /
-  `GetPadAxis(no, axisId)` / Rumble 系を index 引きにする。`SendPadEvent` の
-  Last 状態も pad 毎に持つ必要あり。`onJoypadChange` の `no` 引数は今でも
-  渡しているので TJS API 側の変更は不要。
 - **センサ (accel/gyro)**: SDL3 `SDL_GetGamepadSensorData` で取れるが、
-  `tTVPApplication` に新規仮想関数が必要。`getPadSensor(no, sensorId, axis)`
-  形が自然。
+  `iTVPPhysicalPadProvider` / `tTVPPadManager` に新規メソッドが必要。
+  `getPadSensor(no, sensorId, axis)` 形が自然 (WINVER/XInput はセンサ非対応)。
 - **gamecontrollerdb 配線**: `pad.cpp:InitPadMaiing()` を `SDL_AppInit` から
   呼ぶ (現状コメントアウトの `SDL_AddGamepadMappingsFromFile` を生かす形でも可)。
-- **WINVER 側実装**: `BasicDrawDevice` ベースの旧 Win32 ビルドで XInput 等を
-  使う場合は `tTVPApplication::GetPadState/GetPadAxis` を override する派生を
-  `win32/environ/` 配下に追加すること。
+- **WINVER の機種名**: XInput は機種名 API を持たないため一律 `"XInput Controller"`。
+  個体名が必要なら RawInput / Windows.Gaming.Input との併用が要る。

@@ -446,7 +446,7 @@ tTJSNI_BaseLayer::Construct(tjs_int numparams, tTJSVariant **param,
 	class iTVPLayerTreeOwner* lto = NULL;
 	tTJSVariant iface_v;
 	if(TJS_FAILED(clo.PropGet(0, TJS_W("layerTreeOwnerInterface"), NULL, &iface_v, NULL)))
-		TVPThrowExceptionMessage( TJS_W("Cannot Retrive Layer Tree Owner Interface.") );
+		TVPThrowExceptionMessage(TVPCannotRetriveLayerTreeOwnerInterface );
 	lto = reinterpret_cast<iTVPLayerTreeOwner *>((tjs_intptr_t)(tjs_int64)iface_v);
 
 	// get the layer native instance
@@ -4667,6 +4667,20 @@ void tTJSNI_BaseLayer::SetFontHeight(tjs_int height)
 tjs_int tTJSNI_BaseLayer::GetFontHeight() const
 {
 	return Font.Height;
+}
+//---------------------------------------------------------------------------
+void tTJSNI_BaseLayer::SetFontEmojiMode(tjs_int mode)
+{
+	if(Font.EmojiMode != mode)
+	{
+		Font.EmojiMode = mode;
+		FontChanged = true;
+	}
+}
+//---------------------------------------------------------------------------
+tjs_int tTJSNI_BaseLayer::GetFontEmojiMode() const
+{
+	return Font.EmojiMode;
 }
 //---------------------------------------------------------------------------
 void tTJSNI_BaseLayer::SetFontAngle(tjs_int angle)
@@ -9751,6 +9765,16 @@ tjs_int tTJSNI_Font::GetFontHeight() const
 	if( Layer ) return Layer->GetFontHeight();
 	else return Font.Height;
 }
+void tTJSNI_Font::SetFontEmojiMode(tjs_int mode)
+{
+	if( Layer ) Layer->SetFontEmojiMode(mode);
+	else Font.EmojiMode = mode;
+}
+tjs_int tTJSNI_Font::GetFontEmojiMode() const
+{
+	if( Layer ) return Layer->GetFontEmojiMode();
+	else return Font.EmojiMode;
+}
 //---------------------------------------------------------------------------
 void tTJSNI_Font::SetFontAngle(tjs_int angle)
 {
@@ -10189,6 +10213,88 @@ TJS_BEGIN_NATIVE_PROP_DECL(height)
 	TJS_END_NATIVE_PROP_SETTER
 }
 TJS_END_NATIVE_PROP_DECL(height)
+//----------------------------------------------------------------------
+// emojiMode: 絵文字レンダリングモード (-1=既定に従う / 0=none / 1=mono / 2=color)。
+// 原フォントに無い絵文字コードポイントを絵文字フォントへフォールバックさせる。
+// 指定モードの絵文字フォントが未登録ならスルー (原フォントのまま)。
+TJS_BEGIN_NATIVE_PROP_DECL(emojiMode)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Font);
+		*result = (tjs_int)_this->GetFontEmojiMode();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_BEGIN_NATIVE_PROP_SETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Font);
+		_this->SetFontEmojiMode((tjs_int)*param);
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_PROP_DECL(emojiMode)
+//----------------------------------------------------------------------
+// defaultEmojiMode: 絵文字モードのグローバル既定 (クラスプロパティ)。emojiMode を
+// 個別指定していない (=既定) Font はこの値に従う。変更でフォントキャッシュは破棄。
+TJS_BEGIN_NATIVE_PROP_DECL(defaultEmojiMode)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		if(result) *result = (tjs_int)TVPGetDefaultEmojiMode();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_BEGIN_NATIVE_PROP_SETTER
+	{
+		TVPSetDefaultEmojiMode((tjs_int)*param);
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_STATIC_PROP_DECL(defaultEmojiMode)
+//----------------------------------------------------------------------
+// emojiFaceName / colorEmojiFaceName: 絵文字フォールバックに使う face 名 (クラス
+// プロパティ)。既定はバンドルフォント名。Font.addFont(任意ファイル) で登録した
+// 絵文字フォントの face 名をここに設定すれば、その絵文字フォントを使える。
+TJS_BEGIN_NATIVE_PROP_DECL(emojiFaceName)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		if(result) *result = ttstr(TVPGetEmojiFaceName(TVP_EMOJI_MONO));
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_BEGIN_NATIVE_PROP_SETTER
+	{
+		TVPSetEmojiFaceName(TVP_EMOJI_MONO, ttstr(*param).c_str());
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_STATIC_PROP_DECL(emojiFaceName)
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_PROP_DECL(colorEmojiFaceName)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		if(result) *result = ttstr(TVPGetEmojiFaceName(TVP_EMOJI_COLOR));
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_BEGIN_NATIVE_PROP_SETTER
+	{
+		TVPSetEmojiFaceName(TVP_EMOJI_COLOR, ttstr(*param).c_str());
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_STATIC_PROP_DECL(colorEmojiFaceName)
 //----------------------------------------------------------------------
 TJS_BEGIN_NATIVE_PROP_DECL(bold)
 {

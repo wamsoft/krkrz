@@ -93,6 +93,15 @@ console (CONIN$) を介さずにエージェントが REPL を駆動するため
 ベースのコマンドチャネル。 `-repl` と独立に起動でき (両方同時も可)、 メイン
 スレッド実行は共有キュー (`ReplMainQueue`) で console REPL と共用される。
 
+このチャネルと、その応答口を使う file-based modal (`System.confirm` /
+`inputString` / ファイル選択を REPL 経由で応答する `modal`/`modalresp`
+サブプロトコル) は、 ローカルファイルシステムを使うデスクトップ向け機能で、
+CMake の `KRKRZ_REPL_FILE` (既定は `KRKRZ_REPL` に追従) でゲートされる。
+端末 (標準入出力) を持たない一部プラットフォーム向けの web-only ビルド
+(`KRKRZ_REPL_WEB` のみ) ではリンク外となり、 その場合の modal 呼び出し元は
+native / 既定へフォールバックする。 web REPL 用の modal はブラウザ側 + web
+インターフェース側の別実装が必要 (未実装)。
+
 プロトコル (`<dir>` 配下、 lockstep):
 
 1. エージェント: コマンド (UTF-8 TJS) を `cmd.tmp` に書き、 `cmd` に rename。
@@ -110,6 +119,73 @@ krkrz64 data/ -replfile=/tmp/krkrzchan
 典型フロー (擬似): `win.openMenu()` → `Agent.dialogs()` で状態確認 →
 `Agent.click(255,80)` で遷移 → `Agent.captureScreen("cap.png")` → PNG を読んで
 目視確認。
+
+## ブラウザ REPL / Web サーバ (`-replweb`)
+
+`-replweb[=<port>|<host>:<port>]` で 127.0.0.1:8899 (既定) に軽量 HTTP+SSE
+サーバが立ち、 ブラウザから REPL を操作できる (`KRKRZ_REPL_WEB` ビルド時のみ)。
+端末非依存で選択/コピー/検索がブラウザネイティブに効く。 待受 URL は
+`System.replWebURL` で取得できる。 `0.0.0.0:<port>` バインドで LAN 越しの
+開発 PC からも接続可 (信頼できるネットワーク限定。 起動ログに警告が出る)。
+
+### 組み込みルート
+
+| パス | 説明 |
+|---|---|
+| `GET /` | 埋め込み REPL ビューワー (上=ログ / 下=入力の単一 HTML) |
+| `GET /events` | エンジンログの SSE ストリーム (直近 2000 行のバックログ付き) |
+| `POST /cmd` | body の 1 行を REPL として評価 (ドットコマンド/複数行継続対応)。応答 body は継続入力中なら `"1"` |
+| `GET /sub/<channel>` | 汎用 SSE チャネル購読 (`WebServer.broadcast` の配信先。バックログ無し) |
+
+### `WebServer` TJS クラス (拡張登録口)
+
+スクリプト / プラグインがこのサーバへ機能を追加公開するためのクラス
+(`System` 同様インスタンス不要)。 サーバ未起動でも登録は保持され、 起動時から
+有効になる。 **ハンドラは常にメインスレッドで呼ばれる** (`ReplMainQueue` の
+タスクとして dispatch) ため、 TJS / エンジン API を自由に触ってよい。
+
+| メンバ | 説明 |
+|---|---|
+| `WebServer.register(prefix, handler)` | パスプレフィックス最長一致で動的ハンドラを登録 (同一 prefix は上書き) |
+| `WebServer.unregister(prefix)` | ハンドラ解除。 あれば 1 |
+| `WebServer.serveStatic(prefix, storageDir)` | prefix 以下の GET を `storageDir + 相対パス` のストレージから配信 (`..` は 403)。 例: `("/ui/", "ui/")` |
+| `WebServer.unserveStatic(prefix)` | 静的マウント解除 |
+| `WebServer.broadcast(channel, text)` | `/sub/<channel>` の購読者へ text を配信 (改行可、 SSE 複数 data 行に整形) |
+| `WebServer.active` | サーバ稼働中か |
+| `WebServer.url` | 待受 URL (未稼働なら空文字列) |
+
+ハンドラ呼び出し規約:
+
+```tjs
+WebServer.register("/api/foo/", function(req) {
+    // req = %[ method, path, query, body(文字列), bytes(octet: body 非空時のみ) ]
+    return %[ status : 200, mime : "application/json", body : "{}" ];
+});
+```
+
+戻り値の解釈: 文字列 = 200 `application/json` / octet = 200
+`application/octet-stream` / 整数 = そのステータスで空ボディ / void = 204 /
+辞書 = `%[status, mime, body(文字列 or octet)]`。 ハンドラ内の TJS 例外は
+500 (本文 = メッセージ) になり `WebServer: handler error:` としてログに出る。
+
+プラグインからは TJS グローバル経由で登録するのが定石 (ネイティブメソッドの
+クロージャを渡す。 C++ エクスポート追加は不要):
+
+```tjs
+// プラグイン側 POST_REGIST から TVPExecuteExpression で評価する例
+if (typeof global.WebServer != "undefined") {
+    var api = new MyPluginApi();          // ncbind で登録したクラス
+    WebServer.register("/api/mine/", api.handle);
+}
+```
+
+実装: `common/utils/ReplWebServer.cpp` (サーバ本体) /
+`common/utils/ReplWebIntf.cpp` (TJS クラス)。 動的ハンドラと静的配信の
+ストレージ読込はどちらも `ReplMainQueue::SubmitTask` でメインスレッドに運んで
+実行される (タスクは 1 フレームあたり予算付きで複数件 drain)。 TJS クロージャは
+メインスレッド専用 map に隔離され、 HTTP スレッドは prefix 文字列しか触らない。
+利用例: krkr_threepp プラグインのブラウザ編集 UI (`/ui/` + `/app/` +
+`/api/three/`)。
 
 ## 毎フレーム系イベントの連続例外ガード
 
@@ -162,8 +238,13 @@ REPL ワーカースレッドが `ic_readline` で入力をブロッキング取
 `-replfile` ファイルチャネルスレッド (`tTVPReplFileChannel`) も同じ
 `ReplMainQueue` に提出するため、 console REPL と file channel が共存しても
 メインスレッド実行は 1 件ずつ直列化されます (提出は submit mutex で排他)。
-`TVPCreateREPL()` が `-repl` / `-replfile` の有無を見て console / channel
-スレッドを独立に起動します。
+`TVPCreateREPL()` が `-repl` / `-replfile` / `-replweb` の有無を見て
+console / file channel / web viewer を独立に起動します。 これらの有効化は
+CMake の `KRKRZ_REPL` (console) / `KRKRZ_REPL_FILE` (file channel + file-based
+modal) / `KRKRZ_REPL_WEB` (browser viewer) で独立に制御でき、 共有基盤
+(`ReplMainQueue` / エントリポイント等) は派生フラグ `KRKRZ_REPL_CORE`
+(いずれか一つでも有効なら ON) で一括ゲートされます。 file channel と
+file-based modal はデスクトップ向けで、 web-only ビルドではリンク外です。
 
 この構造により:
 

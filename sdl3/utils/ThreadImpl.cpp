@@ -51,7 +51,7 @@ tTVPNativeThread::Start(tTVPThreadFunc func, void *arg, tTVPThreadPriority pri, 
 		if( Thread == nullptr ) {
 			// スレッドが作れない環境 (SDL_PTHREADS 無効ビルド等) では呼び出し側が
 			// 開始待ちのまま永久ブロックしてしまうため、即座に失敗させる
-			TVPThrowExceptionMessage(TJS_W("Failed to create thread: %1"),
+			TVPThrowExceptionMessage(TVPFailedToCreateThread,
 				ttstr(SDL_GetError()));
 		}
     	SetPriority(pri);

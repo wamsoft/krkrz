@@ -411,7 +411,12 @@ void TTVPWindowForm::OnMouseMove( int shift, int x, int y ) {
 		TVPPostInputEvent( new tTVPOnMouseMoveInputEvent(TJSNativeInstance, x, y, s), TVP_EPT_DISCARDABLE );
 	}
 
-	//RestoreMouseCursor();
+	// mcsTempHidden は「マウスを動かすまで一時非表示」— 実マウスの移動で復帰
+	// させる (win32 実装の RestoreMouseCursor 相当)。 cursor-warp が生む合成
+	// move は ElementsDialogManager が期待座標一致で再 hide するので、 warp
+	// 直後に不用意に出っぱなしにはならない。
+	if (GetMouseCursorState() == mcsTempHidden)
+		SetMouseCursorState(mcsVisible);
 
 	int pos = (y << 16) + x;
 	TVPPushEnvironNoise(&pos, sizeof(pos));
@@ -484,7 +489,7 @@ TTVPWindowForm::UpdateCursorPos(tjs_int x, tjs_int y)
 // 表示/非表示
 void TTVPWindowForm::ShowWindowAsModal() {
 	// modal は対応しないので、例外出す
-	TVPThrowExceptionMessage(TJS_W("Modal window is not supported."));
+	TVPThrowExceptionMessage(TVPModalWindowIsNotSupported);
 }
 
 void TTVPWindowForm::SetInnerWidth(int w) 

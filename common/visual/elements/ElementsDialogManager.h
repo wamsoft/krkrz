@@ -208,6 +208,12 @@ public:
 	bool ForwardTouchUp(tjs_real x, tjs_real y, tjs_real cx, tjs_real cy, tjs_uint32 id);
 	bool ForwardTouchMove(tjs_real x, tjs_real y, tjs_real cx, tjs_real cy, tjs_uint32 id);
 
+	//! @brief 入力を転送してきた window を記録する (TVP_DIALOG_INTERCEPT 経由)。
+	//!        cursor-warp ナビ ("input":{"cursor_warp":true}) でフォーカス移動先へ
+	//!        実マウスカーソルを SetCursorPos するのに使う。 window 側の入力
+	//!        ハンドラ (tTJSNI_BaseWindow::On*) が this を渡す。
+	void NoteInputWindow(class iTVPWindow* window);
+
 	// === DrawDevice::Show() 終端から呼ばれる ===
 	void PaintOverlay(iTVPDrawDevice* device);
 
@@ -217,6 +223,21 @@ public:
 	//!        外から呼ぶ必要があるのは「JSON パース前にフォントを揃えたい」
 	//!        ケース。 [[feedback_elements_font_init_order]] 参照。
 	void EnsureRuntimeInitialized();
+
+	//! @brief handler (TJS native インスタンス等) の破棄時に呼び、 該当 handler を
+	//!        参照する全インスタンスから参照を切って teardown を予約する。
+	//!        モーダル終了後の遅延 teardown が解放済み handler へ OnClosed を
+	//!        発火する use-after-free の防止。 破棄経路では Close() でなくこちらを
+	//!        使う (active でないインスタンスにも効く)。
+	void DetachHandler(iTVPDialogEventHandler* handler);
+
+	//! @brief overlay の描画密度モード (TJS: Dialog.renderScale)。
+	//!        0 = auto (既定): 最終 present サイズで直接ラスタライズする。
+	//!        >0 = authored 論理サイズ×倍率で描き、 present 時に拡縮する
+	//!        (1.0 = 原寸レンダ→拡縮表示、 2.0 = 旧 supersampling 相当)。
+	//!        次回の RenderInstance から反映される (表示中の画面にも効く)。
+	void SetRenderScale(float scale);
+	float GetRenderScale() const;
 
 private:
 	tTVPElementsDialogManager();

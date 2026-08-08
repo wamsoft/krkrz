@@ -134,33 +134,59 @@ void replace_regex( tTJSVariant **param, tjs_int numparams, tTJSNI_RegExp *_this
 }
 //---------------------------------------------------------------------------
 iTJSDispatch2* split_regex( const ttstr &target, iTJSDispatch2 * array, tTJSNI_RegExp *_this, bool purgeempty ) {
+	// krkr2 (boost::regex_grep 版 tTJSSplitPredicator) と同一セマンティクス:
+	//   各マッチごとに「前回マッチ末尾〜マッチ先頭の区間文字列」に続けて
+	//   「キャプチャグループの各部分文字列」を配列へ格納する (JS 互換)。
+	//   purgeempty は区間・グループ双方の空文字列に適用。
 	tjs_uint targlen = target.GetLen();
 	OnigRegion* region = onig_region_new();
 	// ttstr alloc や array->PropSetByNum が例外を投げると旧実装は region を漏らしていた。
 	try {
-		const tjs_char* s = target.c_str();
-		const tjs_char* send = s + targlen;
-		int r = onig_search( _this->RegEx, (UChar*)s, (UChar*)send, (UChar*)s, (UChar*)send, region, ONIG_OPTION_NONE );
+		const tjs_char* base = target.c_str();
+		const UChar* ubase = (const UChar*)base;
+		const UChar* uend  = (const UChar*)(base + targlen);
+		tjs_int lastpos = 0;   // 前回マッチ末尾 (文字単位)
+		tjs_int lastlen = -1;  // 前回マッチ長 (-1 = マッチ無し)
+		tjs_int searchpos = 0; // 次回検索開始位置 (文字単位)
 		int storecount = 0;
-		if( r >= 0 ) { // match
-			do {
-				int len = region->beg[0] / sizeof(tjs_char);
-				if( !purgeempty || len > 0 ) {
-					tTJSVariant val = ttstr( s, len );
+		while( (tjs_uint)searchpos <= targlen &&
+			onig_search( _this->RegEx, ubase, uend,
+				(const UChar*)(base + searchpos), uend, region, ONIG_OPTION_NONE ) >= 0 ) {
+			tjs_int pos = region->beg[0] / (tjs_int)sizeof(tjs_char);
+			tjs_int len = (region->end[0] - region->beg[0]) / (tjs_int)sizeof(tjs_char);
+
+			if( pos >= lastpos && (len || pos != 0) ) {
+				if( !purgeempty || pos - lastpos ) {
+					tTJSVariant val = ttstr( base + lastpos, pos - lastpos );
 					array->PropSetByNum(TJS_MEMBERENSURE, storecount++, &val, array);
 				}
-				s += region->end[0] / sizeof(tjs_char);
-				onig_region_clear( region );
-			} while( onig_search( _this->RegEx, (UChar*)s, (UChar*)send, (UChar*)s, (UChar*)send, region, ONIG_OPTION_NONE ) >= 0 );
-			if( !purgeempty || s < send ) {
-				tTJSVariant val = ttstr( s, (int)(send-s) );
+			}
+			if( region->num_regs > 1 ) {
+				// キャプチャグループを順に出力 (未マッチのグループは空文字列扱い)
+				for( int i = 1; i < region->num_regs; i++ ) {
+					bool matched = region->beg[i] >= 0;
+					tjs_int glen = matched ? (region->end[i] - region->beg[i]) / (tjs_int)sizeof(tjs_char) : 0;
+					if( !purgeempty || glen ) {
+						tTJSVariant val = matched
+							? tTJSVariant(ttstr( base + region->beg[i] / (tjs_int)sizeof(tjs_char), glen ))
+							: tTJSVariant(ttstr());
+						array->PropSetByNum(TJS_MEMBERENSURE, storecount++, &val, array);
+					}
+				}
+			}
+			lastpos = pos + len;
+			lastlen = len;
+			// 零長マッチは 1 文字進めて無限ループを回避 (boost regex_grep 相当)
+			searchpos = len ? lastpos : pos + 1;
+			onig_region_clear( region );
+		}
+		// 末尾区間の出力 (対象末尾での零長マッチ直後は出力しない)
+		if( lastlen != 0 || lastpos != (tjs_int)targlen ) {
+			if( !purgeempty || (tjs_int)targlen - lastpos ) {
+				tTJSVariant val = ttstr( base + lastpos, targlen - lastpos );
 				array->PropSetByNum(TJS_MEMBERENSURE, storecount++, &val, array);
 			}
-		} else {
-			tTJSVariant val = ttstr( s, (int)(send-s) );
-			array->PropSetByNum(TJS_MEMBERENSURE, storecount++, &val, array);
 		}
-		onig_region_clear( region );
 		onig_region_free( region, 1  );
 		return array;
 	} catch(...) {

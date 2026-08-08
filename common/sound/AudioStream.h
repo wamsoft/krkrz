@@ -61,9 +61,33 @@ public:
 	virtual tjs_int GetPan() const = 0;
 	virtual void SetFrequency(tjs_int freq) = 0;
 	virtual tjs_int GetFrequency() const = 0;
+
+	// -- 3D 定位 (spatialization)。既定 no-op = 未対応ストリーム / 非空間化。--
+	//    3D は SetSpatializationEnabled(true) の時のみ効く (既定は無効 = 従来どおり
+	//    非空間化パススルーで回帰なし)。座標系は miniaudio 準拠 (右手系・Y up・任意単位)。
+	virtual void SetSpatializationEnabled(bool enabled) {}
+	virtual void Set3DPosition(float x, float y, float z) {}      // 音源のワールド座標
+	virtual void Set3DVelocity(float x, float y, float z) {}      // 速度 (ドップラー用)
+	virtual void Set3DConeDirection(float x, float y, float z) {} // コーンの向き
+	virtual void Set3DCone(float innerAngleRad, float outerAngleRad, float outerGain) {}
+	virtual void Set3DMinDistance(float d) {}                     // これ以内は減衰なし
+	virtual void Set3DMaxDistance(float d) {}                     // これ以遠は減衰頭打ち
+	virtual void Set3DRolloff(float rolloff) {}                   // 減衰の強さ
+	virtual void Set3DDopplerFactor(float factor) {}             // ドップラー強度 (0=無効)
+	// 減衰モデル (ma_attenuation_model と同値: 0=none/1=inverse/2=linear/3=exponential)
+	virtual void Set3DAttenuationModel(int model) {}
 };
 
 extern iTVPAudioStream* TVPCreateAudioStream(tTVPAudioStreamParam& param);
+
+// -- 3D 定位のリスナ (聴取者)。engine グローバル (listener index 0) を操作する。--
+//    座標系は音源側 (iTVPAudioStream::Set3DPosition 等) と共通 (miniaudio 準拠)。
+extern void TVPSetSoundListenerEnabled(bool enabled);
+extern void TVPSetSoundListenerPosition(float x, float y, float z);
+extern void TVPSetSoundListenerDirection(float x, float y, float z); // 前方向
+extern void TVPSetSoundListenerWorldUp(float x, float y, float z);   // 上方向 (既定 0,1,0)
+extern void TVPSetSoundListenerVelocity(float x, float y, float z);  // 速度 (ドップラー用)
+extern void TVPSetSoundListenerCone(float innerAngleRad, float outerAngleRad, float outerGain);
 
 // オーディオデバイス (miniaudio engine) を起動時に先行初期化する。
 // 初回サウンド再生時のデバイスオープン遅延 (音の頭切れ) を防ぐ目的。

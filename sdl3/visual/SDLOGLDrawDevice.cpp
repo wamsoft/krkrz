@@ -162,7 +162,7 @@ void tTVPSDLOGLDrawDevice::CreateTexture()
 					if (TJS_FAILED(clo.Object->NativeInstanceSupport(TJS_NIS_GETINSTANCE,
 							tTJSNC_Texture::ClassID, (iTJSNativeInstance**)&TextureInstance))) {
 						TextureInstance = nullptr;
-						TVPThrowExceptionMessage(TJS_W("Cannot retrive texture instance."));
+						TVPThrowExceptionMessage(TVPCannotRetriveInstance, TJS_W("texture"));
 					}
 				}
 			}
@@ -412,7 +412,10 @@ bool tTVPSDLOGLDrawDevice::ShowVideo()
 {
 	// presenter 稼働中は動画のみを描く。フレーム保持と GLTexture 管理は presenter 側
 	// (GLVideoPresenter.cpp) が行い、ここでは描画スレッド (GL context current) から pull する。
+	// overlay の Visible=false (WINVER 仕様: 既定 false) の間は画面を占有せず、false を返して
+	// 通常のゲーム描画へ戻す。WINVER が RenderVideoFrame 内で Visible を判定するのと等価。
 	if( !VideoPresenter ) return false;
+	if( !VideoPresenter->IsVisible() ) return false;
 	glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 	tTVPGLVideoPresenterContext ctx;

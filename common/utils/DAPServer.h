@@ -23,8 +23,9 @@
 
 #include "ThreadIntf.h"
 
-// picojson は target_include_directories の PICOJSON_INCLUDE_DIRS から見える
-#define PICOJSON_USE_INT64
+// picojson は target_include_directories の PICOJSON_INCLUDE_DIRS から見える。
+// PICOJSON_USE_INT64 は CMakeLists.txt でビルド全体に定義される (TU ローカル
+// define は ODR 不整合のもとなのでここでは定義しない)
 #include "picojson/picojson.h"
 
 class tTVPDAPServerThread : public tTVPThread

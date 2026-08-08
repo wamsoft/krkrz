@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "comment": "フォントメタデータ。起動時に読み込まれ、name は名前登録のみ(遅延ロード)。実ファイルは初回使用時に読み込まれる。tools/fontgen/gen_fonts_json.py で生成可。",
+  "fonts": [
+    {
+      "file": "fonts/notocoloremoji.ttf",
+      "family": "Noto Color Emoji Regular",
+      "scripts": ["Zsye"],
+      "flags": ["emoji", "color"],
+      "ranges": [[9728, 9983], [9984, 10175], [126976, 129791]]
+    }
+  ]
+}

@@ -2125,6 +2125,7 @@ extern void * TVPImportFuncPtr003f9d3de568fcd71dd532f33d38839c;
 extern void * TVPImportFuncPtrf0890a90b825930e4e5997ed171326b1;
 extern void * TVPImportFuncPtre209729d9d40a6b0952ab83f2ed03e85;
 extern void * TVPImportFuncPtrfe0e5e6794695d7f937e468803528ac5;
+extern void * TVPImportFuncPtr42976ce96de75d3cf2d5ff5110880ecd;
 extern void * TVPImportFuncPtr5da29a19bbe279a89be00e16c59d7641;
 extern void * TVPImportFuncPtrc1b52e8f3578d11f369552a887e13c5b;
 extern void * TVPImportFuncPtrb94ead6de9316bc65758c5aefb564078;
@@ -6357,19 +6358,8 @@ public:
 	// Generic版用拡張メソッド
 	//---------------------------------------------------------------------------
 
-	//! @brief		(Window->DrawDevice) ビデオの更新
-	//! @param		w			ビデオの幅
-	//! @param		h			ビデオの高さ
-	//! @param		updator		ビデオの更新を行う関
-	virtual void UpdateVideo(int w, int h, std::function<void(char *dest, int pitch)> updator) = 0;
-
-	//! @brief		(Window->DrawDevice) ビデオのクリア
-	//! @note		ビデオの内容をクリアする。通常は黒でクリアされる。
-	//!				このメソッドはビデオ再生完了後に呼び出すことが想定される
-	//!				(ビデオの内容をクリアするため)。このメソッドを呼び出すと、
-	//!				ビデオの内容がクリアされ、次に UpdateVideo()
-	//!				が呼ばれるまでビデオの内容は更新されない。
-	virtual void ClearVideo() = 0;
+	// (overlay 動画は pull 型 presenter host へ移行済み。旧 push 型 UpdateVideo/ClearVideo は撤去。
+	//  各 DrawDevice は環境別 presenter host (iTVP{,SDL,GL}VideoPresenterHost) を実装する)
 
 	//! @brief		(Window->DrawDevice) VSync待ちを有効にするかどうかを設定する
 	//! @param		enable		有効にするかどうか
@@ -8967,6 +8957,16 @@ inline tTVPWaveDecoder * TVPCreateWaveDecoder(const ttstr & storagename)
 	typedef tTVPWaveDecoder * (STDCALL * __functype)(const ttstr &);
 	return ((__functype)(TVPImportFuncPtrfe0e5e6794695d7f937e468803528ac5))(storagename);
 }
+inline float TVPQueryUserSoundGainDB(const ttstr & storagename)
+{
+	if(!TVPImportFuncPtr42976ce96de75d3cf2d5ff5110880ecd)
+	{
+		static char funcname[] = "float ::TVPQueryUserSoundGainDB(const ttstr &)";
+		TVPImportFuncPtr42976ce96de75d3cf2d5ff5110880ecd = TVPGetImportFuncPtr(funcname);
+	}
+	typedef float (STDCALL * __functype)(const ttstr &);
+	return ((__functype)(TVPImportFuncPtr42976ce96de75d3cf2d5ff5110880ecd))(storagename);
+}
 #ifdef __WINVER__
 inline void TVPReleaseDirectSound()
 {
@@ -9137,6 +9137,7 @@ inline IDirect3D9 * TVPGetDirect3DObjectNoAddRef()
 	return ((__functype)(TVPImportFuncPtr5fd8dfd2816a2cfd4a51cab41053d575))();
 }
 #endif
+#ifdef KRKRZ_HAS_ELEMENTS
 inline void TVPRegisterDialogHost(iTVPDrawDevice * device , iTVPDialogRendererHost * host)
 {
 	if(!TVPImportFuncPtrf9ae2164a9808838ae76d5abbd4da3ee)
@@ -9147,6 +9148,8 @@ inline void TVPRegisterDialogHost(iTVPDrawDevice * device , iTVPDialogRendererHo
 	typedef void (STDCALL * __functype)(iTVPDrawDevice *, iTVPDialogRendererHost *);
 	((__functype)(TVPImportFuncPtrf9ae2164a9808838ae76d5abbd4da3ee))(device, host);
 }
+#endif
+#ifdef KRKRZ_HAS_ELEMENTS
 inline void TVPUnregisterDialogHost(iTVPDrawDevice * device)
 {
 	if(!TVPImportFuncPtrb102018b90a9c8a06052b9d3acf78edc)
@@ -9157,6 +9160,7 @@ inline void TVPUnregisterDialogHost(iTVPDrawDevice * device)
 	typedef void (STDCALL * __functype)(iTVPDrawDevice *);
 	((__functype)(TVPImportFuncPtrb102018b90a9c8a06052b9d3acf78edc))(device);
 }
+#endif
 inline iTVPScanLineProvider * TVPSLPLoadImage(const ttstr & name , tjs_int bpp , tjs_uint32 key , tjs_uint w , tjs_uint h)
 {
 	if(!TVPImportFuncPtr9982ebedc12d343cb098e2a7b25bdef1)

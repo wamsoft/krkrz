@@ -1,5 +1,7 @@
 #include <windows.h>
-#include "tp_stub.h"
+// Track V-A: exe へ直接統合 (tp_stub 境界を撤去)。engine の実ヘッダを直接参照する。
+#include "tjsCommHead.h"
+#include "MsgIntf.h"       // TVPThrowExceptionMessage
 #include "webplayer.h"
 #include "IMoviePlayer.h"
 #include "D3D11OverlayWindow.h"
@@ -570,7 +572,7 @@ void __stdcall tTVPWebpMovie::GetFrontBuffer( BYTE **buff )
 void __stdcall tTVPWebpMovie::SetVideoBuffer( BYTE *buff1, BYTE *buff2, long size )
 {
 	if( buff1 == NULL)
-		TVPThrowExceptionMessage(TJS_W("SetVideoBuffer Parameter Error"));
+		TVPThrowExceptionMessage(TVPSetVideoBufferParameterError);
 
 	mBuffer = buff1;
 	// buff2は使わない

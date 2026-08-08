@@ -12,7 +12,7 @@
 #include "CharacterSet.h"     // TVPUtf16ToUtf8 / TVPUtf8ToUtf16
 
 #include <string>
-#include <cstdlib>            // getenv
+#include <cstdlib>            // getenv (Linux/Android の環境変数フォールバック用)
 
 #if defined(__linux__)
 #include <sys/socket.h>
@@ -115,13 +115,19 @@ std::string tTVPReplSocketChannel::GetNameFromConfig()
 		      s == TJS_W("false") || s == TJS_W("0") || s.IsEmpty()))
 			return TtstrToUtf8Std(s);
 	}
-	// 2. 環境変数 KRKRZ_REPL_SOCKET (Android は CLI 引数が無いのでこちら)
-	const char* env = std::getenv("KRKRZ_REPL_SOCKET");
+	// 2. 環境変数 KRKRZ_REPL_SOCKET (Android は CLI 引数が無いのでこちら)。
+	// この経路は abstract unix socket 同様 Linux/Android 専用。一部プラットフォームは
+	// getenv 自体を持たない (std/global どちらにも無い) ため、非 Linux では
+	// 環境変数フォールバックをコンパイルしない。ShouldStart() も非 Linux では
+	// 常に false を返すので機能欠落は無い。
+#if defined(__linux__)
+	const char* env = getenv("KRKRZ_REPL_SOCKET");
 	if (env && env[0]) {
 		std::string s(env);
 		if (s != "no" && s != "off" && s != "false" && s != "0")
 			return s;
 	}
+#endif
 	return std::string();
 }
 

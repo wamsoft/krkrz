@@ -261,3 +261,18 @@ icline 側の同期機構が必要)。
 - `Debug.logLocation` — ログ出力先ディレクトリ (プロパティ)
 - `Debug.startLogToFile(clear)` — ファイル出力開始
 - `Debug.logToFileOnError` / `Debug.clearLogFileOnError` — エラー時挙動
+
+### スレッド安全性
+
+`TVPLogDispatchLine` は main 以外のスレッド (REPL ファイルチャネル、file cache /
+image load スレッド等) からも呼ばれます。LogCore 内部では:
+
+- リングバッファ / important cache / タイムスタンプキャッシュ / ファイル出力は
+  `TVPLogStateMutex` (recursive) で保護。
+- **TJS logging handler の FuncCall は main thread 限定**。非 main スレッド発の
+  行は内部の保留キュー (上限 1024 行、超過時は古い行から破棄) に積まれ、
+  main thread がイベントポンプ (`TVPDeliverAllEvents`) / `TVPDrainREPL` 毎に
+  `TVPFlushQueuedLoggingEvents()` で配送します。チャネルスレッド上で TJS VM が
+  走ってメインスレッドと競合するクラッシュ (旧 -replfile 起動時) の再発防止。
+  handler 未登録の間に非 main スレッドから出た行は (従来どおり) handler には
+  届きません。

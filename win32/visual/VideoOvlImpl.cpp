@@ -31,39 +31,29 @@
 #include "LayerBitmapIntf.h"
 
 //---------------------------------------------------------------------------
-// Track V-A: krmovie は exe へ静的統合されたので、そのエクスポート関数を直接
-// リンクして呼ぶ (LoadLibrary/GetProcAddress を経由しない)。krflash.dll は従来通り
-// DLL ロードなので tTVPVideoModule(name) 経路を残す。
+// Track V-A: krmovie は exe へ直接統合された (win32/movie/*.cpp = KRKRZ_SRC_WIN32)。
+// そのエントリ関数を extern "C" 宣言で直接リンクして呼ぶ (LoadLibrary/GetProcAddress や
+// tp_stub 境界を経由しない)。krflash.dll (旧 .swf 対応) は廃止。
 extern "C" {
-	void    __stdcall GetAPIVersion( DWORD *ver );
 	void    __stdcall GetVideoOverlayObject( HWND, IStream*, const tjs_char*, const tjs_char*, unsigned __int64, iTVPVideoOverlay** );
 	void    __stdcall GetVideoLayerObject( HWND, IStream*, const tjs_char*, const tjs_char*, unsigned __int64, iTVPVideoOverlay** );
 	void    __stdcall GetVideoPresenterObject( HWND, IStream*, const tjs_char*, const tjs_char*, unsigned __int64, iTVPVideoOverlay** );
 	void    __stdcall GetMFVideoOverlayObject( HWND, IStream*, const tjs_char*, const tjs_char*, unsigned __int64, iTVPVideoOverlay** );
-	HRESULT __stdcall V2Link( iTVPFunctionExporter *exporter );
-	HRESULT __stdcall V2Unlink();
 	// Track V-E HW: IMFMediaEngine バックエンドのファクトリ (engineDevice=ID3D11Device*)。
 	void    __stdcall GetMediaEngineVideoObject( HWND, IStream*, const tjs_char*, const tjs_char*, unsigned __int64, void*, iTVPVideoOverlay**, iTVPVideoPresenter** );
 }
 
+// 直接統合された krmovie のエントリ関数を束ねる薄いラッパ (tp_stub/DLL 撤去後の名残)。
 class tTVPVideoModule
 {
-	tTVPPluginHolder *Holder;
-	HMODULE Handle;
-	tGetAPIVersion procGetAPIVersion;
 	tGetVideoOverlayObject procGetVideoOverlayObject;
-	tGetVideoOverlayObject procGetVideoLayerObject; // krmovie.dll only
+	tGetVideoOverlayObject procGetVideoLayerObject;
 	tGetVideoOverlayObject procGetVideoPresenterObject; // presenter 経路 (I420 対応形式は YUV 直渡し)
-	tGetVideoOverlayObject procGetMFVideoOverlayObject; // krmovie.dll only
-	tTVPV2LinkProc procV2Link;
-	tTVPV2UnlinkProc procV2Unlink;
+	tGetVideoOverlayObject procGetMFVideoOverlayObject;
 
 public:
-	tTVPVideoModule();               // 静的統合された krmovie を直接束ねる
-	tTVPVideoModule(const ttstr & name); // DLL ロード (krflash.dll 用)
-	~tTVPVideoModule();
+	tTVPVideoModule();
 
-	void GetAPIVersion(DWORD *version) { procGetAPIVersion(version); }
 	void GetVideoOverlayObject(HWND callbackwin, IStream *stream,
 		const wchar_t * streamname, const wchar_t *type, unsigned __int64 size,
 		iTVPVideoOverlay **out)
@@ -94,103 +84,22 @@ public:
 	}
 };
 static tTVPVideoModule *TVPMovieVideoModule = NULL;
-static tTVPVideoModule *TVPFlashVideoModule = NULL;
-static void TVPUnloadKrMovie();
 //---------------------------------------------------------------------------
-// 静的統合された krmovie を直接束ねる (LoadLibrary 不要)。
+// 直接統合された krmovie のエントリ関数を束ねる (LoadLibrary/tp_stub 不要)。
 tTVPVideoModule::tTVPVideoModule()
 {
-	Holder = NULL;
-	Handle = NULL;
 	procGetVideoOverlayObject    = (tGetVideoOverlayObject)&::GetVideoOverlayObject;
 	procGetVideoLayerObject      = (tGetVideoOverlayObject)&::GetVideoLayerObject;
 	procGetVideoPresenterObject  = (tGetVideoOverlayObject)&::GetVideoPresenterObject;
 	procGetMFVideoOverlayObject  = (tGetVideoOverlayObject)&::GetMFVideoOverlayObject;
-	procGetAPIVersion           = (tGetAPIVersion)&::GetAPIVersion;
-	procV2Link                  = (tTVPV2LinkProc)&::V2Link;
-	procV2Unlink                = (tTVPV2UnlinkProc)&::V2Unlink;
-
-	DWORD version;
-	procGetAPIVersion(&version);
-	if(version != TVP_KRMOVIE_VER)
-		TVPThrowExceptionMessage(TVPInvalidKrMovieDLL);
-
-	procV2Link(TVPGetFunctionExporter()); // link functions used by tp_stub
-}
-//---------------------------------------------------------------------------
-tTVPVideoModule::tTVPVideoModule(const ttstr &name)
-{
-	Holder = new tTVPPluginHolder(name);
-	Handle = LoadLibrary((const wchar_t*)Holder->GetLocalName().AsStdString().c_str());
-	if(!Handle)
-	{
-		delete Holder;
-		TVPThrowExceptionMessage(TVPCannotLoadKrMovieDLL);
-	}
-
-	try
-	{
-		procGetVideoOverlayObject = (tGetVideoOverlayObject)
-			GetProcAddress(Handle, "GetVideoOverlayObject");
-
-		procGetVideoLayerObject = (tGetVideoOverlayObject)
-			GetProcAddress(Handle, "GetVideoLayerObject");
-
-		// krflash DLL 等は presenter export を持たない → null 可 (使用側で layer へフォールバック)。
-		procGetVideoPresenterObject = (tGetVideoOverlayObject)
-			GetProcAddress(Handle, "GetVideoPresenterObject");
-
-		procGetMFVideoOverlayObject = (tGetVideoOverlayObject)
-			GetProcAddress(Handle, "GetMFVideoOverlayObject");
-
-		procGetAPIVersion = (tGetAPIVersion)
-			GetProcAddress(Handle, "GetAPIVersion");
-
-		procV2Link = (tTVPV2LinkProc)
-			GetProcAddress(Handle, "V2Link");
-
-		procV2Unlink = (tTVPV2UnlinkProc)
-			GetProcAddress(Handle, "V2Unlink");
-
-		if(!procGetAPIVersion)
-			TVPThrowExceptionMessage(TVPInvalidKrMovieDLL);
-
-		DWORD version;
-		procGetAPIVersion(&version);
-		if(version != TVP_KRMOVIE_VER)
-			TVPThrowExceptionMessage(TVPInvalidKrMovieDLL);
-
-		procV2Link(TVPGetFunctionExporter()); // link functions used by tp_stub
-	}
-	catch(...)
-	{
-		FreeLibrary(Handle);
-		delete Holder;
-		throw;
-	}
-}
-//---------------------------------------------------------------------------
-tTVPVideoModule::~tTVPVideoModule()
-{
-	procV2Unlink();
-	if(Handle) FreeLibrary(Handle); // 静的統合 (krmovie) 時は Handle=NULL
-	if(Holder) delete Holder;
 }
 //---------------------------------------------------------------------------
 static tTVPVideoModule * TVPGetMovieVideoModule()
 {
 	if(TVPMovieVideoModule == NULL)
-		TVPMovieVideoModule = new tTVPVideoModule(); // 静的統合 krmovie
+		TVPMovieVideoModule = new tTVPVideoModule(); // 直接統合 krmovie
 
 	return TVPMovieVideoModule;
-}
-//---------------------------------------------------------------------------
-static tTVPVideoModule * TVPGetFlashVideoModule()
-{
-	if(TVPFlashVideoModule == NULL)
-		TVPFlashVideoModule = new tTVPVideoModule("krflash.dll");
-
-	return TVPFlashVideoModule;
 }
 //---------------------------------------------------------------------------
 static std::vector<tTJSNI_VideoOverlay *> TVPVideoOverlayVector;
@@ -210,7 +119,7 @@ static void TVPRemoveVideoOverlay(tTJSNI_VideoOverlay *ovl)
 //---------------------------------------------------------------------------
 static void TVPShutdownVideoOverlay()
 {
-	// shutdown all overlay object and release krmovie.dll / krflash.dll
+	// shutdown all overlay object
 	std::vector<tTJSNI_VideoOverlay*>::iterator i;
 	for(i = TVPVideoOverlayVector.begin(); i != TVPVideoOverlayVector.end(); i++)
 	{
@@ -218,7 +127,6 @@ static void TVPShutdownVideoOverlay()
 	}
 
 	if(TVPMovieVideoModule) delete TVPMovieVideoModule, TVPMovieVideoModule = NULL;
-	if(TVPFlashVideoModule) delete TVPFlashVideoModule, TVPFlashVideoModule = NULL;
 }
 static tTVPAtExit TVPShutdownVideoOverlayAtExit
 	(TVP_ATEXIT_PRI_PREPARE, TVPShutdownVideoOverlay);
@@ -341,39 +249,15 @@ void tTJSNI_VideoOverlay::Open(const ttstr &_name)
 	}
 
 	IStream *istream = NULL;
-	long size;
-	bool flash;
+	long size = 0;
 	ttstr ext = TVPExtractStorageExt(name).c_str();
 	ext.ToLowerCase();
 
-	tTVPVideoModule *mod = NULL;
-	if(ext == TJS_W(".swf"))
+	// krmovie (exe 直接統合) を束ねるモジュール。旧 .swf/krflash 経路は廃止。
+	tTVPVideoModule *mod = TVPGetMovieVideoModule();
+
+	// prepare IStream
 	{
-		// shockwave flash movie
-		flash = true;
-
-		// load krflash.dll
-		mod = TVPGetFlashVideoModule();
-
-		// prepare local storage
-		if(LocalTempStorageHolder)
-			delete LocalTempStorageHolder, LocalTempStorageHolder = NULL;
-
-		// find local name
-		ttstr placed = TVPSearchPlacedPath(name);
-
-		// open and hold
-		LocalTempStorageHolder =
-			new tTVPLocalTempStorageHolder(placed);
-	}
-	else
-	{
-		flash = false;
-
-		// load krmovie.dll
-		mod = TVPGetMovieVideoModule();
-
-		// prepate IStream
 		iTJSBinaryStream *stream0 = NULL;
 		try
 		{
@@ -394,13 +278,6 @@ void tTJSNI_VideoOverlay::Open(const ttstr &_name)
 	// create video overlay object
 	try
 	{
-		if(flash)
-		{
-			mod->GetVideoOverlayObject(EventQueue.GetOwner(),
-				NULL, (const wchar_t*)(LocalTempStorageHolder->GetLocalName() + param).c_str(),
-				(const wchar_t*)ext.c_str(), 0, &VideoOverlay);
-		}
-		else
 		{
 			// overlay 系。DrawDevice が presenter host を公開していれば、レイヤと同じ
 			// buffer 出力オブジェクト (GetVideoLayerObject) を作り、本体 D3D11 バック

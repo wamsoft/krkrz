@@ -1,0 +1,113 @@
+// -*- mode:tjs2 -*-
+// ======================================================================
+//  elements_flow シーン (ElementsFlowScene)
+//  Dialog フロー (startFlow) の画面切替エフェクト (fade / universal) と
+//  退場 (exit) 演出のデモ。単体起動は startup.tjs、束ね起動はランチャ。
+//  画面定義は flow/*.jsonc (transitions の effect / rule / vague を宣言)。
+// ======================================================================
+
+// onScreen / onClose をシーンへ中継する Dialog。Dialog クラスが無い環境で
+// このファイル自体の読み込みが失敗しないよう、Scripts.eval で条件付き定義。
+if (typeof global.Dialog != "undefined" && typeof global.FlowDemoDialog == "undefined") {
+    Scripts.eval(
+        "class FlowDemoDialog extends Dialog"
+        + "{"
+        + "    var owner;"
+        + "    function FlowDemoDialog(o) { super.Dialog(); owner = o; }"
+        + "    function onScreen(name) { if (owner !== void) owner.onFlowScreen(name); }"
+        + "    function onClose(action) { if (owner !== void) owner.onFlowClosed(action); }"
+        + "}",
+        "elements_flow(FlowDemoDialog)");
+}
+
+class ElementsFlowScene extends DemoScene
+{
+    var dlg;
+    var manifest;
+    var flowAlive = false;
+    var retryStart = false;   // 起動直後は DrawDevice 未登録で失敗するため再試行
+
+    function ElementsFlowScene() { super.DemoScene("Elements 画面遷移 (fade / universal)"); }
+
+    function create()
+    {
+        // 背景の市松 — ダイアログ遷移が「ゲーム画面への overlay 合成」で
+        // あること (下が透けないこと) を見せるための模様
+        drawBackdrop();
+
+        if (!hasElements()) {
+            stage.font.height = 26;
+            stage.drawText(40, 40, "Elements Dialog が利用できないビルドです", 0xd0a0a0, 255);
+            stage.update();
+            setInfo("KRKRZ_USE_ELEMENTS=ON のビルドが必要です");
+            return;
+        }
+
+        // 単体起動 = project 直下 / 束ね起動 = demolib 相対で解決
+        var cands = ["flow/app.jsonc", "elements_flow/flow/app.jsonc"];
+        if (typeof global.demolibPath == "String")
+            cands.add(global.demolibPath + "../elements_flow/flow/app.jsonc");
+        for (var i = 0; i < cands.count; i++) {
+            if (Storages.isExistentStorage(cands[i])) { manifest = cands[i]; break; }
+        }
+        if (manifest === void) {
+            setInfo("flow/app.jsonc が見つかりません");
+            return;
+        }
+        startFlowDemo();
+    }
+
+    function drawBackdrop()
+    {
+        stage.fillRect(0, 0, stage.width, stage.height, 0xFF141821);
+        for (var y = 0; y < stage.height; y += 80) {
+            for (var x = ((y / 80) % 2) * 80; x < stage.width; x += 160) {
+                stage.fillRect(x, y, 80, 80, 0xFF1A2030);
+            }
+        }
+        stage.update();
+    }
+
+    function startFlowDemo()
+    {
+        if (dlg !== void) { invalidate dlg; dlg = void; }
+        dlg = new global.FlowDemoDialog(this);
+        flowAlive = dlg.startFlow(manifest, true);
+        if (flowAlive) {
+            retryStart = false;
+            setInfo("ボタン: エフェクト付き画面遷移 / Esc: exit 演出つきフロー終了 / SPACE: 再表示");
+        } else {
+            // 起動直後は DrawDevice (renderer) 未登録で失敗することがある。
+            // onDemoFrame で成功するまで再試行する (demolib のパネルと同じ扱い)。
+            retryStart = true;
+        }
+    }
+
+    function onDemoFrame(tick)
+    {
+        if (retryStart && manifest !== void) startFlowDemo();
+    }
+
+    function onFlowScreen(name)
+    {
+        setInfo(@"画面: ${name} — ボタンで遷移 (fade / universal) / Esc: 戻る・終了 / SPACE: 再表示");
+    }
+
+    function onFlowClosed(action)
+    {
+        flowAlive = false;
+        setInfo("フロー終了 (exit 演出後にクローズ) — SPACE で再表示");
+    }
+
+    function onKeyDown(key, shift)
+    {
+        if (key == VK_SPACE && !flowAlive && manifest !== void) startFlowDemo();
+    }
+
+    function onExit()
+    {
+        // シーン離脱時は演出なしで即破棄 (DetachHandler 経由の teardown)
+        if (dlg !== void) { invalidate dlg; dlg = void; }
+        flowAlive = false;
+    }
+}

@@ -25,6 +25,7 @@
 
 #include "tvpinputdefs.h"
 #include "WindowFormEvent.h"
+#include "PadManager.h"
 
 //---------------------------------------------------------------------------
 // memory allocation class
@@ -187,6 +188,11 @@ public:
 protected:
 	void OnInitialize(tTJS *tjs){}
 
+	// ゲームパッド論理管理 (0=最後に操作したパッドの別名 / 1..N=実パッド)。
+	// 物理バックエンドは各プラットフォームの App が iTVPPhysicalPadProvider として
+	// 供給し、コンストラクタ等で PadManager_.SetProvider() する。
+	tTVPPadManager PadManager_;
+
 public:
 	// -------------------------------------------------------------------
 	// スクリプトからの呼び出し
@@ -335,6 +341,19 @@ public:
 	// for exception showing
 	virtual void MessageDlg( const tjs_string& string, const tjs_string& caption, int type, int button ) = 0;
 
+	// Yes/No モーダル確認 (System.confirm)。Yes なら true。既定は MessageDlg を
+	// 出して true を返すだけのフォールバック。SDL3Application 等が override する。
+	virtual bool ConfirmYesNo( const tjs_string& string, const tjs_string& caption ) {
+		MessageDlg( string, caption, 0, 0 );
+		return true;
+	}
+
+	// テキスト入力モーダル (System.inputString)。OK なら true (result に入力文字列)、
+	// キャンセル/未対応なら false。既定は未対応 (false=キャンセル扱い)。
+	// WINVER は win32/base の TVPInputString を直接使う。SDL は将来 Elements で実装。
+	virtual bool InputString( const tjs_string& caption, const tjs_string& prompt,
+		const tjs_string& def, tjs_string& result ) { return false; }
+
 	// 未処理スクリプト例外の表示と後処理を行う (プラットフォーム別ポリシー)。
 	//   message : 表示用エラー本文 / trace : スタックトレース / dlgType : ダイアログ種別
 	//   戻り値  : true  = 呼び出し側 (TVPShowScriptException) が既定の後処理
@@ -364,6 +383,18 @@ public:
 		return false; // デフォルトは実装しない
 	};
 
+	// ファイル選択ダイアログ (標準 Storages.selectFile 用)。params は吉里吉里互換の
+	// 辞書 (filter / title / name / initialDir / save / filterIndex)。成功で true を返し、
+	// params.name に選択パス (正規化ストレージ名) を書き戻す。既定は非対応 (false)。
+	// SDL3 版は SDL_ShowOpenFileDialog で実装。WINVER は win32/base の TVPSelectFile
+	// (GetOpenFileName) を直接使うためこの経路は通らない。
+	virtual bool SelectFile( class iTJSDispatch2 *params ) { return false; }
+
+	//< フォルダ選択ダイアログ (Storages.selectDirectory)。SDL3 版は
+	//< SDL_ShowOpenFolderDialog で実装。WINVER は win32/base の TVPSelectDirectory
+	//< (IFileOpenDialog) を直接使うためこの経路は通らない。
+	virtual bool SelectDirectory( class iTJSDispatch2 *params ) { return false; }
+
 	// アプリロック取得
 	virtual bool CreateAppLock(const ttstr &lockname) { 
 		return true; // デフォルトはロックしない
@@ -386,7 +417,7 @@ public:
 	// キー押し下げ状態取得
 	virtual bool GetAsyncKeyState(tjs_uint keycode, bool getcurrent);
 
-	virtual tjs_uint32 GetPadState(int no) = 0;
+	virtual tjs_uint32 GetPadState(int no) { return PadManager_.GetPadState(no); }
 
 	// パッド軸 ID (doc/Gamepad.md §3 参照)。値は SDL3 の SDL_GamepadAxis と同値で、
 	// SDL3 実装では axisId をそのまま SDL に渡せる。新規 ID は末尾に追加すること。
@@ -404,20 +435,24 @@ public:
 	// スティック軸: -1.0f 〜 +1.0f (中立 0.0f)
 	// トリガ軸    :  0.0f 〜 +1.0f (未押下 0.0f)
 	// 未接続パッド・無効 axisId は 0.0f を返す。デッドゾーンは適用しない (呼び元責務)。
-	virtual float GetPadAxis(int /*no*/, int /*axisId*/) { return 0.0f; }
+	virtual float GetPadAxis(int no, int axisId) { return PadManager_.GetPadAxis(no, axisId); }
 
 	// SystemControl から移管
 	// イベント処理からのコールバック
 	void BeginContinuousEvent();
 	void EndContinuousEvent();
 
-	virtual tjs_string GetJoypadType(int no) { return TJS_W(""); } //< joypadの種別（環境依存値）
-	virtual tjs_int GetJoypadCount() { return 0; } //< 接続されているjoypadの数
-	virtual bool HasJoypad(int no) { return false; } //< 指定番号のjoypadが有効か
+	virtual tjs_string GetJoypadType(int no) { return PadManager_.GetJoypadType(no); } //< joypadの種別（環境依存値）
+	virtual tjs_int GetJoypadCount() { return PadManager_.GetJoypadCount(); } //< 接続されているjoypadの数
+	virtual bool HasJoypad(int no) { return PadManager_.HasJoypad(no); } //< 指定番号のjoypadが有効か
 
 	// 振動機能
-	virtual bool RumbleGamepad(int no, int low, int high, int duration_ms) { return false; }
-	virtual bool StopRumbleGamepad(int no) { return false; }
+	virtual bool RumbleGamepad(int no, int low, int high, int duration_ms) { return PadManager_.Rumble(no, low, high, duration_ms); }
+	virtual bool StopRumbleGamepad(int no) { return PadManager_.StopRumble(no); }
+
+	// パッド機能の有効/無効 (System.padEnabled)。CLI -joypad より優先。
+	void SetJoypadEnabled(bool b) { PadManager_.SetEnabled(b); }
+	bool GetJoypadEnabled() { return PadManager_.IsEnabled(); }
 
 	// ----------------------------------------------------------------------
     // 動画関係処理

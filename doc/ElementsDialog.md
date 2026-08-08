@@ -118,6 +118,97 @@ label が次フレームで自動更新される。 TJS からは `dlg.setVar(na
 ソフトウェアキーボードの入力文字列表示のような「ホスト状態 → label」の
 動的反映に使う (Phase 7d 値 API の最小先行版)。
 
+`text_var` 以外の変数連動フィールドも同じ setVar 経路で駆動できる (詳細は
+elements_modal README「変数 store」節): `text_list` / `rect_list` +
+`index_var` (10 進 index 文字列で表示エントリ切替)、 `value_var`
+(slider / gauge、 `"0.75"` 形式)、 `at_var` (canvas 子の配置 rect、
+`"x,y"` / `"x,y,w,h"`)。 picker 系の `index_var` は**双方向** (選択変更で変数へ
+書く + setVar で picker 表示が quiet 追従) で、 text_list / rect_list と同名に
+すると選択連動 UI が JSON だけで組める。 さらに `enabled_var` (picker 選択肢の
+有効/無効 mask、 `'0'`/`'1'` 文字列)、 `selected_var`+`selected_value`
+(atlas_choice / radio_button のラジオグループ変数、 双方向) も setVar 駆動。
+
+### モーダルへの初期変数注入 (`showModalFile(path, %[vars])`)
+
+overlay モーダル (`showModalJson` / `showModalFile` / `showModalDict` の引数
+1 個形式) は表示中呼出側 TJS がブロックするため、 setVar での初期値注入が
+できない。 第 2 引数に **Dictionary** を渡すと build 直後・pump 前に
+変数 store へ流し込まれ、 `index_var` / `enabled_var` / `selected_var` 等の
+subscribe 済 widget が反映する (静的 JSON への動的初期値注入):
+
+```tjs
+var r = dlg.showModalFile("ui/launcher.jsonc",
+    %[ "machine" => "2", "machine_mask" => "10101011" ]);
+```
+
+モーダル中も onAction は同期で届くので、 picker の現在 index 等は onAction で
+追跡し、 close 後 (戻り値の action) と組み合わせて確定処理を行う。
+
+### フォント / pad アイコンのセットアップ (static)
+
+- `Dialog.registerFont(family, path[, weight[, slant[, stretch]]])` /
+  `Dialog.registerFontDir(dir)` — storage パス (XP3 内可) からフォント登録。
+- `Dialog.defaultFontFamily = "Open Sans, Roboto, Noto Sans JP, ..."` —
+  theme 全スロットの family 列を明示。 **明示設定後は EnsureRuntimeInitialized
+  の自動並び (登録済み family から生成) に上書きされない**。 自動並びは
+  Latin → CJK → Emoji の順 (Emoji 系が primary になると英数の字間が崩れるため
+  必ず末尾)。
+- **アイコンフォント `elements_basic.ttf`** (fontello 生成、 elements 同梱) —
+  check_box の ✓ / selection_menu の ▼ 等のアイコングリフ (`draw_icon`) 用。
+  `resource/` に同梱し起動時に自動登録される。 theme.icon_font の参照名
+  "elements_basic" と一致させるため名前加工せず登録し、 本文フォントの
+  fallback 連結 (自動並び) には混ぜない。 **これが無いとチェックマーク等の
+  アイコンだけ描画されない** (枠は出るが ✓ が出ない) ので注意。
+- `Dialog.setPadIconBase(dir)` — pad_icon (Kenney input prompts) のベース
+  ディレクトリ (storage パス、 配下に xbox/ps/switch/keyboard + vector/*.svg)。
+  未設定だと pad_icon は灰色プレースホルダになる。
+- `Dialog.setPadTheme(name)` — "xbox"/"ps"/"switch"/"keyboard"/"none"。
+  画面 JSON の top-level `pad_theme` があればそちらが優先。
+
+### 実行時画像の注入 (`registerImage` / `image` ウィジェット)
+
+セーブサムネイルのように**実行時に変わる画像**を Elements ウィジェットへ渡す
+仕組み。 静的な atlas とは別に、 名前→画像バイトの実行時ストアを持つ。
+
+- `Dialog.registerImage(name, path)` — storage パスのファイルを読み `name` で
+  登録。 jsonc の `image` ウィジェットからは `"image": "mem://<name>"` で参照。
+  戻り値 = 成否。 `Dialog.unregisterImage(name)` / `Dialog.clearImages()`。
+- jsonc: `{ "type": "image", "image": "mem://save0", "at": [x,y,w,h] }` で
+  bounds にアスペクト維持 fit 描画 (elements_modal README 参照)。
+- pixmap は画面 build 時に一度読むので、 **再登録 → 画面を開き直す**と更新。
+  登録前に build すると空表示なので、 画面 push の前に registerImage する。
+- ⚠ **Elements の画像デコーダ (ThorVG/stb) は krkrz の BMP を読めない**
+  (stb が "bad offset" で拒否)。 セーブサムネイルは BMP 保存 (saveThumbnail)
+  なので、 **krkrz Layer に loadImages → saveLayerImage で PNG 化 → その PNG を
+  registerImage** する (ゲーム側 data/main/sg8bit_ui.tjs の sg8RegisterSlotThumb
+  が実例)。 PNG/JPEG/WEBP は ThorVG が直接デコードする。
+
+### 描画密度 (static、 `Dialog.renderScale`)
+
+overlay の ThorVG ラスタライズ密度を切り替える。 表示中の画面にも次フレーム
+から反映されるので、 品質/負荷の比較にも使える。
+
+- `0` (既定) = **auto**: 最終 present サイズで直接ラスタライズする。 authored
+  サイズが surface より大きい画面 (1920x1080 authored → 1280x720 surface 等)
+  は縮小率ぶん小さい buffer で描くため、 CPU ラスタ / テクスチャ転送コストが
+  最小になる。
+- `>0` = authored 論理サイズ × この倍率で描き、 present 時に GPU 拡縮する
+  (`1.0` = 原寸レンダ→拡縮表示、 `2.0` = 旧 supersampling 相当)。
+
+なお oversized present (縮小表示) 中のマウス座標は manager が縮小率と
+センタリングの逆変換をかけて dialog 論理座標へ戻すため、 どのモードでも
+マウス操作は authored 座標系の hit-test に正しく届く。
+
+ゲーム側セットアップ例 (pcx_5pb_sg8bit の data/main/sg8bit_ui.tjs):
+
+```tjs
+ElementsDialog.registerFontDir("ui/resources/fonts");
+ElementsDialog.setPadIconBase("ui/resources/kenny_input_prompts");
+ElementsDialog.setPadTheme("xbox");
+ElementsDialog.defaultFontFamily =
+    "Open Sans, Roboto, Noto Sans JP, Noto Sans TC, Noto Sans SC, Noto Emoji";
+```
+
 ### SDL 拡張プラグイン向け C ABI サービス (`tp_dialog_service.h`)
 
 静的リンクプラグイン (tp_stub ベース) から overlay ダイアログ機構を使うための
@@ -230,7 +321,7 @@ manager は krkrz ネイティブ入力 (Windows VK / `tTVPMouseButton` / `TVP_S
 high/low サロゲート 2 回に分けて配信するので、 `ForwardKeyPress` が high を保持して low と
 合成し 1 コードポイント (最大 4 byte UTF-8) にする。
 
-Elements 側はこれを受けて [keyboard / arrow / gamepad ナビゲーション](https://github.com/wamsoft/elements/blob/develop/docs/keyboard-navigation.md) で動く。 デフォルト bind は A=Enter / B=Esc / X=Shift+Tab / Y=Tab / D-Pad=矢印。
+Elements 側はこれを受けて [keyboard / arrow / gamepad ナビゲーション](https://github.com/wamsoft/elements/blob/develop/docs/keyboard-navigation.md) で動く。 pad→key 合成のデフォルトは A=Enter / B=Esc / X=Shift+Tab / Y=Tab / D-Pad=矢印だが、 overlay ではその手前で **named-action バインド** (A→accept / B→cancel / LB,RB→page 等、 後述「named-action バインド」) が優先して発火する。
 
 ## elements_modal ライブラリ
 
@@ -269,11 +360,17 @@ JSON / JSONC (コメント + 末尾カンマ) 対応。 要素タイプ・属性
 - **`"size": [w, h]`** (top-level) — ダイアログの希望論理サイズ (上限)。 実際は content の自然サイズにフィット縮小される (上側余白対策、 [project_elements_dialog_size] 系)。
 - **`"align"`** + **`"margin"`** (top-level) — overlay 上での配置。 `align` は `"center"` (既定) / `"top"` / `"bottom"` / `"left"` / `"right"` と、 それらの組合せ `"top_left"` / `"top_right"` / `"bottom_left"` / `"bottom_right"` (文字列に `top`/`bottom`/`left`/`right` が含まれるかで縦横独立に判定)。 `margin` は非中央側のサーフェス端からの余白 px (既定 0)。 入力座標の補正 (overlay_session の last_rect) も同じ配置で行われるのでクリック判定はズレない。 全 overlay 経路 (showJson / showFlow / startFlow) で有効。 例: ゲーム画面左上にメニューを出す → `"align": "top_left", "margin": 24`。
 - **`"initial_focus": true`** (focusable widget) — 起動時にフォーカスを当てる候補。 複数あった場合 build 順で先勝ち。
-- **`"close_on_click": true`** (button) — click で modal を閉じ、 `result.action = id` で確定する。 **デフォルト false** で、 click は `Dialog.onAction` を発火させるだけで終了させない。 OK / Cancel など「閉じるボタン」だけに付ける運用。 navigator フローでは、 画面遷移する button (transitions と組) と、 その場で動作させる button (close_on_click 無し → onAction のみ) を使い分ける。
+- **`"close_on_click": true`** (button) — click で modal を閉じ、 `result.action = id` で確定する。 **デフォルト false** で、 click は `Dialog.onAction` を発火させるだけで終了させない。 OK / Cancel など「閉じるボタン」だけに付ける運用。 navigator フローでは、 画面遷移する button (transitions と組) と、 その場で動作させる button (close_on_click 無し → onAction のみ) を使い分ける。 なお TJS Dictionary 経由 (`showDict` 等) では true が int 1 で届くが、 bool 属性は number 0/非0 も真偽として受容する (elements_modal 2026-07-20 対応済。 古い pin では効かないので注意)。
+- **`"gap"` (vtile/htile) / top-level `"style"` ブロック** — 既定で「詰まった」見た目になるのを避ける密度指定。 `{"type":"vtile","gap":8,...}` で子間に spacer 自動挿入相当、 top-level `"style": { "font_scale", "row_height", "tile_gap", "padding" }` で未指定値の既定をまとめて与える (詳細は elements_modal README「style ブロック」)。 いずれも省略で従来と完全一致。
 - **`"input"`** (top-level) — ナビゲーション設定:
   ```jsonc
   "input": {
       "arrow_focus_nav": true,           // 矢印で 2D フォーカスナビ
+      "focus_wrap": true,                 // 端で反対端へ回り込み (既定 false)
+      "skip_disabled": true,              // disabled 要素を nav スキップ (既定 false)
+      "repeat_delay_ms": 400,             // dpad/stick 長押しリピート開始
+      "repeat_rate_ms": 80,               // 0 (既定) = 倒し量で 60〜250ms 可変
+      "initial_focus": "BTN_START",       // id 指定の初期フォーカス (要素側フラグより優先)
       "dpad_mode":        "both",         // disabled / focus / value / both
       "left_stick_mode":  "focus",
       "right_stick_mode": "value",
@@ -289,11 +386,77 @@ JSON / JSONC (コメント + 末尾カンマ) 対応。 要素タイプ・属性
           { "key": "f",  "mods": ["ctrl"], "target": "search_btn" },
           { "pad": "lb",                    "target": "cancel" },
           { "pad": "rb",                    "target": "ok", "force": true }
-      ]
+      ],
+      "bindings": [
+          // 入力 → named action (下記) のバインド。 組込デフォルトへの差分
+          { "pad": "b",       "action": "cancel" },
+          { "mouse": "right", "action": "none" },       // 既定バインドの無効化
+          { "pad": "start",   "action": "open_menu" }   // 未知 action → onAction 通知
+      ],
+      "se": { "nav": "cursor.ogg", "accept": "ok.ogg", "cancel": "cancel.ogg" }
   }
   ```
 
 `force: true` の shortcut は input_box 編集中でも反応する (リスト内編集中の save 押下を許容するケース等)。
+
+### named-action バインド (`"bindings"` / `input_defaults.jsonc`)
+
+「閉じる / 決定 / ページ送り」等は**名前付きアクションへの 3 層バインド** (後勝ち)
+で決まる: ①組込デフォルト → ②`input_defaults.jsonc` → ③画面別 `"input"."bindings"`。
+詳細仕様は elements_modal README の「named-action と組込デフォルト標準バインド」を参照。
+
+- **組込デフォルト**: Esc / B / **右クリック** → `cancel` (閉じる、`onClose` の action は "")、
+  A → `accept`、 X/Y → `focus_prev/next`、 LB/RB → `page_prev/next` (tab_view のタブ送り)、
+  ホイール → `scroll_up/down`。 Enter / Tab / 矢印 / PageUp/Down キーはネイティブ経路が
+  同じ意味を実装済み (identity のため登録対象外)。
+- **旧仕様との差分**: overlay の Esc は以前 `overlay_session` に hard-code されていたが、
+  現在は escape→cancel の組込バインド (force=true) 経由。 画面 JSON で差替や
+  `"action": "none"` による無効化ができる。 B ボタン・右クリックでも同様に閉じる。
+- **`"action": "none"`** = 該当入力を消費して何もしない (下層バインドとネイティブ
+  フォールスルーも遮断)。 組込以外の action 名は `onAction("<action>", 名前)` で
+  TJS へ通知される (画面横断 quick action の実装口)。
+- **`input_defaults.jsonc`** (プロジェクト共通層): **resource_base 直下**に置くと
+  初回表示時に 1 回ロード・キャッシュされる (top-level は `"input"` ブロックと同形。
+  変更反映はアプリ再起動)。 ⚠ `showFile` / `showJson` / `showDict` 系は
+  resource_base が**空** (= 画面 jsonc 内のパスはプロジェクトルート相対で書く運用)
+  なので、 置き場所は **data ルート直下**になる。 manifest フロー (`showFlow`) では
+  manifest のディレクトリが resource_base。 ロード成否は stderr の
+  `elements_modal: input defaults "...": loaded/not used` で確認できる。
+- **⚠全画面透過の非モーダル overlay** (常駐 HUD 等) は描画矩形が全面のため
+  右クリックが常にヒットし、 既定 cancel で意図せず閉じる。 その画面の
+  `"input"."bindings"` に `{ "mouse": "right", "action": "none" }` を入れること。
+
+### cursor-warp ナビ (`"cursor_warp"`)
+
+`"input": { "cursor_warp": true }` (input_defaults.jsonc で全画面一括可) にすると、
+**キー/パッドでフォーカスが動いたとき実マウスカーソルがフォーカス先へ warp** し、
+カーソルは mcsTempHidden で一時非表示になる (実マウスを動かすと通常復帰)。
+カーソルがフォーカス widget に乗るため、 **hover の見た目 (hilite フレーム /
+hover 演出 / vars_on_focus) がキー操作のフォーカスに自然追従**する。 ホイールや
+トラッククリック等のマウス操作もフォーカス位置が対象になる。
+
+- 飛び先 = widget の **focus hot point**。 既定は bounds 中心、 slider は thumb
+  中心 (トラッククリックの値ジャンプ防止)、 choice_nav グループは選択中メンバー。
+  widget の `"focus_point": [ax, ay]` (0..1 アンカー比) で個別調整可。
+- hover 由来 (hover_focus) のフォーカス移動では warp しない (実カーソルと喧嘩
+  しない)。 マウス操作に戻ると次のキー操作まで warp は起きない。
+- 実装: session が `take_key_focus_move()` でワンショット通知 → manager が
+  PaintOverlay 終端で present 変換の逆写像で layer 座標化し
+  `iTVPWindow::SetCursorPos` + `SetMouseCursorState(mcsTempHidden)`。
+  warp が生む合成 mouse move は期待座標一致で判別し、 カーソル再表示させず
+  session へは流す (= hover 更新)。 実マウスの move (座標不一致) で解除。
+
+### SE フックと擬似 id (`onAction`)
+
+`"se"` マップ (キー = カテゴリ `nav`/`accept`/`cancel`/`page`/`scroll`、 または
+個別 action 名・button id) を宣言すると、 アクション発火時に
+**`onAction("<se>", SE名)`** が TJS へ届く (Elements は音を鳴らさない。 再生は
+TJS 側の責務 — kag.se 等)。 `nav` はフォーカス変化検出 (キー/dpad/stick/hover
+どの経路でも)、 `accept` は button click で一元発火、 `cancel`/`page` 等は
+アクションディスパッチ時。 SE 未宣言なら一切通知されない。
+組込以外の action は **`onAction("<action>", action名)`** で届く。 通常の
+widget id と混同しないよう、 TJS 側 router は `"<se>"` / `"<action>"` を
+先に分岐すること。
 
 ## TJS Dictionary レイアウト (showDict / showModalDict)
 
@@ -367,6 +530,16 @@ var result = dlg.showModalJson(json, "Title", 560, 700);  // 独立 window
 
 `onAction` は state widget の値変化 / 全 button click に発火する。 `result.action` / `result.values` は close 時のスナップ。
 
+### 例外への文脈付加
+
+show* / showModal* / showFlow* / startFlow* の全 API 入口で、 elements /
+elements_modal / host 別 runner 由来の C++ 例外 (`std::exception` および不明型)
+を `Dialog.showModalFile(ui/xxx.jsonc): <what()>` 形式の TJS 例外へ変換する
+(`WithDialogExceptionContext`、 `DialogIntf.cpp`)。 TJS 例外 (`TVPReadStream` の
+ストレージエラー等) は元々メッセージ完備なのでそのまま透過。 画像読込失敗は
+elements 側 pixmap が対象リソース名を例外メッセージに含め、 「不存在 (loader が
+empty)」 と 「デコード失敗 (バイト数 + 拡張子付き)」 を区別する。
+
 ## 複数画面フロー (navigator)
 
 1 つの overlay 上で **複数の画面 (JSON) を遷移**させる仕組み。 各画面 JSON の
@@ -401,8 +574,48 @@ var result = dlg.showFlowScreens(screens, "menu");
 `"transitions"` の target 語彙: `"<name>"` (= 画面名 push、 山括弧不要) / `"<back>"`
 (pop) / `"<replace:name>"` / `"<stay>"` / `"<exit>"` (または空 target)。 未定義の
 action は「entry なら exit / 子画面なら pop」にフォールバックする。 画面ごとの
-focus と表示言語は navigator が遷移をまたいで記憶 / 復元する。 `effect`
-(`"fade"` 等) は仕様としては解釈されるが、 krkrz overlay 側の演出配線は後フェーズ。
+focus と表示言語は navigator が遷移をまたいで記憶 / 復元する。
+
+### 画面切替エフェクト (`effect`: fade / universal)
+
+transitions のエントリを object 形式にすると、 画面切替時の遷移エフェクトを
+宣言できる。 **krkrz overlay 側で配線済み** (CPU 合成なので SDL / WINVER /
+GL 全 DrawDevice で同一動作):
+
+```jsonc
+"transitions": {
+    "next": { "target": "s2", "effect": "fade", "duration": 300 },
+    "back": { "target": "<back>", "effect": "universal",
+              "rule": "rule.png", "vague": 64, "duration": 500 }
+}
+```
+
+| キー | 意味 |
+|---|---|
+| `effect` | `"fade"` = クロスフェード / `"universal"` = rule 画像によるユニバーサルトランジション。 未対応名は警告ログ + 即切替 |
+| `duration` | ms。 0 / 省略 = 200ms |
+| `rule` | universal の rule 画像 (グレースケール、 値が小さい画素ほど早く次画面へ切替)。 解決順 = **遷移を宣言した画面 (旧画面) の resource_base 相対** → Storages パスそのまま → autopath 検索 |
+| `vague` | 境界ぼかし幅 (rule 値スケール 0-255、 既定 64) |
+
+実装メモ (ElementsDialogManager):
+- session は finish 後に再描画できないため、 nav フローの各インスタンスは
+  **直近描画フレームの複製 (`last_frame`) を毎フレーム保持**し、 遷移確定時に
+  from 側スナップショットへ move する。 混色は `elements_modal/effects.h` の
+  `blend_argb8888` (fade) / `blend_universal_argb8888` (universal、 4ch 対応) を
+  新画面の staging バッファへ in-place 適用 (テクスチャ upload 前)。
+- rule 画像は `TVPLoadGraphic` (glmGrayscale) → バイリニアで buffer サイズへ展開。
+  ロード失敗時は fade へフォールバック (警告ログ)。
+- 新旧で buffer サイズが変わった場合 (画面サイズ / renderScale 変更) は即切替
+  フォールバック。 旧画面が一度も描画されていない場合も即切替。
+
+### 退場 (exit) 演出と close の協調
+
+要素の `"animate"` に `"on": "exit"` を付けると、 画面が閉じる / 遷移するとき
+退場演出を再生してから finish する (overlay_session 内で自動協調)。 これは
+close_on_click / Esc 等の画面内トリガに加え、 **TJS `Dialog.close()` からの
+外部 close でも発火する** (manager が `session->close()` 経由で閉じ、 演出完了後に
+teardown する。 transitions は解決せずフローごと終了)。 Window close 等の即時
+破棄経路 (`ForceClose` / handler 破棄) は演出なしで即 teardown。
 
 ### 非モーダル (常駐) フロー — `startFlow` / `startFlowScreens`
 
@@ -470,7 +683,8 @@ getter も `IsHandlerActive(this)` を返す。 ブロッキングモーダル�
 | 6d | `Dialog.onAction` を showModal* でも発火 + `close_on_click` で閉じる ボタン明示 | 完了 |
 | 7  | UserConfig を Elements で実装 (SDL3 ビルド) | 完了 |
 | 7d | JsonLayout 要素拡張 / VT_String 編集 UI / plugin sidecar JSON 等 | 未着手 |
-| 8  | navigator 複数画面フロー (`showFlow` / `showFlowScreens` + `onScreen` / `onScreenLeave`、 manifest/inline 両対応、 Storages 資材解決) | 完了 (fade 演出は後フェーズ) |
+| 8  | navigator 複数画面フロー (`showFlow` / `showFlowScreens` + `onScreen` / `onScreenLeave`、 manifest/inline 両対応、 Storages 資材解決) | 完了 |
+| 8t | **画面切替エフェクト** (`effect: fade / universal` + `rule` / `vague`、 CPU 合成で全 DrawDevice 対応) + `Dialog.close()` の exit 演出協調 | 完了 (SDL / WINVER 実機検証済) |
 | R6 | **複数インスタンス同時表示** (z-order インスタンスリスト + layer 単位テクスチャ + `modal` フラグ + ヒットテスト入力ルーティング + 素通し)。 非モーダル常駐 UI の並存 / modal の重ね出しが可能に | 完了 (描画・ロジック実装済、 GUI 実機での重ね操作検証は未) |
 
 ## Phase 7d 拡張候補 (JsonLayout 要素)

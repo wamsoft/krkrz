@@ -122,6 +122,14 @@ public:
 TJS_EXP_FUNC_DEF(void, TVPRegisterWaveDecoderCreator, (tTVPWaveDecoderCreator *d));
 TJS_EXP_FUNC_DEF(void, TVPUnregisterWaveDecoderCreator, (tTVPWaveDecoderCreator *d));
 TJS_EXP_FUNC_DEF(tTVPWaveDecoder *, TVPCreateWaveDecoder, (const ttstr & storagename));
+
+//---------------------------------------------------------------------------
+// 曲別ゲイン取得コールバック (WaveSoundBuffer.setGainQueryCallback で登録)。
+// デコーダが Create 時 (= スクリプトの WaveSoundBuffer.open() 呼び出し =
+// メインスレッド) に storagename(URL) を渡して呼び、適用する追加ゲイン(dB)を
+// 得る。コールバック未登録なら 0dB。TJS closure を呼ぶためメインスレッド限定。
+//---------------------------------------------------------------------------
+TJS_EXP_FUNC_DEF(float, TVPQueryUserSoundGainDB, (const ttstr & storagename));
 //---------------------------------------------------------------------------
 
 
@@ -217,6 +225,22 @@ public:
 	virtual float GetPosY() const = 0;
 	virtual void SetPosZ(float v) = 0;
 	virtual float GetPosZ() const = 0;
+	// -- 3D 定位 (miniaudio spatializer)。use3D=true の時のみ有効化 (既定 false=回帰なし)。--
+	virtual void SetUse3D(bool b) = 0;
+	virtual bool GetUse3D() const = 0;
+	virtual void Set3DVelocity(float x, float y, float z) = 0;      // ドップラー用
+	virtual void Set3DConeDirection(float x, float y, float z) = 0; // コーンの向き
+	virtual void Set3DCone(float innerAngleRad, float outerAngleRad, float outerGain) = 0;
+	virtual void SetMinDistance(float v) = 0;
+	virtual float GetMinDistance() const = 0;
+	virtual void SetMaxDistance(float v) = 0;
+	virtual float GetMaxDistance() const = 0;
+	virtual void SetRolloffFactor(float v) = 0;
+	virtual float GetRolloffFactor() const = 0;
+	virtual void SetDopplerFactor(float v) = 0;
+	virtual float GetDopplerFactor() const = 0;
+	virtual void SetAttenuationModel(tjs_int m) = 0; // 0=none/1=inverse/2=linear/3=exponential
+	virtual tjs_int GetAttenuationModel() const = 0;
 	virtual tjs_int GetFrequency() const = 0;
 	virtual void SetFrequency(tjs_int freq) = 0;
 	virtual tjs_int GetBitsPerSample() const = 0;
@@ -244,6 +268,25 @@ protected:
 };
 //---------------------------------------------------------------------------
 extern tTJSNativeClass * TVPCreateNativeClass_SoundBuffer();
+//---------------------------------------------------------------------------
+
+
+
+//---------------------------------------------------------------------------
+// tTJSNC_SoundListener : TJS SoundListener class
+//   3D 定位のリスナ (聴取者)。engine グローバル (listener index 0) を操作する
+//   インスタンス不要の名前空間的クラス (System と同様)。
+//---------------------------------------------------------------------------
+class tTJSNC_SoundListener : public tTJSNativeClass
+{
+public:
+	tTJSNC_SoundListener();
+	static tjs_uint32 ClassID;
+protected:
+	tTJSNativeInstance *CreateNativeInstance() { return NULL; } // 実体を持たない
+};
+//---------------------------------------------------------------------------
+extern tTJSNativeClass * TVPCreateNativeClass_SoundListener();
 //---------------------------------------------------------------------------
 
 

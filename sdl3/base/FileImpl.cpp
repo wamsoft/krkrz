@@ -370,8 +370,11 @@ SDL3FileSystem::LastModifiedFileTime(const tjs_char *path)
 	TVPUtf16ToUtf8(file_path_utf8, path);
 	SDL_PathInfo pathInfo;
 	if (SDL_GetPathInfo(file_path_utf8.c_str(), &pathInfo) && pathInfo.type == SDL_PATHTYPE_FILE) {
-		constexpr tjs_uint64 UNIX_EPOCH_IN_100NS = 11644473600000000000ULL; // 100-ns intervals from 1601-01-01 to 1970-01-01
-		tjs_uint64 mod_time_100ns = static_cast<tjs_uint64>(pathInfo.modify_time) * 10000000ULL + UNIX_EPOCH_IN_100NS;
+		// SDL_PathInfo.modify_time は Unix エポック(1970)起点の「ナノ秒」。
+		// fstat プラグイン / 他バリアントと同じ Windows FILETIME
+		// (1601-01-01 UTC 起点・100ns 刻み) に変換して返す。取得失敗時は 0。
+		constexpr tjs_uint64 EPOCH_1601_TO_1970_IN_100NS = 116444736000000000ULL; // 100ns intervals, 1601→1970
+		tjs_uint64 mod_time_100ns = static_cast<tjs_uint64>(pathInfo.modify_time) / 100ULL + EPOCH_1601_TO_1970_IN_100NS;
 		return mod_time_100ns;
 	}
 	return 0;

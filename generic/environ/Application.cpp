@@ -149,7 +149,7 @@ extern void TVPLoadStaticPluigins(void);
 bool tTVPApplication::InitializeApplication() 
 {
 	try {
-		{
+		try {
 			tjs_string path = Application->ResourcePath() + TJS_W("messages.json");
 			tjs_uint64 flen;
 			auto buf = TVPReadStream(path.c_str(), &flen);
@@ -168,6 +168,11 @@ bool tTVPApplication::InitializeApplication()
 				return false;
 			}
 			TVPLoadMessage(v.get<picojson::array>());
+		} catch( const std::exception &e ) {
+			std::string path8;
+			TVPUtf16ToUtf8( path8, Application->ResourcePath() + TJS_W("messages.json") );
+			TVPLOG_ERROR("failed to load message file {}: {}", path8, e.what());
+			return false;
 		}
 
 		// 初期カレントディレクトリ設定

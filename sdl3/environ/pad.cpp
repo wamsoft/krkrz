@@ -73,22 +73,22 @@ static void analog_to_key(float x, float y, int key_base, tjs_uint32 &key_state)
 	}
 }
 
-extern SDL_Gamepad *gamepad;
+// 物理パッドアクセス (main.cpp)。物理 index は g_open_gamepads の並び (接続順)。
+extern SDL_Gamepad *TVPGetOpenGamepad(int idx);
+extern int TVPGetOpenGamepadCount();
 
-tjs_uint32 SDL3Application::GetPadState(int no)
+// 指定 SDL_Gamepad から 24bit ボタン状態 (doc/Gamepad.md §3.1) を組み立てる。
+static tjs_uint32 BuildPadState(SDL_Gamepad *gp)
 {
-	if (!gamepad) {
-		return 0;
-	}
+	if (!gp) return 0;
 
-	// パッドキー状態
 	tjs_uint32 key_state = 0;
 
 	// ボタン状態を取得
 	for (int i=0; i<16; i++) {
 		SDL_GamepadButton btn = button_map[i];
 		if (btn != SDL_GAMEPAD_BUTTON_INVALID) {
-			if (SDL_GetGamepadButton(gamepad, btn)) {
+			if (SDL_GetGamepadButton(gp, btn)) {
 				key_state |= (1 << i);
 			}
 		}
@@ -96,24 +96,30 @@ tjs_uint32 SDL3Application::GetPadState(int no)
 
 	// トリガーをL2/R2ボタンに反映
 	float triggerThreshold = 0.8f;
-	float leftTrigger = SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) / 32767.0f;
-	float rightTrigger = SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) / 32767.0f;
-	if (leftTrigger > triggerThreshold) {
-		key_state |= (1 << 6);
-	}
-	if (rightTrigger > triggerThreshold) {
-		key_state |= (1 << 7);
-	}
+	float leftTrigger = SDL_GetGamepadAxis(gp, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) / 32767.0f;
+	float rightTrigger = SDL_GetGamepadAxis(gp, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) / 32767.0f;
+	if (leftTrigger > triggerThreshold) key_state |= (1 << 6);
+	if (rightTrigger > triggerThreshold) key_state |= (1 << 7);
+
 	// アナログスティックから方向キー情報を反映
-	float leftX  = SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_LEFTX) / 32767.0f;
-	float leftY  = SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_LEFTY) / 32767.0f;
-	float rightX = SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_RIGHTX) / 32767.0f;
-	float rightY = SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_RIGHTY) / 32767.0f;	
+	float leftX  = SDL_GetGamepadAxis(gp, SDL_GAMEPAD_AXIS_LEFTX) / 32767.0f;
+	float leftY  = SDL_GetGamepadAxis(gp, SDL_GAMEPAD_AXIS_LEFTY) / 32767.0f;
+	float rightX = SDL_GetGamepadAxis(gp, SDL_GAMEPAD_AXIS_RIGHTX) / 32767.0f;
+	float rightY = SDL_GetGamepadAxis(gp, SDL_GAMEPAD_AXIS_RIGHTY) / 32767.0f;
 	analog_to_key(leftX, leftY,   16, key_state);
 	analog_to_key(rightX, rightY, 20, key_state);
 
-	//TVPLOG_DEBUG("GetPadState: {:x}", key_state);
 	return key_state;
+}
+
+int SDL3Application::GetPhysicalPadCount()
+{
+	return TVPGetOpenGamepadCount();
+}
+
+tjs_uint32 SDL3Application::GetPhysicalPadState(int phys)
+{
+	return BuildPadState(TVPGetOpenGamepad(phys));
 }
 
 // 軸 ID は SDL_GamepadAxis と同値で定義済み (Application.h)。下記 static_assert で
@@ -125,21 +131,41 @@ static_assert((int)tTVPApplication::TVP_PAD_AXIS_RIGHTY        == (int)SDL_GAMEP
 static_assert((int)tTVPApplication::TVP_PAD_AXIS_LEFT_TRIGGER  == (int)SDL_GAMEPAD_AXIS_LEFT_TRIGGER,  "");
 static_assert((int)tTVPApplication::TVP_PAD_AXIS_RIGHT_TRIGGER == (int)SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, "");
 
-float SDL3Application::GetPadAxis(int no, int axisId)
+float SDL3Application::GetPhysicalPadAxis(int phys, int axisId)
 {
-	if (!gamepad) {
-		return 0.0f;
-	}
-	if (no != 0) {
-		return 0.0f; // 現状は no=0 のメインパッドのみ対応
-	}
-	if (axisId < 0 || axisId >= TVP_PAD_AXIS_COUNT) {
-		return 0.0f;
-	}
+	SDL_Gamepad *gp = TVPGetOpenGamepad(phys);
+	if (!gp) return 0.0f;
+	if (axisId < 0 || axisId >= TVP_PAD_AXIS_COUNT) return 0.0f;
 	// SDL_GetGamepadAxis: スティック -32768〜32767、トリガ 0〜32767
-	Sint16 raw = SDL_GetGamepadAxis(gamepad, (SDL_GamepadAxis)axisId);
+	Sint16 raw = SDL_GetGamepadAxis(gp, (SDL_GamepadAxis)axisId);
 	float v = raw / 32767.0f;
 	// raw = -32768 のとき -1.00003... になるので clamp
 	if (v < -1.0f) v = -1.0f;
 	return v;
+}
+
+tjs_string SDL3Application::GetPhysicalPadName(int phys)
+{
+	SDL_Gamepad *gp = TVPGetOpenGamepad(phys);
+	if (!gp) return tjs_string();
+	tjs_string name;
+	TVPUtf8ToUtf16(name, SDL_GetGamepadName(gp));
+	return name;
+}
+
+bool SDL3Application::RumblePhysical(int phys, int low, int high, int duration_ms)
+{
+	SDL_Gamepad *gp = TVPGetOpenGamepad(phys);
+	if (!gp) return false;
+	// 0〜255 を 0〜0xFFFF にスケール
+	Uint16 low16 = (Uint16)((low * 0xFFFF) / 255);
+	Uint16 high16 = (Uint16)((high * 0xFFFF) / 255);
+	return SDL_RumbleGamepad(gp, low16, high16, (Uint32)duration_ms);
+}
+
+bool SDL3Application::StopRumblePhysical(int phys)
+{
+	SDL_Gamepad *gp = TVPGetOpenGamepad(phys);
+	if (!gp) return false;
+	return SDL_RumbleGamepad(gp, 0, 0, 0);
 }

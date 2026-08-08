@@ -1,7 +1,7 @@
 {
     /* サウンド系サンプル。 BGM は「出しっぱなし」系: 再生開始後メニューを閉じても
        鳴り続け、 再度開いて BGM を選ぶと停止する。 速度は PhaseVocoder。 */
-    "size": [460, 360],
+    "size": [460, 600],
     "background": [30, 26, 40, 248],
     "locale": "ja-JP",
     "align": "top_left",
@@ -35,6 +35,18 @@
                 { "type": "vspacer", "height": 8 },
                 { "type": "vsize", "height": 42, "child": {
                     "type": "button", "id": "spd_dn", "text": "再生速度 - 0.1" } },
+                { "type": "vspacer", "height": 8 },
+                { "type": "vsize", "height": 42, "child": {
+                    "type": "button", "id": "sound3d", "text": "3D 音声デモ 開始 / 停止" } },
+                { "type": "vspacer", "height": 8 },
+                { "type": "vsize", "height": 42, "child": {
+                    "type": "button", "id": "s3d_mode", "text": "└ モード切替 (左右 ⇔ 周回)" } },
+                { "type": "vspacer", "height": 8 },
+                { "type": "vsize", "height": 42, "child": {
+                    "type": "button", "id": "s3d_dop", "text": "└ ドップラー ON/OFF" } },
+                { "type": "vspacer", "height": 8 },
+                { "type": "vsize", "height": 42, "child": {
+                    "type": "button", "id": "s3d_model", "text": "└ 減衰モデル切替" } },
 
                 { "type": "vspacer", "height": 14 },
                 { "type": "vsize", "height": 38, "child": {

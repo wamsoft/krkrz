@@ -905,10 +905,26 @@ void tFreeTypeFace::SetHeight(int height)
 {
 	Height = height;
 	for( auto face = Faces.begin(); face != Faces.end(); face++ ) {
-		FT_Error err = FT_Set_Pixel_Sizes( (*face)->FTFace, 0, Height );
+		FT_Face ft = (*face)->FTFace;
+		FT_Error err = FT_Set_Pixel_Sizes( ft, 0, Height );
 		if(err)
 		{
-			// TODO: Error ハンドリング
+			// bitmap-strike のみのフォント (CBDT/sbix 等のカラー絵文字) は任意サイズを
+			// 設定できないので、利用可能な strike から選ぶ。要求サイズ以上で最も近い
+			// strike を優先し、無ければ最大 strike を選ぶ (後段で目標サイズへ縮小する)。
+			if( ft->num_fixed_sizes > 0 ) {
+				int best = 0;
+				int bestppem = (int)(ft->available_sizes[0].y_ppem >> 6);
+				for( int s = 1; s < ft->num_fixed_sizes; s++ ) {
+					int ppem = (int)(ft->available_sizes[s].y_ppem >> 6);
+					bool bestOk = bestppem >= Height;
+					bool curOk  = ppem >= Height;
+					if( curOk && !bestOk ) { best = s; bestppem = ppem; }
+					else if( curOk && bestOk && ppem < bestppem ) { best = s; bestppem = ppem; }
+					else if( !curOk && !bestOk && ppem > bestppem ) { best = s; bestppem = ppem; }
+				}
+				FT_Select_Size( ft, best );
+			}
 		}
 	}
 }
@@ -922,7 +938,7 @@ void tFreeTypeFace::SetHeight(int height)
  * @return	新規作成されたグリフビットマップオブジェクトへのポインタ
  *			NULL の場合は変換に失敗した場合
  */
-tTVPCharacterData * tFreeTypeFace::GetGlyphFromCharcode(tjs_char code)
+tTVPCharacterData * tFreeTypeFace::GetGlyphFromCharcode(tjs_uint32 code)
 {
 	// グリフスロットにグリフを読み込み、寸法を取得する
 	tjs_int index;
@@ -954,9 +970,9 @@ tTVPCharacterData * tFreeTypeFace::GetGlyphFromCharcode(tjs_char code)
 	tTVPCharacterData * glyph_bmp = nullptr;
 	try
 	{
-		if(ft_bmp->rows && ft_bmp->width)
+		if(ft_bmp->rows && ft_bmp->width && ft_bmp->pixel_mode != FT_PIXEL_MODE_BGRA)
 		{
-			// ビットマップがサイズを持っている場合
+			// ビットマップがサイズを持っている場合 (カラー BGRA は下で別処理)
 			if(ft_bmp->pixel_mode != ft_pixel_mode_grays)
 			{
 				// ft_pixel_mode_grays ではないので ft_pixel_mode_grays 形式に変換する
@@ -998,34 +1014,120 @@ tTVPCharacterData * tFreeTypeFace::GetGlyphFromCharcode(tjs_char code)
 		metrics.CellIncX = FT_PosToInt( metrics.CellIncX );
 		metrics.CellIncY = FT_PosToInt( metrics.CellIncY );
 
-		// tGlyphBitmap を作成して返す
-		//int baseline = (int)(face->height + face->descender) * face->size->metrics.y_ppem / face->units_per_EM;
-		//int baseline = (int)( face->ascender ) * face->size->metrics.y_ppem / face->units_per_EM;
-		int baseline = Height * 0.9;
+		// tGlyphBitmap を作成して返す。
+		// baseline (= ascent 線) は描画側 (drawText) がペン位置に使う GetAscentHeight()
+		// = GetAscent() と一致させる必要がある。以前は Height*0.9 の近似だったため、
+		// ペン線・アンダーライン/取消線 (これらは実 ascent 基準) とグリフがずれていた。
+		// primary face (Faces[0]) の実 ascent を全グリフ共通の baseline とする
+		// (全グリフが同一 baseline に載る = GDI と同じレイアウト)。
+		int baseline = GetAscent();
 
-		glyph_bmp = new tTVPCharacterData(
-			ft_bmp->buffer,
-			ft_bmp->pitch,
-			  face->glyph->bitmap_left,
-			  baseline - face->glyph->bitmap_top,
-			  ft_bmp->width,
-			  ft_bmp->rows,
-			metrics);
-		glyph_bmp->Gray = 256;
-
-		
-		if( Options & TVP_TF_UNDERLINE ) {
-			tjs_int pos = -1, thickness = -1;
-			GetUnderline( pos, thickness, index );
-			if( pos >= 0 && thickness > 0 ) {
-				glyph_bmp->AddHorizontalLine( pos, thickness, 255 );
+		if( ft_bmp->pixel_mode == FT_PIXEL_MODE_BGRA )
+		{
+			// カラーグリフ (COLR/CBDT/sbix 等)。FT の BGRA は前乗算α なので、
+			// kirikiri の TVPAlphaBlend (非前乗算前提) 用に非前乗算へ戻して FullColored 化する。
+			// コンストラクタは fullcolor 時 inpitch をピクセル単位で受ける (内部で *4 する)。
+			// bitmap-strike フォント (CBDT/sbix) は strike の ppem でしか描けないため、
+			// 目標サイズ (Height) へ縮小/拡大する。scalable カラー (COLRv0) は
+			// y_ppem == Height となり scale≒1 (実質そのまま)。
+			tjs_uint sw = ft_bmp->width, sh = ft_bmp->rows;
+			tjs_int y_ppem = face->size ? (tjs_int)face->size->metrics.y_ppem : 0;
+			double scale = ( y_ppem > 0 ) ? ( (double)Height / (double)y_ppem ) : 1.0;
+			tjs_uint dw = sw, dh = sh;
+			tjs_int c_originx = face->glyph->bitmap_left;
+			tjs_int c_origintop = face->glyph->bitmap_top;
+			const tjs_uint8 *c_srcbuf = ft_bmp->buffer;
+			tjs_int c_srcpitchpix = ft_bmp->pitch / 4;
+			std::vector<tjs_uint8> c_scaled;
+			if( scale < 0.999 || scale > 1.001 ) {
+				dw = (tjs_uint)(sw * scale + 0.5); if( dw < 1 ) dw = 1;
+				dh = (tjs_uint)(sh * scale + 0.5); if( dh < 1 ) dh = 1;
+				c_scaled.resize( (size_t)dw * dh * 4 );
+				tjs_int spitch = ft_bmp->pitch;
+				for( tjs_uint dy = 0; dy < dh; dy++ ) {
+					tjs_uint sy0 = (tjs_uint)( (tjs_uint64)dy     * sh / dh );
+					tjs_uint sy1 = (tjs_uint)( (tjs_uint64)(dy+1) * sh / dh );
+					if( sy1 <= sy0 ) sy1 = sy0 + 1; if( sy1 > sh ) sy1 = sh;
+					for( tjs_uint dx = 0; dx < dw; dx++ ) {
+						tjs_uint sx0 = (tjs_uint)( (tjs_uint64)dx     * sw / dw );
+						tjs_uint sx1 = (tjs_uint)( (tjs_uint64)(dx+1) * sw / dw );
+						if( sx1 <= sx0 ) sx1 = sx0 + 1; if( sx1 > sw ) sx1 = sw;
+						tjs_uint32 sb=0,sg=0,sr=0,sa=0,cnt=0;
+						for( tjs_uint yy = sy0; yy < sy1; yy++ ) {
+							const tjs_uint8 *sp = c_srcbuf + spitch*yy + sx0*4;
+							for( tjs_uint xx = sx0; xx < sx1; xx++ ) {
+								sb += sp[0]; sg += sp[1]; sr += sp[2]; sa += sp[3];
+								sp += 4; cnt++;
+							}
+						}
+						tjs_uint8 *d = &c_scaled[ ((size_t)dy*dw + dx)*4 ];
+						d[0]=(tjs_uint8)(sb/cnt); d[1]=(tjs_uint8)(sg/cnt);
+						d[2]=(tjs_uint8)(sr/cnt); d[3]=(tjs_uint8)(sa/cnt);
+					}
+				}
+				c_srcbuf = c_scaled.data();
+				c_srcpitchpix = dw;
+				c_originx   = (tjs_int)( c_originx   * scale + (c_originx>=0?0.5:-0.5) );
+				c_origintop = (tjs_int)( c_origintop * scale + (c_origintop>=0?0.5:-0.5) );
+				metrics.CellIncX = (tjs_int)( metrics.CellIncX * scale + 0.5 );
+				metrics.CellIncY = (tjs_int)( metrics.CellIncY * scale + 0.5 );
 			}
+			glyph_bmp = new tTVPCharacterData(
+				c_srcbuf,
+				c_srcpitchpix,
+				  c_originx,
+				  baseline - c_origintop,
+				  dw,
+				  dh,
+				metrics,
+				true /* fullcolor */ );
+			// Gray は 256 にしない。描画ディスパッチは if(Gray==256) が先に来るため、
+			// 256 にすると FullColored 分岐 (else if) に到達せずグレースケール誤描画になる。
+
+			tjs_uint8 *dp = glyph_bmp->GetData();
+			tjs_int cpitch = glyph_bmp->Pitch;
+			for( tjs_uint y = 0; y < dh; y++ ) {
+				tjs_uint8 *p = dp + cpitch * y;
+				for( tjs_uint x = 0; x < dw; x++ ) {
+					tjs_uint a = p[3];
+					if( a == 0 ) {
+						p[0] = p[1] = p[2] = 0;
+					} else if( a < 255 ) {
+						p[0] = (tjs_uint8)( ( p[0] * 255 + (a>>1) ) / a );
+						p[1] = (tjs_uint8)( ( p[1] * 255 + (a>>1) ) / a );
+						p[2] = (tjs_uint8)( ( p[2] * 255 + (a>>1) ) / a );
+					}
+					p += 4;
+				}
+			}
+			// カラーグリフには下線/取消線を描き込まない (AddHorizontalLine は FullColored 非対応)。
 		}
-		if( Options & TVP_TF_STRIKEOUT ) {
-			tjs_int pos = -1, thickness = -1;
-			GetStrikeOut( pos, thickness, index );
-			if( pos >= 0 && thickness > 0 ) {
-				glyph_bmp->AddHorizontalLine( pos, thickness, 255 );
+		else
+		{
+			glyph_bmp = new tTVPCharacterData(
+				ft_bmp->buffer,
+				ft_bmp->pitch,
+				  face->glyph->bitmap_left,
+				  baseline - face->glyph->bitmap_top,
+				  ft_bmp->width,
+				  ft_bmp->rows,
+				metrics);
+			glyph_bmp->Gray = 256;
+
+
+			if( Options & TVP_TF_UNDERLINE ) {
+				tjs_int pos = -1, thickness = -1;
+				GetUnderline( pos, thickness, index );
+				if( pos >= 0 && thickness > 0 ) {
+					glyph_bmp->AddHorizontalLine( pos, thickness, 255 );
+				}
+			}
+			if( Options & TVP_TF_STRIKEOUT ) {
+				tjs_int pos = -1, thickness = -1;
+				GetStrikeOut( pos, thickness, index );
+				if( pos >= 0 && thickness > 0 ) {
+					glyph_bmp->AddHorizontalLine( pos, thickness, 255 );
+				}
 			}
 		}
 	}
@@ -1047,7 +1149,7 @@ tTVPCharacterData * tFreeTypeFace::GetGlyphFromCharcode(tjs_char code)
  * @return	レンダリング領域矩形へのポインタ
  *			NULL の場合は変換に失敗した場合
  */
-bool tFreeTypeFace::GetGlyphRectFromCharcode( tTVPRect& rt, tjs_char code, tjs_int& advancex, tjs_int& advancey )
+bool tFreeTypeFace::GetGlyphRectFromCharcode( tTVPRect& rt, tjs_uint32 code, tjs_int& advancex, tjs_int& advancey )
 {
 	advancex = advancey = 0;
 	tjs_int index;
@@ -1055,8 +1157,9 @@ bool tFreeTypeFace::GetGlyphRectFromCharcode( tTVPRect& rt, tjs_char code, tjs_i
 		return false;
 
 	FT_Face face = Faces[index]->FTFace;
-	//int baseline = (int)( face->ascender ) * face->size->metrics.y_ppem / face->units_per_EM;
-	int baseline = Height * 0.9;
+	// baseline は GetGlyphFromCharcode と同一 (実 ascent = GetAscent()) にすること。
+	// でないと測定 (rect) と描画でグリフ位置がずれる。
+	int baseline = GetAscent();
 
 	/*
 	FT_Render_Glyph でレンダリングしないと以下の各値は取得できない
@@ -1103,7 +1206,7 @@ bool tFreeTypeFace::GetGlyphRectFromCharcode( tTVPRect& rt, tjs_char code, tjs_i
  * @param metrics	寸法
  * @return	成功の場合フェイスインデックス、失敗の場合負の値
  */
-tjs_int tFreeTypeFace::GetGlyphMetricsFromCharcode(tjs_char code,
+tjs_int tFreeTypeFace::GetGlyphMetricsFromCharcode(tjs_uint32 code,
 	tGlyphMetrics & metrics)
 {
 	tjs_int index;
@@ -1127,7 +1230,7 @@ tjs_int tFreeTypeFace::GetGlyphMetricsFromCharcode(tjs_char code,
  * @param metrics	サイズ
  * @return	成功の場合真、失敗の場合偽
  */
-bool tFreeTypeFace::GetGlyphSizeFromCharcode(tjs_char code, tGlyphMetrics & metrics)
+bool tFreeTypeFace::GetGlyphSizeFromCharcode(tjs_uint32 code, tGlyphMetrics & metrics)
 {
 	tjs_int index;
 	if( (index = LoadGlyphSlotFromCharcode(code)) < 0 ) return false;
@@ -1146,12 +1249,14 @@ bool tFreeTypeFace::GetGlyphSizeFromCharcode(tjs_char code, tGlyphMetrics & metr
  * @param code	文字コード
  * @return	成功の場合フェイスインデックス、失敗の場合負の値
  */
-tjs_int tFreeTypeFace::LoadGlyphSlotFromCharcode(tjs_char code)
+tjs_int tFreeTypeFace::LoadGlyphSlotFromCharcode(tjs_uint32 code)
 {
 	// TODO: スレッド保護
 
 	tjs_size count = Faces.size();
-	for( tjs_size i = 0; i < count; i++ ) {
+	for( tjs_size k = 0; k < count; k++ ) {
+		// PreferLastFace 時は末尾 face (絵文字 face) を最初に試し、その後 0..count-2。
+		tjs_size i = PreferLastFace ? ( (k == 0) ? (count - 1) : (k - 1) ) : k;
 		std::unique_ptr<FaceSet>& faceset = Faces[i];
 		// 文字コードを得る
 		FT_ULong localcode;
@@ -1167,7 +1272,11 @@ tjs_int tFreeTypeFace::LoadGlyphSlotFromCharcode(tjs_char code)
 
 		// グリフスロットに文字を読み込む
 		FT_Int32 load_glyph_flag = 0;
-		if(!(Options & TVP_FACE_OPTIONS_NO_ANTIALIASING))
+		if(Options & TVP_FACE_OPTIONS_COLOR) {
+			// カラーグリフ(COLR/CBDT/sbix等)を BGRA で読み込む。
+			// 埋め込みカラービットマップも許可したいので FT_LOAD_NO_BITMAP は付けない。
+			load_glyph_flag |= FT_LOAD_COLOR;
+		} else if(!(Options & TVP_FACE_OPTIONS_NO_ANTIALIASING))
 			load_glyph_flag |= FT_LOAD_NO_BITMAP;
 		else
 			load_glyph_flag |= FT_LOAD_TARGET_MONO;

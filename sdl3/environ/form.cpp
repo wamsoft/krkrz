@@ -183,10 +183,26 @@ SDL3WindowForm::GetCursorPos(tjs_int &x, tjs_int &y)
 	y = (tjs_int)ypos;
 }
 
-void 
+void
+SDL3WindowForm::SetCursorVisible(bool visible)
+{
+	// SDL のカーソル表示はプロセスグローバル (ウィンドウ単位ではない)。
+	// TTVPWindowForm::SetMouseCursorState が状態変化時のみ呼んでくる。
+	if (visible) SDL_ShowCursor();
+	else         SDL_HideCursor();
+}
+
+void
 SDL3WindowForm::SetCursorPos(tjs_int x, tjs_int y)
 {
 	if (mWindow) {
+		// 引数は「描画矩形内の座標」(iTVPWindow::SetCursorPos の契約。 入力側の
+		// OnMouse* が TranslateWindowToDrawArea で destRect オフセットを引いた
+		// 座標で流れてくるのと対)。 SDL の warp はウィンドウクライアント座標
+		// なので destRect オフセットを足し戻す (win32 実装と同じ変換)。
+		// フルスクリーンのレターボックス等で destRect が (0,0) 以外のとき、
+		// これが無いと warp 先がオフセット分ズレる。
+		TranslateDrawAreaToWindow(x, y);
 		SDL_WarpMouseInWindow(mWindow, (float)x, (float)y);
 	}
 }
@@ -333,18 +349,16 @@ SDL3WindowForm::AppEvent(const SDL_Event& event)
 		}
 		case SDL_EVENT_WINDOW_CLOSE_REQUESTED: {
 			TVPLOG_DEBUG("Window close requested");
-#ifdef KRKRZ_HAS_ELEMENTS
-			// modal dialog 表示中は Close を呼ばない (=閉じる動作をキャンセル)。
-			// ユーザは dialog 側で意図的に close するまで Window を閉じられない。
-			// 非モーダルの常駐 UI だけならウィンドウは閉じてよい。
-			if (tTVPElementsDialogManager::Instance().HasModalInstance()) {
-				TVPAddLog(TJS_W("Window close cancelled: dialog modal active"));
-			} else {
-				Close();
-			}
-#else
+			// modal dialog 表示中でも Close 要求はゲーム側 (onCloseQuery) へ
+			// 届ける。 KAG 側は askOnClose なら Elements の終了確認モーダルを
+			// さらに上へ重ねて表示し、 確定するまで実際には閉じない
+			// (super.onCloseQuery(false) でキャンセルされる)。
+			// 旧実装はモーダル表示中ここで握り潰していた (「dialog 側で意図的に
+			// close するまで閉じられない」ガード) が、 boot ランチャーや
+			// grabFocus メニュー表示中に × が無反応になるため撤廃 (2026-08-06)。
+			// モーダル多重 (ランチャー上の終了確認等) は manager の複数
+			// インスタンス + nested pump で成立する。
 			Close();
-#endif
 			break;
 		}
 		case SDL_EVENT_WINDOW_RESIZED: {

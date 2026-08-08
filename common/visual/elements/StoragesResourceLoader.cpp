@@ -15,6 +15,7 @@
 #include <elements/support/font.hpp>
 #include <elements/support/resource_loader.hpp>
 #include <elements/support/theme.hpp>
+#include <elements_modal/modal.h>   // refresh_mem_image (registerImage 差替時の即時反映)
 
 // ThorVG: Text::info() で読込み済みフォントから embedded family / style 名を
 // 取り出す。 元データの再パース無しで、 ロード時 ThorVG が掴んだ FT_Face の
@@ -24,6 +25,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -43,6 +45,43 @@ ttstr Utf8ToTtstr(std::string_view u8)
 }
 
 //---------------------------------------------------------------------------
+// 実行時画像ストア (ホスト注入画像)
+//
+// TJS 側が `ElementsDialog.registerImage(name, ...)` で名前→エンコード済み
+// 画像バイト (PNG/BMP 等) を登録する。 resource_loader.read() は "mem://<name>"
+// を受けたらファイル VFS でなくこのストアから返す。 セーブサムネイル等、
+// 実行時に変わる画像を Elements ウィジェットへ渡すための仕組み。
+// pixmap は画面 build 時に読み直されるので、 再登録 → 画面再オープンで更新。
+//---------------------------------------------------------------------------
+std::mutex& ImageStoreMutex()
+{
+	static std::mutex m;
+	return m;
+}
+std::map<std::string, std::vector<std::uint8_t>>& ImageStore()
+{
+	static std::map<std::string, std::vector<std::uint8_t>> s;
+	return s;
+}
+
+// name が "mem:" スキームなら true を返し、 out にストアキー (スキームと
+// 続くスラッシュを除いた残り) を入れる。 ⚠ Elements 側で fs::path を経由すると
+// "mem://x" が "mem:/x" 等にスラッシュ正規化されることがあるため、 スラッシュ
+// 数に依存せず "mem:" + 任意個のスラッシュ を許容する。
+bool ParseMemName(std::string_view name, std::string& out)
+{
+	constexpr std::string_view scheme = "mem:";
+	if (name.size() <= scheme.size() ||
+	    name.compare(0, scheme.size(), scheme) != 0)
+		return false;
+	std::size_t i = scheme.size();
+	while (i < name.size() && (name[i] == '/' || name[i] == '\\')) ++i;
+	if (i >= name.size()) return false;
+	out.assign(name.substr(i));
+	return true;
+}
+
+//---------------------------------------------------------------------------
 // resource_loader 実装本体
 //
 // read():   TVPReadStream で全バイト読込み (内部で TVPCreateStream → 例外 OK)。
@@ -58,6 +97,13 @@ public:
 	std::vector<std::uint8_t> read(std::string_view name) override
 	{
 		if (name.empty()) return {};
+		// "mem://<name>" は実行時画像ストアから返す (ホスト注入画像)。
+		if (std::string key; ParseMemName(name, key)) {
+			std::lock_guard<std::mutex> lk(ImageStoreMutex());
+			auto it = ImageStore().find(key);
+			if (it != ImageStore().end()) return it->second;
+			return {};
+		}
 		ttstr path = Utf8ToTtstr(name);
 		try {
 			tjs_uint64 flen = 0;
@@ -76,6 +122,10 @@ public:
 	bool exists(std::string_view name) override
 	{
 		if (name.empty()) return false;
+		if (std::string key; ParseMemName(name, key)) {
+			std::lock_guard<std::mutex> lk(ImageStoreMutex());
+			return ImageStore().count(key) != 0;
+		}
 		ttstr path = Utf8ToTtstr(name);
 		try {
 			return TVPIsExistentStorage(path);
@@ -206,6 +256,13 @@ FontFileInfo ParseFontFilename(const std::string& stem)
 {
 	using namespace cycfi::elements::font_constants;
 	FontFileInfo info;
+
+	// elements_basic (アイコンフォント: ✓ ▼ 等の独自グリフ) は theme.icon_font の
+	// 参照名 "elements_basic" と正確に一致させる必要があるため、 名前加工しない。
+	if (stem == "elements_basic") {
+		info.family = stem;
+		return info;
+	}
 
 	auto dash = stem.find('-');
 	std::string family_part = (dash != std::string::npos) ? stem.substr(0, dash) : stem;
@@ -467,6 +524,15 @@ static std::string& ThemeFamiliesStorage()
 	return s;
 }
 
+// TVPSetElementsDefaultFontFamily (TJS: ElementsDialog.defaultFontFamily) で
+// 明示設定されたら true。 以後 TVPApplyRegisteredFontsToElementsTheme の
+// 自動並び (EnsureRuntimeInitialized 経由) では上書きしない。
+static bool& ThemeFamiliesExplicit()
+{
+	static bool b = false;
+	return b;
+}
+
 static void ApplyThemeFromStoredFamilies()
 {
 	const std::string& fams = ThemeFamiliesStorage();
@@ -486,16 +552,27 @@ static void ApplyThemeFromStoredFamilies()
 
 void TVPApplyRegisteredFontsToElementsTheme()
 {
+	// 明示設定 (defaultFontFamily) 済なら自動並びで上書きしない。
+	if (ThemeFamiliesExplicit()) return;
+
 	const auto& fams = RegisteredFamilies();
 	if (fams.empty()) return;
 
-	// 1byte (= Latin/ASCII 主体) 系を先頭、 CJK 系を後尾に並べる。 load 順は
-	// 同じ群内では維持する (stable partition 相当)。 これにより
-	// theme.label_font の primary は Roboto 等の Latin 系になり、 日本語等は
-	// ThorVG の per-codepoint fallback で CJK 系フォントに自動的に切替わる。
+	// 1byte (= Latin/ASCII 主体) 系を先頭、 CJK 系を後尾、 Emoji 系は最後尾に
+	// 並べる。 load 順は同じ群内では維持する (stable partition 相当)。 これに
+	// より theme.label_font の primary は Roboto 等の Latin 系になり、 日本語等
+	// は ThorVG の per-codepoint fallback で CJK 系フォントに自動的に切替わる。
+	// Emoji フォントは英数グリフも持っていて primary になると字間が崩れるので
+	// 必ず末尾 (絵文字 codepoint の fallback 専用)。
 	std::vector<const std::string*> latin;
 	std::vector<const std::string*> cjk;
+	std::vector<const std::string*> emoji;
 	for (const auto& f : fams) {
+		// elements_basic はアイコン専用フォント (theme.icon_font が参照)。
+		// 本文フォントの fallback 連結に混ぜない。
+		if (f == "elements_basic") continue;
+		if (f.find("Emoji") != std::string::npos ||
+		    f.find("emoji") != std::string::npos) { emoji.push_back(&f); continue; }
 		(IsCJKFamilyName(f) ? cjk : latin).push_back(&f);
 	}
 
@@ -509,6 +586,7 @@ void TVPApplyRegisteredFontsToElementsTheme()
 	};
 	for (auto* s : latin) append(s);
 	for (auto* s : cjk)   append(s);
+	for (auto* s : emoji) append(s);
 
 	ApplyThemeFromStoredFamilies();
 
@@ -519,6 +597,7 @@ void TVPApplyRegisteredFontsToElementsTheme()
 void TVPSetElementsDefaultFontFamily(const ttstr& families)
 {
 	if (families.IsEmpty()) return;
+	ThemeFamiliesExplicit() = true;
 	ThemeFamiliesStorage() = TtstrToUtf8(families);
 	ApplyThemeFromStoredFamilies();
 
@@ -530,4 +609,52 @@ ttstr TVPGetElementsDefaultFontFamily()
 	const std::string& s = ThemeFamiliesStorage();
 	if (s.empty()) return ttstr();
 	return Utf8ToTtstr(s);
+}
+
+//---------------------------------------------------------------------------
+// 実行時画像ストア API (ホスト注入画像)
+//---------------------------------------------------------------------------
+// name (logical) → storage path のファイルバイトを読んで登録。 jsonc からは
+// "mem://<name>" で参照する。 読めなければ登録せず false。
+bool TVPRegisterElementsImageFile(const ttstr& name, const ttstr& path)
+{
+	std::string key = TtstrToUtf8(name);
+	if (key.empty()) return false;
+	tjs_uint64 flen = 0;
+	std::vector<std::uint8_t> bytes;
+	try {
+		auto buf = TVPReadStream(path.c_str(), &flen);
+		if (!buf || flen == 0) {
+			TVPAddImportantLog(ttstr(TJS_W("ElementsResourceLoader: registerImage: cannot read: ")) + path);
+			return false;
+		}
+		bytes.resize(static_cast<std::size_t>(flen));
+		std::memcpy(bytes.data(), buf.get(), bytes.size());
+	} catch (...) {
+		TVPAddImportantLog(ttstr(TJS_W("ElementsResourceLoader: registerImage: read failed: ")) + path);
+		return false;
+	}
+	{
+		std::lock_guard<std::mutex> lk(ImageStoreMutex());
+		ImageStore()[key] = std::move(bytes);
+	}
+	// バイト差替後、 その mem:// を表示中の image widget を即時再ロード
+	// (セーブサムネイル等がその場で更新される)。 ⚠ ImageStoreMutex は必ず
+	// 解放してから呼ぶ (refresh 内の set_image が resource_loader 経由で
+	// ImageStore を読むため、 保持したままだと同一 mutex を再入してデッドロック)。
+	elements_modal::refresh_mem_image(key);
+	return true;
+}
+
+void TVPUnregisterElementsImage(const ttstr& name)
+{
+	std::string key = TtstrToUtf8(name);
+	std::lock_guard<std::mutex> lk(ImageStoreMutex());
+	ImageStore().erase(key);
+}
+
+void TVPClearElementsImages()
+{
+	std::lock_guard<std::mutex> lk(ImageStoreMutex());
+	ImageStore().clear();
 }

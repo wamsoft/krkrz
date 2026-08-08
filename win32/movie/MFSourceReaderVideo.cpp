@@ -3,7 +3,9 @@
 @brief レイヤ再生用 MF SourceReader ビデオプレイヤの実装
 *****************************************************************************/
 #include <windows.h>
-#include "tp_stub.h"
+// Track V-A: exe へ直接統合 (tp_stub 境界を撤去)。engine の実ヘッダを直接参照する。
+#include "tjsCommHead.h"
+#include "MsgIntf.h"       // TVPThrowExceptionMessage
 #include "MFSourceReaderVideo.h"
 #include "MovieAudioSink.h"
 #include "D3D11OverlayWindow.h"

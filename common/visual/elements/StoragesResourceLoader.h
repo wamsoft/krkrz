@@ -76,4 +76,18 @@ void TVPSetElementsDefaultFontFamily(const ttstr& families);
 //!        TJS `Dialog.defaultFontFamily` プロパティ getter。
 ttstr TVPGetElementsDefaultFontFamily();
 
+//! @brief 実行時画像ストアへ storage path のファイルを name で登録する。
+//!        jsonc からは "mem://<name>" で参照 (image ウィジェット等)。
+//!        セーブサムネイル等、 実行時に変わる画像を Elements へ渡す仕組み。
+//!        画面 build 時に pixmap が読み直されるので、 再登録 → 画面再オープンで
+//!        表示が更新される。 読込失敗時は false (登録しない)。
+//!        TJS `ElementsDialog.registerImage(name, path)` のバックエンド。
+bool TVPRegisterElementsImageFile(const ttstr& name, const ttstr& path);
+
+//! @brief 実行時画像ストアから name の登録を削除する。
+void TVPUnregisterElementsImage(const ttstr& name);
+
+//! @brief 実行時画像ストアを全消去する。
+void TVPClearElementsImages();
+
 #endif

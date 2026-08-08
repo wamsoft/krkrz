@@ -151,7 +151,7 @@ static inline ttstr TVPMakeIndependentString(const ttstr & s)
 | M8 | `generic/base/PluginImpl.h:119,120` | `tTVPExceptionDesc::type` / `message`（ttstr メンバ） | 例外がスレッド間で伝播する経路があれば危険 |
 | M9 | `common/utils/REPL.h:19,26` | `tTVPReplThread::req_script_` / `resp_error_`（ttstr メンバ） | ワーカーが書込み、メインが `DrainMain` で読出し。`req_mtx_`/`resp_mtx_` 保護下でも ttstr の代入で RefCount が動く |
 | M10 | `common/utils/TimerIntf.h:43` | `tTJSNI_Timer::ActionName`（ttstr メンバ） | `OnTimer` 発火時に参照（`TimerIntf.cpp:174`）。TimerThread 経路でクロススレッドの可能性 |
-| M11 | `common/utils/LogCore.cpp:56-63,71,72` | `tTVPLogItem::Log`/`Time`、`TVPImportantLogs`、`TVPLogLocation`、`TVPLogDeque` | ログは各スレッドから呼ばれる。`TVPLogDispatchLine` 内の `static ttstr prevtimebuf`（同 :371）も複数スレッドから更新されうる |
+| M11 | `common/utils/LogCore.cpp` | `tTVPLogItem::Log`/`Time`、`TVPImportantLogs`、`TVPLogLocation`、`TVPLogDeque` | ログは各スレッドから呼ばれる。**リングバッファ / important cache / `prevtimebuf` / ファイル出力は `TVPLogStateMutex` で、TJS handler 配送は main thread マーシャル (保留キュー) で保護済** (doc/Logging.md「スレッド安全性」)。ttstr の RefCount 非原子性自体は残るためデータ保持方針の対象からは外れない |
 | M12 | `sdl3/utils/LogImpl.cpp:176` | `TVPLogLocation`（グローバル ttstr） | LogCore との同期が不明確 |
 | M13 | `common/visual/LayerBitmapImpl.cpp:133` | `TVPPrerenderedFonts`（`tTJSHashTable<ttstr, tTVPPrerenderedFont*>`、キー ttstr） | フォント追加／描画時にアクセス。描画がワーカー経路を持つなら中 |
 | M14 | `common/visual/LayerIntf.h:529` ほか | `tTJSNI_BaseLayer::Hint`、各種イベント構造体（`WindowIntf.h:681` `tTVPOnHintChangeInputEvent::HintMessage` 等） | イベント配信でスレッド境界をまたぐ可能性 |

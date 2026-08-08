@@ -1,170 +1,155 @@
 /****************************************************************************/
 /*! @file
-@brief 新レイヤ動画プレイヤ (MF SourceReader / pl_mpeg) 共通の XAudio2 音声シンク
+@brief 新レイヤ動画プレイヤ (MF SourceReader / pl_mpeg) 共通の音声シンク
 
-Track V。krmovie は別 DLL で krkrz 本体の miniaudio とリンクできないため、
-WIN ネイティブ API の XAudio2 で音声出力する (webplayer の WebpXAudio2Sink と
-同方針だが movie-player の IAudioSink には依存しない独立実装)。
-GetSamplesPlayed() を A/V 同期のマスタクロックとして使う。
+Track V。**音声出力は miniaudio (iTVPAudioStream) に統合済み** (旧 XAudio2 実装は
+Track V-A' で撤去)。デコーダが渡す PCM は借り物 (MF の IMFMediaBuffer は Unlock で、
+pl_mpeg の interleaved は次デコードで上書き) なので、内部へ *コピー* してから stream
+へ流し、再生完了通知 (TryPopConsumed) でコピーをフリーリストへ回収して再利用する。
+GetPlayedMs() を A/V 同期のマスタクロックとして使う。
+
+公開 API は旧 XAudio2 版と同一なので、レイヤデコーダ (LayerVideoBase /
+MFSourceReaderVideo / Mpeg1Video) 側は無改造。Submit / QueuedBuffers / GetPlayedMs /
+DrainConsumed は全て decode thread からのみ呼ばれる (single producer/consumer) ため
+ロック不要 (stream の consumed キューは iTVPAudioStream 側でスレッド安全)。
 *****************************************************************************/
 #ifndef __MOVIE_AUDIO_SINK_H__
 #define __MOVIE_AUDIO_SINK_H__
 
-#include <windows.h>
-#include <xaudio2.h>
-#include <atomic>
+#include "AudioStream.h"   // iTVPAudioStream / TVPCreateAudioStream / tTVPAudioStreamParam
+#include <vector>
 #include <cstdint>
 #include <cstddef>
+#include <chrono>
+#include <thread>
 
-#pragma comment(lib, "xaudio2.lib")
-
-class tTVPMovieAudioSink : public IXAudio2VoiceCallback
+class tTVPMovieAudioSink
 {
-	// 1 producer(decode thread) / 1 consumer(drain) 用ロックフリーリング
-	template<typename T, size_t N>
-	class SPSCRing {
-		static_assert((N & (N - 1)) == 0, "N must be power of 2");
-	public:
-		SPSCRing() : mHead(0), mTail(0) {}
-		bool TryPush(const T &v) {
-			size_t h = mHead.load(std::memory_order_relaxed);
-			size_t next = (h + 1) & (N - 1);
-			if (next == mTail.load(std::memory_order_acquire)) return false;
-			mBuffer[h] = v; mHead.store(next, std::memory_order_release); return true;
-		}
-		bool TryPop(T &out) {
-			size_t t = mTail.load(std::memory_order_relaxed);
-			if (t == mHead.load(std::memory_order_acquire)) return false;
-			out = mBuffer[t]; mTail.store((t + 1) & (N - 1), std::memory_order_release); return true;
-		}
-	private:
-		T mBuffer[N];
-		std::atomic<size_t> mHead, mTail;
-	};
+	// Submit でコピーした PCM の保持単位。stream へ渡したあと再生完了通知で回収し
+	// フリーリストへ戻して再利用する (毎フレームの確保を避ける)。
+	struct CopyBuffer { std::vector<uint8_t> data; };
 
-	struct SubmitContext { uint8_t *data; void *param; };
-
-	IXAudio2 *mXAudio2;
-	IXAudio2MasteringVoice *mMaster;
-	IXAudio2SourceVoice *mSource;
+	iTVPAudioStream *mStream;
 	int   mSampleRate;
 	float mVolume;
-	std::atomic<int> mQueued; //!< 未再生バッファ数 (音声供給の絞り込み用)
-	SPSCRing<SubmitContext *, 128> mConsumedRing;
+	std::vector<CopyBuffer*> mAll;   //!< 全コピーバッファ所有 (デストラクタで一括解放)
+	std::vector<CopyBuffer*> mFree;  //!< 再利用待ち (mAll の部分集合への非所有ポインタ)
+
+	CopyBuffer *Acquire()
+	{
+		if (!mFree.empty()) { CopyBuffer *c = mFree.back(); mFree.pop_back(); return c; }
+		CopyBuffer *c = new CopyBuffer(); mAll.push_back(c); return c;
+	}
 
 public:
 	tTVPMovieAudioSink()
-	: mXAudio2(nullptr), mMaster(nullptr), mSource(nullptr)
-	, mSampleRate(0), mVolume(1.0f), mQueued(0)
-	{
-		if (FAILED(XAudio2Create(&mXAudio2, 0, XAUDIO2_DEFAULT_PROCESSOR))) { mXAudio2 = nullptr; return; }
-		if (FAILED(mXAudio2->CreateMasteringVoice(&mMaster))) mMaster = nullptr;
-	}
+	: mStream(nullptr), mSampleRate(0), mVolume(1.0f) {}
+
 	~tTVPMovieAudioSink()
 	{
-		if (mSource) { mSource->Stop(); mSource->FlushSourceBuffers(); mSource->DestroyVoice(); mSource = nullptr; }
-		if (mMaster) { mMaster->DestroyVoice(); mMaster = nullptr; }
-		if (mXAudio2) { mXAudio2->Release(); mXAudio2 = nullptr; }
-		DrainConsumed();
+		if (mStream) { mStream->StopStream(); delete mStream; mStream = nullptr; }
+		for (CopyBuffer *c : mAll) delete c;
 	}
 
-	bool IsAvailable() const { return mXAudio2 != nullptr && mMaster != nullptr; }
+	//! stream は Setup で生成する。生成前でも呼び出せるよう常に true を返す
+	//! (旧 XAudio2 版は device 初期化可否を返したが、miniaudio は Setup で判定)。
+	bool IsAvailable() const { return true; }
 
-	//! 音声フォーマットを設定して source voice を作る。isFloat=true で 32bit float。
+	//! 音声フォーマットを設定して stream を作る。isFloat=true で 32bit float。
 	bool Setup(int channels, int sampleRate, int bitsPerSample, bool isFloat)
 	{
-		if (mSource || !IsAvailable()) return false;
-		WAVEFORMATEX fmt = {};
-		fmt.wFormatTag      = isFloat ? WAVE_FORMAT_IEEE_FLOAT : WAVE_FORMAT_PCM;
-		fmt.nChannels       = (WORD)channels;
-		fmt.nSamplesPerSec  = (DWORD)sampleRate;
-		fmt.wBitsPerSample  = (WORD)bitsPerSample;
-		fmt.nBlockAlign     = (WORD)((channels * bitsPerSample) / 8);
-		fmt.nAvgBytesPerSec = fmt.nSamplesPerSec * fmt.nBlockAlign;
-		if (FAILED(mXAudio2->CreateSourceVoice(&mSource, &fmt, 0, XAUDIO2_DEFAULT_FREQ_RATIO, this))) {
-			mSource = nullptr; return false;
-		}
+		if (mStream) return false;
+		tTVPAudioStreamParam param;
+		param.Channels      = (tjs_uint32)channels;
+		param.SampleRate    = (tjs_uint32)sampleRate;
+		param.BitsPerSample = (tjs_uint32)bitsPerSample;
+		if      (isFloat)            param.SampleType = astFloat32;
+		else if (bitsPerSample == 8) param.SampleType = astUInt8;
+		else if (bitsPerSample == 32)param.SampleType = astInt32;
+		else                         param.SampleType = astInt16;
+		mStream = TVPCreateAudioStream(param);
+		if (!mStream) return false;
 		mSampleRate = sampleRate;
-		mSource->SetVolume(mVolume);
+		ApplyVolume();
 		return true;
 	}
 
-	//! PCM を送出 (内部コピー。XAudio2 の寿命とデコーダバッファを分離)。
-	//! param は再生完了時に TryPopConsumed で返す識別子 (IAudioSink アダプタ用。
-	//! 直接利用時は nullptr で可)。
-	void Submit(const void *data, size_t bytes, bool last = false, void *param = nullptr)
+	//! PCM を送出 (内部コピー。stream の寿命とデコーダの借り物バッファを分離)。
+	//! param は旧版互換で受けるが、レイヤ経路では未使用 (常に copy 識別子で上書き)。
+	void Submit(const void *data, size_t bytes, bool last = false, void * /*param*/ = nullptr)
 	{
-		if (!mSource || bytes == 0) return;
-		SubmitContext *ctx = new SubmitContext;
-		ctx->data = new uint8_t[bytes];
-		ctx->param = param;
-		memcpy(ctx->data, data, bytes);
-		XAUDIO2_BUFFER buf = {};
-		buf.AudioBytes = (UINT32)bytes;
-		buf.pAudioData = ctx->data;
-		buf.pContext   = ctx;
-		buf.Flags      = last ? XAUDIO2_END_OF_STREAM : 0;
-		if (SUCCEEDED(mSource->SubmitSourceBuffer(&buf))) {
-			mQueued.fetch_add(1, std::memory_order_relaxed);
-		} else {
-			delete[] ctx->data; delete ctx;
-		}
+		if (!mStream) return;
+		if (bytes == 0 && !last) return;
+		DrainConsumed(); // 先に再生済みコピーを回収してフリーリストへ
+		CopyBuffer *c = Acquire();
+		c->data.assign(static_cast<const uint8_t*>(data),
+					   static_cast<const uint8_t*>(data) + bytes);
+		mStream->Enqueue(c->data.data(), c->data.size(), last, c);
 	}
 
-	void Start() { if (mSource) mSource->Start(); }
-	void Stop()  { if (mSource) mSource->Stop(); }
-	void Flush() { if (mSource) { mSource->Stop(); mSource->FlushSourceBuffers(); } DrainConsumed(); }
+	void Start() { if (mStream) mStream->StartStream(); }
+	void Stop()  { if (mStream) mStream->StopStream(); }
 
-	//! 未再生バッファ数 (供給を絞るための目安)。
-	int QueuedBuffers() const { return mQueued.load(std::memory_order_relaxed); }
+	void Flush()
+	{
+		if (!mStream) return;
+		bool wasPlaying = mStream->IsPlaying();
+		mStream->StopStream();
+		// ma_sound_stop は async stop なので最後の callback が抜けるのを少し待つ
+		// (Flush は seek 等の低頻度パスでのみ呼ばれる想定)。
+		std::this_thread::sleep_for(std::chrono::milliseconds(20));
+		mStream->ClearQueue();
+		DrainConsumed(); // ClearQueue が consumed へ流したコピーを回収
+		if (wasPlaying) mStream->StartStream();
+	}
+
+	//! 未再生バッファ数 (供給を絞るための目安 = in-flight コピー数)。
+	int QueuedBuffers() const { return (int)(mAll.size() - mFree.size()); }
 
 	//! 再生済みサンプル数 → A/V 同期クロック。
-	int64_t GetSamplesPlayed() const {
-		if (!mSource) return 0;
-		XAUDIO2_VOICE_STATE st = {};
-		mSource->GetState(&st, 0);
-		return (int64_t)st.SamplesPlayed;
+	int64_t GetSamplesPlayed() const
+	{
+		return mStream ? (int64_t)mStream->GetSamplesPlayed() : 0;
 	}
 	//! 再生位置 (ms)。音声が無い/未設定なら -1。
-	int64_t GetPlayedMs() const {
-		if (!mSource || mSampleRate <= 0) return -1;
+	int64_t GetPlayedMs() const
+	{
+		if (!mStream || mSampleRate <= 0) return -1;
 		return GetSamplesPlayed() * 1000 / mSampleRate;
 	}
 
-	//! 再生完了エントリを 1 件取り出し、内部コピーを解放して param を返す。
-	//! (IAudioSink アダプタが movie-player の DecodedBuffer 解放に使う)。無ければ false。
-	bool TryPopConsumed(void **outParam) {
-		SubmitContext *ctx = nullptr;
-		if (!mConsumedRing.TryPop(ctx)) return false;
-		if (ctx) { if (outParam) *outParam = ctx->param; delete[] ctx->data; delete ctx; }
-		else if (outParam) *outParam = nullptr;
+	//! 再生完了エントリを 1 件取り出し、コピーをフリーリストへ戻す。無ければ false。
+	//! (レイヤ経路は param を使わないので outParam には常に nullptr を返す)。
+	bool TryPopConsumed(void **outParam)
+	{
+		if (!mStream) return false;
+		void *p = nullptr;
+		if (!mStream->TryPopConsumed(p)) return false;
+		if (p) mFree.push_back(static_cast<CopyBuffer*>(p));
+		if (outParam) *outParam = nullptr;
 		return true;
 	}
 
-	//! 再生完了バッファのメモリを解放する (param 不要な直接利用時。decode thread から)。
-	void DrainConsumed() {
+	//! 再生完了コピーを全て回収する (decode thread から)。
+	void DrainConsumed()
+	{
 		void *p = nullptr;
 		while (TryPopConsumed(&p)) {}
 	}
 
-	void SetVolume(float v) {
+	void SetVolume(float v)
+	{
 		if (v < 0.0f) v = 0.0f; if (v > 1.0f) v = 1.0f;
-		mVolume = v; if (mSource) mSource->SetVolume(v);
+		mVolume = v; ApplyVolume();
 	}
 	float Volume() const { return mVolume; }
 
-	// IXAudio2VoiceCallback (XAudio2 audio thread。重い処理禁止) --------------
-	STDMETHODIMP_(void) OnVoiceProcessingPassStart(UINT32) override {}
-	STDMETHODIMP_(void) OnVoiceProcessingPassEnd() override {}
-	STDMETHODIMP_(void) OnStreamEnd() override {}
-	STDMETHODIMP_(void) OnBufferStart(void *) override {}
-	STDMETHODIMP_(void) OnBufferEnd(void *pctx) override {
-		// 再生完了。delete は decode thread(DrainConsumed) 側で行うため ring へ流す。
-		mQueued.fetch_sub(1, std::memory_order_relaxed);
-		mConsumedRing.TryPush((SubmitContext *)pctx);
+private:
+	void ApplyVolume()
+	{
+		// iTVPAudioStream の volume 範囲は 0 .. 100000
+		if (mStream) mStream->SetVolume((tjs_int)(mVolume * 100000.0f + 0.5f));
 	}
-	STDMETHODIMP_(void) OnLoopEnd(void *) override {}
-	STDMETHODIMP_(void) OnVoiceError(void *, HRESULT) override {}
 };
 
 #endif // __MOVIE_AUDIO_SINK_H__

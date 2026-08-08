@@ -163,7 +163,9 @@ void tTJSNI_VideoOverlay::Open(const ttstr &name)
 	ttstr path;
 	ttstr newpath = TVPGetPlacedPath(name);
 	if( newpath.IsEmpty() ) {
-		path = TVPNormalizeStorageName(name);
+		// ファイルが無い場合はエラー
+		SetStatus( tTVPVideoOverlayStatus::LoadError );
+		return;
 	} else {
 		path = newpath;
 	}
@@ -296,7 +298,11 @@ void tTJSNI_VideoOverlay::PreparePresenter()
 	if( Mode == vomLayer || !Window ) return;
 	if( !Presenter )
 		Presenter = TVPCreateBoundVideoOverlayPresenter( Window->GetDrawDeviceObject() );
-	if( Presenter ) mUseYUV = Presenter->SupportsYUV();
+	if( Presenter ) {
+		mUseYUV = Presenter->SupportsYUV();
+		// open 前に visible を設定していた場合も反映 (既定は false = 非表示)。
+		Presenter->SetVisible( Visible );
+	}
 }
 //---------------------------------------------------------------------------
 void tTJSNI_VideoOverlay::TryRegisterPresenter()
@@ -414,6 +420,9 @@ void tTJSNI_VideoOverlay::SetVisible(bool b) {
 	} else {
 		// 自前表示を持つ実装 (wasm <video>) の表示制御。通常実装では no-op
 		if( mPlayer ) mPlayer->SetOverlayVisible( Visible );
+		// overlay presenter 経路 (SDL / GL): DrawDevice が毎フレーム IsVisible() を見て
+		// 画面占有可否を判定する。WINVER が RenderVideoFrame 内で Visible を判定するのと等価。
+		if( Presenter ) Presenter->SetVisible( Visible );
 	}
 }
 //---------------------------------------------------------------------------

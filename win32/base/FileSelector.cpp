@@ -12,12 +12,18 @@
 
 #include <cderr.h>
 #include <commdlg.h>
+#include <shobjidl.h>   // IFileOpenDialog (selectDirectory)
+#include <shlobj.h>     // SHCreateItemFromParsingName
+#include <thread>       // selectDirectory を STA スレッドで実行
+#include <string>
 
 #include "MsgIntf.h"
 #include "StorageImpl.h"
 #include "WindowImpl.h"
 #include "SysInitIntf.h"
 #include "DebugIntf.h"
+#include "StorageIntf.h"  // TVPNormalizeStorageName / TVPGetLocalName
+#include "FileSelector.h"
 
 #include "TVPScreen.h"
 
@@ -298,6 +304,104 @@ bool TVPSelectFile(iTJSDispatch2 *params)
 	delete [] filename;
 
 	return 0!=result;
+}
+//---------------------------------------------------------------------------
+// TVPSelectDirectory : フォルダ選択モーダルダイアログ (Storages.selectDirectory)
+//   params は %[ name, title, window, rootDir ] の辞書。選択されると params["name"]
+//   に正規化パスを書き戻し true を返す。キャンセル時は false。
+//   モダンな IFileOpenDialog (FOS_PICKFOLDERS) を使用。
+//---------------------------------------------------------------------------
+bool TVPSelectDirectory(iTJSDispatch2 *params)
+{
+	tTJSVariant val;
+
+	// タイトル
+	std::wstring wtitle;
+	if( TJS_SUCCEEDED(params->PropGet(TJS_MEMBERMUSTEXIST, TJS_W("title"), 0, &val, params))
+		&& val.Type() != tvtVoid )
+		wtitle = (const wchar_t*)((ttstr)val).c_str();
+
+	// 初期フォルダ (name 優先、無ければ rootDir)
+	std::wstring winitial;
+	if( TJS_SUCCEEDED(params->PropGet(TJS_MEMBERMUSTEXIST, TJS_W("name"), 0, &val, params))
+		&& val.Type() == tvtString && !val.NormalCompare(ttstr(TJS_W(""))) )
+	{
+		ttstr n = TVPNormalizeStorageName(val.AsStringNoAddRef());
+		TVPGetLocalName(n);
+		winitial = (const wchar_t*)n.c_str();
+	}
+	else if( TJS_SUCCEEDED(params->PropGet(TJS_MEMBERMUSTEXIST, TJS_W("rootDir"), 0, &val, params))
+		&& val.Type() == tvtString && !val.NormalCompare(ttstr(TJS_W(""))) )
+	{
+		ttstr n = TVPNormalizeStorageName(val.AsStringNoAddRef());
+		TVPGetLocalName(n);
+		winitial = (const wchar_t*)n.c_str();
+	}
+
+	std::wstring resultPath;
+	bool selected = false;
+
+	// IFileOpenDialog::Show は STA を要求する。エンジンのメインスレッドは WIC / D3D 等
+	// により MTA になっている場合があり、MTA スレッドで Show するとクロスアパートメント
+	// でハングする。確実に動かすため専用の STA スレッドでダイアログを実行し join で待つ。
+	// (owner は別スレッドになりデッドロック要因になるため Show には渡さない。main は
+	//  join でブロック中なので実質モーダルになる)
+	std::thread worker([&]() {
+		HRESULT hrco = ::CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+		bool couninit = SUCCEEDED(hrco);
+
+		IFileOpenDialog *dlg = NULL;
+		if( SUCCEEDED(::CoCreateInstance(CLSID_FileOpenDialog, NULL, CLSCTX_INPROC_SERVER,
+			IID_PPV_ARGS(&dlg))) && dlg )
+		{
+			DWORD opts = 0;
+			dlg->GetOptions(&opts);
+			dlg->SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
+
+			if( !wtitle.empty() )
+				dlg->SetTitle(wtitle.c_str());
+
+			if( !winitial.empty() )
+			{
+				IShellItem *psi = NULL;
+				if( SUCCEEDED(::SHCreateItemFromParsingName(winitial.c_str(),
+					NULL, IID_PPV_ARGS(&psi))) && psi )
+				{
+					dlg->SetFolder(psi);
+					psi->Release();
+				}
+			}
+
+			if( SUCCEEDED(dlg->Show(NULL)) )
+			{
+				IShellItem *item = NULL;
+				if( SUCCEEDED(dlg->GetResult(&item)) && item )
+				{
+					PWSTR pszPath = NULL;
+					if( SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &pszPath)) && pszPath )
+					{
+						resultPath = pszPath;
+						selected = true;
+						::CoTaskMemFree(pszPath);
+					}
+					item->Release();
+				}
+			}
+			dlg->Release();
+		}
+
+		if( couninit ) ::CoUninitialize();
+	});
+	worker.join();
+
+	if( selected )
+	{
+		ttstr path((const tjs_char*)resultPath.c_str());
+		path = TVPNormalizeStorageName(path);
+		tTJSVariant nv(path);
+		params->PropSet(TJS_MEMBERENSURE, TJS_W("name"), NULL, &nv, params);
+	}
+	return selected;
 }
 //---------------------------------------------------------------------------
 

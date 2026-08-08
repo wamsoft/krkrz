@@ -21,10 +21,15 @@
 #include "CharacterSet.h"   // TVPUtf8ToUtf16
 #include "StorageIntf.h"    // TVPReadStream
 #include "Application.h"    // Application, MainWindowForm() / ResourcePath()
+#include "WindowIntf.h"     // iTVPWindow (cursor-warp: SetCursorPos) / mcs enum
+#include "WindowImpl.h"     // tTJSNI_Window::SetMouseCursorState (cursor-warp hide)
 #ifndef __WINVER__
 #include "WindowForm.h"     // TTVPWindowForm::NativeWindowHandle() (SDL/generic host)
 #endif
 #include "StoragesResourceLoader.h"   // TVPInstallElementsResourceLoader / Fonts
+#include "GraphicsLoaderIntf.h"       // TVPLoadGraphic (universal rule 画像)
+#include "LayerBitmapIntf.h"          // tTVPBaseBitmap (rule 画像の 8bpp 展開)
+#include "TickCount.h"                // TVPGetRoughTickCount32 (遷移エフェクト計時)
 
 #ifndef _WIN32
 #include "VirtualKey.h"
@@ -32,6 +37,7 @@
 
 #include <elements_modal/modal.h>
 #include <elements_modal/navigator.h>   // フロー駆動 (画面遷移スタック)
+#include <elements_modal/effects.h>     // 画面切替エフェクト (fade / universal ブレンド)
 #include <elements/base_view.hpp>        // cycfi 中立入力型 (mouse_button / key_code / mod_*)
 #include <elements/element/gamepad.hpp>  // cycfi 中立入力型 (pad_button)
 
@@ -153,8 +159,13 @@ inline void HostStopTextInput()  { if (auto* w = HostMainWindow()) SDL_StopTextI
 //---------------------------------------------------------------------------
 struct tTVPElementsDialogManager::Impl
 {
-	// Dialog の描画密度。 view は logical、 buffer は kRenderScale 倍の pixel。
-	static constexpr float kRenderScale = 2.0f;
+	// Dialog の描画密度モード (スクリプトから ElementsDialog.renderScale で切替)。
+	//   0  = auto (既定): 最終 present サイズで直接ラスタライズする。 authored が
+	//        surface より大きい画面 (1920x1080 authored を 720p surface へ等) は
+	//        縮小率ぶん小さい buffer で描くので CPU ラスタ/転送が最小になる。
+	//   >0 = authored 論理サイズ × この倍率で描き、 present 時に拡縮する
+	//        (1.0 = 原寸レンダ→縮小表示、 2.0 = 旧 supersampling 相当)。
+	float render_scale_mode = 0.0f;
 
 	//! @brief 1 つの overlay UI インスタンス。 z-order = instances 内の並び順
 	//!        (先頭 = 最背面、 末尾 = 最前面)。
@@ -190,6 +201,13 @@ struct tTVPElementsDialogManager::Impl
 		int dest_offset_x = 0;
 		int dest_offset_y = 0;
 
+		// oversized present (authored サイズ > surface) の縮小率と配置オフセット
+		// (surface logical 座標)。 マウス座標を dialog 論理座標へ戻す逆変換に使う。
+		// 等倍 present (非 oversized) は 1.0 / 0,0 のまま。
+		float present_scale = 1.0f;
+		float present_off_x = 0.0f;
+		float present_off_y = 0.0f;
+
 		// 直近 render_to_buffer の描画矩形 (surface logical 座標)。 ヒットテスト用。
 		elements_modal::overlay_session::render_rect last_rect{};
 		bool has_rect = false;
@@ -200,6 +218,32 @@ struct tTVPElementsDialogManager::Impl
 		std::map<std::string, std::string> screen_jsons;
 		ttstr manifest_base;
 		std::string flow_lang;
+
+		// 現画面の資材解決基準ディレクトリ (utf-8)。 universal 遷移の rule 画像を
+		// 「遷移を宣言した画面 (= 旧画面)」からの相対で解決するのに使う。 単発
+		// JSON / インラインフローでは空のこともある。
+		std::string current_resource_base;
+
+		// === 画面切替遷移エフェクト (transitions の effect: fade / universal) ===
+		// last_frame: 直近描画フレームの複製 (nav フローのみ毎フレーム更新)。
+		// 遷移確定時に from 側スナップショット (trans_from) へ move する。
+		// session は finish 後 render_to_buffer が false を返すため、 finish を
+		// 検知してからでは旧画面を描き直せない — 直近フレーム保持方式にする。
+		std::vector<tjs_uint32> last_frame;
+		int last_frame_w = 0, last_frame_h = 0;
+
+		std::vector<tjs_uint32> trans_from;      // 旧画面スナップショット
+		int trans_from_w = 0, trans_from_h = 0;
+		std::string trans_effect;                // "" = 遷移中でない
+		bool trans_started = false;              // 新画面の初回描画で計時開始
+		tjs_uint32 trans_start_tick = 0;
+		int trans_duration_ms = 0;
+		std::vector<tjs_uint8> trans_rule;       // universal の rule (trans_from と同画素数)
+		int trans_vague = 64;
+
+		// Dialog.close() 等の外部 close 要求で exit 演出を再生中。 finished() 後は
+		// transitions を解決せず (フローを進めず) FinishSingle で終了する。
+		bool close_after_exit = false;
 
 		// renderer のテクスチャ識別キー (Instance ごとに一意)。
 		const void* LayerKey() const { return static_cast<const void*>(this); }
@@ -226,6 +270,17 @@ struct tTVPElementsDialogManager::Impl
 		std::map<ttstr, tTJSVariant> values;
 	};
 	std::map<iTVPDialogEventHandler*, ResultSnapshot> pending_results;
+
+	// --- cursor-warp ナビ ("input":{"cursor_warp":true}) ---
+	// 直近に入力を転送してきた window (NoteInputWindow で更新、 非所有)。
+	// キー/パッドでフォーカスが動いたとき、 この window の実カーソルを
+	// フォーカス先へ SetCursorPos し、 mcsTempHidden で隠す。
+	iTVPWindow* input_window = nullptr;
+	// warp が生む合成 mouse move を実マウスと区別する期待座標 (layer 座標)。
+	// 一致 move はカーソル再表示させず (再 hide)、 不一致 = 実マウスで解除。
+	bool    warp_expect_active = false;
+	tjs_int warp_expect_x = 0;
+	tjs_int warp_expect_y = 0;
 
 	// --- helpers ---
 
@@ -280,14 +335,18 @@ struct tTVPElementsDialogManager::Impl
 		return nullptr;
 	}
 
-	// マウス座標 (image-area 系) → surface logical 座標。
+	// マウス座標 (image-area 系) → session へ渡す座標。 通常 present は surface
+	// logical そのまま。 oversized present (縮小表示) 中は縮小率とセンタリングの
+	// 逆変換をかけて dialog 論理座標へ戻す (session 内 hit-test は論理座標のため)。
 	static float ToSurfaceX(const Instance& inst, tjs_int image_x)
 	{
-		return static_cast<float>(image_x + inst.dest_offset_x);
+		return (static_cast<float>(image_x + inst.dest_offset_x)
+		        - inst.present_off_x) / inst.present_scale;
 	}
 	static float ToSurfaceY(const Instance& inst, tjs_int image_y)
 	{
-		return static_cast<float>(image_y + inst.dest_offset_y);
+		return (static_cast<float>(image_y + inst.dest_offset_y)
+		        - inst.present_off_y) / inst.present_scale;
 	}
 
 	// 指定 surface 座標が inst の描画矩形内か。
@@ -438,6 +497,44 @@ struct tTVPElementsDialogManager::Impl
 	// 単発インスタンスの finish 処理 (結果スナップ + teardown 予約)。
 	void FinishSingle(Instance& inst);
 
+	// --- 画面切替遷移エフェクト (fade / universal) ---
+
+	void ClearTransition(Instance& inst)
+	{
+		inst.trans_from.clear();
+		inst.trans_from_w = inst.trans_from_h = 0;
+		inst.trans_effect.clear();
+		inst.trans_started = false;
+		inst.trans_start_tick = 0;
+		inst.trans_duration_ms = 0;
+		inst.trans_rule.clear();
+	}
+
+	// 遷移確定時 (AdvanceFlow、 旧画面 teardown 前) に呼び、 last_frame を from 側
+	// スナップショットへ move + rule 画像ロード等の準備をする。
+	void PrepareScreenTransition(Instance& inst, const elements_modal::nav_step& step);
+
+	// rule 画像を Storages からロードし 8bpp グレースケール + dst サイズへ展開。
+	bool LoadTransitionRule(Instance& inst, const std::string& rule_utf8,
+	                        int dst_w, int dst_h);
+
+	// RenderInstance で新画面を描いた buffer に対し、 遷移中なら from と混色する。
+	void ApplyScreenTransition(Instance& inst, tjs_uint32* buf,
+	                           int w_pixels, int h_pixels);
+
+	// 外部 close 要求 (Dialog.close / QUIT)。 session 生存中は session->close()
+	// 経由で exit 演出と協調し、 finished() 後に FinishSingle で終了する。
+	void RequestClose(Instance& inst)
+	{
+		if (inst.session && !inst.session->finished() && !inst.close_requested) {
+			inst.close_after_exit = true;
+			inst.session->close();   // exit 演出があれば再生後に finished()
+		} else {
+			inst.active = false;
+			inst.close_requested = true;   // 次フレーム teardown (再入安全)
+		}
+	}
+
 	// finish した結果を pending_results に保存。
 	void SnapshotResult(Instance& inst, const ttstr& action,
 	                    const std::map<ttstr, tTJSVariant>& values)
@@ -506,13 +603,18 @@ bool tTVPElementsDialogManager::Impl::BeginScreen(
 
 	auto sess = std::make_unique<elements_modal::overlay_session>();
 	auto bridge = MakeBridgeCallback(inst.handler);
-	if (!sess->start(json_utf8, inst.dialog_w, inst.dialog_h, kRenderScale,
+	// pixel_scale は 1.0 固定 — 実際の描画密度は render_to_buffer に渡す buffer
+	// サイズから毎回導出される (render_scale_mode 参照)。
+	if (!sess->start(json_utf8, inst.dialog_w, inst.dialog_h, 1.0f,
 	                 std::move(bridge), resource_base_utf8)) {
 		return false;
 	}
 
 	// run_modal と同じく content の自然サイズへフィット (上側空欄対策)。
-	{
+	// ただし top-level "size" が明示された画面は作者が寸法を指定しているので
+	// 縮めない (指定サイズを尊重)。 明示サイズが surface より大きい場合は
+	// RenderInstance 側で surface にスケール present する (1920x1080 authored 画面等)。
+	if (!has_explicit_size) {
 		int mw = 0, mh = 0;
 		if (sess->measure_content(mw, mh)) {
 			int fit_w = (mw > 0 && mw < inst.dialog_w) ? mw : inst.dialog_w;
@@ -526,6 +628,7 @@ bool tTVPElementsDialogManager::Impl::BeginScreen(
 	}
 
 	inst.session = std::move(sess);
+	inst.current_resource_base = resource_base_utf8;
 	inst.has_rect = false;
 
 	// テキスト入力受信を開始 (input_box の IME / 物理キー入力用)。
@@ -622,11 +725,18 @@ void tTVPElementsDialogManager::Impl::AdvanceFlow(Instance& inst)
 		inst.handler->OnScreenLeave(Utf8ToTtstr(current), action);
 	}
 
-	if (inst.nav) inst.nav->advance(r.action, inst.session->transitions());
+	elements_modal::nav_step step;
+	if (inst.nav) step = inst.nav->advance(r.action, inst.session->transitions());
+
+	// 次画面がある場合のみ遷移エフェクトを準備する (旧画面の直近フレームを
+	// from 側スナップに move、 rule 解決は旧画面の resource_base 基準なので
+	// StartCurrentScreen で上書きされる前のここで行う)。
+	const bool flow_continues = inst.nav && !inst.nav->empty();
+	if (flow_continues) PrepareScreenTransition(inst, step);
 
 	inst.session.reset();
 
-	if (!inst.nav || inst.nav->empty()) {
+	if (!flow_continues) {
 		SnapshotResult(inst, action, values);
 		inst.active = false;
 		inst.close_requested = true;
@@ -657,14 +767,142 @@ void tTVPElementsDialogManager::Impl::FinishSingle(Instance& inst)
 	TVPAddLog(TJS_W("ElementsDialog: session auto-finished (close_on_click)"));
 }
 
+//---------------------------------------------------------------------------
+// 画面切替遷移エフェクト (transitions の effect: "fade" / "universal")
+//---------------------------------------------------------------------------
+void tTVPElementsDialogManager::Impl::PrepareScreenTransition(
+	Instance& inst, const elements_modal::nav_step& step)
+{
+	ClearTransition(inst);
+	if (step.effect.empty()) return;
+	if (step.effect != "fade" && step.effect != "universal") {
+		TVPAddImportantLog(
+			ttstr(TJS_W("ElementsDialog flow: unsupported transition effect: "))
+			+ Utf8ToTtstr(step.effect) + TJS_W(" (instant switch)"));
+		return;
+	}
+	// まだ一度も描画していない (初回画面直後など) → スナップ無し = 即切替
+	if (inst.last_frame.empty() ||
+	    inst.last_frame_w <= 0 || inst.last_frame_h <= 0) return;
+
+	inst.trans_from   = std::move(inst.last_frame);
+	inst.trans_from_w = inst.last_frame_w;
+	inst.trans_from_h = inst.last_frame_h;
+	inst.last_frame.clear();
+	inst.last_frame_w = inst.last_frame_h = 0;
+
+	inst.trans_effect      = step.effect;
+	inst.trans_duration_ms = (step.duration_ms > 0) ? step.duration_ms : 200;
+	inst.trans_started     = false;   // 新画面の初回描画から計時
+	inst.trans_vague       = step.vague;
+
+	if (step.effect == "universal") {
+		if (step.rule.empty() ||
+		    !LoadTransitionRule(inst, step.rule,
+		                        inst.trans_from_w, inst.trans_from_h)) {
+			TVPAddImportantLog(
+				ttstr(TJS_W("ElementsDialog flow: universal rule unavailable, "))
+				+ TJS_W("fallback to fade: ") + Utf8ToTtstr(step.rule));
+			inst.trans_effect = "fade";
+			inst.trans_rule.clear();
+		}
+	}
+}
+
+bool tTVPElementsDialogManager::Impl::LoadTransitionRule(
+	Instance& inst, const std::string& rule_utf8, int dst_w, int dst_h)
+{
+	if (dst_w <= 0 || dst_h <= 0) return false;
+
+	// 解決順: 現画面 (= 遷移を宣言した旧画面) の resource_base 相対 →
+	// そのままの Storages パス → autopath 検索。
+	const ttstr name = Utf8ToTtstr(rule_utf8);
+	ttstr resolved;
+	if (!inst.current_resource_base.empty()) {
+		ttstr cand = Utf8ToTtstr(inst.current_resource_base) + name;
+		if (TVPIsExistentStorage(cand)) resolved = cand;
+	}
+	if (resolved.IsEmpty() && TVPIsExistentStorage(name)) resolved = name;
+	if (resolved.IsEmpty()) {
+		ttstr placed = TVPGetPlacedPath(name);   // autopath (無ければ空)
+		if (!placed.IsEmpty()) resolved = placed;
+	}
+	if (resolved.IsEmpty()) return false;
+
+	try {
+		tTVPBaseBitmap bmp(16, 16, 8);
+		TVPLoadGraphic(&bmp, resolved, 0, 0, 0, glmGrayscale);
+		const int src_w = (int)bmp.GetWidth();
+		const int src_h = (int)bmp.GetHeight();
+		if (src_w <= 0 || src_h <= 0) return false;
+
+		// バイリニアで present バッファサイズへ展開 (rule は 8bpp グレースケール)。
+		inst.trans_rule.resize((size_t)dst_w * dst_h);
+		for (int y = 0; y < dst_h; ++y) {
+			const float sy = (dst_h > 1)
+				? (float)y * (src_h - 1) / (dst_h - 1) : 0.0f;
+			const int y0 = (int)sy;
+			const int y1 = std::min(y0 + 1, src_h - 1);
+			const float fy = sy - y0;
+			const tjs_uint8* r0 = (const tjs_uint8*)bmp.GetScanLine(y0);
+			const tjs_uint8* r1 = (const tjs_uint8*)bmp.GetScanLine(y1);
+			tjs_uint8* out = &inst.trans_rule[(size_t)y * dst_w];
+			for (int x = 0; x < dst_w; ++x) {
+				const float sx = (dst_w > 1)
+					? (float)x * (src_w - 1) / (dst_w - 1) : 0.0f;
+				const int x0 = (int)sx;
+				const int x1 = std::min(x0 + 1, src_w - 1);
+				const float fx = sx - x0;
+				const float v0 = r0[x0] + (r0[x1] - r0[x0]) * fx;
+				const float v1 = r1[x0] + (r1[x1] - r1[x0]) * fx;
+				out[x] = (tjs_uint8)(v0 + (v1 - v0) * fy + 0.5f);
+			}
+		}
+		return true;
+	} catch (...) {
+		// ロード失敗は呼出側で fade フォールバック (ログも呼出側)。
+		return false;
+	}
+}
+
+void tTVPElementsDialogManager::Impl::ApplyScreenTransition(
+	Instance& inst, tjs_uint32* buf, int w_pixels, int h_pixels)
+{
+	if (inst.trans_effect.empty()) return;
+	if (inst.trans_from.empty() ||
+	    inst.trans_from_w != w_pixels || inst.trans_from_h != h_pixels) {
+		// buffer サイズが変わった (画面サイズ / DPI / renderScale 変更) → 即切替
+		ClearTransition(inst);
+		return;
+	}
+	const tjs_uint32 now = TVPGetRoughTickCount32();
+	if (!inst.trans_started) {
+		inst.trans_started = true;
+		inst.trans_start_tick = now;
+	}
+	const tjs_uint32 elapsed = now - inst.trans_start_tick;
+	if (inst.trans_duration_ms <= 0 ||
+	    elapsed >= (tjs_uint32)inst.trans_duration_ms) {
+		ClearTransition(inst);
+		return;
+	}
+	const float t = (float)elapsed / (float)inst.trans_duration_ms;
+	const size_t count = (size_t)w_pixels * h_pixels;
+	if (inst.trans_effect == "universal" && inst.trans_rule.size() == count) {
+		elements_modal::blend_universal_argb8888(
+			inst.trans_from.data(), buf, inst.trans_rule.data(),
+			t, inst.trans_vague, buf, count);
+	} else {
+		elements_modal::blend_argb8888(
+			inst.trans_from.data(), buf, t, buf, count);
+	}
+}
+
 void tTVPElementsDialogManager::Impl::RenderInstance(
 	Instance& inst, iTVPDrawDevice* device, iTVPDialogRenderer* renderer)
 {
-	const float scale = kRenderScale;
 	const int w_logical = inst.dialog_w;
 	const int h_logical = inst.dialog_h;
-	const int w_pixels  = static_cast<int>(w_logical * scale);
-	const int h_pixels  = static_cast<int>(h_logical * scale);
 
 	int sw = 0, sh = 0;
 	renderer->GetSurfaceSize(sw, sh);
@@ -677,20 +915,78 @@ void tTVPElementsDialogManager::Impl::RenderInstance(
 	inst.dest_offset_x = dx;
 	inst.dest_offset_y = dy;
 
+	// dialog の logical サイズが surface を超える場合 (1920x1080 authored 画面を
+	// 640x400x2=1280x720 等の小さいゲーム surface に重ねる時) は、 render_to_buffer
+	// には dialog 自身の logical サイズを "surface" として渡し、 canvas 全体を
+	// buffer に描かせる (real surface を渡すと中央配置/クリップで一部しか描かれない)。
+	// present 時にアスペクトを保って real surface へ縮小スケールする。
+	const bool oversized = (sw > 0 && sh > 0 &&
+	                        (w_logical > sw || h_logical > sh));
+	const int render_sw = oversized ? w_logical : sw;
+	const int render_sh = oversized ? h_logical : sh;
+
+	// present 縮小率 (oversized fit)。 非 oversized は等倍 present。
+	float fit = 1.0f;
+	if (oversized) {
+		fit = std::min(static_cast<float>(sw) / w_logical,
+		               static_cast<float>(sh) / h_logical);
+	}
+
+	// 描画密度 (render_scale_mode コメント参照): auto は最終 present サイズで
+	// 直接描く。 >0 は authored 論理サイズ×倍率で描いて present 時に拡縮。
+	// 密度は buffer サイズとして overlay_session へ伝わる (canvas scale は
+	// session 側が buffer サイズ ÷ view logical から導出する)。
+	const float density = (render_scale_mode > 0.0f) ? render_scale_mode : fit;
+	const int w_pixels = std::max(1, static_cast<int>(w_logical * density + 0.5f));
+	const int h_pixels = std::max(1, static_cast<int>(h_logical * density + 0.5f));
+
 	const void* layer = inst.LayerKey();
 	uint32_t* buf = renderer->AcquireBuffer(layer, w_pixels, h_pixels);
 	if (!buf) return;
 
 	elements_modal::overlay_session::render_rect rect{};
 	bool ok = inst.session->render_to_buffer(buf, w_pixels, h_pixels,
-	                                         sw, sh, rect);
+	                                         render_sw, render_sh, rect);
+	if (ok) {
+		// 画面切替遷移中なら旧画面スナップと混色 (in-place、 upload 前に行う)。
+		ApplyScreenTransition(inst, buf, w_pixels, h_pixels);
+
+		// フローインスタンスは提示フレームの複製を保持する (次の画面切替の
+		// from 側スナップ用)。 finish 後の session は再描画できないため、
+		// ここで持っておくしかない。 遷移中は混色後 = 実際に見えている絵。
+		if (inst.nav) {
+			inst.last_frame.assign(buf, buf + (size_t)w_pixels * h_pixels);
+			inst.last_frame_w = w_pixels;
+			inst.last_frame_h = h_pixels;
+		}
+	}
 	renderer->ReleaseBuffer(layer);
 	if (!ok) return;
 
 	inst.last_rect = rect;
 	inst.has_rect = true;
 
-	renderer->PresentOverlay(layer, rect.x, rect.y, w_logical, h_logical);
+	// SDL_RenderTexture は dst 矩形へスケールするので、 buffer 全体を縮小 dst に
+	// 描けば downscale される。 縮小率とオフセットは Instance に保存し、
+	// ToSurfaceX/Y がマウス座標を dialog 論理座標へ逆変換する (マウス操作対応)。
+	int px = rect.x, py = rect.y, pw = w_logical, ph = h_logical;
+	if (oversized) {
+		// present 座標は surface logical (PresentOverlay が内部で dest へマップ)。
+		// 非 oversized 経路が rect.x/y をそのまま渡すのと同じ空間なので、 ここで
+		// dest offset (dx,dy) を足してはいけない。 surface 内で中央寄せするだけ。
+		pw = static_cast<int>(w_logical * fit + 0.5f);
+		ph = static_cast<int>(h_logical * fit + 0.5f);
+		px = (sw - pw) / 2;
+		py = (sh - ph) / 2;
+		inst.present_scale = fit;
+		inst.present_off_x = static_cast<float>(px);
+		inst.present_off_y = static_cast<float>(py);
+	} else {
+		inst.present_scale = 1.0f;
+		inst.present_off_x = 0.0f;
+		inst.present_off_y = 0.0f;
+	}
+	renderer->PresentOverlay(layer, px, py, pw, ph);
 }
 
 //---------------------------------------------------------------------------
@@ -723,6 +1019,16 @@ bool tTVPElementsDialogManager::IsHandlerActive(iTVPDialogEventHandler* handler)
 {
 	Impl::Instance* inst = _impl->FindByHandler(handler);
 	return inst && inst->active;
+}
+
+void tTVPElementsDialogManager::SetRenderScale(float scale)
+{
+	_impl->render_scale_mode = (scale > 0.0f) ? scale : 0.0f;
+}
+
+float tTVPElementsDialogManager::GetRenderScale() const
+{
+	return _impl->render_scale_mode;
 }
 
 void tTVPElementsDialogManager::EnsureRuntimeInitialized()
@@ -968,18 +1274,40 @@ void tTVPElementsDialogManager::Close()
 {
 	Impl::Instance* top = _impl->TopmostActive();
 	if (!top) return;
-	top->active = false;
-	top->close_requested = true;   // 次フレーム teardown (再入安全)
-	TVPAddLog(TJS_W("ElementsDialog: closed (topmost)"));
+	// session->close() 経由で exit 演出 ("on":"exit" の animate) と協調する。
+	// 演出が無ければ即 finished() → 次フレーム teardown (従来と同じ)。
+	_impl->RequestClose(*top);
+	TVPAddLog(TJS_W("ElementsDialog: close requested (topmost)"));
 }
 
 void tTVPElementsDialogManager::Close(iTVPDialogEventHandler* handler)
 {
 	Impl::Instance* inst = _impl->FindByHandler(handler);
 	if (!inst || !inst->active) return;
-	inst->active = false;
-	inst->close_requested = true;
-	TVPAddLog(TJS_W("ElementsDialog: closed (by handler)"));
+	_impl->RequestClose(*inst);
+	TVPAddLog(TJS_W("ElementsDialog: close requested (by handler)"));
+}
+
+void tTVPElementsDialogManager::DetachHandler(iTVPDialogEventHandler* handler)
+{
+	// handler (TJS native インスタンス) の破棄時に必ず呼ぶ。 モーダル終了後の
+	// teardown は次フレーム PaintOverlay まで遅延するため、 その間に handler が
+	// 解放されると TeardownInstance の handler->OnClosed() が解放済みポインタへの
+	// 仮想呼び出しになる (Release で AV、 ランチャー等の「ブロッキング表示 →
+	// 復帰後すぐ Dialog オブジェクト解放」フローで顕在化)。 ここで参照を切って
+	// おけばコールバックは発火せず teardown だけが行われる。
+	if (!handler) return;
+	bool any = false;
+	for (auto& up : _impl->instances) {
+		Impl::Instance* inst = up.get();
+		if (inst->handler != handler) continue;
+		inst->handler = nullptr;
+		inst->active = false;
+		inst->close_requested = true;   // 次フレーム teardown (再入安全)
+		any = true;
+	}
+	_impl->pending_results.erase(handler);
+	if (any) TVPAddLog(TJS_W("ElementsDialog: handler detached"));
 }
 
 iTVPDialogEventHandler* tTVPElementsDialogManager::ActiveHandler() const
@@ -1083,6 +1411,10 @@ bool tTVPElementsDialogManager::TakeLastModalResult(
 
 void tTVPElementsDialogManager::ForceClose()
 {
+	// window 破棄経路でも呼ばれるので、 記録済み入力 window は失効させる
+	// (cursor-warp のダングリング防止)。
+	_impl->input_window = nullptr;
+	_impl->warp_expect_active = false;
 	if (_impl->instances.empty()) return;
 	_impl->TeardownAll();
 	TVPAddLog(TJS_W("ElementsDialog: force-closed (all)"));
@@ -1169,8 +1501,12 @@ void tTVPElementsDialogManager::PaintOverlay(iTVPDrawDevice* device)
 			if (!inst->active || !inst->session) continue;
 
 			// "close_on_click" / Esc 等で session が自動 finish したとき。
+			// (exit 演出がある画面は、 その再生完了後にここへ来る。)
 			if (inst->session->finished()) {
-				if (inst->nav) {
+				if (inst->close_after_exit) {
+					// Dialog.close() 等の外部 close: transitions を解決せず終了。
+					_impl->FinishSingle(*inst);
+				} else if (inst->nav) {
 					_impl->AdvanceFlow(*inst);
 				} else {
 					_impl->FinishSingle(*inst);
@@ -1194,6 +1530,36 @@ void tTVPElementsDialogManager::PaintOverlay(iTVPDrawDevice* device)
 
 	// 3) portable: テキスト欄への focus 状態に追従してソフトキーボードを出し入れ。
 	_impl->UpdateFocusDrivenTextInput();
+
+	// 4) cursor-warp ナビ: キー/パッド由来のフォーカス移動があれば、 実マウス
+	//    カーソルをフォーカス先の hot point へ warp してカーソルを一時非表示に
+	//    する ("input":{"cursor_warp":true} の画面のみ session が通知してくる)。
+	//    render 済みのこのタイミングなら present 変換 (present_scale/off) が
+	//    当フレームの値で確定している。
+	if (_impl->input_window) {
+		Impl::Instance* f = _impl->TopmostKeyboardFocus();
+		if (f && f->session && f->host_device == device) {
+			float sx = 0.0f, sy = 0.0f;
+			if (f->session->take_key_focus_move(sx, sy)) {
+				// surface logical → layer 座標 (ToSurfaceX/Y の逆変換)
+				tjs_int lx = static_cast<tjs_int>(
+					sx * f->present_scale + f->present_off_x + 0.5f)
+					- f->dest_offset_x;
+				tjs_int ly = static_cast<tjs_int>(
+					sy * f->present_scale + f->present_off_y + 0.5f)
+					- f->dest_offset_y;
+				_impl->warp_expect_active = true;
+				_impl->warp_expect_x = lx;
+				_impl->warp_expect_y = ly;
+				_impl->input_window->SetCursorPos(lx, ly);
+				// パッド/キー操作モード: カーソルは隠す。 warp が生む合成
+				// mouse move による再表示は ForwardMouseMove 側で抑止する。
+				static_cast<tTJSNI_Window*>(
+					static_cast<tTJSNI_BaseWindow*>(_impl->input_window))
+					->SetMouseCursorState(mcsTempHidden);
+			}
+		}
+	}
 }
 
 //---------------------------------------------------------------------------
@@ -1342,6 +1708,25 @@ bool tTVPElementsDialogManager::ForwardMouseUp(
 bool tTVPElementsDialogManager::ForwardMouseMove(
 	tjs_int x, tjs_int y, tjs_uint32 flags)
 {
+	// cursor-warp ガード: 自分の SetCursorPos が生んだ合成 move は「実マウス
+	// が動いた」と見なさない。 window 層が move で mcsTempHidden→visible に
+	// 復帰させるので、 一致 move では再 hide して非表示を維持する (move 自体
+	// は session へ流す = hover/hilite がフォーカス先に付く)。 warp 直後は
+	// 同座標の move が複数届きうる (SetCursorPos の折返し + OS motion) ため、
+	// 不一致 move が来るまで期待座標は保持する。
+	if (_impl->warp_expect_active) {
+		if (std::abs(x - _impl->warp_expect_x) <= 2 &&
+		    std::abs(y - _impl->warp_expect_y) <= 2) {
+			if (_impl->input_window) {
+				static_cast<tTJSNI_Window*>(
+					static_cast<tTJSNI_BaseWindow*>(_impl->input_window))
+					->SetMouseCursorState(mcsTempHidden);
+			}
+		} else {
+			_impl->warp_expect_active = false;   // 実マウス: 通常挙動へ復帰
+		}
+	}
+
 	bool consumed = false;
 	Impl::Instance* hit = nullptr;
 	// 最前面から: modal なら独占、 非モーダルはヒット判定。
@@ -1387,6 +1772,11 @@ bool tTVPElementsDialogManager::ForwardMouseWheel(
 bool tTVPElementsDialogManager::ForwardClick(tjs_int /*x*/, tjs_int /*y*/) { return false; }
 bool tTVPElementsDialogManager::ForwardDoubleClick(tjs_int /*x*/, tjs_int /*y*/) { return false; }
 bool tTVPElementsDialogManager::ForwardReleaseCapture() { return false; }
+
+void tTVPElementsDialogManager::NoteInputWindow(iTVPWindow* window)
+{
+	_impl->input_window = window;
+}
 
 bool tTVPElementsDialogManager::ForwardMouseOutOfWindow()
 {

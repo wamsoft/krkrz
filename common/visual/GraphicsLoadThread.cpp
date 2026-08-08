@@ -307,7 +307,7 @@ void tTVPAsyncImageLoader::LoadRequest( iTJSDispatch2 *owner, tTJSNI_Bitmap* bmp
 	}
 	ttstr ext = TVPExtractStorageExt(name);
 	if(ext == TJS_W("")) {
-		TVPThrowExceptionMessage(TJS_W("Filename extension not found/%1"), name);
+		TVPThrowExceptionMessage(TVPFilenameExtensionNotFound, name);
 	}
 
 	PushLoadQueue( owner, bmp, nname );

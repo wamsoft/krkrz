@@ -87,8 +87,10 @@ struct tTVPMessageReceiverRecord
 class tTJSNI_Window;
 struct tTVPRect;
 class tTVPBaseBitmap;
-class tTVPWheelDirectInputDevice; // class for DirectInputDevice management
-class tTVPPadDirectInputDevice; // class for DirectInputDevice management
+// マウスホイール検出方式。DirectInput は撤去済みで、検出は WM_MOUSEWHEEL
+// (ウィンドウメッセージ) 経由のみ。wdtNone で無効化できる。
+enum tTVPWheelDetectionType { wdtNone, wdtWindowMessage };
+extern tTVPWheelDetectionType TVPWheelDetectionType;
 
 class TTVPWindowForm : public tTVPWindow, public TouchHandler {
 	static const int TVP_MOUSE_MAX_ACCEL = 30;
@@ -104,13 +106,6 @@ private:
 	//-- interface to plugin
 	tObjectList<tTVPMessageReceiverRecord> WindowMessageReceivers;
 	
-	//-- DirectInput related
-	tTVPWheelDirectInputDevice *DIWheelDevice;
-#ifndef DISABLE_EMBEDDED_GAME_PAD
-	tTVPPadDirectInputDevice *DIPadDevice;
-#endif
-	bool ReloadDevice;
-	DWORD ReloadDeviceTick;
 
 	//-- TJS object related
 	tTJSNI_Window * TJSNativeInstance;
@@ -327,10 +322,6 @@ public:
 	void InvokeShowVisible();
 	void InvokeShowTop(bool activate = true);
 	HDWP ShowTop(HDWP hdwp);
-
-	//-- DirectInput related
-	void CreateDirectInputDevice();
-	void FreeDirectInputDevice();
 
 	int GetDisplayOrientation() { UpdateOrientation(); return DisplayOrientation; }
 	int GetDisplayRotate() { UpdateOrientation(); return DisplayRotate; }

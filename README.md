@@ -284,7 +284,7 @@ TJS なら BP 設置可能です。
 自動生成ファイル
 吉里吉里Z本体にはいくつかの自動生成ファイルが存在します。
 自動生成ファイルは直接編集せず、生成元のファイルを編集します。
-生成には主にbatファイルとperlが使用されているので、perlのインストールが必要です。
+生成には bat ファイルと、perl(構文解析器 bison 経路 / tvpgl 生成)および python(tp_stub 生成 / メッセージ生成)が使われます。**perl と python の両方が必要です**(tp_stub とメッセージ定義系は 2026-08 に Perl+Excel から Python 標準ライブラリのみへ移行済み。bison 経路と tvpgl は引き続き perl)。
 各生成ファイルを左に ':' 以降に生成元ファイルを列挙します。
 
 tjs2/syntax/compile.bat で以下のファイルが生成されます。
@@ -304,7 +304,11 @@ http://gnuwin32.sourceforge.net/packages/regex.htm
 visual/glgen/gengl.bat で以下のファイルが生成されます。
 tvpgl.c/tvpgl.h : maketab.c/tvpps.c
 
-base/win32/makestub.bat で以下のファイルが生成されます。
-FuncStubs.cpp/FuncStubs.h : makestub.pl内で指定されたヘッダーファイル内のTJS_EXP_FUNC_DEF/TVP_GL_FUNC_PTR_EXTERN_DECLマクロで記述された関数
-tp_stub.cpp/tp_stub.h : 同上
+common/base/makestub.bat (中身は python gen_tpstub.py) で以下のファイルが生成されます。
+gen_tpstub.py は Python 標準ライブラリ(zlib/hashlib)のみで動作し、Perl (makestub.pl + Compress::Zlib + Digest::MD5) は不要になりました。出力は旧 Perl 版とバイト単位で一致します。
+FuncStubs.cpp/FuncStubs.h : gen_tpstub.py 内で指定されたヘッダーファイル内の TJS_EXP_FUNC_DEF/TVP_GL_FUNC_PTR_EXTERN_DECL マクロおよび TJS_*_METHOD_DEF* マクロで記述された関数
+tp_stub.cpp/tp_stub.h : 同上 (生成後は plugins 側 tp_stub サブモジュールへ従来どおりコピーする)
+
+common/msg/text/gen_messages.py で以下のメッセージ定義系ファイルが生成されます(Python 標準ライブラリのみ。Excel/Win32::OLE/Perl 不要)。源=CSV の common/msg/text/messages.csv を編集し `python gen_messages.py`。詳細は common/msg/text/README.md。
+tjsErrorInc.h / MsgIntfInc.h / MsgImpl.h / resource/messages{,-en,-chs}.json / win32/vcproj/string_table_*.rc + string_table_resource.h / generic・win32 の MsgLoad.cpp : messages.csv
 

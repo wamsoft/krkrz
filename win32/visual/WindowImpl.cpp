@@ -1801,26 +1801,10 @@ tTJSNativeClass * TVPCreateNativeClass_Window()
 	static tjs_uint32 TJS_NCM_CLASSID;
 	TJS_NCM_CLASSID = tTJSNC_Window::ClassID;
 //---------------------------------------------------------------------------
-TJS_BEGIN_NATIVE_METHOD_DECL(findFullScreenCandidates)
-{
-	if(numparams < 5) return TJS_E_BADPARAMCOUNT;
-
-	std::vector<tTVPScreenModeCandidate> candidates;
-
-	tTVPScreenMode preferred;
-	preferred.Width = *param[0];
-	preferred.Height = *param[1];
-	preferred.BitsPerPixel = *param[2];
-	tjs_int mode = *param[3];
-	tjs_int zoom_mode = *param[4];
-
-	TVPMakeFullScreenModeCandidates(preferred, (tTVPFullScreenResolutionMode)mode,
-		(tTVPFullScreenUsingEngineZoomMode)zoom_mode, candidates);
-
-
-	return TJS_S_OK;
-}
-TJS_END_NATIVE_METHOD_DECL_OUTER(cls, findFullScreenCandidates)
+// findFullScreenCandidates は撤去。ボーダーレス全画面化 (D3D9 排他モード撤去)
+// によりユーザ側で全画面解像度候補を列挙・選択する用途が無くなったため。
+// 内部の候補計算 (TVPMakeFullScreenModeCandidates) は全画面時のサイズ/ズーム
+// 決定に引き続き使用する。
 //---------------------------------------------------------------------------
 TJS_BEGIN_NATIVE_METHOD_DECL(registerMessageReceiver)
 {

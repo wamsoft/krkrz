@@ -12,7 +12,9 @@
 *****************************************************************************/
 
 #include <windows.h>
-#include "tp_stub.h"
+// Track V-A: exe へ直接統合 (tp_stub 境界を撤去)。engine の実ヘッダを直接参照する。
+#include "tjsCommHead.h"
+#include "MsgIntf.h"       // TVPThrowExceptionMessage
 #include "krmovie.h"
 #include "webplayer.h"
 #include "MFSourceReaderVideo.h"

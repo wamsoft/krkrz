@@ -45,6 +45,7 @@ data
 !/data/demolib/
 !/data/sysinfo/
 !/data/elements_gallery/
+!/data/elements_flow/
 !/data/gl_canvas/
 !/data/gl_particles/
 !/data/layer_basic/
@@ -53,6 +54,9 @@ data
 !/data/text_font/
 !/data/timer_async/
 !/data/gallery/
+# フォントメタデータと外だしフォント一式 (doc/FontMetadata.md)
+!/data/fonts.json
+!/data/fonts/
 vcpkg_installed
 .DS_store
 .krkrz_history

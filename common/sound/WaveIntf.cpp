@@ -18,6 +18,7 @@
 #include "UtilStreams.h"
 #include "WaveLoopManager.h"
 #include "tjsDictionary.h"
+#include "AudioStream.h"   // TVPSetSoundListener* (3D 定位リスナ)
 
 
 
@@ -776,6 +777,38 @@ void TVPUnregisterWaveDecoderCreator(tTVPWaveDecoderCreator *d)
 	}
 }
 //---------------------------------------------------------------------------
+// 曲別ゲイン取得コールバック (WaveSoundBuffer.setGainQueryCallback)
+//   スクリプトが URL→追加ゲイン(dB) を返す関数を登録し、デコーダが open 時
+//   (メインスレッド) に TVPQueryUserSoundGainDB() で問い合わせる。
+//---------------------------------------------------------------------------
+static bool TVPHasSoundGainQuery = false;
+static tTJSVariantClosure TVPSoundGainQueryCallback(NULL, NULL);
+
+static void TVPSetSoundGainQueryCallback(tTJSVariant *v)
+{
+	if(TVPHasSoundGainQuery) {
+		TVPSoundGainQueryCallback.Release();
+		TVPSoundGainQueryCallback = tTJSVariantClosure(NULL, NULL);
+		TVPHasSoundGainQuery = false;
+	}
+	if(v && v->Type() == tvtObject && v->AsObjectNoAddRef() != NULL) {
+		TVPSoundGainQueryCallback = v->AsObjectClosure(); // AddRef 付きで保持
+		TVPHasSoundGainQuery = true;
+	}
+}
+
+float TVPQueryUserSoundGainDB(const ttstr & storagename)
+{
+	if(!TVPHasSoundGainQuery) return 0.0f;
+	tTJSVariant result;
+	tTJSVariant urlv(storagename);
+	tTJSVariant *params[1] = { &urlv };
+	if(TJS_SUCCEEDED(TVPSoundGainQueryCallback.FuncCall(
+			0, NULL, NULL, &result, 1, params, NULL)))
+		return (float)(tTVReal)result;
+	return 0.0f;
+}
+//---------------------------------------------------------------------------
 tTVPWaveDecoder *  TVPCreateWaveDecoder(const ttstr & storagename)
 {
 	// find a decoder and create its instance.
@@ -1053,6 +1086,17 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/open)
 }
 TJS_END_NATIVE_METHOD_DECL(/*func. name*/open)
 //----------------------------------------------------------------------
+// setGainQueryCallback(func): クラス静的メソッド。func は URL(文字列) を受け取り
+// 適用する追加ゲイン(dB)を返す関数。null で解除。ogg(vorbis)/opus のデコード時に
+// 曲ごとに問い合わせて適用する (旧 wuvorbis/wuopus プラグインの同名 API を統合)。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/setGainQueryCallback)
+{
+	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
+	TVPSetSoundGainQueryCallback(param[0]);
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/setGainQueryCallback)
+//----------------------------------------------------------------------
 TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/play)
 {
 	TJS_GET_NATIVE_INSTANCE(/*var. name*/_this,
@@ -1123,6 +1167,55 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/setPos) // not setPosition
 	return TJS_S_OK;
 }
 TJS_END_NATIVE_METHOD_DECL(/*func. name*/setPos)
+//----------------------------------------------------------------------
+// set3DPosition = setPos の別名 (3D 定位 API の統一命名)。x,y,z のワールド座標。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/set3DPosition)
+{
+	TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_BaseWaveSoundBuffer);
+	if(numparams < 3) return TJS_E_BADPARAMCOUNT;
+	_this->SetPos( static_cast<float>((tTVReal)*param[0]),
+	               static_cast<float>((tTVReal)*param[1]),
+	               static_cast<float>((tTVReal)*param[2]) );
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_METHOD_DECL(/*func. name*/set3DPosition)
+//----------------------------------------------------------------------
+// set3DVelocity(vx,vy,vz): ドップラー計算用の速度ベクトル。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/set3DVelocity)
+{
+	TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_BaseWaveSoundBuffer);
+	if(numparams < 3) return TJS_E_BADPARAMCOUNT;
+	_this->Set3DVelocity( static_cast<float>((tTVReal)*param[0]),
+	                      static_cast<float>((tTVReal)*param[1]),
+	                      static_cast<float>((tTVReal)*param[2]) );
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_METHOD_DECL(/*func. name*/set3DVelocity)
+//----------------------------------------------------------------------
+// set3DConeDirection(dx,dy,dz): 指向性コーンの向き。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/set3DConeDirection)
+{
+	TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_BaseWaveSoundBuffer);
+	if(numparams < 3) return TJS_E_BADPARAMCOUNT;
+	_this->Set3DConeDirection( static_cast<float>((tTVReal)*param[0]),
+	                           static_cast<float>((tTVReal)*param[1]),
+	                           static_cast<float>((tTVReal)*param[2]) );
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_METHOD_DECL(/*func. name*/set3DConeDirection)
+//----------------------------------------------------------------------
+// set3DCone(innerAngleRad, outerAngleRad, outerGain): 指向性コーン。角度はラジアン、
+// outerGain は外側での減衰ゲイン (0..1)。全方位にしたい場合は inner=outer=2*PI。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/set3DCone)
+{
+	TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_BaseWaveSoundBuffer);
+	if(numparams < 3) return TJS_E_BADPARAMCOUNT;
+	_this->Set3DCone( static_cast<float>((tTVReal)*param[0]),
+	                  static_cast<float>((tTVReal)*param[1]),
+	                  static_cast<float>((tTVReal)*param[2]) );
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_METHOD_DECL(/*func. name*/set3DCone)
 //----------------------------------------------------------------------
 
 //-- events
@@ -1445,6 +1538,127 @@ TJS_BEGIN_NATIVE_PROP_DECL(posZ)
 	TJS_END_NATIVE_PROP_SETTER
 }
 TJS_END_NATIVE_PROP_DECL(posZ)
+//----------------------------------------------------------------------
+// use3D: 3D 定位 (spatialization) の有効/無効。既定 false (=非空間化、従来どおり)。
+// true にすると位置/距離減衰/ドップラー/コーンが有効になる。
+TJS_BEGIN_NATIVE_PROP_DECL(use3D)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_BaseWaveSoundBuffer);
+		*result = (tjs_int)(_this->GetUse3D() ? 1 : 0);
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+	TJS_BEGIN_NATIVE_PROP_SETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_BaseWaveSoundBuffer);
+		_this->SetUse3D( ((tjs_int)*param) != 0 );
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_PROP_DECL(use3D)
+//----------------------------------------------------------------------
+// minDistance: この距離以内では減衰しない (音量最大)。
+TJS_BEGIN_NATIVE_PROP_DECL(minDistance)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_BaseWaveSoundBuffer);
+		*result = (tTVReal)_this->GetMinDistance();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+	TJS_BEGIN_NATIVE_PROP_SETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_BaseWaveSoundBuffer);
+		_this->SetMinDistance( static_cast<float>((tTVReal)*param) );
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_PROP_DECL(minDistance)
+//----------------------------------------------------------------------
+// maxDistance: この距離を超えると減衰が頭打ちになる。
+TJS_BEGIN_NATIVE_PROP_DECL(maxDistance)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_BaseWaveSoundBuffer);
+		*result = (tTVReal)_this->GetMaxDistance();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+	TJS_BEGIN_NATIVE_PROP_SETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_BaseWaveSoundBuffer);
+		_this->SetMaxDistance( static_cast<float>((tTVReal)*param) );
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_PROP_DECL(maxDistance)
+//----------------------------------------------------------------------
+// rolloffFactor: 距離減衰の強さ (大きいほど急激に減衰)。
+TJS_BEGIN_NATIVE_PROP_DECL(rolloffFactor)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_BaseWaveSoundBuffer);
+		*result = (tTVReal)_this->GetRolloffFactor();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+	TJS_BEGIN_NATIVE_PROP_SETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_BaseWaveSoundBuffer);
+		_this->SetRolloffFactor( static_cast<float>((tTVReal)*param) );
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_PROP_DECL(rolloffFactor)
+//----------------------------------------------------------------------
+// dopplerFactor: ドップラー効果の強度 (0 で無効、1 で標準)。
+TJS_BEGIN_NATIVE_PROP_DECL(dopplerFactor)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_BaseWaveSoundBuffer);
+		*result = (tTVReal)_this->GetDopplerFactor();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+	TJS_BEGIN_NATIVE_PROP_SETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_BaseWaveSoundBuffer);
+		_this->SetDopplerFactor( static_cast<float>((tTVReal)*param) );
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_PROP_DECL(dopplerFactor)
+//----------------------------------------------------------------------
+// attenuationModel: 距離減衰モデル (amNone/amInverse/amLinear/amExponential)。
+TJS_BEGIN_NATIVE_PROP_DECL(attenuationModel)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_BaseWaveSoundBuffer);
+		*result = (tjs_int)_this->GetAttenuationModel();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+	TJS_BEGIN_NATIVE_PROP_SETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_BaseWaveSoundBuffer);
+		_this->SetAttenuationModel( (tjs_int)*param );
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_PROP_DECL(attenuationModel)
 //----------------------------------------------------------------------
 TJS_BEGIN_NATIVE_PROP_DECL(status)
 {
@@ -1794,5 +2008,109 @@ tTJSNativeClass * TVPCreateNativeClass_SoundBuffer()
 	TVPSetGlobalFocusMode = TVPQueueSoundSetGlobalFocusMode;
 	TVPGetGlobalFocusMode = TVPQueueSoundGetGlobalFocusMode;
 	return TVPCreateNativeClass_QueueSoundBuffer();
+}
+//---------------------------------------------------------------------------
+
+
+
+//---------------------------------------------------------------------------
+// tTJSNC_SoundListener : 3D 定位のリスナ (engine グローバル、listener index 0)
+//   インスタンス不要の名前空間的クラス (System と同じ idiom)。
+//---------------------------------------------------------------------------
+tjs_uint32 tTJSNC_SoundListener::ClassID = -1;
+// enabled は ma に getter があるが、TJS getter 用に最後に設定した値をキャッシュする。
+static bool TVPSoundListenerEnabledCache = false;
+
+tTJSNC_SoundListener::tTJSNC_SoundListener() : tTJSNativeClass(TJS_W("SoundListener"))
+{
+	TJS_BEGIN_NATIVE_MEMBERS(SoundListener)
+	TJS_DECL_EMPTY_FINALIZE_METHOD
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_CONSTRUCTOR_DECL_NO_INSTANCE(/*TJS class name*/SoundListener)
+{
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_CONSTRUCTOR_DECL(/*TJS class name*/SoundListener)
+//----------------------------------------------------------------------
+
+//-- methods
+
+//----------------------------------------------------------------------
+// setPosition(x, y, z): リスナ (聴取者) のワールド座標。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/setPosition)
+{
+	if(numparams < 3) return TJS_E_BADPARAMCOUNT;
+	TVPSetSoundListenerPosition((float)(tTVReal)*param[0], (float)(tTVReal)*param[1], (float)(tTVReal)*param[2]);
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/setPosition)
+//----------------------------------------------------------------------
+// setDirection(x, y, z): リスナの前方向ベクトル。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/setDirection)
+{
+	if(numparams < 3) return TJS_E_BADPARAMCOUNT;
+	TVPSetSoundListenerDirection((float)(tTVReal)*param[0], (float)(tTVReal)*param[1], (float)(tTVReal)*param[2]);
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/setDirection)
+//----------------------------------------------------------------------
+// setWorldUp(x, y, z): リスナの上方向ベクトル (既定 0,1,0)。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/setWorldUp)
+{
+	if(numparams < 3) return TJS_E_BADPARAMCOUNT;
+	TVPSetSoundListenerWorldUp((float)(tTVReal)*param[0], (float)(tTVReal)*param[1], (float)(tTVReal)*param[2]);
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/setWorldUp)
+//----------------------------------------------------------------------
+// setVelocity(x, y, z): リスナの速度 (ドップラー用)。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/setVelocity)
+{
+	if(numparams < 3) return TJS_E_BADPARAMCOUNT;
+	TVPSetSoundListenerVelocity((float)(tTVReal)*param[0], (float)(tTVReal)*param[1], (float)(tTVReal)*param[2]);
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/setVelocity)
+//----------------------------------------------------------------------
+// setCone(innerAngleRad, outerAngleRad, outerGain): リスナの指向性 (通常は音源側で使う)。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/setCone)
+{
+	if(numparams < 3) return TJS_E_BADPARAMCOUNT;
+	TVPSetSoundListenerCone((float)(tTVReal)*param[0], (float)(tTVReal)*param[1], (float)(tTVReal)*param[2]);
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/setCone)
+//----------------------------------------------------------------------
+
+//-- properties
+
+//----------------------------------------------------------------------
+// enabled: このリスナを有効にするか (既定 false。3D を使うなら true にする)。
+TJS_BEGIN_NATIVE_PROP_DECL(enabled)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		*result = (tjs_int)(TVPSoundListenerEnabledCache ? 1 : 0);
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+	TJS_BEGIN_NATIVE_PROP_SETTER
+	{
+		bool b = ((tjs_int)*param) != 0;
+		TVPSoundListenerEnabledCache = b;
+		TVPSetSoundListenerEnabled(b);
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_STATIC_PROP_DECL(enabled)
+//----------------------------------------------------------------------
+
+	TJS_END_NATIVE_MEMBERS
+}
+//---------------------------------------------------------------------------
+tTJSNativeClass * TVPCreateNativeClass_SoundListener()
+{
+	return new tTJSNC_SoundListener();
 }
 //---------------------------------------------------------------------------

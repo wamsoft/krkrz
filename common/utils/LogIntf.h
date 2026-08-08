@@ -209,6 +209,11 @@ TJS_EXP_FUNC_DEF(void, TVPLogDispatchLine, (TVPLogLevel level, const char *utf8_
 extern void TVPAddLoggingHandler(tTJSVariantClosure clo);
 extern void TVPRemoveLoggingHandler(tTJSVariantClosure clo);
 
+// handler の FuncCall は main thread 限定。非 main スレッド (REPL チャネル等) 発の
+// ログ行は LogCore 内の保留キューに積まれ、main thread がこれを毎フレーム呼んで
+// 配送する (イベントポンプ / TVPDrainREPL から呼ばれる)。
+extern void TVPFlushQueuedLoggingEvents();
+
 /*[*/
 
 // ログマクロ実装のヘルパー

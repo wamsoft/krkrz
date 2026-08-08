@@ -79,7 +79,8 @@ void PumpModalLoop(tTVPElementsDialogManager& mgr,
 bool TVPRunElementsModalOverlay(
 	const std::string& json_utf8,
 	iTVPDialogEventHandler* handler,
-	tTVPElementsModalResult& out_result)
+	tTVPElementsModalResult& out_result,
+	const std::map<ttstr, ttstr>* initial_vars)
 {
 	auto& mgr = tTVPElementsDialogManager::Instance();
 	if (mgr.IsHandlerActive(handler)) {
@@ -89,6 +90,10 @@ bool TVPRunElementsModalOverlay(
 	// modal=true で背景の非モーダル UI / ゲームへ入力を通さない。
 	if (!mgr.ShowFromJsonString(json_utf8, handler, nullptr, /*modal=*/true)) {
 		return false;
+	}
+	// pump 前に初期変数を注入 (subscribe 済 widget が表示へ反映する)。
+	if (initial_vars) {
+		for (const auto& kv : *initial_vars) mgr.SetVar(handler, kv.first, kv.second);
 	}
 	PumpModalLoop(mgr, handler, out_result);
 	return true;

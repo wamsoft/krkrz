@@ -1,0 +1,30 @@
+// -*- mode:tjs2 -*-
+// ======================================================================
+//  elements_flow — Elements フロー画面遷移エフェクト デモ
+// ----------------------------------------------------------------------
+//  Dialog.startFlow の複数画面フローで、transitions に宣言する画面切替
+//  エフェクト (fade / universal) と退場 (exit) 演出を確認するデモ。
+//
+//  - クロスフェード ("effect": "fade")
+//  - ユニバーサルトランジション ("effect": "universal" + rule 画像 + vague)
+//    斜めワイプ (vague 大小) / サークル (開く・閉じる)
+//  - タイトルの exit 演出 (Esc で閉じるとき演出完了を待ってから遷移)
+//
+//  単体起動用の薄いランチャ。実体は scene.tjs の ElementsFlowScene、
+//  画面定義は flow/*.jsonc。束ね起動 (ランチャ) では scene.tjs だけを読む。
+//
+//  操作: ボタン = 遷移 / Esc = 戻る・終了 / SPACE = フロー再表示
+// ======================================================================
+
+var demolibPath = void;
+{
+    var cands = ["../demolib/", "../core/demolib/", "../../src/core/data/demolib/"];
+    for (var i = 0; i < cands.count; i++) {
+        if (Storages.isExistentStorage(cands[i] + "demo_common.tjs")) { demolibPath = cands[i]; break; }
+    }
+}
+if (demolibPath === void) { System.inform("demolib が見つかりません"); System.exit(1); }
+Scripts.execStorage(demolibPath + "demo_common.tjs");
+Scripts.execStorage("scene.tjs");
+
+runDemoShell([new ElementsFlowScene()], "Elements 画面遷移デモ");

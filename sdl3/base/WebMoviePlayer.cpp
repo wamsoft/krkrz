@@ -412,8 +412,9 @@ public:
 // CreatePlayer (ファイルパス版)。wasm では正規化ストレージ名が渡ってくる
 // (VideoOvlImpl::Open の __EMSCRIPTEN__ 分岐は localname 変換をしない)
 iTVPMoviePlayer *
-TVPCreateMoviePlayer(const tjs_char *filename)
+TVPCreateMoviePlayer(const tjs_char *filename, bool preferYUV)
 {
+	// preferYUV: <video> DOM 再生ではブラウザがデコードするため無視
 	tTVPWebMoviePlayer *player = new tTVPWebMoviePlayer();
 	if (player->Open(ttstr(filename))) {
 		return player;
@@ -424,7 +425,7 @@ TVPCreateMoviePlayer(const tjs_char *filename)
 
 // CreatePlayer (ストリーム版)。wasm は KRKRZ_MOVIE_STREAM=OFF なので未使用
 iTVPMoviePlayer *
-TVPCreateMoviePlayer(IMovieReadStream *stream, const char *filename)
+TVPCreateMoviePlayer(IMovieReadStream *stream, const char *filename, bool preferYUV)
 {
 	return nullptr;
 }

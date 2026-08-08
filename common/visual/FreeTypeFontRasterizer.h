@@ -11,6 +11,7 @@ class FreeTypeFontRasterizer : public FontRasterizer {
 	class tFreeTypeFace* Face; //!< Faceオブジェクト
 	class tTVPNativeBaseBitmap * LastBitmap;
 	tTVPFont CurrentFont;
+	tjs_int LastEmojiMode; //!< Face 構築時の実効絵文字モード (連鎖再生成の判定用)
 
 public:
 	FreeTypeFontRasterizer();
@@ -19,7 +20,7 @@ public:
 	void Release();
 	void ApplyFont( class tTVPNativeBaseBitmap *bmp, bool force );
 	void ApplyFont( const struct tTVPFont& font );
-	void GetTextExtent(tjs_char ch, tjs_int &w, tjs_int &h);
+	void GetTextExtent(tjs_uint32 ch, tjs_int &w, tjs_int &h);
 	tjs_int GetAscentHeight();
 	tTVPCharacterData* GetBitmap( const tTVPFontAndCharacterData & font, tjs_int aofsx, tjs_int aofsy );
 	void GetGlyphDrawRect( const ttstr & text, struct tTVPRect& area );

@@ -39,6 +39,15 @@ struct tTVPElementsModalResult
 
 class iTVPDialogEventHandler;
 
+//! @brief 1 行テキスト入力モーダル (System.inputString の Elements 実装)。
+//!        独立ウィンドウで prompt ラベル + input_box + OK/キャンセルを表示する。
+//!        OK なら true (result に入力文字列。未入力時は def)、キャンセル/Esc なら
+//!        false。SDL host 専用 (WINVER は独立 window modal 未対応)。
+//! @note  input_box は初期値設定に未対応のため、def は placeholder 表示 + 未入力
+//!        時のフォールバックで扱う (初期値の編集可能化は将来 elements_modal 拡張)。
+bool TVPInputStringElements(const ttstr& caption, const ttstr& prompt,
+	const ttstr& def, ttstr& result);
+
 //! @brief 独立ウィンドウを立ててモーダルダイアログを実行する。
 //!        ダイアログが閉じるまでブロックする。
 //! @param json_utf8   JSON テキスト (UTF-8)。 top-level の "size" は無視され、
@@ -71,11 +80,17 @@ bool TVPRunElementsModalWindow(
 //! @param handler     button click / 値変化で OnAction が呼ばれるハンドラ
 //!                    (nullptr 可)。 ShowFromJsonString と同じ意味論。
 //! @param out_result  結果格納先
+//! @param initial_vars 任意。 build 直後 (pump 前) に SetVar で流し込む変数
+//!                    初期値。 index_var / enabled_var / selected_var 等の
+//!                    subscribe 済 widget が表示に反映する (静的 JSON への
+//!                    動的初期値注入用。 モーダル中は呼出側 TJS がブロック
+//!                    されるため、 事前注入の口が必要)。
 //! @return true: 正常実行 / false: 起動失敗 (他のダイアログが active 等)
 bool TVPRunElementsModalOverlay(
 	const std::string& json_utf8,
 	iTVPDialogEventHandler* handler,
-	tTVPElementsModalResult& out_result);
+	tTVPElementsModalResult& out_result,
+	const std::map<ttstr, ttstr>* initial_vars = nullptr);
 
 //! @brief navigator フロー (複数画面遷移) をオーバーレイでブロッキング実行する。
 //!        TVPRunElementsModalOverlay と同じ nested pump で、 フローのスタックが

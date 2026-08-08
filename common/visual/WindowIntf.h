@@ -194,6 +194,12 @@ public:
 	virtual void ResetDrawDevice() = 0;
 	virtual iTJSDispatch2 * GetWindowDispatch() { if(Owner) Owner->AddRef(); return Owner; }
 
+	//-- GLES 系プラグイン用: GLGetProcAddress で遅延取得する GL コンテキスト
+	//   (OGLDrawDevice を使わない状況でもウィンドウから取得できるようにするため)
+#ifdef TVP_USE_OPENGL
+	class iTVPGLContext * PluginGLContext = nullptr;
+#endif
+
 	//-- interface to tTVPLayerTreeOwner (layer event target)
 
 protected:

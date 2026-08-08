@@ -14,6 +14,7 @@
 
 #include <SDL3/SDL.h>
 #include <mutex>
+#include <atomic>
 #include <algorithm>
 #include <cstring>
 #include <vector>
@@ -39,6 +40,7 @@ class tTVPSDLVideoOverlayPresenter
 	SDL_Renderer*        mTexRenderer;
 	iTVPSDLVideoPresenterHost* mHost;
 	bool                 mActive;
+	std::atomic<bool>    mVisible;    // overlay 表示可否 (WINVER 仕様: 既定 false)。描画スレッドから読む
 
 	// mixer 追加画像 (動画の上へ α 合成。setMixingLayer の後継)
 	std::vector<uint8_t> mMixer;        // BGRA (ARGB8888 メモリ並び) top-down packed
@@ -56,7 +58,7 @@ public:
 		: mBuffer(nullptr), mYUVFormat(iTVPMoviePlayer::VPF_UNKNOWN)
 		, mWidth(0), mHeight(0), mIsYUV(false), mDirty(false)
 		, mTexture(nullptr), mTexW(0), mTexH(0), mTexIsYUV(false), mTexRenderer(nullptr)
-		, mHost(nullptr), mActive(false)
+		, mHost(nullptr), mActive(false), mVisible(false)
 		, mMixerW(0), mMixerH(0), mMixerAlpha(1.0f), mMixerValid(false), mMixerDirty(false)
 		, mMixerTex(nullptr), mMixerTexW(0), mMixerTexH(0), mMixerTexRenderer(nullptr)
 	{ mMixerRect.left = mMixerRect.top = mMixerRect.right = mMixerRect.bottom = 0; }
@@ -92,6 +94,12 @@ public:
 		if (mHost && mActive) mHost->RemoveVideoPresenter(this);
 		mActive = false;
 	}
+
+	//--- 表示可否 (WINVER の VideoOverlay.visible と同仕様) --------------------
+	// SetVisible = iTVPVideoOverlayPresenter (generic 側), IsVisible = iTVPSDLVideoPresenter
+	// (SDLDrawDevice 側)。同じ mVisible を両 IF が参照する。
+	void SetVisible(bool visible) override { mVisible.store(visible, std::memory_order_relaxed); }
+	bool TJS_INTF_METHOD IsVisible() const override { return mVisible.load(std::memory_order_relaxed); }
 
 	bool SupportsYUV() const override { return true; }   // SDL は YUV テクスチャ内蔵
 

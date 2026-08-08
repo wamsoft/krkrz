@@ -16,5 +16,6 @@
 
 
 extern bool TVPSelectFile(iTJSDispatch2 *params);
+extern bool TVPSelectDirectory(iTJSDispatch2 *params);
 
 #endif

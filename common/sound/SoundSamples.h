@@ -55,7 +55,7 @@ public:
 		SampleSize = format->SamplesPerSec / BUFFER_DIVIDER;	// 1sec / div
 		ByteSize = SampleSize * format->BytesPerSample * format->Channels;
 		if(ByteSize <= 0)
-			TVPThrowExceptionMessage(TJS_W("Invalid format."));
+			TVPThrowExceptionMessage(TVPInvalidFormat);
 		if( Buffer ) sound_free(Buffer);
 		Buffer = (tjs_uint8*)sound_malloc(ByteSize);
 		if( VisBuffer ) sound_free(VisBuffer), VisBuffer = nullptr;

@@ -105,7 +105,7 @@ void GDIFontRasterizer::ApplyFont( const tTVPFont& font ) {
 	CurentLOGFONT.lfWeight = orgweight;
 	LastBitmap = NULL;
 }
-void GDIFontRasterizer::GetTextExtent(tjs_char ch, tjs_int &w, tjs_int &h) {
+void GDIFontRasterizer::GetTextExtent(tjs_uint32 ch, tjs_int &w, tjs_int &h) {
 	SIZE s;
 	s.cx = 0;
 	s.cy = 0;

@@ -92,12 +92,12 @@ GLint* tTVPShaderParameter::ArrayToInt( const tTJSVariant *param, tjs_int rqCoun
 	tTJSVariantClosure clo = param->AsObjectClosureNoAddRef();
 	if( clo.Object ) {
 		tjs_int count = TJSGetArrayElementCount( clo.Object );
-		if( count < rqCount ) TVPThrowExceptionMessage( TJS_W( "Insufficient number of arrays." ) );
+		if( count < rqCount ) TVPThrowExceptionMessage(TVPInsufficientNumberOfArrays );
 		std::unique_ptr<GLint[]> result(new GLint[count]);
 		tTJSVariant tmp;
 		for( tjs_int i = 0; i < count; i++ ) {
 			if( TJS_FAILED( clo.Object->PropGetByNum( TJS_MEMBERMUSTEXIST, i, &tmp, clo.ObjThis ) ) )
-				TVPThrowExceptionMessage( TJS_W( "Insufficient number of arrays." ) );
+				TVPThrowExceptionMessage(TVPInsufficientNumberOfArrays );
 			result[i] = (tjs_int)tmp;
 		}
 		return result.release();
@@ -110,12 +110,12 @@ GLfloat* tTVPShaderParameter::ArrayToFloat( const tTJSVariant *param, tjs_int rq
 	tTJSVariantClosure clo = param->AsObjectClosureNoAddRef();
 	if( clo.Object ) {
 		tjs_int count = TJSGetArrayElementCount( clo.Object );
-		if( count < rqCount ) TVPThrowExceptionMessage( TJS_W( "Insufficient number of arrays." ) );
+		if( count < rqCount ) TVPThrowExceptionMessage(TVPInsufficientNumberOfArrays );
 		std::unique_ptr<GLfloat[]> result( new GLfloat[count] );
 		tTJSVariant tmp;
 		for( tjs_int i = 0; i < count; i++ ) {
 			if( TJS_FAILED( clo.Object->PropGetByNum( TJS_MEMBERMUSTEXIST, i, &tmp, clo.ObjThis ) ) )
-				TVPThrowExceptionMessage( TJS_W( "Insufficient number of arrays." ) );
+				TVPThrowExceptionMessage(TVPInsufficientNumberOfArrays );
 			result[i] = (GLfloat)(tjs_real)tmp;
 		}
 		return result.release();
@@ -128,12 +128,12 @@ GLuint* tTVPShaderParameter::ArrayToUInt( const tTJSVariant *param, tjs_int rqCo
 	tTJSVariantClosure clo = param->AsObjectClosureNoAddRef();
 	if( clo.Object ) {
 		tjs_int count = TJSGetArrayElementCount( clo.Object );
-		if( count < rqCount ) TVPThrowExceptionMessage( TJS_W( "Insufficient number of arrays." ) );
+		if( count < rqCount ) TVPThrowExceptionMessage(TVPInsufficientNumberOfArrays );
 		std::unique_ptr<GLuint[]> result( new GLuint[count] );
 		tTJSVariant tmp;
 		for( tjs_int i = 0; i < count; i++ ) {
 			if( TJS_FAILED( clo.Object->PropGetByNum( TJS_MEMBERMUSTEXIST, i, &tmp, clo.ObjThis ) ) )
-				TVPThrowExceptionMessage( TJS_W( "Insufficient number of arrays." ) );
+				TVPThrowExceptionMessage(TVPInsufficientNumberOfArrays );
 			result[i] = (GLuint)(tjs_int64)tmp;
 		}
 		return result.release();
@@ -146,12 +146,12 @@ GLuint* tTVPShaderParameter::ArrayToBool( const tTJSVariant *param, tjs_int rqCo
 	tTJSVariantClosure clo = param->AsObjectClosureNoAddRef();
 	if( clo.Object ) {
 		tjs_int count = TJSGetArrayElementCount( clo.Object );
-		if( count < rqCount ) TVPThrowExceptionMessage( TJS_W( "Insufficient number of arrays." ) );
+		if( count < rqCount ) TVPThrowExceptionMessage(TVPInsufficientNumberOfArrays );
 		std::unique_ptr<GLuint[]> result( new GLuint[count] );
 		tTJSVariant tmp;
 		for( tjs_int i = 0; i < count; i++ ) {
 			if( TJS_FAILED( clo.Object->PropGetByNum( TJS_MEMBERMUSTEXIST, i, &tmp, clo.ObjThis ) ) )
-				TVPThrowExceptionMessage( TJS_W( "Insufficient number of arrays." ) );
+				TVPThrowExceptionMessage(TVPInsufficientNumberOfArrays );
 			result[i] = (GLuint)(tjs_int)tmp;
 		}
 		return result.release();
@@ -404,7 +404,7 @@ void tTVPShaderParameter::SetToShader( tjs_int* texCount, tjs_int* vertexCount )
 			const tTJSNI_VertexBinder* vtxBind = GetVertexBinder( *Value );
 			if( !vtxBind ) return;
 			const tTJSNI_VertexBuffer* vtxBuf = vtxBind->GetVertexBuffer();
-			if( !vtxBuf ) TVPThrowExceptionMessage( TJS_W( "VertexBinder is empty." ) );
+			if( !vtxBuf ) TVPThrowExceptionMessage(TVPVertexBinderIsEmpty );
 			GLuint vtxid = (GLuint)vtxBuf->GetNativeHandle();
 			glBindBuffer( GL_ARRAY_BUFFER, vtxid );
 			glVertexAttribPointer( Id, vtxBind->GetComponentCount(), vtxBuf->GetDataType(), vtxBind->GetNormalize() ? GL_TRUE : GL_FALSE, vtxBind->GetStride(), (const GLvoid *)vtxBind->GetOffset() );
@@ -458,7 +458,7 @@ tjs_error TJS_INTF_METHOD tTJSNI_ShaderProgram::Construct(tjs_int numparams, tTJ
 	}
 	Program = CompileProgram( vs, fs );
 	if( Program == 0 ) {
-		TVPThrowExceptionMessage(TJS_W("Shader compile error."));
+		TVPThrowExceptionMessage(TVPShaderCompileError);
 		return TJS_E_FAIL;
 	}
 	RetrieveShaderParameter();

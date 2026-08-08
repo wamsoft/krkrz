@@ -97,6 +97,16 @@ option(KRKRZ_BUILD_TESTS "build SIMD parity tests" ON)
 # オプションは事実上 SDL ビルド専用の knob。
 option(KRKRZ_USE_ELEMENTS "embed Elements dialog UI (cycfi::elements + thorvg + elements_modal, SDL build only)" ON)
 
+# picojson の INT64 サポートを exe 全体で統一する。
+# picojson はヘッダオンリーで value のメソッドが inline (COMDAT) 統合されるため、
+# TU ごとに PICOJSON_USE_INT64 の有無が混在すると ODR 違反になる。 INT64 の有無で
+# 型 enum の値が 1 ずれる (object=5↔6 等) ので、 リンカがどちらの実装を採用するか
+# (= リンク順) 次第で get<>()/to_str() が type mismatch assert
+# (throw runtime_error) を起こす。 従来は tjsDebuggerCore.h / DAPServer.h /
+# FontSystem.cpp だけが TU ローカルに define しており、 NX リンクで実際に発火した。
+# ディレクトリスコープで定義して elements_modal (add_subdirectory) 含む全 TU に適用する。
+add_compile_definitions(PICOJSON_USE_INT64)
+
 # デスクトップ判定 (Win/Mac/Linux)
 # Android/iOS/Emscripten はデスクトップ機能を無効化
 if(WIN32 OR (APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS") OR (UNIX AND NOT ANDROID AND NOT EMSCRIPTEN))
@@ -109,8 +119,42 @@ endif()
 option(KRKRZ_REPL "enable interactive TJS REPL (requires icline)" ${KRKRZ_DESKTOP})
 # 端末制御 (raw mode / termios / Win32 console API) を持たない環境向けに
 # icline を切り、fgets ベースの簡易行入力に切り替えるオプション。
-# Switch 等で有効にする想定。デフォルト ON (= icline を使う)。
+# 端末制御を持たない一部プラットフォームで有効にする想定。デフォルト ON (= icline を使う)。
 option(KRKRZ_REPL_LINE_EDIT "use icline (line editing/history/color) for REPL" ON)
+# ブラウザ REPL ビューワー (-replweb=<port> で HTTP+SSE サーバを立て、
+# ブラウザから 上=ログ / 下=入力 で操作。端末非依存で選択/コピペ/スクロール可)。
+# console REPL (KRKRZ_REPL) とは独立に有効化できる。端末 (標準入出力) を持たない
+# 一部プラットフォームでは console REPL 無しで これ だけを有効にして使う。
+option(KRKRZ_REPL_WEB "enable browser REPL viewer (HTTP+SSE, -replweb=<port>)" ${KRKRZ_REPL})
+# 既定バインドアドレスを 0.0.0.0 (全インタフェース) にする。本体にローカル
+# ブラウザが無く開発PCから LAN 越しに繋ぐ、端末を持たない一部プラットフォーム向け。
+# OFF なら既定 127.0.0.1 (ローカル専用、デスクトップの安全側)。
+option(KRKRZ_REPL_WEB_BIND_ANY "default -replweb bind address to 0.0.0.0 (for platforms without a local browser)" OFF)
+# ファイル監視コマンドチャネル (-replfile=<dir>) と、その応答口を使う file-based
+# modal (confirm / inputString / ファイル選択 を REPL 経由で応答)。ローカル
+# ファイルシステムを使うデスクトップのエージェント駆動向け機能で、console REPL /
+# web REPL とは独立。web REPL の modal はブラウザ側 + web I/F 側の別実装が必要で
+# あり (未実装)、この file-based 実装とは無関係。既定は console REPL に追従。
+option(KRKRZ_REPL_FILE "enable file command channel + file-based modal (-replfile, desktop agent driving)" ${KRKRZ_REPL})
+
+# MASTER (量産) ビルドでは REPL / REPLWEB / file channel を完全無効化する。
+# 端末 REPL もブラウザ REPL ビューワーも file channel も成果物に一切含めない。
+if (MASTER)
+	set(KRKRZ_REPL      OFF)
+	set(KRKRZ_REPL_WEB  OFF)
+	set(KRKRZ_REPL_FILE OFF)
+endif()
+
+# REPL コア = メインスレッド実行キュー / 画面キャプチャ / エントリポイント
+# (TVPCreateREPL 等) と共有基盤。console REPL・web REPL・file channel の
+# いずれか一つでも有効なら必要。console(icline/stdin) / web(HTTP+SSE) /
+# file(-replfile) はそれぞれ独立に有効化でき、コア基盤はこの派生フラグで
+# 一括制御する。file-based modal は KRKRZ_REPL_FILE 側 (コアには含めない)。
+if (KRKRZ_REPL OR KRKRZ_REPL_WEB OR KRKRZ_REPL_FILE)
+	set(KRKRZ_REPL_CORE ON)
+else()
+	set(KRKRZ_REPL_CORE OFF)
+endif()
 
 # LogCore はデスクトップでのみ有効 (リングバッファ、ファイル出力、TJS handler 等)
 # モバイルでは SDL3 のネイティブログ出力を直接使用 (Android→logcat, iOS→os_log)
@@ -306,11 +350,20 @@ MASTER
 )
 endif()
 
-if (KRKRZ_REPL)
+if (KRKRZ_REPL_CORE)
 list(APPEND KRKRZ_DEFINES KRKRZ_USE_REPL)
-if (NOT KRKRZ_REPL_LINE_EDIT)
+# console REPL の icline 行編集を使うのは KRKRZ_REPL(console) 有効時のみ。
+# web 専用ビルド (KRKRZ_REPL=OFF) や LINE_EDIT=OFF では fgets shim に切替。
+if (NOT (KRKRZ_REPL AND KRKRZ_REPL_LINE_EDIT))
 list(APPEND KRKRZ_DEFINES KRKRZ_REPL_NO_ICLINE)
 endif()
+endif()
+
+# file 監視コマンドチャネル + file-based modal (confirm/inputString/選択の応答口)。
+# ローカルファイルシステムを使うデスクトップ限定機能。web-only ビルドでは未定義に
+# なり、modal 呼び出し元 (System/Storages) は native/既定へフォールバックする。
+if (KRKRZ_REPL_FILE)
+list(APPEND KRKRZ_DEFINES KRKRZ_USE_REPL_FILECHANNEL)
 endif()
 
 if (KRKRZ_USE_LOGCORE)
@@ -529,6 +582,20 @@ if (KRKRZ_REPL AND KRKRZ_REPL_LINE_EDIT AND NOT TARGET icline)
 endif()
 
 # ----------------------------------------------------
+# ブラウザ REPL ビューワー (HTTP+SSE。-replweb=<port>)
+# 依存追加なし (TCP ソケット + 埋め込み HTML)。Windows は Winsock をリンク。
+# ----------------------------------------------------
+if (KRKRZ_REPL_WEB)
+	list(APPEND KRKRZ_DEFINES KRKRZ_REPL_WEB)
+	if (KRKRZ_REPL_WEB_BIND_ANY)
+		list(APPEND KRKRZ_DEFINES KRKRZ_REPL_WEB_BIND_ANY)
+	endif()
+	if (WIN32)
+		list(APPEND KRKRZ_LIB_REPL ws2_32)
+	endif()
+endif()
+
+# ----------------------------------------------------
 # Elements (汎用ダイアログ機構, ThorVG ベース)
 #
 # WIN / SDL 両 variant で組み込む (LIB は window / renderer が無いため対象外)。
@@ -714,6 +781,12 @@ foreach(RESOURCE ${RESOURCE_FILES})
     get_filename_component(NAME ${RESOURCE} NAME)
     file(APPEND ${RC_FILE} "${NAME} BINARY \"${RESOURCE}\"\n")
 endforeach()
+
+# .rc は参照先バイナリの「内容」を含めて .res へ埋め込むが、ビルドツールは
+# .rc 自身のタイムスタンプしか見ない。resource/*.json 更新時に .res が再生成
+# されず、旧 messages.json 埋め込み exe が MsgLoad 側 (採番数増) と食い違い
+# 起動時 picojson OOB で落ちる事故が起きたため、内容依存を明示する。
+set_source_files_properties(${RC_FILE} PROPERTIES OBJECT_DEPENDS "${RESOURCE_FILES}")
 
 elseif(APPLE)
 
@@ -1081,8 +1154,12 @@ else()
 message(FATAL_ERROR "Unsupported platform")
 endif()
 
-# krmovie (Track V-A: STATIC ライブラリ化して exe へ静的統合)
-add_subdirectory( win32/movie )
+# Track V-A: krmovie は exe へ直接統合 (win32/movie/*.cpp を KRKRZ_SRC_WIN32 に畳み込み、
+# tp_stub 境界を撤去)。動画デコーダの movie-player (webm/VP8-9) だけ static lib として
+# 取り込み PRIVATE リンクする (pl_mpeg はヘッダオンリで KRKRZ_INC_WIN32 に追加済み)。
+if(NOT TARGET movieplayer)
+	add_subdirectory(external/movie-player)
+endif()
 
 # krkrz executable
 
@@ -1105,6 +1182,8 @@ foreach(RESOURCE ${RESOURCE_FILES})
     get_filename_component(NAME ${RESOURCE} NAME)
     file(APPEND ${RC_FILE} "${NAME} BINARY \"${RESOURCE}\"\n")
 endforeach()
+# resource 内容変更で .res を再生成させる (SDL ブランチ側と同趣旨)
+set_source_files_properties(${RC_FILE} PROPERTIES OBJECT_DEPENDS "${RESOURCE_FILES}")
 
 add_executable( ${EXENAME} WIN32
 	${KRKRZ_SRC}
@@ -1151,7 +1230,7 @@ target_link_libraries( ${EXENAME} PRIVATE
 	dxgi
 	d3dcompiler
 	shlwapi
-	krmovie
+	movieplayer
 	${KRKRZ_LIB_REPL}
 	${KRKRZ_LIB_ELEMENTS}
 	${KRKRZ_LIB_ADD}

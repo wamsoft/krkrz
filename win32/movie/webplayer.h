@@ -4,7 +4,9 @@
 
 // external/movie-player library から
 #include "IMoviePlayer.h"
-#include "WebpXAudio2Sink.h"
+// Track V-A': 動画音声は miniaudio に統合。webm (movie-player 駆動) は generic/SDL と
+// 同じ common の miniaudio アダプタ (IAudioSink) を使う。
+#include "MovieAudioSinkAdapter.h"
 
 #include <vector>
 #include <mutex>
@@ -123,7 +125,7 @@ protected:
 	ULONG		RefCount;
 	// AudioSink は Player より先に宣言 = 後に破棄。Player の decoder thread が
 	// 停止 (Player のデストラクタ内) してから sink がクリーンアップされる。
-	WebpXAudio2Sink AudioSink;
+	tTVPMovieAudioSinkAdapter AudioSink;
 	IMoviePlayer *Player;
 	HWND OwnerWindow;
 	BYTE *mBuffer;

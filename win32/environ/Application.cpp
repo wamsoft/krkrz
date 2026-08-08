@@ -8,9 +8,6 @@
 
 #include <eh.h>
 
-#define DIRECTINPUT_VERSION 0x0500
-#include <dinput.h>
-
 #include <DbgHelp.h>
 #include <Strsafe.h>
 
@@ -306,6 +303,8 @@ tTVPApplication::tTVPApplication() : is_attach_console_(false), tarminate_(false
 	 , file_cache_thread_(NULL)
 	 , has_map_report_process_(false), console_cache_(1024)
 {
+	// ゲームパッド論理管理に XInput 物理プロバイダを接続。
+	PadManager_.SetProvider(&PadProvider_);
 }
 tTVPApplication::~tTVPApplication() {
 	while( windows_list_.size() ) {
@@ -724,12 +723,6 @@ void tTVPApplication::EnableWindows( const std::vector<TTVPWindowForm*>& win ) {
 	}
 	*/
 }
-void tTVPApplication::FreeDirectInputDeviceForWindows() {
-	size_t count = windows_list_.size();
-	for( size_t i = 0; i < count; i++ ) {
-		windows_list_[i]->FreeDirectInputDevice();
-	}
-}
 
 
 void tTVPApplication::RegisterAcceleratorKey(HWND hWnd, char virt, short key, short cmd) {
@@ -855,6 +848,16 @@ void tTVPApplication::CacheFileClearOld(int keepTime, bool force)
 void tTVPApplication::CacheFileSetMaxSize( int maxSize)
 {
 	TVPSetMaxStorageCacheSize(maxSize);
+}
+
+void tTVPApplication::PadPoll(bool windowActive)
+{
+	if (windowActive) {
+		PadProvider_.Poll();      // XInput 状態取り込み
+		PadManager_.Update();     // active 更新 + キーイベント生成
+	} else {
+		PadManager_.SuspendState(); // 全キー解放
+	}
 }
 
 bool tTVPApplication::CacheIsLoading(bool fast) const

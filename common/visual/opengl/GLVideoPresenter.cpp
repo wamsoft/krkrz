@@ -24,6 +24,7 @@
 #include "tjsVariant.h"
 
 #include <mutex>
+#include <atomic>
 #include <algorithm>
 #include <cstring>
 #include <vector>
@@ -151,6 +152,7 @@ class tTVPGLVideoOverlayPresenter
 	GLTexture*           mTexture;
 	iTVPGLVideoPresenterHost* mHost;
 	bool                 mActive;
+	std::atomic<bool>    mVisible;     // overlay 表示可否 (WINVER 仕様: 既定 false)。描画スレッドから読む
 
 	// YUV(I420) 経路 (SupportsYUV=true。generic movie は I420 native)
 	std::vector<uint8_t> mYUV;         // packed I420 (Y=w×h + U/V=cw×ch)
@@ -170,7 +172,7 @@ class tTVPGLVideoOverlayPresenter
 public:
 	tTVPGLVideoOverlayPresenter()
 		: mBuffer(nullptr), mWidth(0), mHeight(0), mDirty(false)
-		, mTexture(nullptr), mHost(nullptr), mActive(false)
+		, mTexture(nullptr), mHost(nullptr), mActive(false), mVisible(false)
 		, mYUVW(0), mYUVH(0), mIsYUV(false)
 		, mMixerW(0), mMixerH(0), mMixerAlpha(1.0f), mMixerValid(false), mMixerDirty(false)
 		, mMixerTex(nullptr)
@@ -276,6 +278,11 @@ public:
 		if (mHost && mActive) mHost->RemoveVideoPresenter(this);
 		mActive = false;
 	}
+	//--- 表示可否 (WINVER の VideoOverlay.visible と同仕様) --------------------
+	// SetVisible = iTVPVideoOverlayPresenter (generic 側), IsVisible = iTVPGLVideoPresenter
+	// (OGLDrawDevice 側)。同じ mVisible を両 IF が参照する。
+	void SetVisible(bool visible) override { mVisible.store(visible, std::memory_order_relaxed); }
+	bool TJS_INTF_METHOD IsVisible() const override { return mVisible.load(std::memory_order_relaxed); }
 	//--- iTVPGLVideoPresenter (OGLDrawDevice 側、描画スレッド、GL context current) ---
 	bool TJS_INTF_METHOD RenderVideoFrame(const tTVPGLVideoPresenterContext &ctx) override
 	{

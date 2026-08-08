@@ -104,7 +104,10 @@ static tTVPAtExit
 	TVPUninitializeFontRaster(TVP_ATEXIT_PRI_RELEASE, TVPUninitializeFontRasterizers);
 
 void TVPSetFontRasterizer( tjs_int index ) {
-	if( TVPCurrentFontRasterizers != index && index >= 0 && index < FONT_RASTER_EOT ) {
+	// 未登録スロット (例: SDL/generic では GDI は NULL) への切替は無視する
+	// (GetCurrentRasterizer() が NULL を返してクラッシュするのを防ぐ)。
+	if( index < 0 || index >= FONT_RASTER_EOT || TVPFontRasterizers[index] == NULL ) return;
+	if( TVPCurrentFontRasterizers != index ) {
 		TVPCurrentFontRasterizers = index;
 		TVPClearFontCache(); // ラスタライザが切り替わる時、キャッシュはクリアしてしまう
 		TVPGlobalFontStateMagic++; // ApplyFont が走るようにする
@@ -115,6 +118,49 @@ tjs_int TVPGetFontRasterizer() {
 }
 FontRasterizer* GetCurrentRasterizer() {
 	return TVPFontRasterizers[TVPCurrentFontRasterizers];
+}
+
+//---------------------------------------------------------------------------
+// 絵文字モード (グローバル既定 + 実効モード解決 + 絵文字 face 名)
+//---------------------------------------------------------------------------
+static tjs_int TVPDefaultEmojiMode = TVP_EMOJI_NONE;
+void TVPSetDefaultEmojiMode( tjs_int mode ) {
+	if( mode < TVP_EMOJI_NONE ) mode = TVP_EMOJI_NONE;
+	if( mode > TVP_EMOJI_COLOR ) mode = TVP_EMOJI_COLOR;
+	if( TVPDefaultEmojiMode != mode ) {
+		TVPDefaultEmojiMode = mode;
+		TVPClearFontCache();          // モードが変わるとグリフキャッシュを破棄
+		TVPGlobalFontStateMagic++;    // ApplyFont を再走させる
+	}
+}
+tjs_int TVPGetDefaultEmojiMode() { return TVPDefaultEmojiMode; }
+// Font 個別指定 (TVP_EMOJI_DEFAULT ならグローバル既定) を実効モードへ解決する。
+tjs_int TVPResolveEmojiMode( tjs_int fontmode ) {
+	return (fontmode == TVP_EMOJI_DEFAULT) ? TVPDefaultEmojiMode : fontmode;
+}
+// 絵文字フォントの face 名 (設定可能)。既定はバンドルフォントの face 名。
+// ユーザは Font.addFont(任意ファイル) で別の絵文字フォントを登録し、
+// Font.emojiFaceName / Font.colorEmojiFaceName でその face 名を指すことで
+// 任意の絵文字フォントを使える。
+static ttstr TVPMonoEmojiFaceName( TJS_W("Noto Emoji Regular") );
+static ttstr TVPColorEmojiFaceName( TJS_W("Noto Color Emoji Regular") );
+
+// 実効モードに対応する絵文字フォントの face 名。none/未対応は空文字列。
+// この face が未登録 (リソース未収納等) の場合、呼び出し側はスルーする。
+const tjs_char* TVPGetEmojiFaceName( tjs_int mode ) {
+	switch( mode ) {
+	case TVP_EMOJI_MONO:  return TVPMonoEmojiFaceName.c_str();
+	case TVP_EMOJI_COLOR: return TVPColorEmojiFaceName.c_str();
+	default:              return TJS_W("");
+	}
+}
+void TVPSetEmojiFaceName( tjs_int mode, const tjs_char* name ) {
+	ttstr n( name ? name : TJS_W("") );
+	if( mode == TVP_EMOJI_MONO )       TVPMonoEmojiFaceName = n;
+	else if( mode == TVP_EMOJI_COLOR ) TVPColorEmojiFaceName = n;
+	else return;
+	TVPClearFontCache();
+	TVPGlobalFontStateMagic++;
 }
 
 //---------------------------------------------------------------------------
@@ -750,7 +796,7 @@ void tTVPNativeBaseBitmap::ApplyFont()
 
 		// compute font hash
 		FontHash = tTJSHashFunc<ttstr>::Make(Font.Face);
-		FontHash ^= Font.Height ^ Font.Flags ^ Font.Angle;
+		FontHash ^= Font.Height ^ Font.Flags ^ Font.Angle ^ (Font.EmojiMode << 5);
 	}
 	else
 	{
@@ -792,6 +838,38 @@ struct tTVPDrawTextData
 	bool holdalpha;
 	tTVPBBBltMethod bltmode;
 };
+//---------------------------------------------------------------------------
+// UTF-16 サロゲートペアを 1 コードポイントへ結合する。*p から読み取り codepoint を
+// 返す。ペアを消費した場合は p を 1 つ進める (呼び出し側ループが末尾でさらに 1 つ
+// 進めるので、合計 2 tjs_char 消費になる)。tjs_char は本コードベースでは常に 16bit。
+// 単独 (低) サロゲートや末尾の高サロゲートはそのまま返す (字形検索で不一致=tofu)。
+//---------------------------------------------------------------------------
+static inline tjs_uint32 TVPReadCodePointAdvance( const tjs_char *&p )
+{
+	tjs_uint32 cp = (tjs_uint32)(tjs_uint16)*p;
+	if( cp >= 0xD800 && cp <= 0xDBFF ) {
+		tjs_uint32 lo = (tjs_uint32)(tjs_uint16)p[1];
+		if( lo >= 0xDC00 && lo <= 0xDFFF ) {
+			cp = 0x10000u + ((cp - 0xD800u) << 10) + (lo - 0xDC00u);
+			++p; // 低サロゲートを消費 (末尾の p++ が高サロゲート側を消費)
+		}
+	}
+	return cp;
+}
+//---------------------------------------------------------------------------
+// 基底文字の直後にある異体字セレクタ (VS15/VS16) を検出し presentation を返す。
+// 呼び出し時 p は TVPReadCodePointAdvance 直後 (= 基底文字の最終符号単位) を指す。
+// セレクタは次の符号単位 p[1] にあるので、あれば ++p して読み飛ばす
+// (ループ末尾の p++ とあわせてセレクタを消費する)。無ければ p は動かさず DEFAULT。
+// (自動判定 = Emoji_Presentation 既定は行わない。明示指定時のみ切替える)
+static inline tjs_int TVPReadEmojiPresentation( const tjs_char *&p )
+{
+	tjs_uint32 c = (tjs_uint32)(tjs_uint16) p[1];
+	if( c == TVP_EMOJI_VS16 ) { ++p; return TVP_EMOJI_PRESENTATION_EMOJI; }
+	if( c == TVP_EMOJI_VS15 ) { ++p; return TVP_EMOJI_PRESENTATION_TEXT; }
+	return TVP_EMOJI_PRESENTATION_DEFAULT;
+}
+//---------------------------------------------------------------------------
 bool tTVPNativeBaseBitmap::InternalDrawText(tTVPCharacterData *data, tjs_int x,
 	tjs_int y, tjs_uint32 color, tTVPDrawTextData *dtdata, tTVPRect &drect)
 {
@@ -1494,7 +1572,8 @@ void tTVPNativeBaseBitmap::DrawTextMultiple(const tTVPRect &destrect,
 	// prepare all drawn characters
 	while(*p) // while input string is remaining
 	{
-		font.Character = *p;
+		font.Character = TVPReadCodePointAdvance(p); // astral 面はサロゲート結合
+		font.EmojiPresentation = TVPReadEmojiPresentation(p); // 直後の VS15/VS16 を反映
 
 		font.Blured = false;
 		tTVPCharacterData * data = NULL;
@@ -1647,8 +1726,10 @@ void tTVPNativeBaseBitmap::GetTextSize(const ttstr & text)
 
 			while(*buf)
 			{
+				tjs_uint32 cp = TVPReadCodePointAdvance(buf); // astral 面はサロゲート結合
+				TVPReadEmojiPresentation(buf); // VS15/VS16 はゼロ幅なので読み飛ばす
 				tjs_int w=0, h=0;
-				GetCurrentRasterizer()->GetTextExtent( *buf, w, h );
+				GetCurrentRasterizer()->GetTextExtent( cp, w, h );
 				width += w;
 				buf++;
 			}

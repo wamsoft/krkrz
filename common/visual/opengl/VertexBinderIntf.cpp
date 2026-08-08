@@ -54,7 +54,7 @@ void tTJSNI_VertexBinder::SetVertexBufferObject( const tTJSVariant & val ) {
 		if( clo.Object ) {
 			if( TJS_FAILED( clo.Object->NativeInstanceSupport( TJS_NIS_GETINSTANCE, tTJSNC_VertexBuffer::ClassID, (iTJSNativeInstance**)&VertexBufferInstance ) ) ) {
 				VertexBufferInstance = nullptr;
-				TVPThrowExceptionMessage( TJS_W( "Cannot retrive vertex buffer instance." ) );
+				TVPThrowExceptionMessage(TVPCannotRetriveInstance, TJS_W("vertex buffer"));
 			}
 		}
 	}

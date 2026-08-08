@@ -19,8 +19,51 @@
 // WinElementsModalRunner.cpp (現状スタブ、 showModal* は未対応で false を返す)。
 #include "ElementsModalRunner.h"
 #include "StorageIntf.h"     // TVPReadStream (ShowModalFile)
+#include "MsgIntf.h"         // TVPThrowExceptionMessage (例外への文脈付加)
+#include "tjsError.h"        // eTJS (TJS 例外の透過判定)
+
+#include <elements/element/pad_icon.hpp>   // set_pad_icon_base_dir / set_pad_theme
 
 #include <string>
+
+namespace {
+
+//---------------------------------------------------------------------------
+// 例外への文脈付加
+//
+// elements / elements_modal / host 別 modal runner 由来の C++ 例外は what() が
+// 短く (例: "File does not exist.")、 どの Dialog API のどのファイルで起きたか
+// が例外メッセージから分からない。 さらに std::exception 以外の型だと VM 側で
+// メッセージ無しの例外になる。 全 API 入口でここを通し、 API 名と対象
+// (path / entry) を付けて TJS 例外へ変換する。 eTJS 系 (TVPReadStream の
+// storage エラー等) は元々十分な情報を持つのでそのまま透過させる。
+//---------------------------------------------------------------------------
+template<typename TFunc>
+auto WithDialogExceptionContext(const tjs_char* api, const ttstr& target,
+	TFunc&& func) -> decltype(func())
+{
+	try {
+		return func();
+	} catch (const eTJS&) {
+		throw;
+	} catch (const std::exception& e) {
+		std::string w8 = e.what() ? e.what() : "";
+		tjs_string ws;
+		TVPUtf8ToUtf16(ws, w8);
+		ttstr msg(api);
+		if (!target.IsEmpty()) msg += ttstr(TJS_W("(")) + target + TJS_W(")");
+		msg += ttstr(TJS_W(": ")) + ttstr(ws.c_str());
+		TVPThrowExceptionMessage(TJS_W("%1"), msg);
+	} catch (...) {
+		ttstr msg(api);
+		if (!target.IsEmpty()) msg += ttstr(TJS_W("(")) + target + TJS_W(")");
+		msg += TJS_W(": unknown C++ exception");
+		TVPThrowExceptionMessage(TJS_W("%1"), msg);
+	}
+	return decltype(func()){};   // not reached (TVPThrowExceptionMessage は必ず throw)
+}
+
+} // anonymous namespace
 
 //---------------------------------------------------------------------------
 // tTJSNI_Dialog
@@ -37,17 +80,13 @@ tTJSNI_Dialog::Construct(tjs_int /*numparams*/, tTJSVariant** /*param*/, iTJSDis
 
 void TJS_INTF_METHOD tTJSNI_Dialog::Invalidate()
 {
-	if (Owner) {
-		// この Dialog インスタンスが「現在アクティブなモーダル」のオーナー
-		// (= mgr の active_handler が this) のときだけ閉じる。 別 Dialog が
-		// 開いた modal を巻き込まないように。 modalTest/modalOverlayTest を
-		// 連続実行したとき、 前者の dlg が GC される直前に後者の modal が走って
-		// いると、 ここで Close を呼ぶと後者の modal が即終了してしまう。
-		auto& mgr = tTVPElementsDialogManager::Instance();
-		if (mgr.IsHandlerActive(this)) {
-			mgr.Close(this);
-		}
-	}
+	// この native インスタンスを handler として参照する全インスタンスから
+	// 参照を切る (自分のインスタンスだけが対象なので、 別 Dialog が開いた
+	// modal を巻き込むことはない)。 単に Close() するだけだと、 モーダル終了
+	// 直後 (active=false, teardown は次フレーム) に GC された場合に参照が
+	// 残ったままとなり、 遅延 teardown の OnClosed が解放済み this への仮想
+	// 呼び出しになる (Release ビルドで AV)。
+	tTVPElementsDialogManager::Instance().DetachHandler(this);
 	Owner = nullptr;
 }
 
@@ -85,29 +124,35 @@ void tTJSNI_Dialog::OnClosed(const ttstr& action)
 
 bool tTJSNI_Dialog::ShowFile(const ttstr& path, bool grabFocus)
 {
-	auto& mgr = tTVPElementsDialogManager::Instance();
-	// 非モーダルオーバーレイ。grabFocus=false なら未フォーカスで表示し、
-	// 未処理キーをホストへ通す (wants_focus = modal || grabFocus のため modal も false に)。
-	return mgr.ShowFromJsonFile(path, this, nullptr, /*modal=*/grabFocus, grabFocus);
+	return WithDialogExceptionContext(TJS_W("Dialog.showFile"), path, [&]() -> bool {
+		auto& mgr = tTVPElementsDialogManager::Instance();
+		// 非モーダルオーバーレイ。grabFocus=false なら未フォーカスで表示し、
+		// 未処理キーをホストへ通す (wants_focus = modal || grabFocus のため modal も false に)。
+		return mgr.ShowFromJsonFile(path, this, nullptr, /*modal=*/grabFocus, grabFocus);
+	});
 }
 
 bool tTJSNI_Dialog::ShowJson(const ttstr& json_utf16, bool grabFocus)
 {
-	std::string utf8;
-	tjs_string ts(json_utf16.c_str());
-	TVPUtf16ToUtf8(utf8, ts);
-	auto& mgr = tTVPElementsDialogManager::Instance();
-	return mgr.ShowFromJsonString(utf8, this, nullptr, /*modal=*/grabFocus, grabFocus);
+	return WithDialogExceptionContext(TJS_W("Dialog.showJson"), ttstr(), [&]() -> bool {
+		std::string utf8;
+		tjs_string ts(json_utf16.c_str());
+		TVPUtf16ToUtf8(utf8, ts);
+		auto& mgr = tTVPElementsDialogManager::Instance();
+		return mgr.ShowFromJsonString(utf8, this, nullptr, /*modal=*/grabFocus, grabFocus);
+	});
 }
 
 bool tTJSNI_Dialog::ShowDict(iTJSDispatch2* dict, bool grabFocus)
 {
 	if (!dict) return false;
-	std::string utf8;
-	tTJSVariant v(dict, dict);
-	TVPVariantToJsonUtf8(v, utf8);
-	auto& mgr = tTVPElementsDialogManager::Instance();
-	return mgr.ShowFromJsonString(utf8, this, nullptr, /*modal=*/grabFocus, grabFocus);
+	return WithDialogExceptionContext(TJS_W("Dialog.showDict"), ttstr(), [&]() -> bool {
+		std::string utf8;
+		tTJSVariant v(dict, dict);
+		TVPVariantToJsonUtf8(v, utf8);
+		auto& mgr = tTVPElementsDialogManager::Instance();
+		return mgr.ShowFromJsonString(utf8, this, nullptr, /*modal=*/grabFocus, grabFocus);
+	});
 }
 
 void tTJSNI_Dialog::Close()
@@ -167,103 +212,221 @@ iTJSDispatch2* BuildModalResultDict(const tTVPElementsModalResult& mr)
 	return dict;
 }
 
+// showModal*(x, %[vars]) の 2 番目引数 (TJS Dictionary) を
+// std::map<ttstr,ttstr> へ変換する EnumMembers コールバック。 値は文字列 /
+// 数値等を ttstr 化して格納 (VariableStore は文字列ベース)。
+struct VarsEnumCaller : public tTJSDispatch
+{
+	std::map<ttstr, ttstr> vars;
+
+	tjs_error TJS_INTF_METHOD FuncCall(tjs_uint32 /*flag*/,
+		const tjs_char* /*membername*/, tjs_uint32* /*hint*/,
+		tTJSVariant* result, tjs_int numparams,
+		tTJSVariant** param, iTJSDispatch2* /*objthis*/)
+	{
+		if (numparams < 3) return TJS_E_BADPARAMCOUNT;
+		tjs_uint32 flags = (tjs_int)*param[1];
+		if (!(flags & TJS_HIDDENMEMBER)) {
+			ttstr key = *param[0];
+			tTJSVariantType t = param[2]->Type();
+			if (t == tvtString || t == tvtInteger || t == tvtReal) {
+				vars[key] = ttstr(*param[2]);
+			}
+		}
+		if (result) *result = (tjs_int)1;
+		return TJS_S_OK;
+	}
+};
+
+// TJS Dictionary → vars map。 dict が null なら空 map。
+static std::map<ttstr, ttstr> DictToVarsMap(iTJSDispatch2* dict)
+{
+	std::map<ttstr, ttstr> out;
+	if (!dict) return out;
+	VarsEnumCaller caller;
+	tTJSVariantClosure clo(&caller, nullptr);
+	dict->EnumMembers(TJS_IGNOREPROP, &clo, dict);
+	out = std::move(caller.vars);
+	return out;
+}
+
 } // anonymous
 
+//---------------------------------------------------------------------------
+// System.inputString の Elements 実装 (SDL host)。
+//---------------------------------------------------------------------------
+static std::string InputJsonEscape(const std::string& s)
+{
+	std::string out;
+	out.reserve(s.size() + 8);
+	for (unsigned char c : s) {
+		switch (c) {
+			case '"':  out += "\\\""; break;
+			case '\\': out += "\\\\"; break;
+			case '\n': out += "\\n";  break;
+			case '\r': out += "\\r";  break;
+			case '\t': out += "\\t";  break;
+			default:
+				if (c < 0x20) { char b[8]; snprintf(b, sizeof(b), "\\u%04x", c); out += b; }
+				else out += (char)c;
+		}
+	}
+	return out;
+}
+
+bool TVPInputStringElements(const ttstr& caption, const ttstr& prompt,
+	const ttstr& def, ttstr& result)
+{
+	std::string p8, d8;
+	{ tjs_string t(prompt.c_str()); TVPUtf16ToUtf8(p8, t); }
+	{ tjs_string t(def.c_str());    TVPUtf16ToUtf8(d8, t); }
+
+	std::string json =
+		"{\"background\":[40,40,40,245],\"content\":{"
+		"\"type\":\"margin\",\"padding\":16,\"child\":{"
+		"\"type\":\"vtile\",\"children\":["
+		"{\"type\":\"label\",\"text\":\"" + InputJsonEscape(p8) + "\"},"
+		"{\"type\":\"vspacer\",\"height\":8},"
+		"{\"type\":\"input_box\",\"id\":\"value\",\"text\":\"" + InputJsonEscape(d8) + "\",\"initial_focus\":true},"
+		"{\"type\":\"vspacer\",\"height\":12},"
+		"{\"type\":\"htile\",\"children\":["
+		"{\"type\":\"button\",\"id\":\"ok\",\"text\":\"OK\",\"close_on_click\":true},"
+		"{\"type\":\"hspacer\",\"width\":8},"
+		"{\"type\":\"button\",\"id\":\"cancel\",\"text\":\"\xE3\x82\xAD\xE3\x83\xA3\xE3\x83\xB3\xE3\x82\xBB\xE3\x83\xAB\",\"close_on_click\":true}"
+		"]}"
+		"]}}}";
+
+	tTVPElementsModalResult mr;
+	if (!TVPRunElementsModalWindow(json, caption, 380, 150, nullptr, mr))
+		return false; // 起動失敗 (WINVER 独立 window modal 未対応など)
+
+	if (mr.Action == ttstr(TJS_W("ok"))) {
+		auto it = mr.Values.find(ttstr(TJS_W("value")));
+		if (it != mr.Values.end() && it->second.Type() == tvtString)
+			result = ttstr(it->second);
+		else
+			result = def; // 未入力は既定値
+		return true;
+	}
+	return false; // cancel / Esc
+}
+//---------------------------------------------------------------------------
 iTJSDispatch2* tTJSNI_Dialog::ShowModalJson(const ttstr& json_utf16,
 	const ttstr& title, int width, int height)
 {
-	std::string utf8;
-	tjs_string ts(json_utf16.c_str());
-	TVPUtf16ToUtf8(utf8, ts);
+	return WithDialogExceptionContext(TJS_W("Dialog.showModalJson"), ttstr(),
+		[&]() -> iTJSDispatch2* {
+		std::string utf8;
+		tjs_string ts(json_utf16.c_str());
+		TVPUtf16ToUtf8(utf8, ts);
 
-	tTVPElementsModalResult mr;
-	// `this` を handler として渡し、 button click / 値変化が onAction にも来る。
-	// "close_on_click": true な button だけがモーダルを閉じる。
-	if (!TVPRunElementsModalWindow(utf8, title, width, height, this, mr)) {
-		return nullptr;
-	}
-	return BuildModalResultDict(mr);
+		tTVPElementsModalResult mr;
+		// `this` を handler として渡し、 button click / 値変化が onAction にも来る。
+		// "close_on_click": true な button だけがモーダルを閉じる。
+		if (!TVPRunElementsModalWindow(utf8, title, width, height, this, mr)) {
+			return nullptr;
+		}
+		return BuildModalResultDict(mr);
+	});
 }
 
 iTJSDispatch2* tTJSNI_Dialog::ShowModalFile(const ttstr& path,
 	const ttstr& title, int width, int height)
 {
-	tjs_uint64 flen = 0;
-	auto buf = TVPReadStream(path.c_str(), &flen);
-	if (!buf || flen == 0) {
-		TVPAddImportantLog(ttstr(TJS_W("Dialog.showModalFile: cannot read: "))
-			+ path);
-		return nullptr;
-	}
-	std::string utf8(reinterpret_cast<const char*>(buf.get()),
-	                 static_cast<size_t>(flen));
+	return WithDialogExceptionContext(TJS_W("Dialog.showModalFile"), path,
+		[&]() -> iTJSDispatch2* {
+		tjs_uint64 flen = 0;
+		auto buf = TVPReadStream(path.c_str(), &flen);
+		if (!buf || flen == 0) {
+			TVPAddImportantLog(ttstr(TJS_W("Dialog.showModalFile: cannot read: "))
+				+ path);
+			return nullptr;
+		}
+		std::string utf8(reinterpret_cast<const char*>(buf.get()),
+		                 static_cast<size_t>(flen));
 
-	tTVPElementsModalResult mr;
-	if (!TVPRunElementsModalWindow(utf8, title, width, height, this, mr)) {
-		return nullptr;
-	}
-	return BuildModalResultDict(mr);
+		tTVPElementsModalResult mr;
+		if (!TVPRunElementsModalWindow(utf8, title, width, height, this, mr)) {
+			return nullptr;
+		}
+		return BuildModalResultDict(mr);
+	});
 }
 
-iTJSDispatch2* tTJSNI_Dialog::ShowModalOverlayJson(const ttstr& json_utf16)
+iTJSDispatch2* tTJSNI_Dialog::ShowModalOverlayJson(const ttstr& json_utf16,
+	const std::map<ttstr, ttstr>* initialVars)
 {
-	std::string utf8;
-	tjs_string ts(json_utf16.c_str());
-	TVPUtf16ToUtf8(utf8, ts);
+	return WithDialogExceptionContext(TJS_W("Dialog.showModalOverlayJson"), ttstr(),
+		[&]() -> iTJSDispatch2* {
+		std::string utf8;
+		tjs_string ts(json_utf16.c_str());
+		TVPUtf16ToUtf8(utf8, ts);
 
-	tTVPElementsModalResult mr;
-	if (!TVPRunElementsModalOverlay(utf8, this, mr)) {
-		return nullptr;
-	}
-	return BuildModalResultDict(mr);
+		tTVPElementsModalResult mr;
+		if (!TVPRunElementsModalOverlay(utf8, this, mr, initialVars)) {
+			return nullptr;
+		}
+		return BuildModalResultDict(mr);
+	});
 }
 
-iTJSDispatch2* tTJSNI_Dialog::ShowModalOverlayFile(const ttstr& path)
+iTJSDispatch2* tTJSNI_Dialog::ShowModalOverlayFile(const ttstr& path,
+	const std::map<ttstr, ttstr>* initialVars)
 {
-	tjs_uint64 flen = 0;
-	auto buf = TVPReadStream(path.c_str(), &flen);
-	if (!buf || flen == 0) {
-		TVPAddImportantLog(ttstr(TJS_W("Dialog.showModalOverlayFile: cannot read: "))
-			+ path);
-		return nullptr;
-	}
-	std::string utf8(reinterpret_cast<const char*>(buf.get()),
-	                 static_cast<size_t>(flen));
+	return WithDialogExceptionContext(TJS_W("Dialog.showModalOverlayFile"), path,
+		[&]() -> iTJSDispatch2* {
+		tjs_uint64 flen = 0;
+		auto buf = TVPReadStream(path.c_str(), &flen);
+		if (!buf || flen == 0) {
+			TVPAddImportantLog(ttstr(TJS_W("Dialog.showModalOverlayFile: cannot read: "))
+				+ path);
+			return nullptr;
+		}
+		std::string utf8(reinterpret_cast<const char*>(buf.get()),
+		                 static_cast<size_t>(flen));
 
-	tTVPElementsModalResult mr;
-	if (!TVPRunElementsModalOverlay(utf8, this, mr)) {
-		return nullptr;
-	}
-	return BuildModalResultDict(mr);
+		tTVPElementsModalResult mr;
+		if (!TVPRunElementsModalOverlay(utf8, this, mr, initialVars)) {
+			return nullptr;
+		}
+		return BuildModalResultDict(mr);
+	});
 }
 
 iTJSDispatch2* tTJSNI_Dialog::ShowModalDict(iTJSDispatch2* dict,
 	const ttstr& title, int width, int height)
 {
 	if (!dict) return nullptr;
-	std::string utf8;
-	tTJSVariant v(dict, dict);
-	TVPVariantToJsonUtf8(v, utf8);
+	return WithDialogExceptionContext(TJS_W("Dialog.showModalDict"), ttstr(),
+		[&]() -> iTJSDispatch2* {
+		std::string utf8;
+		tTJSVariant v(dict, dict);
+		TVPVariantToJsonUtf8(v, utf8);
 
-	tTVPElementsModalResult mr;
-	if (!TVPRunElementsModalWindow(utf8, title, width, height, this, mr)) {
-		return nullptr;
-	}
-	return BuildModalResultDict(mr);
+		tTVPElementsModalResult mr;
+		if (!TVPRunElementsModalWindow(utf8, title, width, height, this, mr)) {
+			return nullptr;
+		}
+		return BuildModalResultDict(mr);
+	});
 }
 
-iTJSDispatch2* tTJSNI_Dialog::ShowModalOverlayDict(iTJSDispatch2* dict)
+iTJSDispatch2* tTJSNI_Dialog::ShowModalOverlayDict(iTJSDispatch2* dict,
+	const std::map<ttstr, ttstr>* initialVars)
 {
 	if (!dict) return nullptr;
-	std::string utf8;
-	tTJSVariant v(dict, dict);
-	TVPVariantToJsonUtf8(v, utf8);
+	return WithDialogExceptionContext(TJS_W("Dialog.showModalOverlayDict"), ttstr(),
+		[&]() -> iTJSDispatch2* {
+		std::string utf8;
+		tTJSVariant v(dict, dict);
+		TVPVariantToJsonUtf8(v, utf8);
 
-	tTVPElementsModalResult mr;
-	if (!TVPRunElementsModalOverlay(utf8, this, mr)) {
-		return nullptr;
-	}
-	return BuildModalResultDict(mr);
+		tTVPElementsModalResult mr;
+		if (!TVPRunElementsModalOverlay(utf8, this, mr, initialVars)) {
+			return nullptr;
+		}
+		return BuildModalResultDict(mr);
+	});
 }
 
 //---------------------------------------------------------------------------
@@ -271,11 +434,14 @@ iTJSDispatch2* tTJSNI_Dialog::ShowModalOverlayDict(iTJSDispatch2* dict)
 //---------------------------------------------------------------------------
 iTJSDispatch2* tTJSNI_Dialog::ShowFlow(const ttstr& manifest_path)
 {
-	tTVPElementsModalResult mr;
-	if (!TVPRunElementsFlowOverlayManifest(manifest_path, this, mr)) {
-		return nullptr;
-	}
-	return BuildModalResultDict(mr);
+	return WithDialogExceptionContext(TJS_W("Dialog.showFlow"), manifest_path,
+		[&]() -> iTJSDispatch2* {
+		tTVPElementsModalResult mr;
+		if (!TVPRunElementsFlowOverlayManifest(manifest_path, this, mr)) {
+			return nullptr;
+		}
+		return BuildModalResultDict(mr);
+	});
 }
 
 namespace {
@@ -329,14 +495,17 @@ iTJSDispatch2* tTJSNI_Dialog::ShowFlowScreens(iTJSDispatch2* screens_dict,
 		return nullptr;
 	}
 
-	std::string entry_utf8;
-	{ tjs_string ts(entry.c_str()); TVPUtf16ToUtf8(entry_utf8, ts); }
+	return WithDialogExceptionContext(TJS_W("Dialog.showFlowScreens"), entry,
+		[&]() -> iTJSDispatch2* {
+		std::string entry_utf8;
+		{ tjs_string ts(entry.c_str()); TVPUtf16ToUtf8(entry_utf8, ts); }
 
-	tTVPElementsModalResult mr;
-	if (!TVPRunElementsFlowOverlayScreens(caller.screens, entry_utf8, this, mr)) {
-		return nullptr;
-	}
-	return BuildModalResultDict(mr);
+		tTVPElementsModalResult mr;
+		if (!TVPRunElementsFlowOverlayScreens(caller.screens, entry_utf8, this, mr)) {
+			return nullptr;
+		}
+		return BuildModalResultDict(mr);
+	});
 }
 
 //---------------------------------------------------------------------------
@@ -346,8 +515,11 @@ bool tTJSNI_Dialog::StartFlow(const ttstr& manifest_path, bool grabFocus)
 {
 	// 即 return。 以降の画面遷移 / イベントは DrawDevice の PaintOverlay が駆動し、
 	// onScreen / onScreenLeave / onAction で通知される。 close() で閉じる。
-	return tTVPElementsDialogManager::Instance()
-		.StartFlowFromManifest(manifest_path, this, nullptr, /*modal=*/false, grabFocus);
+	return WithDialogExceptionContext(TJS_W("Dialog.startFlow"), manifest_path,
+		[&]() -> bool {
+		return tTVPElementsDialogManager::Instance()
+			.StartFlowFromManifest(manifest_path, this, nullptr, /*modal=*/false, grabFocus);
+	});
 }
 
 bool tTJSNI_Dialog::StartFlowScreens(iTJSDispatch2* screens_dict, const ttstr& entry,
@@ -361,11 +533,14 @@ bool tTJSNI_Dialog::StartFlowScreens(iTJSDispatch2* screens_dict, const ttstr& e
 		TVPAddImportantLog(TJS_W("Dialog.startFlowScreens: no string screens in dict"));
 		return false;
 	}
-	std::string entry_utf8;
-	{ tjs_string ts(entry.c_str()); TVPUtf16ToUtf8(entry_utf8, ts); }
-	return tTVPElementsDialogManager::Instance()
-		.StartFlowFromScreens(caller.screens, entry_utf8, this, nullptr,
-			/*modal=*/false, grabFocus);
+	return WithDialogExceptionContext(TJS_W("Dialog.startFlowScreens"), entry,
+		[&]() -> bool {
+		std::string entry_utf8;
+		{ tjs_string ts(entry.c_str()); TVPUtf16ToUtf8(entry_utf8, ts); }
+		return tTVPElementsDialogManager::Instance()
+			.StartFlowFromScreens(caller.screens, entry_utf8, this, nullptr,
+				/*modal=*/false, grabFocus);
+	});
 }
 
 //---------------------------------------------------------------------------
@@ -427,7 +602,11 @@ tTJSNC_Dialog::tTJSNC_Dialog() : inherited(TJS_W("Dialog"))
 		if (numparams < 1) return TJS_E_BADPARAMCOUNT;
 		ttstr json(*param[0]);
 		iTJSDispatch2* dict;
-		if (numparams >= 2) {
+		if (numparams >= 2 && param[1]->Type() == tvtObject) {
+			// showModalJson(json, %[vars]) — overlay + 初期変数注入
+			auto vars = DictToVarsMap(param[1]->AsObjectNoAddRef());
+			dict = _this->ShowModalOverlayJson(json, &vars);
+		} else if (numparams >= 2 && param[1]->Type() != tvtVoid) {
 			ttstr title = ttstr(*param[1]);
 			int width   = (numparams >= 3) ? static_cast<int>((tjs_int)*param[2]) : 800;
 			int height  = (numparams >= 4) ? static_cast<int>((tjs_int)*param[3]) : 600;
@@ -445,13 +624,19 @@ tTJSNC_Dialog::tTJSNC_Dialog() : inherited(TJS_W("Dialog"))
 	// showModalFile(path [, title [, width [, height]]])
 	//   path から JSON を読込んで showModalJson と同じ動作。 引数 1 個で overlay、
 	//   2 個以上で独立 SDL_Window。
+	//   showModalFile(path, %[vars]) — overlay + 初期変数注入 (build 直後・
+	//   pump 前に setVar 相当。 index_var/enabled_var/selected_var 連動 widget
+	//   へ動的初期値を流し込む)。
 	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/showModalFile)
 	{
 		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Dialog);
 		if (numparams < 1) return TJS_E_BADPARAMCOUNT;
 		ttstr path(*param[0]);
 		iTJSDispatch2* dict;
-		if (numparams >= 2) {
+		if (numparams >= 2 && param[1]->Type() == tvtObject) {
+			auto vars = DictToVarsMap(param[1]->AsObjectNoAddRef());
+			dict = _this->ShowModalOverlayFile(path, &vars);
+		} else if (numparams >= 2 && param[1]->Type() != tvtVoid) {
 			ttstr title = ttstr(*param[1]);
 			int width   = (numparams >= 3) ? static_cast<int>((tjs_int)*param[2]) : 800;
 			int height  = (numparams >= 4) ? static_cast<int>((tjs_int)*param[3]) : 600;
@@ -492,7 +677,11 @@ tTJSNC_Dialog::tTJSNC_Dialog() : inherited(TJS_W("Dialog"))
 		if (param[0]->Type() != tvtObject) return TJS_E_INVALIDPARAM;
 		iTJSDispatch2* dict_in = param[0]->AsObjectNoAddRef();
 		iTJSDispatch2* dict;
-		if (numparams >= 2) {
+		if (numparams >= 2 && param[1]->Type() == tvtObject) {
+			// showModalDict(dict, %[vars]) — overlay + 初期変数注入
+			auto vars = DictToVarsMap(param[1]->AsObjectNoAddRef());
+			dict = _this->ShowModalOverlayDict(dict_in, &vars);
+		} else if (numparams >= 2 && param[1]->Type() != tvtVoid) {
 			ttstr title = ttstr(*param[1]);
 			int width   = (numparams >= 3) ? static_cast<int>((tjs_int)*param[2]) : 800;
 			int height  = (numparams >= 4) ? static_cast<int>((tjs_int)*param[3]) : 600;
@@ -703,6 +892,109 @@ tTJSNC_Dialog::tTJSNC_Dialog() : inherited(TJS_W("Dialog"))
 		TJS_END_NATIVE_PROP_SETTER
 	}
 	TJS_END_NATIVE_PROP_DECL(defaultFontFamily)
+	//---------------------------------------------------------------------------
+	// renderScale プロパティ (static 相当):
+	//   overlay の描画密度モード。
+	//     0 (既定) = auto: 最終 present サイズで直接ラスタライズ (authored が
+	//                surface より大きい画面は縮小率ぶん小さい buffer で描く)
+	//     >0       = authored 論理サイズ × この倍率で描き、 present 時に拡縮
+	//                (1.0 = 原寸レンダ→拡縮表示、 2.0 = 旧 supersampling 相当)
+	//   表示中の画面にも次フレームから反映される (描画品質/負荷の比較用)。
+	TJS_BEGIN_NATIVE_PROP_DECL(renderScale)
+	{
+		TJS_BEGIN_NATIVE_PROP_GETTER
+		{
+			*result = (tjs_real)tTVPElementsDialogManager::Instance().GetRenderScale();
+			return TJS_S_OK;
+		}
+		TJS_END_NATIVE_PROP_GETTER
+
+		TJS_BEGIN_NATIVE_PROP_SETTER
+		{
+			tTVPElementsDialogManager::Instance().SetRenderScale((float)(tjs_real)*param);
+			return TJS_S_OK;
+		}
+		TJS_END_NATIVE_PROP_SETTER
+	}
+	TJS_END_NATIVE_PROP_DECL(renderScale)
+	//---------------------------------------------------------------------------
+	// setPadIconBase(dir)
+	//
+	// pad_icon (Kenney input prompts) のベースディレクトリを設定する。 dir は
+	// krkrz storage パス (XP3 内でも OK。 SVG 読込は Storages-backed
+	// resource_loader 経由)。 配下に xbox/ps/switch/keyboard の各ディレクトリ +
+	// vector/*.svg がある構成 (uisample の resources/kenny_input_prompts と同じ)。
+	// 未設定のままだと pad_icon は灰色プレースホルダになる。
+	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/setPadIconBase)
+	{
+		if (numparams < 1) return TJS_E_BADPARAMCOUNT;
+		ttstr dir(*param[0]);
+		std::string utf8;
+		tjs_string ts(dir.c_str());
+		TVPUtf16ToUtf8(utf8, ts);
+		cycfi::elements::set_pad_icon_base_dir(utf8);
+		if (result) *result = true;
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_METHOD_DECL(/*func. name*/setPadIconBase)
+	//---------------------------------------------------------------------------
+	// setPadTheme(name)
+	//
+	// pad_icon の全体テーマ ("xbox"/"ps"/"switch"/"keyboard"/"none") を設定する。
+	// 画面 JSON の top-level "pad_theme" が指定されていればそちらが優先される
+	// (build 時に上書き)。 戻り値は名前を解釈できたかどうか。
+	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/setPadTheme)
+	{
+		if (numparams < 1) return TJS_E_BADPARAMCOUNT;
+		ttstr name(*param[0]);
+		std::string utf8;
+		tjs_string ts(name.c_str());
+		TVPUtf16ToUtf8(utf8, ts);
+		auto t = cycfi::elements::parse_pad_theme(utf8);
+		bool ok = (t != cycfi::elements::pad_theme::none) || (utf8 == "none");
+		if (ok) cycfi::elements::set_pad_theme(t);
+		if (result) *result = ok;
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_METHOD_DECL(/*func. name*/setPadTheme)
+	//---------------------------------------------------------------------------
+	// registerImage(name, path)
+	//
+	// 実行時画像ストアへ、 storage パス path のファイルを name で登録する。
+	// jsonc の image ウィジェット等からは "mem://<name>" で参照する。 セーブ
+	// サムネイル等、 実行時に変わる画像を Elements へ渡すための仕組み。
+	// pixmap は画面 build 時に読み直されるので、 再登録 → 画面再オープンで表示が
+	// 更新される。 戻り値 = 読込・登録に成功したか。
+	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/registerImage)
+	{
+		if (numparams < 2) return TJS_E_BADPARAMCOUNT;
+		ttstr name(*param[0]);
+		ttstr path(*param[1]);
+		bool ok = TVPRegisterElementsImageFile(name, path);
+		if (result) *result = ok;
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_METHOD_DECL(/*func. name*/registerImage)
+	//---------------------------------------------------------------------------
+	// unregisterImage(name) — 実行時画像ストアから name を削除。
+	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/unregisterImage)
+	{
+		if (numparams < 1) return TJS_E_BADPARAMCOUNT;
+		ttstr name(*param[0]);
+		TVPUnregisterElementsImage(name);
+		if (result) *result = true;
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_METHOD_DECL(/*func. name*/unregisterImage)
+	//---------------------------------------------------------------------------
+	// clearImages() — 実行時画像ストアを全消去。
+	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/clearImages)
+	{
+		TVPClearElementsImages();
+		if (result) *result = true;
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_METHOD_DECL(/*func. name*/clearImages)
 	//---------------------------------------------------------------------------
 	// active プロパティ (getter のみ):
 	//   この Dialog インスタンスが今アクティブなダイアログ / フローのオーナーか。

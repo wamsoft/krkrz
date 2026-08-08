@@ -1,0 +1,30 @@
+// 斜めワイプ (universal) 遷移先の画面。戻りは同じ rule を鋭いエッジで。
+{
+    "size": [960, 600],
+    "background": [96, 40, 40, 255],
+    "input": { "arrow_focus_nav": true },
+    "transitions": {
+        "back": { "target": "<back>", "effect": "universal",
+                  "rule": "rule_wipe.png", "vague": 8, "duration": 700 },
+        "": { "target": "<back>", "effect": "universal",
+              "rule": "rule_wipe.png", "vague": 8, "duration": 700 }
+    },
+    "content": {
+        "type": "align_center_middle",
+        "child": { "type": "vtile", "children": [
+            { "type": "label", "text": "UNIVERSAL / WIPE", "size": 56,
+              "color": [255, 220, 200, 255],
+              "animate": { "type": "move", "from": [-500, 0], "to": [0, 0],
+                           "frames": 20, "accel": 0.2, "decel": 0.4 } },
+            { "type": "vspacer", "height": 12 },
+            { "type": "label", "text": "rule 画像 (斜めグラデーション) の暗い画素から順に切替",
+              "size": 22, "color": [220, 180, 170, 255] },
+            { "type": "label", "text": "行き: vague 48 (ぼかし) / 戻り: vague 8 (鋭いエッジ)",
+              "size": 22, "color": [220, 180, 170, 255] },
+            { "type": "vspacer", "height": 36 },
+            { "type": "hsize", "width": 280, "child":
+                { "type": "button", "id": "back", "text": "戻る (鋭いワイプ)",
+                  "close_on_click": true, "initial_focus": true } }
+        ]}
+    }
+}

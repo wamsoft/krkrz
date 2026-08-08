@@ -26,7 +26,8 @@
 #include <string>
 #include <vector>
 
-#define PICOJSON_USE_INT64
+// PICOJSON_USE_INT64 は CMakeLists.txt でビルド全体に定義される (TU ローカルに
+// define すると他 TU と ODR 不整合になるためここでは定義しない)
 #include "picojson/picojson.h"
 
 namespace TJS

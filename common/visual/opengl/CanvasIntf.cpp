@@ -98,6 +98,71 @@ const ttstr tTJSNI_Canvas::DefaultFillFragmentShaderText(
 	TJS_W( "}" )
 );
 //----------------------------------------------------------------------
+// 内蔵トランジションシェーダ (drawTransition)。 s_tex0 = 表 (from) /
+// s_tex1 = 裏 (to)、 a_phase = 進行度 0-1。 straight-alpha 同士の混色式は
+// 実績のある旧ゲームシステム実装 (crossfade.frag / universal.frag) を踏襲。
+const ttstr tTJSNI_Canvas::TransitionCrossfadeFragmentShaderText(
+TJS_W( "precision mediump float;" )
+TJS_W( "varying vec2 v_texCoord;" )
+TJS_W( "uniform sampler2D s_tex0;" )
+TJS_W( "uniform sampler2D s_tex1;" )
+TJS_W( "uniform float a_phase;" )
+TJS_W( "uniform float a_opacity;" )
+TJS_W( "void main()" )
+TJS_W( "{" )
+TJS_W( "  vec4 s1 = texture2D( s_tex0, v_texCoord );" )
+TJS_W( "  vec4 s2 = texture2D( s_tex1, v_texCoord );" )
+TJS_W( "  float opa = clamp( a_phase, 0.0, 1.0 );" )
+TJS_W( "  float a1 = s1.a;" )
+TJS_W( "  float a2 = s2.a;" )
+TJS_W( "  float a = a1 * (1.0 - opa);" )
+TJS_W( "  float alpha = 1.0;" )
+TJS_W( "  if( a != 0.0 ) {" )
+TJS_W( "    float b = a2 * opa;" )
+TJS_W( "    alpha = b / a;" )
+TJS_W( "    alpha = alpha / (1.0 - b + alpha);" )
+TJS_W( "    alpha = clamp( alpha, 0.0, 1.0 );" )
+TJS_W( "  }" )
+TJS_W( "  float ar = a1 + (a2 - a1) * opa;" )
+TJS_W( "  gl_FragColor = vec4( mix( s1.rgb, s2.rgb, alpha ), ar * a_opacity );" )
+TJS_W( "}" )
+);
+//----------------------------------------------------------------------
+// universal: s_tex2 = rule (tcfAlpha、 .a 参照)。 a_vague = ぼかし幅
+// (rule 値スケールを 0-1 に正規化)。 閾値は a_phase * (1+vague) をスイープし、
+// phase=0 で全画素 表 / phase=1 で全画素 裏 になる (CPU 版と同じ意味論)。
+const ttstr tTJSNI_Canvas::TransitionUniversalFragmentShaderText(
+TJS_W( "precision mediump float;" )
+TJS_W( "varying vec2 v_texCoord;" )
+TJS_W( "uniform sampler2D s_tex0;" )
+TJS_W( "uniform sampler2D s_tex1;" )
+TJS_W( "uniform sampler2D s_tex2;" )
+TJS_W( "uniform float a_phase;" )
+TJS_W( "uniform float a_vague;" )
+TJS_W( "uniform float a_opacity;" )
+TJS_W( "void main()" )
+TJS_W( "{" )
+TJS_W( "  vec4 s1 = texture2D( s_tex0, v_texCoord );" )
+TJS_W( "  vec4 s2 = texture2D( s_tex1, v_texCoord );" )
+TJS_W( "  float rule = texture2D( s_tex2, v_texCoord ).a;" )
+TJS_W( "  float vague = max( a_vague, 1.0 / 255.0 );" )
+TJS_W( "  float thres = clamp( a_phase, 0.0, 1.0 ) * (1.0 + vague);" )
+TJS_W( "  float opa = clamp( (thres - rule) / vague, 0.0, 1.0 );" )
+TJS_W( "  float a1 = s1.a;" )
+TJS_W( "  float a2 = s2.a;" )
+TJS_W( "  float a = a1 * (1.0 - opa);" )
+TJS_W( "  float alpha = 1.0;" )
+TJS_W( "  if( a != 0.0 ) {" )
+TJS_W( "    float b = a2 * opa;" )
+TJS_W( "    alpha = b / a;" )
+TJS_W( "    alpha = alpha / (1.0 - b + alpha);" )
+TJS_W( "    alpha = clamp( alpha, 0.0, 1.0 );" )
+TJS_W( "  }" )
+TJS_W( "  float ar = a1 + (a2 - a1) * opa;" )
+TJS_W( "  gl_FragColor = vec4( mix( s1.rgb, s2.rgb, alpha ), ar * a_opacity );" )
+TJS_W( "}" )
+);
+//----------------------------------------------------------------------
 const float tTJSNI_Canvas::DefaultUVs[] = {
 	0.0f,  1.0f,
 	0.0f,  0.0f,
@@ -168,6 +233,16 @@ void TJS_INTF_METHOD tTJSNI_Canvas::Invalidate() {
 	DefaultFillShaderObject.Clear();
 	EmbeddedDefaultFillShaderObject.Clear();
 	DefaultFillShaderInstance = nullptr;
+
+	// release transition shaders (内蔵、 遅延生成なので未使用なら void のまま)
+	if( TransitionCrossfadeShaderObject.Type() == tvtObject )
+		TransitionCrossfadeShaderObject.AsObjectClosureNoAddRef().Invalidate( 0, NULL, NULL, TransitionCrossfadeShaderObject.AsObjectNoAddRef() );
+	TransitionCrossfadeShaderObject.Clear();
+	TransitionCrossfadeShaderInstance = nullptr;
+	if( TransitionUniversalShaderObject.Type() == tvtObject )
+		TransitionUniversalShaderObject.AsObjectClosureNoAddRef().Invalidate( 0, NULL, NULL, TransitionUniversalShaderObject.AsObjectNoAddRef() );
+	TransitionUniversalShaderObject.Clear();
+	TransitionUniversalShaderInstance = nullptr;
 }
 //----------------------------------------------------------------------
 void TJS_INTF_METHOD tTJSNI_Canvas::Destruct() {
@@ -252,7 +327,15 @@ void tTJSNI_Canvas::BeginDrawing()
 	glClear( GL_COLOR_BUFFER_BIT | GL_STENCIL_BUFFER_BIT );
 
 #ifndef __EMSCRIPTEN__
-	glDisable(GL_FRAMEBUFFER_SRGB_EXT); // sRGB補整の無効化 (WebGL には存在しない enum のため除外)
+	// sRGB補整の無効化。GL_FRAMEBUFFER_SRGB_EXT は GL_EXT_sRGB_write_control 拡張が
+	// 無い GLES 環境 (例: ANGLE) では無効な enum で、glDisable が GL_INVALID_ENUM を
+	// 立てる。このエラーは誰も消費しないため後段の ShaderProgram リンク前チェック
+	// (CheckLinkStatusAndReturnProgram の glGetError) を誤発火させ、正常なシェーダが
+	// "Shader compile error" になる (WINVER gpumode でタイトルの crossfade が落ちる原因)。
+	// 対応を検出できた環境でのみ呼ぶ (SupportSRGBWriteControl は InitSupported で一度だけ判定)。
+	if (GLTexture::SupportSRGBWriteControl()) {
+		glDisable(GL_FRAMEBUFFER_SRGB_EXT);
+	}
 #endif
 
 	glDisable( GL_DEPTH_TEST );
@@ -366,11 +449,22 @@ void tTJSNI_Canvas::Capture( class tTJSNI_Bitmap* bmp, int x, int y, int w, int 
 	if (w == 0) w = sw;
 	if (h == 0) h = sh;
 	if (x < 0 || y < 0 || x+w > sw || y+h > sh) {
-		TVPThrowExceptionMessage(TJS_W("capture area over."));
+		TVPThrowExceptionMessage(TVPCaptureAreaOver);
 	}
 
 	bmp->SetSize( w, h, false );
-	tTVPBaseBitmap* b = bmp->GetBitmap();
+	Capture( bmp->GetBitmap(), x, y, w, h );
+}
+//----------------------------------------------------------------------
+void tTJSNI_Canvas::Capture( class tTVPBaseBitmap* b, int x, int y, int w, int h ) {
+	tjs_int sw = CanvasWidth;
+	tjs_int sh = CanvasHeight;
+
+	if (w == 0) w = sw;
+	if (h == 0) h = sh;
+	if (x < 0 || y < 0 || x+w > sw || y+h > sh) {
+		TVPThrowExceptionMessage(TVPCaptureAreaOver);
+	}
 
 	std::unique_ptr<char[]> buffer(new char[w*h*4]);
 	tjs_uint32 *src = (tjs_uint32*)&buffer[0];
@@ -405,7 +499,7 @@ void tTJSNI_Canvas::Capture( const class iTVPTextureInfoIntrface* texture, int x
 	if (w == 0) w = sw;
 	if (h == 0) h = sh;
 	if (x < 0 || y < 0 || x+w > sw || y+h > sh) {
-		TVPThrowExceptionMessage(TJS_W("capture area over."));
+		TVPThrowExceptionMessage(TVPCaptureAreaOver);
 	}
 
 	glActiveTexture( GL_TEXTURE0 );
@@ -456,20 +550,20 @@ void tTJSNI_Canvas::Fill( tjs_int width, tjs_int height, tjs_uint32 colors[4], t
 
 	shader->SetupProgram();
 	GLint posLoc = shader->FindLocation( std::string( "a_pos" ) );
-	if( posLoc < 0 ) TVPThrowExceptionMessage( TJS_W( "Not found a_pos in shader." ) );
+	if( posLoc < 0 ) TVPThrowExceptionMessage(TVPNotFoundInShader, TJS_W("a_pos"));
 	glVertexAttribPointer( posLoc, 2, GL_FLOAT, GL_FALSE, 2 * sizeof( GLfloat ), vertices );
 	GLint colorLoc = shader->FindLocation( std::string( "a_color" ) );
-	if( colorLoc < 0 ) TVPThrowExceptionMessage( TJS_W( "Not found a_texCoord in shader." ) );
+	if( colorLoc < 0 ) TVPThrowExceptionMessage(TVPNotFoundInShader, TJS_W("a_texCoord"));
 	glVertexAttribPointer( colorLoc, 4, GL_FLOAT, GL_FALSE, 4 * sizeof( GLfloat ), glcolors );
 	glEnableVertexAttribArray( posLoc );
 	glEnableVertexAttribArray( colorLoc );
 
 	GLint matLoc = shader->FindLocation( std::string( "a_modelMat4" ) );
-	if( matLoc < 0 ) TVPThrowExceptionMessage( TJS_W( "Not found a_modelMat4 in shader." ) );
+	if( matLoc < 0 ) TVPThrowExceptionMessage(TVPNotFoundInShader, TJS_W("a_modelMat4"));
 	glUniformMatrix4fv( matLoc, 1, GL_FALSE, Matrix32Instance->GetMatrixArray16() );
 
 	GLint vpLoc = shader->FindLocation( std::string( "a_size" ) );
-	if( vpLoc < 0 ) TVPThrowExceptionMessage( TJS_W( "Not found a_size in shader." ) );
+	if( vpLoc < 0 ) TVPThrowExceptionMessage(TVPNotFoundInShader, TJS_W("a_size"));
 	glUniform2f( vpLoc, (float)ssize.x, (float)ssize.y );
 
 	glDrawArrays( GL_TRIANGLE_STRIP, 0, 4 );
@@ -478,11 +572,11 @@ void tTJSNI_Canvas::Fill( tjs_int width, tjs_int height, tjs_uint32 colors[4], t
 void tTJSNI_Canvas::SetupTextureDrawing( tTJSNI_ShaderProgram* shader, const iTVPTextureInfoIntrface* tex, tTJSNI_Matrix32* mat, const tTVPPoint& vpSize ) {
 #if 1
 	GLint posLoc = shader->FindLocation( std::string( "a_pos" ) );
-	if( posLoc < 0 ) TVPThrowExceptionMessage( TJS_W("Not found a_pos in shader.") );
+	if( posLoc < 0 ) TVPThrowExceptionMessage(TVPNotFoundInShader, TJS_W("a_pos"));
 	GLint uvLoc = shader->FindLocation( std::string( "a_texCoord" ) );
-	if( uvLoc < 0 ) TVPThrowExceptionMessage( TJS_W("Not found a_texCoord in shader.") );
+	if( uvLoc < 0 ) TVPThrowExceptionMessage(TVPNotFoundInShader, TJS_W("a_texCoord"));
 	GLuint vboid = (GLuint)tex->GetVBOHandle();
-	if( vboid == 0 ) TVPThrowExceptionMessage( TJS_W("This method require VBO.") );
+	if( vboid == 0 ) TVPThrowExceptionMessage(TVPThisMethodRequireVBO );
 	glBindBuffer( GL_ARRAY_BUFFER, vboid );
 	glVertexAttribPointer( posLoc, 2, GL_FLOAT, GL_FALSE, 2 * sizeof( GLfloat ), 0 );
 	TextureVertexBuffer.bindBuffer();
@@ -492,17 +586,17 @@ void tTJSNI_Canvas::SetupTextureDrawing( tTJSNI_ShaderProgram* shader, const iTV
 	glEnableVertexAttribArray( uvLoc );
 
 	GLint texLoc = shader->FindLocation( std::string( "s_tex0" ) );
-	if( texLoc < 0 ) TVPThrowExceptionMessage( TJS_W( "Not found s_tex0 in shader." ) );
+	if( texLoc < 0 ) TVPThrowExceptionMessage(TVPNotFoundInShader, TJS_W("s_tex0"));
 	glActiveTexture( GL_TEXTURE0 );
 	glBindTexture( GL_TEXTURE_2D, (GLuint)tex->GetNativeHandle() );
 	glUniform1i( texLoc, 0 );
 
 	GLint matLoc = shader->FindLocation( std::string( "a_modelMat4" ) );
-	if( matLoc < 0 ) TVPThrowExceptionMessage( TJS_W("Not found a_modelMat4 in shader.") );
+	if( matLoc < 0 ) TVPThrowExceptionMessage(TVPNotFoundInShader, TJS_W("a_modelMat4"));
 	glUniformMatrix4fv( matLoc, 1, GL_FALSE, mat->GetMatrixArray16() );
 
 	GLint vpLoc = shader->FindLocation( std::string( "a_size" ) );
-	if( vpLoc < 0 ) TVPThrowExceptionMessage( TJS_W("Not found a_size in shader.") );
+	if( vpLoc < 0 ) TVPThrowExceptionMessage(TVPNotFoundInShader, TJS_W("a_size"));
 	glUniform2f( vpLoc, (float)vpSize.x, (float)vpSize.y );
 #else
 	const float width = (float)tex->GetWidth();
@@ -566,7 +660,7 @@ void tTJSNI_Canvas::DrawTexture( const iTVPTextureInfoIntrface* texture0, const 
 	shader->SetupProgram();
 	SetupTextureDrawing( shader, texture0, Matrix32Instance, ssize );
 	GLint texLoc = shader->FindLocation( std::string( "s_tex1" ) );
-	if( texLoc < 0 ) TVPThrowExceptionMessage( TJS_W("Not found s_tex1 in shader.") );
+	if( texLoc < 0 ) TVPThrowExceptionMessage(TVPNotFoundInShader, TJS_W("s_tex1"));
 	glActiveTexture( GL_TEXTURE1 );
 	glBindTexture( GL_TEXTURE_2D, (GLuint)texture1->GetNativeHandle() );
 	glUniform1i( texLoc, 1 );
@@ -587,12 +681,12 @@ void tTJSNI_Canvas::DrawTexture( const iTVPTextureInfoIntrface* texture0, const 
 	shader->SetupProgram();
 	SetupTextureDrawing( shader, texture0, Matrix32Instance, ssize );
 	GLint texLoc = shader->FindLocation( std::string( "s_tex1" ) );
-	if( texLoc < 0 ) TVPThrowExceptionMessage( TJS_W("Not found s_tex1 in shader.") );
+	if( texLoc < 0 ) TVPThrowExceptionMessage(TVPNotFoundInShader, TJS_W("s_tex1"));
 	glActiveTexture( GL_TEXTURE1 );
 	glBindTexture( GL_TEXTURE_2D, (GLuint)texture1->GetNativeHandle() );
 	glUniform1i( texLoc, 1 );
 	texLoc = shader->FindLocation( std::string( "s_tex2" ) );
-	if( texLoc < 0 ) TVPThrowExceptionMessage( TJS_W("Not found s_tex2 in shader.") );
+	if( texLoc < 0 ) TVPThrowExceptionMessage(TVPNotFoundInShader, TJS_W("s_tex2"));
 	glActiveTexture( GL_TEXTURE2 );
 	glBindTexture( GL_TEXTURE_2D, (GLuint)texture2->GetNativeHandle() );
 	glUniform1i( texLoc, 2 );
@@ -606,6 +700,73 @@ void tTJSNI_Canvas::DrawTexture( const iTVPTextureInfoIntrface* texture0, const 
 	glBindTexture( GL_TEXTURE_2D, 0 );
 }
 //----------------------------------------------------------------------
+tTJSNI_ShaderProgram* tTJSNI_Canvas::EnsureTransitionShader( bool universal ) {
+	tTJSVariant& obj = universal ? TransitionUniversalShaderObject
+	                             : TransitionCrossfadeShaderObject;
+	tTJSNI_ShaderProgram*& inst = universal ? TransitionUniversalShaderInstance
+	                                        : TransitionCrossfadeShaderInstance;
+	if( inst ) return inst;
+
+	iTJSDispatch2 * cls = NULL;
+	iTJSDispatch2 * newobj = NULL;
+	try
+	{
+		cls = new tTJSNC_ShaderProgram();
+		tTJSVariant param[4] = { DefaultVertexShaderText,
+			universal ? TransitionUniversalFragmentShaderText
+			          : TransitionCrossfadeFragmentShaderText, 0, 0 };
+		tTJSVariant *pparam[4] = { param, param + 1, param + 2, param + 3 };
+		if( TJS_FAILED( cls->CreateNew( 0, NULL, NULL, &newobj, 4, pparam, cls ) ) )
+			TVPThrowExceptionMessage( TVPInternalError, TJS_W( "tTJSNI_ShaderProgram::Construct" ) );
+		{
+			// a_opacity 既定 1.0 (default shader と同じ理由: uniform 初期値 0 対策)
+			tTJSVariant opacity(1.0);
+			static ttstr opacity_name(TJS_W("a_opacity"));
+			newobj->PropSet( TJS_MEMBERENSURE, opacity_name.c_str(),
+				opacity_name.GetHint(), &opacity, newobj );
+		}
+		obj = tTJSVariant( newobj, newobj );
+		if( TJS_FAILED( newobj->NativeInstanceSupport( TJS_NIS_GETINSTANCE,
+			tTJSNC_ShaderProgram::ClassID, (iTJSNativeInstance**)&inst ) ) ) {
+			inst = nullptr;
+			TVPThrowExceptionMessage( TVPCannotRetriveInstance, TJS_W("shader") );
+		}
+	} catch( ... ) {
+		if( cls ) cls->Release();
+		if( newobj ) newobj->Release();
+		throw;
+	}
+	if( cls ) cls->Release();
+	if( newobj ) newobj->Release();
+	return inst;
+}
+//----------------------------------------------------------------------
+void tTJSNI_Canvas::DrawTransition( const iTVPTextureInfoIntrface* front,
+	const iTVPTextureInfoIntrface* back, tjs_real phase,
+	const iTVPTextureInfoIntrface* rule, tjs_int vague ) {
+	const bool universal = ( rule != nullptr );
+	tTJSNI_ShaderProgram* shader = EnsureTransitionShader( universal );
+
+	// 進行度 / ぼかし幅は shader パラメータとして保存 → SetupProgram で適用される
+	if( phase < 0.0 ) phase = 0.0;
+	else if( phase > 1.0 ) phase = 1.0;
+	{
+		static ttstr phase_name( TJS_W("a_phase") );
+		tTJSVariant pv( phase );
+		shader->SetShaderParam( phase_name, &pv );
+	}
+	if( universal ) {
+		if( vague < 1 ) vague = 1;
+		else if( vague > 255 ) vague = 255;
+		static ttstr vague_name( TJS_W("a_vague") );
+		tTJSVariant vv( (tjs_real)vague / 255.0 );
+		shader->SetShaderParam( vague_name, &vv );
+		DrawTexture( front, back, rule, shader );
+	} else {
+		DrawTexture( front, back, shader );
+	}
+}
+//----------------------------------------------------------------------
 void tTJSNI_Canvas::DrawTextureAtlas( const tTJSNI_Rect* rect, const iTVPTextureInfoIntrface* texture, tTJSNI_ShaderProgram* shader ) {
 	SetupEachDrawing();
 
@@ -617,9 +778,9 @@ void tTJSNI_Canvas::DrawTextureAtlas( const tTJSNI_Rect* rect, const iTVPTexture
 	shader->SetupProgram();
 
 	GLint posLoc = shader->FindLocation( std::string( "a_pos" ) );
-	if( posLoc < 0 ) TVPThrowExceptionMessage( TJS_W("Not found a_pos in shader.") );
+	if( posLoc < 0 ) TVPThrowExceptionMessage(TVPNotFoundInShader, TJS_W("a_pos"));
 	GLint uvLoc = shader->FindLocation( std::string( "a_texCoord" ) );
-	if( uvLoc < 0 ) TVPThrowExceptionMessage( TJS_W("Not found a_texCoord in shader.") );
+	if( uvLoc < 0 ) TVPThrowExceptionMessage(TVPNotFoundInShader, TJS_W("a_texCoord"));
 
 	const float tw = (float)texture->GetWidth();
 	const float th = (float)texture->GetHeight();
@@ -650,17 +811,17 @@ void tTJSNI_Canvas::DrawTextureAtlas( const tTJSNI_Rect* rect, const iTVPTexture
 	glEnableVertexAttribArray( uvLoc );
 
 	GLint texLoc = shader->FindLocation( std::string( "s_tex0" ) );
-	if( texLoc < 0 ) TVPThrowExceptionMessage( TJS_W( "Not found s_tex0 in shader." ) );
+	if( texLoc < 0 ) TVPThrowExceptionMessage(TVPNotFoundInShader, TJS_W("s_tex0"));
 	glActiveTexture( GL_TEXTURE0 );
 	glBindTexture( GL_TEXTURE_2D, (GLuint)texture->GetNativeHandle() );
 	glUniform1i( texLoc, 0 );
 
 	GLint matLoc = shader->FindLocation( std::string( "a_modelMat4" ) );
-	if( matLoc < 0 ) TVPThrowExceptionMessage( TJS_W("Not found a_modelMat4 in shader.") );
+	if( matLoc < 0 ) TVPThrowExceptionMessage(TVPNotFoundInShader, TJS_W("a_modelMat4"));
 	glUniformMatrix4fv( matLoc, 1, GL_FALSE, Matrix32Instance->GetMatrixArray16() );
 
 	GLint vpLoc = shader->FindLocation( std::string( "a_size" ) );
-	if( vpLoc < 0 ) TVPThrowExceptionMessage( TJS_W("Not found a_size in shader.") );
+	if( vpLoc < 0 ) TVPThrowExceptionMessage(TVPNotFoundInShader, TJS_W("a_size"));
 	glUniform2f( vpLoc, (float)ssize.x, (float)ssize.y );
 
 	glDrawArrays( GL_TRIANGLE_STRIP, 0, 4 );
@@ -679,9 +840,9 @@ void tTJSNI_Canvas::Draw9PatchTexture( class tTJSNI_Texture* tex, tjs_int width,
 	shader->SetupProgram();
 
 	GLint posLoc = shader->FindLocation( std::string( "a_pos" ) );
-	if( posLoc < 0 ) TVPThrowExceptionMessage( TJS_W( "Not found a_pos in shader." ) );
+	if( posLoc < 0 ) TVPThrowExceptionMessage(TVPNotFoundInShader, TJS_W("a_pos"));
 	GLint uvLoc = shader->FindLocation( std::string( "a_texCoord" ) );
-	if( uvLoc < 0 ) TVPThrowExceptionMessage( TJS_W( "Not found a_texCoord in shader." ) );
+	if( uvLoc < 0 ) TVPThrowExceptionMessage(TVPNotFoundInShader, TJS_W("a_texCoord"));
 
 	const float tw = (float)tex->GetWidth();
 	const float th = (float)tex->GetHeight();
@@ -821,17 +982,17 @@ void tTJSNI_Canvas::Draw9PatchTexture( class tTJSNI_Texture* tex, tjs_int width,
 	glEnableVertexAttribArray( uvLoc );
 
 	GLint texLoc = shader->FindLocation( std::string( "s_tex0" ) );
-	if( texLoc < 0 ) TVPThrowExceptionMessage( TJS_W( "Not found s_tex0 in shader." ) );
+	if( texLoc < 0 ) TVPThrowExceptionMessage(TVPNotFoundInShader, TJS_W("s_tex0"));
 	glActiveTexture( GL_TEXTURE0 );
 	glBindTexture( GL_TEXTURE_2D, (GLuint)tex->GetNativeHandle() );
 	glUniform1i( texLoc, 0 );
 
 	GLint matLoc = shader->FindLocation( std::string( "a_modelMat4" ) );
-	if( matLoc < 0 ) TVPThrowExceptionMessage( TJS_W( "Not found a_modelMat4 in shader." ) );
+	if( matLoc < 0 ) TVPThrowExceptionMessage(TVPNotFoundInShader, TJS_W("a_modelMat4"));
 	glUniformMatrix4fv( matLoc, 1, GL_FALSE, Matrix32Instance->GetMatrixArray16() );
 
 	GLint vpLoc = shader->FindLocation( std::string( "a_size" ) );
-	if( vpLoc < 0 ) TVPThrowExceptionMessage( TJS_W( "Not found a_size in shader." ) );
+	if( vpLoc < 0 ) TVPThrowExceptionMessage(TVPNotFoundInShader, TJS_W("a_size"));
 	glUniform2f( vpLoc, (float)ssize.x, (float)ssize.y );
 
 	const GLsizei count = sizeof( indexes ) / sizeof( GLubyte );
@@ -871,7 +1032,7 @@ void tTJSNI_Canvas::DrawMesh( tTJSNI_ShaderProgram* shader, tjs_int primitiveTyp
 	if( count <= 0 ) return;
 	GLenum type = (GLenum)index->GetVertexBuffer()->GetDataType();
 	if( type != GL_UNSIGNED_BYTE && type != GL_UNSIGNED_SHORT && type != GL_UNSIGNED_INT ) {
-		TVPThrowExceptionMessage( TJS_W("Index type is invalid.") );
+		TVPThrowExceptionMessage(TVPIndexTypeIsInvalid );
 		return;
 	}
 
@@ -952,7 +1113,7 @@ void tTJSNI_Canvas::UnwindEffects() {
 void tTJSNI_Canvas::BeginEffect() {
 	tjs_int w = GetCanvasWidth(), h = GetCanvasHeight();
 	if( w <= 0 || h <= 0 ) {
-		TVPThrowExceptionMessage( TJS_W("Canvas.beginEffect: no canvas size (call while drawing).") );
+		TVPThrowExceptionMessage(TVPCanvasBeginEffectNoCanvasSizeCallWhileDrawing );
 	}
 	if( !EffectCtx.ready() ) EffectCtx.init();
 
@@ -1053,7 +1214,7 @@ void tTJSNI_Canvas::EndMaskClip( const iTVPTextureInfoIntrface* mask, float x, f
 void tTJSNI_Canvas::BeginStencilClip( const iTVPTextureInfoIntrface* mask, float x, float y, tjs_int threshold ) {
 	tjs_int w = GetCanvasWidth(), h = GetCanvasHeight();
 	if( w <= 0 || h <= 0 ) {
-		TVPThrowExceptionMessage( TJS_W("Canvas.beginStencilClip: no canvas size (call while drawing).") );
+		TVPThrowExceptionMessage(TVPCanvasBeginStencilClipNoCanvasSizeCallWhileDrawing );
 	}
 	if( !mask ) return;
 	if( !ClipCtx.ready() ) ClipCtx.init();
@@ -1142,7 +1303,7 @@ void tTJSNI_Canvas::SetRenderTargetObject( const tTJSVariant & val ) {
 		if( clo.Object ) {
 			if( TJS_FAILED( clo.Object->NativeInstanceSupport( TJS_NIS_GETINSTANCE, tTJSNC_Offscreen::ClassID, (iTJSNativeInstance**)&RenderTargetInstance ) ) ) {
 				RenderTargetInstance = nullptr;
-				TVPThrowExceptionMessage( TJS_W( "Cannot retrive rect instance." ) );
+				TVPThrowExceptionMessage(TVPCannotRetriveInstance, TJS_W("rect"));
 			}
 		}
 	}
@@ -1178,7 +1339,7 @@ void tTJSNI_Canvas::SetClipRectObject( const tTJSVariant & val ) {
 		if( clo.Object ) {
 			if( TJS_FAILED( clo.Object->NativeInstanceSupport( TJS_NIS_GETINSTANCE, tTJSNC_Rect::ClassID, (iTJSNativeInstance**)&ClipRectInstance ) ) ) {
 				ClipRectInstance = nullptr;
-				TVPThrowExceptionMessage( TJS_W( "Cannot retrive rect instance." ) );
+				TVPThrowExceptionMessage(TVPCannotRetriveInstance, TJS_W("rect"));
 			}
 		}
 	}
@@ -1199,7 +1360,7 @@ void tTJSNI_Canvas::SetMatrix32Object( const tTJSVariant & val ) {
 		if( clo.Object ) {
 			if( TJS_FAILED( clo.Object->NativeInstanceSupport( TJS_NIS_GETINSTANCE, tTJSNC_Matrix32::ClassID, (iTJSNativeInstance**)&Matrix32Instance ) ) ) {
 				Matrix32Instance = nullptr;
-				TVPThrowExceptionMessage( TJS_W( "Cannot retrive matrix instance." ) );
+				TVPThrowExceptionMessage(TVPCannotRetriveInstance, TJS_W("matrix"));
 			}
 		}
 	}
@@ -1224,7 +1385,7 @@ void tTJSNI_Canvas::SetDefaultShader( const tTJSVariant & val ) {
 		if( clo.Object ) {
 			if( TJS_FAILED( clo.Object->NativeInstanceSupport( TJS_NIS_GETINSTANCE, tTJSNC_ShaderProgram::ClassID, (iTJSNativeInstance**)&DefaultShaderInstance ) ) ) {
 				DefaultShaderInstance = nullptr;
-				TVPThrowExceptionMessage( TJS_W( "Cannot retrive shader instance." ) );
+				TVPThrowExceptionMessage(TVPCannotRetriveInstance, TJS_W("shader"));
 			}
 		}
 	}
@@ -1249,7 +1410,7 @@ void tTJSNI_Canvas::SetDefaultFillShader( const tTJSVariant & val ) {
 		if( clo.Object ) {
 			if( TJS_FAILED( clo.Object->NativeInstanceSupport( TJS_NIS_GETINSTANCE, tTJSNC_ShaderProgram::ClassID, (iTJSNativeInstance**)&DefaultFillShaderInstance ) ) ) {
 				DefaultFillShaderInstance = nullptr;
-				TVPThrowExceptionMessage( TJS_W( "Cannot retrive shader instance." ) );
+				TVPThrowExceptionMessage(TVPCannotRetriveInstance, TJS_W("shader"));
 			}
 		}
 	}
@@ -1438,7 +1599,7 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/fill)
 				tTJSVariant tmp;
 				for( tjs_int i = 0; i < 4; i++ ) {
 					if( TJS_FAILED( clo.Object->PropGetByNum( TJS_MEMBERMUSTEXIST, i, &tmp, clo.ObjThis ) ) )
-						TVPThrowExceptionMessage( TJS_W( "Insufficient number of arrays." ) );
+						TVPThrowExceptionMessage(TVPInsufficientNumberOfArrays );
 					colors[i] = (tjs_uint32)(tjs_int64)tmp;
 				}
 				_this->Fill( width, height, colors, shader );
@@ -1465,7 +1626,7 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/drawMesh2D)
 		if(TJS_FAILED(clo.Object->NativeInstanceSupport(TJS_NIS_GETINSTANCE, tTJSNI_Texture::ClassID, (iTJSNativeInstance**)&texture)))
 			return TJS_E_INVALIDPARAM;
 	}
-	if(!texture) TVPThrowExceptionMessage(TJS_W("Parameter require Texture class instance."));
+	if(!texture) TVPThrowExceptionMessage(TVPParameterRequireClassInstance, TJS_W("Texture"));
 
 	// Mesh にしてしまうと3Dやる時に被るよな……
 	// TODO もうちょっと名前考える
@@ -1475,7 +1636,7 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/drawMesh2D)
 		if(TJS_FAILED(clo.Object->NativeInstanceSupport(TJS_NIS_GETINSTANCE, tTJSNI_Mesh::ClassID, (iTJSNativeInstance**)&mesh)))
 			return TJS_E_INVALIDPARAM;
 	}
-	if(!mesh) TVPThrowExceptionMessage(TJS_W("Parameter require Mesh class instance."));
+	if(!mesh) TVPThrowExceptionMessage(TVPParameterRequireClassInstance, TJS_W("Mesh"));
 
 	_this->DrawMesh( texture, mesh );
 
@@ -1524,6 +1685,36 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/drawTexture )
 }
 TJS_END_NATIVE_METHOD_DECL(/*func. name*/drawTexture)
 //----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/drawTransition )
+{
+	// drawTransition(front, back, phase [, rule [, vague=64]])
+	//   front/back : Texture / Offscreen (表 / 裏)
+	//   phase      : 進行度 0.0-1.0 (0=表のみ → 1=裏のみ)
+	//   rule       : ユニバーサルトランジションの rule 画像 (tcfAlpha テクスチャ)。
+	//                省略 / null でクロスフェード。
+	//   vague      : 境界ぼかし幅 (rule 値スケール 0-255、 既定 64)
+	TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Canvas );
+	if( numparams < 3 ) return TJS_E_BADPARAMCOUNT;
+
+	const iTVPTextureInfoIntrface* front = TVPGetTextureInfo( param[0] );
+	if( !front ) return TJS_E_INVALIDPARAM;
+	const iTVPTextureInfoIntrface* back = TVPGetTextureInfo( param[1] );
+	if( !back ) return TJS_E_INVALIDPARAM;
+	tjs_real phase = (tjs_real)*param[2];
+
+	const iTVPTextureInfoIntrface* rule = nullptr;
+	if( numparams >= 4 && param[3]->Type() == tvtObject && param[3]->AsObjectNoAddRef() ) {
+		rule = TVPGetTextureInfo( param[3] );
+		if( !rule ) return TJS_E_INVALIDPARAM;
+	}
+	tjs_int vague = 64;
+	if( numparams >= 5 && param[4]->Type() != tvtVoid ) vague = (tjs_int)*param[4];
+
+	_this->DrawTransition( front, back, phase, rule, vague );
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_METHOD_DECL(/*func. name*/drawTransition)
+//----------------------------------------------------------------------
 TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/drawTextureAtlas )
 {
 	TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Canvas );
@@ -1557,7 +1748,7 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/drawText)
 		if(TJS_FAILED(clo.Object->NativeInstanceSupport(TJS_NIS_GETINSTANCE, tTJSNC_Font::ClassID, (iTJSNativeInstance**)&font)))
 			return TJS_E_INVALIDPARAM;
 	}
-	if(!font) TVPThrowExceptionMessage(TJS_W("Parameter require Font class instance."));
+	if(!font) TVPThrowExceptionMessage(TVPParameterRequireClassInstance, TJS_W("Font"));
 
 	tjs_int x = *param[1];
 	tjs_int y = *param[2];

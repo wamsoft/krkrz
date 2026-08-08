@@ -105,3 +105,92 @@ class TextFontScene extends DemoScene
 
     function onDemoTest() { dm(@"@demotest:text_font faces=${faceList.count}"); }
 }
+
+
+// ======================================================================
+//  text_emoji シーン (TextEmojiScene) — 絵文字表示 (FreeType)
+//  絵文字フォールバックは FreeType ラスタライザの機能なので、GDI 既定の
+//  WINVER でも確認できるよう独立ページに分離している。
+// ======================================================================
+class TextEmojiScene extends DemoScene
+{
+    var savedRas = 0;
+    var emojiFT = true;   // FreeType へ切替えられたか
+    var sample = "顔 😀  星 ⭐  火 🔥  音 🎵  猫 🐱";
+
+    function TextEmojiScene() { super.DemoScene("絵文字 (FreeType)"); }
+
+    function create()
+    {
+        // Font.rasterizer はクラス(グローバル)プロパティ。絵文字は FreeType(=0)専用。
+        try { savedRas = Font.rasterizer; Font.rasterizer = 0; emojiFT = true; }
+        catch (e) { emojiFT = false; }
+        draw();
+        setInfo("font.emojiMode で 元フォント / 絵文字フォント を切替 (FreeType 専用)");
+    }
+
+    // ページを離れるときはラスタライザを元へ戻す (text_font の GDI 表示を保つ)。
+    function onExit() { try { Font.rasterizer = savedRas; } catch (e) {} }
+
+    function head(x, y, text)
+    {
+        resetFont(); stage.font.height = 18;
+        stage.drawText(x, y, "■ " + text, 0x8fb8e8, 255);
+    }
+
+    function resetFont()
+    {
+        var f = stage.font;
+        f.face = "";
+        f.bold = false; f.italic = false; f.underline = false; f.strikeout = false;
+        f.angle = 0; f.emojiMode = 0;
+    }
+
+    function row(y, mode, label)
+    {
+        var s = stage;
+        resetFont(); s.font.height = 40; s.font.emojiMode = mode;
+        s.drawText(40, y, label + ": " + sample, 0xe8ecf4, 255, true);
+    }
+
+    function draw()
+    {
+        var s = stage;
+        s.fillRect(0, 0, 1280, 720, 0xff181c24);
+
+        resetFont(); s.font.height = 34;
+        s.drawText(40, 22, "絵文字表示 (FreeType ラスタライザ)", 0xffffff, 255, true);
+
+        head(40, 80, "font.emojiMode : 0=元フォントのみ / 1=モノクロ絵文字 / 2=カラー絵文字");
+        resetFont(); s.font.height = 18;
+        s.drawText(48, 104, "・該当コードポイントを絵文字フォント (Noto Emoji) にフォールバックして描画", 0xc4ccda, 255);
+        s.drawText(48, 128, "・絵文字フォントは実行ファイルに埋め込み済み。Font.emojiFaceName / Font.addFont で差替も可", 0xc4ccda, 255);
+        s.drawText(48, 152, "・GDI ラスタライザ (WINVER 既定) には無い機能。この画面のみ FreeType(=0) を使用", 0xc4ccda, 255);
+
+        if (!emojiFT) {
+            resetFont(); s.font.height = 24;
+            s.drawText(40, 220, "(この環境では FreeType ラスタライザが使えません)", 0xf0a0a0, 255);
+            s.update();
+            return;
+        }
+
+        head(40, 190, "モード比較 (同じ文字列)");
+        row(214, 0, "mode0");
+        row(268, 1, "mode1");
+        row(322, 2, "mode2");
+
+        resetFont(); s.font.height = 16;
+        s.drawText(48, 380, "mode0 : 絵文字は元フォントに無いため tofu (□) 表示", 0x9fb0c8, 255);
+        s.drawText(48, 402, "mode1 : モノクロ絵文字グリフ (Noto Emoji)", 0x9fb0c8, 255);
+        s.drawText(48, 424, "mode2 : カラー絵文字グリフ (Noto Color Emoji)。★❤ 等は元フォントにもあるため mono になる場合あり", 0x9fb0c8, 255);
+        s.drawText(48, 446, "  → 文字直後に VS16 (U+FE0F) を付けると その1文字だけ絵文字優先 / VS15 (U+FE0E) で原フォント強制", 0x9fb0c8, 255);
+
+        head(40, 460, "グローバル既定: Font.defaultEmojiMode (個別 emojiMode = -1 でこれに追従)");
+        resetFont(); s.font.height = 40; s.font.emojiMode = 2;
+        s.drawText(48, 484, "🎨 😀 ⭐ 🔥 🎵 🐱 🎉 👍 🍎 🚀", 0xffe0a0, 255, true);
+
+        s.update();
+    }
+
+    function onDemoTest() { dm("@demotest:text_emoji ft=" + (emojiFT ? 1 : 0)); }
+}

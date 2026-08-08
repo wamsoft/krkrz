@@ -20,10 +20,12 @@ D3D9→D3D11 移行 (完了) に続く一連のワークストリームを、依
 
 **ユーザ可視の主な変更**: 動画 overlay は既定でハードウェアデコード (mp4/wmv 等、`-mediaengine=no`
 で無効化)、追加画像合成は `vomMixer` 指定時のみ、JPEG XR (.jxr) サポート撤去、音声 5.1/マルチ ch
-対応、DPI 追従。将来項目: Generic(SDL) の presenter 統一 / HW 経路への mixer 直描画 / F-1 3D 音声 /
-F-2 long-path。
+対応、DPI 追従。将来項目: HW 経路への mixer 直描画 / F-2 long-path。
 
 - **完了済**: D3D9 → D3D11/DXGI 描画移行 (SSOT: `doc/D3D11Migration.md`)。
+- **完了済**: Generic(SDL/GL) の overlay 動画 presenter 統一 + visible 整合 (SSOT: `doc/MovieMFMigration.md`)。
+- **完了済**: F-1 3D 音声定位 (WaveSoundBuffer spatializer、全バリアント横断。SSOT: `doc/Sound3D.md`)。
+- **完了済**: F-3 入力 DirectInput 完全撤去 (WINVER ゲームパッド→XInput・マウスホイール→WM_MOUSEWHEEL、共有 `tTVPPadManager` へ全 PF 再設計。SSOT: `doc/Gamepad.md`)。
 - 監査ソース: レガシー Win32 API / メディア・描画・DPI / マニフェスト・バージョン分岐
   の 3 系統調査 (2026-07-29)。
 
@@ -77,7 +79,7 @@ libEGL 実ロードは当環境に ANGLE 非配置のため未検証、WM_DPICHA
 単一モニタのため未 (リサイズ経路は D3D11 検証でカバー)。
 | # | 項目 | ファイル | 依存 |
 |---|---|---|---|
-| 2-1 | DLL ロード硬化: `SetDefaultDllDirectories(SEARCH_SYSTEM32/DEFAULT)` + 非システム DLL (libEGL/dinput) をフルパス/`LoadLibraryEx`。※dsound は Phase 1 で消滅 | `win32/environ/Application.cpp`, `win32/visual/OpenGLPlatform.cpp`, `win32/visual/DInputMgn.cpp` | — |
+| 2-1 | DLL ロード硬化: `SetDefaultDllDirectories(SEARCH_SYSTEM32/DEFAULT)` + 非システム DLL (libEGL) をフルパス/`LoadLibraryEx`。※dsound は Phase 1、dinput は F-3 で消滅 (DInputMgn 撤去) | `win32/environ/Application.cpp`, `win32/visual/OpenGLPlatform.cpp` | — |
 | 2-2 | `GetDensity()` → `GetDpiForWindow(hwnd)` + `GetDC(0)` の DC リーク解消 【小・明確なバグ】 | `win32/environ/Application.cpp:898` | 0-1 |
 | 2-3 | `WM_DPICHANGED` ハンドリング (OS 提案矩形へ `SetWindowPos`) + 高 DPI 時のウィンドウ枠/レイアウト追従 | `win32/visual/WindowImpl.cpp` | 0-1 |
 
@@ -167,6 +169,14 @@ Track V (動画):    D3D11(済) → V-1 → V-2 → V-3、他 Phase と並行可
 
 本ロードマップ (Phase 0-4 + Track V) のモダン化が一段落した後に着手する新機能。
 
+### F-4 コマンドライン プリセット / 引数再構成 【優先度: 中 / 要望メモ】
+- アプリ (ゲーム/ツール) 別に起動オプションの組み合わせが複雑化。「本処理前に
+  引数を再構成 (束の展開・別名解決) できる仕組み」がほしいという要望。
+- 既存の `config.cf` / embedded / 優先順位付き `TVPProgramArguments` を土台に
+  プロファイル展開フック (`-profile=<name>` → オプション束) を挟む案が有力。
+- 詳細 (背景・既存機構分析・実現案 A/B/C・検討ポイント・当面の回避策):
+  **SSOT: [CommandLinePresets.md](CommandLinePresets.md)**
+
 ### F-1 WaveSoundBuffer 3D 定位 API 新設 (miniaudio spatializer) 【優先度: 中〜高】
 - **背景**: 旧吉里吉里の 3D モード (`-wsuse3d` / DS3D の `IDirectSound3DListener` + 3D バッファ)
   は「器」だけで **TJS から音源位置/速度/コーン/リスナーを設定する API が無く実質未使用**
@@ -203,17 +213,24 @@ Track V (動画):    D3D11(済) → V-1 → V-2 → V-3、他 Phase と並行可
   実害は「exe 自体を >260 の深さに設置」「datapath を >260 に設定」等の稀ケースに限られ、通常の
   コンテンツ/セーブの読み書きは上記 I/O 層の `\\?\` で機能する。必要時に個別対応。
 
-### F-3 入力 (DirectInput) モダン化 【優先度: 中・将来調査/検証】
-- **背景**: WINVER は `win32/visual/DInputMgn.cpp` で **DirectInput** を使用。ゲームパッド
-  (`DIDEVTYPE_JOYSTICK`) と **マウス** (`GUID_SysMouse`) の両方を担う。DInput は legacy
-  (DirectX 8/9 世代・非推奨) だが Win10/11 でも動作はする。
-- **検討 (2026-07-30)**: 「DInput → XInput 全面載せ替え」は**不適**。① XInput はゲームパッド
-  専用でマウスを扱えない ② XInput は XInput 互換 (Xbox 系) のみ = 汎用 HID パッド/アケコン/
-  フライト/レーシング系が全滅 ③ ボタン/軸マッピングの意味が変わり既存ゲーム互換に影響。
-- **妥当な方向**: **マウス = Raw Input (WM_INPUT)** / **ゲームパッド = Windows.Gaming.Input**
-  (WinRT `Gamepad`/`RawGameController`。Win10+ で DInput/XInput 双方を置換する現行推奨 API。
-  Xbox + 汎用両対応・トリガ分離・振動・バッテリ)。SDL3 ビルドは既に `SDL_Gamepad` (標準
-  レイアウト) を使用しており、WINVER を Windows.Gaming.Input に寄せると挙動が揃う。
-- **段取り (未着手)**: DInput 依存箇所の棚卸し (gamepad 列挙 / マウス取得 / force feedback /
-  TJS の Pad・マウス API 契約) → 「標準ゲームパッド抽象」新設 + 既存 API 対応表で互換維持 →
-  実機検証。**今回のモダン化スコープ外。将来、調査して検証する** (ユーザ判断 2026-07-30)。
+### F-3 入力 (DirectInput) モダン化 【DirectInput 完全撤去 = ✅ 完了 / 汎用 HID 対応 = 将来】
+- **背景 (当初)**: WINVER は `win32/visual/DInputMgn.cpp` で **DirectInput** を使用し、ゲームパッド
+  (`DIDEVTYPE_JOYSTICK`) と **マウス** (`GUID_SysMouse`) の両方を担っていた。DInput は legacy
+  (DirectX 8/9 世代・非推奨)。
+- **✅ 完了 (2026-08): DirectInput を完全撤去**。
+  - `925693d4` gamepad: **複数パッド正規対応 + 論理 0 = 最後に操作したパッド へ全 PF 再設計**。
+    共有の論理層 `tTVPPadManager` (`common/environ/PadManager.{h,cpp}`) を新設し、各プラット
+    フォームは物理プロバイダ `iTVPPhysicalPadProvider` を実装するだけにした (SDL3=`SDL_Gamepad`)。
+  - `75a3c913` input: **WINVER の DirectInput を完全撤去**。ゲームパッドは **XInput**
+    (`win32/environ/XInputPad.{h,cpp}`、最大 4 台・振動対応) へ、**マウスホイールは
+    `WM_MOUSEWHEEL`** へ移行。`win32/visual/DInputMgn.{h,cpp}` と `#include <dinput.h>` を削除。
+  - `bf7e6a7d` `-joypad=no` / `eb871f0a` `System.padEnabled` (実行時 有効/無効) も追加。
+  - **SSOT: [Gamepad.md](Gamepad.md)** (アーキテクチャ・API・プロバイダ表)。
+- **採った方針の割り切り**: 上の 2026-07-30 検討では「XInput 全面載せ替えは不適」としていたが、
+  実装では **ゲームパッド = XInput / マウスホイール = WM_MOUSEWHEEL** という実利的な分担で
+  DInput を外した。トレードオフ: XInput ゆえ **Xbox 系のみ・最大 4 台**で、汎用 HID パッド/
+  アケコン/フライト/レーシング系は非対応 ([Gamepad.md](Gamepad.md) に明記)。
+- **【残・将来 / 優先度低】汎用 HID パッド対応**: 汎用 HID を扱う必要が出たら
+  **ゲームパッド = Windows.Gaming.Input (WinRT `Gamepad`/`RawGameController`)** への載せ替えを
+  `iTVPPhysicalPadProvider` の別実装として追加する (論理層 `tTVPPadManager` は不変のまま差し替え
+  可能)。マウスの Raw Input (WM_INPUT) 化も同様に将来検討。今回のスコープ外。

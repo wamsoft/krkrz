@@ -12,6 +12,7 @@
 #include "Application.h"
 #include "WindowForm.h"
 #include "app.h"           // SDL3Application (overlay モードの nested iterate 用)
+#include "REPL.h"          // TVPDrainREPL: modal 中も REPL/agent を回す
 
 #include <elements_modal/modal.h>
 
@@ -138,6 +139,10 @@ void PumpModalLoop(SDL3Application* app, tTVPElementsDialogManager& mgr,
 		app->SendPadEvent();
 		if (!app->IsInBackground()) app->RequestUpdate();
 		app->Dispatch();
+#ifdef KRKRZ_USE_REPL
+		TVPDrainREPL();   // modal ブロック中も -replfile / Agent を処理する
+			              // (boot ランチャー等のモーダルを外部エージェントで検証可能に)
+#endif
 #ifdef __EMSCRIPTEN__
 		// wasm: SDL_Delay でメインスレッドをブロックするとブラウザのイベント
 		// ループが止まる (描画・入力・オーディオが凍る)。JSPI で次フレームまで
@@ -192,12 +197,26 @@ bool TVPRunElementsModalWindow(
 		}
 	}
 
+	// DPI 対応: 引数 width/height を「論理サイズ」とみなし、実モニタの content scale
+	// に合わせて物理サイズへ拡大 + pixel_scale で高密度レンダリングする。これをしないと
+	// 高 DPI モニタでダイアログが極端に小さく表示される。倍率は SDL_GetWindowDisplayScale
+	// (content scale。GetWindowPixelDensity ではない) を使う。
+	float dscale = 1.0f;
+	if (parent_window) {
+		float s = SDL_GetWindowDisplayScale(parent_window);
+		if (s > 0.0f) dscale = s;
+	} else {
+		SDL_DisplayID disp = SDL_GetPrimaryDisplay();
+		if (disp) { float s = SDL_GetDisplayContentScale(disp); if (s > 0.0f) dscale = s; }
+	}
+
 	elements_modal::config cfg;
-	cfg.title_utf8 = std::move(title_utf8);
-	cfg.width      = width;
-	cfg.height     = height;
-	cfg.parent     = parent_window;
-	cfg.on_event   = MakeHandlerBridge(handler);
+	cfg.title_utf8  = std::move(title_utf8);
+	cfg.width       = (int)(width  * dscale);
+	cfg.height      = (int)(height * dscale);
+	cfg.pixel_scale = dscale;
+	cfg.parent      = parent_window;
+	cfg.on_event    = MakeHandlerBridge(handler);
 	// font_directory は空 — elements_modal 側の default 探索 (external/elements/...)
 	// に任せる。 krkrz と同じ "data/font" を見たいときは別途指定する余地あり。
 
@@ -219,7 +238,8 @@ bool TVPRunElementsModalWindow(
 bool TVPRunElementsModalOverlay(
 	const std::string& json_utf8,
 	iTVPDialogEventHandler* handler,
-	tTVPElementsModalResult& out_result)
+	tTVPElementsModalResult& out_result,
+	const std::map<ttstr, ttstr>* initial_vars)
 {
 	auto& mgr = tTVPElementsDialogManager::Instance();
 	if (mgr.IsHandlerActive(handler)) {
@@ -240,6 +260,11 @@ bool TVPRunElementsModalOverlay(
 	// 通さない。
 	if (!mgr.ShowFromJsonString(json_utf8, handler, nullptr, /*modal=*/true)) {
 		return false;
+	}
+
+	// pump 前に初期変数を注入 (subscribe 済 widget が表示へ反映する)。
+	if (initial_vars) {
+		for (const auto& kv : *initial_vars) mgr.SetVar(handler, kv.first, kv.second);
 	}
 
 	// 既存ゲームの iterate を nested で回し、 閉じたら結果を取り出す。

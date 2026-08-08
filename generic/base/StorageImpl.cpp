@@ -15,6 +15,9 @@
 #include "StorageImpl.h"
 #include "WindowImpl.h"
 #include "SysInitIntf.h"
+#ifdef KRKRZ_USE_REPL_FILECHANNEL
+#include "ReplModal.h"   // TVPReplTrySelect
+#endif
 #include "LogIntf.h"
 #include "Random.h"
 #include "XP3Archive.h"
@@ -596,22 +599,51 @@ TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
 //----------------------------------------------------------------------
 TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/selectFile)
 {
-#if 1
-	return TJS_E_NOTIMPL;
-#else
 	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
 
 	iTJSDispatch2 * dsp =  param[0]->AsObjectNoAddRef();
 
-	bool res = TVPSelectFile(dsp);
+#ifdef KRKRZ_USE_REPL_FILECHANNEL
+	if(TVPReplActive) {
+		int r = TVPReplTrySelect(dsp, false);
+		if(r >= 0) { if(result) *result = (tjs_int)(r == 1); return TJS_S_OK; }
+	}
+#endif
+
+	// ファイル選択ダイアログは環境依存機能なので Application に委譲する
+	// (SDL3 は SDL_ShowOpenFileDialog で実装。非対応環境は false を返す)。
+	bool res = Application ? Application->SelectFile(dsp) : false;
 
 	if(result) *result = (tjs_int)res;
 
 	return TJS_S_OK;
-#endif
 }
 TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
 	/*func. name*/selectFile)
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/selectDirectory)
+{
+	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
+
+	iTJSDispatch2 * dsp = param[0]->AsObjectNoAddRef();
+
+#ifdef KRKRZ_USE_REPL_FILECHANNEL
+	if(TVPReplActive) {
+		int r = TVPReplTrySelect(dsp, true);
+		if(r >= 0) { if(result) *result = (tjs_int)(r == 1); return TJS_S_OK; }
+	}
+#endif
+
+	// フォルダ選択ダイアログは環境依存機能なので Application に委譲する
+	// (SDL3 は SDL_ShowOpenFolderDialog で実装。非対応環境は false を返す)。
+	bool res = Application ? Application->SelectDirectory(dsp) : false;
+
+	if(result) *result = (tjs_int)res;
+
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
+	/*func. name*/selectDirectory)
 //----------------------------------------------------------------------
 TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/isExistentDirectory)
 {

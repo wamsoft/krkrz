@@ -21,11 +21,17 @@
 #include "SysInitIntf.h"
 #include "StorageIntf.h"
 #include "StorageImpl.h"
+#include "InputDialog.h"   // TVPInputString
+#ifdef KRKRZ_USE_REPL_FILECHANNEL
+#include "ReplModal.h"   // TVPReplConfirm / TVPReplInputString
+#endif
+#ifdef KRKRZ_REPL_WEB
+#include "ReplWebServer.h"   // TVPReplWeb::GetURL (System.replWebURL)
+#endif
 #include "TickCount.h"
 #include "ComplexRect.h"
 #include "WindowImpl.h"
 #include "SystemControl.h"
-#include "DInputMgn.h"
 
 #include "Application.h"
 #include "TVPScreen.h"
@@ -69,6 +75,32 @@ static void TVPShowSimpleMessageBox(const ttstr & text, const ttstr & caption)
 	::MessageBox( hWnd, (const wchar_t*)text.AsStdString().c_str(), (const wchar_t*)caption.AsStdString().c_str(), MB_OK|MB_ICONINFORMATION );
 }
 //---------------------------------------------------------------------------
+// TVPConfirmYesNo : Yes/No モーダル確認 (System.confirm)
+//---------------------------------------------------------------------------
+static bool TVPConfirmYesNo(const ttstr & text, const ttstr & caption, HWND parent)
+{
+	if( TVPReplActive ) {
+#ifdef KRKRZ_USE_REPL_FILECHANNEL
+		// REPL ファイルチャネルが応答口を持っていれば、エージェントの応答を待つ。
+		bool ans = false;
+		if( TVPReplConfirm(text, caption, ans) ) return ans;
+#endif
+		// チャネル無し (console のみ等) はブロッキングダイアログを出さず、内容を
+		// ログへ流し既定応答 (Yes) を返す (inform と同じ方針)。
+		TVPAddImportantLog( ttstr(TJS_W("[confirm] ")) + caption + ttstr(TJS_W(": ")) + text +
+			ttstr(TJS_W(" -> (REPL: Yes)")) );
+		return true;
+	}
+	if( parent == INVALID_HANDLE_VALUE ) parent = NULL;
+	if( parent == NULL ) {
+		parent = TVPGetModalWindowOwnerHandle();
+		if( parent == INVALID_HANDLE_VALUE ) parent = NULL;
+	}
+	int ret = ::MessageBox( parent, (const wchar_t*)text.AsStdString().c_str(),
+		(const wchar_t*)caption.AsStdString().c_str(), MB_YESNO|MB_ICONQUESTION );
+	return ret == IDYES;
+}
+//---------------------------------------------------------------------------
 
 
 
@@ -84,8 +116,8 @@ bool TVPGetAsyncKeyState(tjs_uint keycode, bool getcurrent)
 
 	if(keycode >= VK_PAD_FIRST  && keycode <= VK_PAD_LAST)
 	{
-		// JoyPad related keys are treated in DInputMgn.cpp
-		return TVPGetJoyPadAsyncState(keycode, getcurrent);
+		// ゲームパッドキーは Application 内の tTVPPadManager (XInput) が扱う。
+		return Application ? Application->GetPadKeyAsyncState(keycode) : false;
 	}
 
 	if(keycode == VK_LBUTTON || keycode == VK_RBUTTON)
@@ -799,6 +831,68 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/inform)
 TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
 	/*func. name*/inform)
 //----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/confirm)
+{
+	// Yes/No モーダル確認。Yes なら真、No なら偽を返す。
+	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
+
+	ttstr text = *param[0];
+
+	ttstr caption;
+	if(numparams >= 2 && param[1]->Type() != tvtVoid)
+		caption = *param[1];
+	else
+		caption = TJS_W("Confirmation");
+
+	// 第3引数 window (省略可): 指定時はそのウィンドウを親にする。
+	HWND parent = NULL;
+	if(numparams >= 3 && param[2]->Type() == tvtObject) {
+		iTJSDispatch2 *win = param[2]->AsObjectNoAddRef();
+		if(win) {
+			tTJSVariant val;
+			if(TJS_SUCCEEDED(win->PropGet(0, TJS_W("HWND"), NULL, &val, win)))
+				parent = reinterpret_cast<HWND>((tjs_intptr_t)(tTVInteger)val);
+		}
+	}
+
+	bool ret = TVPConfirmYesNo(text, caption, parent);
+	if(result) *result = ret;
+
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
+	/*func. name*/confirm)
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/inputString)
+{
+	// System.inputString(caption, prompt, default="") -> 入力文字列 / キャンセルで void
+	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
+
+	ttstr caption = *param[0];
+	ttstr prompt  = (numparams >= 2 && param[1]->Type() != tvtVoid) ? ttstr(*param[1]) : caption;
+	ttstr def;
+	if(numparams >= 3 && param[2]->Type() != tvtVoid) def = *param[2];
+
+	ttstr out;
+#ifdef KRKRZ_USE_REPL_FILECHANNEL
+	if(TVPReplActive) {
+		bool cancelled = false;
+		if(TVPReplInputString(caption, prompt, def, out, cancelled)) {
+			if(result) { if(cancelled) result->Clear(); else *result = out; }
+			return TJS_S_OK;
+		}
+		// チャネル無し (console のみ等) はブロックせず既定値を返す。
+		if(result) *result = def;
+		return TJS_S_OK;
+	}
+#endif
+	bool ok = TVPInputString(caption, prompt, def, out);
+	if(result) { if(ok) *result = out; else result->Clear(); }
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
+	/*func. name*/inputString)
+//----------------------------------------------------------------------
 TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/getTickCount)
 {
 	if(result)
@@ -1108,6 +1202,24 @@ TJS_BEGIN_NATIVE_PROP_DECL(exePath)
 }
 TJS_END_NATIVE_STATIC_PROP_DECL_OUTER(cls, exePath)
 //----------------------------------------------------------------------
+// -replweb で開いているブラウザ REPL ビューワーの URL。未起動なら空文字列。
+TJS_BEGIN_NATIVE_PROP_DECL(replWebURL)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+#ifdef KRKRZ_REPL_WEB
+		*result = TVPReplWeb::GetURL();
+#else
+		*result = ttstr();
+#endif
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_DENY_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_STATIC_PROP_DECL_OUTER(cls, replWebURL)
+//----------------------------------------------------------------------
 TJS_BEGIN_NATIVE_PROP_DECL(personalPath)
 {
 	TJS_BEGIN_NATIVE_PROP_GETTER
@@ -1306,12 +1418,115 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/getJoypadType)
 {
 	tjs_int no = numparams > 0 ? (tjs_int)*param[0] : 0;
 	if (result) {
-//		*result = Application->GetJoypadType(no);
+		*result = Application->GetJoypadType(no);
 	}
 	return TJS_S_OK;
 }
 TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
 	/*func. name*/getJoypadType)
+
+
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/rumblePad)
+{
+	if(numparams < 4) return TJS_E_BADPARAMCOUNT;
+	tjs_int no = (tjs_int)*param[0];
+	tjs_int low = (tjs_int)*param[1];
+	tjs_int high = (tjs_int)*param[2];
+	tjs_int duration = (tjs_int)*param[3];
+	bool ret = Application->RumbleGamepad(no, low, high, duration);
+	if(result) *result = (tjs_int)ret;
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
+	/*func. name*/rumblePad)
+
+
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/stopRumblePad)
+{
+	tjs_int no = numparams > 0 ? (tjs_int)*param[0] : 0;
+	bool ret = Application->StopRumbleGamepad(no);
+	if(result) *result = (tjs_int)ret;
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
+	/*func. name*/stopRumblePad)
+
+
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/getJoypadCount)
+{
+	if(result) *result = Application->GetJoypadCount();
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
+	/*func. name*/getJoypadCount)
+
+
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/hasJoypad)
+{
+	tjs_int no = numparams > 0 ? (tjs_int)*param[0] : 0;
+	if(result) *result = (tjs_int)Application->HasJoypad(no);
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
+	/*func. name*/hasJoypad)
+
+
+// 指定パッドの指定軸のアナログ値を返す (doc/Gamepad.md §3)。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/getPadAxis)
+{
+	if(numparams < 2) return TJS_E_BADPARAMCOUNT;
+	tjs_int no     = (tjs_int)*param[0];
+	tjs_int axisId = (tjs_int)*param[1];
+	float v = Application->GetPadAxis(no, axisId);
+	if(result) *result = (tjs_real)v;
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
+	/*func. name*/getPadAxis)
+
+
+// パッド軸 ID 定数 (readonly)。値は SDL_GamepadAxis と同値 (doc/Gamepad.md §3)。
+#define TVP_DEF_PAD_AXIS_PROP(propname, value) \
+	TJS_BEGIN_NATIVE_PROP_DECL(propname) \
+	{ \
+		TJS_BEGIN_NATIVE_PROP_GETTER \
+		{ \
+			*result = (tjs_int)(value); \
+			return TJS_S_OK; \
+		} \
+		TJS_END_NATIVE_PROP_GETTER \
+		TJS_DENY_NATIVE_PROP_SETTER \
+	} \
+	TJS_END_NATIVE_STATIC_PROP_DECL_OUTER(cls, propname)
+
+TVP_DEF_PAD_AXIS_PROP(padAxisLeftX,         tTVPApplication::TVP_PAD_AXIS_LEFTX)
+TVP_DEF_PAD_AXIS_PROP(padAxisLeftY,         tTVPApplication::TVP_PAD_AXIS_LEFTY)
+TVP_DEF_PAD_AXIS_PROP(padAxisRightX,        tTVPApplication::TVP_PAD_AXIS_RIGHTX)
+TVP_DEF_PAD_AXIS_PROP(padAxisRightY,        tTVPApplication::TVP_PAD_AXIS_RIGHTY)
+TVP_DEF_PAD_AXIS_PROP(padAxisLeftTrigger,   tTVPApplication::TVP_PAD_AXIS_LEFT_TRIGGER)
+TVP_DEF_PAD_AXIS_PROP(padAxisRightTrigger,  tTVPApplication::TVP_PAD_AXIS_RIGHT_TRIGGER)
+
+#undef TVP_DEF_PAD_AXIS_PROP
+
+
+// ゲームパッド機能の有効/無効 (読み書き)。CLI -joypad より優先される。
+TJS_BEGIN_NATIVE_PROP_DECL(padEnabled)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		*result = (tjs_int)(Application->GetJoypadEnabled() ? 1 : 0);
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_BEGIN_NATIVE_PROP_SETTER
+	{
+		Application->SetJoypadEnabled(param->operator bool());
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_STATIC_PROP_DECL_OUTER(cls, padEnabled)
 
 	return cls;
 

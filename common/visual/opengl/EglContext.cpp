@@ -513,7 +513,7 @@ void tTVPEGLContext::InitEGL()
 	if (!egl_version) {
 		egl_version = gladLoadEGL(nullptr, gladload);
 		if (!egl_version) {
-			TVPThrowExceptionMessage( TJS_W("Unable to initialize glad EGL.") );
+			TVPThrowExceptionMessage(TVPUnableToInitializeGladEGL );
 		}
 		int major = GLAD_VERSION_MAJOR(egl_version);
 		int minor = GLAD_VERSION_MINOR(egl_version);

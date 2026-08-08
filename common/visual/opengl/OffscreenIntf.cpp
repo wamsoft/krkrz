@@ -26,7 +26,7 @@ tjs_error TJS_INTF_METHOD tTJSNI_Offscreen::Construct(tjs_int numparams, tTJSVar
 
 	bool result = FrameBuffer.create( width, height);
 	if( result == false ) {
-		TVPThrowExceptionMessage( TJS_W("FBO create error.") );
+		TVPThrowExceptionMessage(TVPFBOCreateError );
 	}
 	return TJS_S_OK;
 }
@@ -65,7 +65,7 @@ void tTJSNI_Offscreen::ExchangeTexture( tTJSNI_Texture* texture ) {
 		GLuint newFboTex = (GLuint)texture->GetNativeHandle();
 		bool result = FrameBuffer.exchangeTexture( newFboTex );
 		if( !result ) {
-			TVPThrowExceptionMessage( TJS_W( "Cannot exchange texture." ) );
+			TVPThrowExceptionMessage(TVPCannotExchangeTexture );
 		} else {
 			// 所有権の交換:
 			//   旧 FBO 側 attachment (oldFboTex) → Texture が以後管理
@@ -75,7 +75,7 @@ void tTJSNI_Offscreen::ExchangeTexture( tTJSNI_Texture* texture ) {
 			texture->GetTexture()->AdoptTextureId( oldFboTex );
 		}
 	} else {
-		TVPThrowExceptionMessage( TJS_W( "Incompatible texture." ) );
+		TVPThrowExceptionMessage(TVPIncompatibleTexture );
 	}
 }
 //---------------------------------------------------------------------------
@@ -139,7 +139,7 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/exchangeTexture )
 	if( numparams < 1 ) return TJS_E_BADPARAMCOUNT;
 
 	tTJSNI_Texture* texture = (tTJSNI_Texture*)TJSGetNativeInstance( tTJSNC_Texture::ClassID, param[0] );
-	if( !texture ) TVPThrowExceptionMessage( TJS_W( "Parameter require Texture class instance." ) );
+	if( !texture ) TVPThrowExceptionMessage(TVPParameterRequireClassInstance, TJS_W("Texture"));
 
 	_this->ExchangeTexture( texture );
 

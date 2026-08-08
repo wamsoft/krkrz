@@ -74,7 +74,7 @@ void tTJSNI_TextureLayerTreeOwner::CreateTexture() {
 					if(TJS_FAILED(clo.Object->NativeInstanceSupport(TJS_NIS_GETINSTANCE, tTJSNC_Texture::ClassID, (iTJSNativeInstance**)&TextureInstance)))
 					{
 						TextureInstance = nullptr;
-						TVPThrowExceptionMessage(TJS_W("Cannot retrive texture instance."));
+						TVPThrowExceptionMessage(TVPCannotRetriveInstance, TJS_W("texture"));
 					}
 				}
 			}
@@ -688,7 +688,7 @@ TJS_BEGIN_NATIVE_PROP_DECL(primaryLayer)
 	{
 		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_TextureLayerTreeOwner);
 		tTJSNI_BaseLayer *pri = _this->GetPrimaryLayer();
-		if(!pri) TVPThrowExceptionMessage(TJS_W("Not have primary layer"));
+		if(!pri) TVPThrowExceptionMessage(TVPNotHavePrimaryLayer);
 
 		if(pri && pri->GetOwnerNoAddRef())
 			*result = tTJSVariant(pri->GetOwnerNoAddRef(), pri->GetOwnerNoAddRef());

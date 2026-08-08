@@ -12,28 +12,42 @@ extern "C" {
 }
 
 #include <cmath>
+#include <cstdlib> // std::atof (ReplayGain タグ)
 #include <memory>
 
 static bool FloatExtraction = false; // true if output format is IEEE 32-bit float
+static double gVorbisGlobalGainDb = 0.0; // -ogg_gain / -vorbis_gain (全体ゲイン, dB)
+static int    gVorbisReplayGainMode = 0; // 0=none(既定) / 1=track / 2=album
 static bool TVPVorbisOptionsInit = false;
 static void TVPInitVorbisOptions() {
 	if(TVPVorbisOptionsInit) return;
 
 	// retrieve options from commandline
-	ttstr debug_str(L"ogg:");
 	tTJSVariant val;
-	if( TVPGetCommandLine(TJS_W("-ogg_gain"), &val) ) {
-		double db = (tTVReal)val;
-		double fac = std::pow(10.0, db / 20);
-		debug_str = TJS_W("ogg: Setting global gain to ");
-		val = (tTVReal)db;
-		debug_str += ttstr(val);
+	// 全体ゲイン: -ogg_gain (現行) / -vorbis_gain (旧 wuvorbis 互換)。
+	// libvorbis を改変せず、Render 時に PCM を float 域でスケールして適用する。
+	if( TVPGetCommandLine(TJS_W("-ogg_gain"), &val) || TVPGetCommandLine(TJS_W("-vorbis_gain"), &val) ) {
+		gVorbisGlobalGainDb = (tTVReal)val;
+		double fac = std::pow(10.0, gVorbisGlobalGainDb / 20);
+		ttstr debug_str = TJS_W("ogg: Setting global gain to ");
+		tTJSVariant tmp((tTVReal)gVorbisGlobalGainDb);
+		debug_str += ttstr(tmp);
 		debug_str += TJS_W("dB (");
-		val = (tTVReal)(fac * 100);
-		debug_str += ttstr(val);
+		tmp = (tTVReal)(fac * 100);
+		debug_str += ttstr(tmp);
 		debug_str += TJS_W("%)");
 		TVPAddLog(debug_str);
-		// XXX op_set_gain_offset を呼び出した方が良さそう
+	}
+
+	// ReplayGain: -ogg_rg / -vorbis_rg (none(既定) / track / album)。
+	// 既存再生を変えないよう既定 OFF (opt-in)。
+	if( TVPGetCommandLine(TJS_W("-ogg_rg"), &val) || TVPGetCommandLine(TJS_W("-vorbis_rg"), &val) ) {
+		ttstr sval(val);
+		if( sval == TJS_W("track") ) gVorbisReplayGainMode = 1;
+		else if( sval == TJS_W("album") ) gVorbisReplayGainMode = 2;
+		else gVorbisReplayGainMode = 0;
+		if( gVorbisReplayGainMode )
+			TVPAddLog( TJS_W("ogg: ReplayGain enabled (") + sval + TJS_W(")") );
 	}
 
 /*
@@ -58,6 +72,7 @@ class tTVPWD_Vorbis : public tTVPWaveDecoder
 	OggVorbis_File InputFile; // OggVorbis_File instance
 	tTVPWaveFormat Format; // output PCM format
 	int CurrentSection; // current section in ogg stream
+	float GainFactor = 1.0f; // 適用する線形ゲイン (1.0=無効時は int16 高速経路)
 
 public:
 	tTVPWD_Vorbis( std::unique_ptr<iTJSBinaryStream>&& stream ) : Stream(std::move(stream)), InputFileInit(false), CurrentSection(-1) {
@@ -112,6 +127,24 @@ public:
 		return true;
 	}
 
+	// 全体ゲイン + ReplayGain タグ + 曲別コールバック を合算し線形ゲインを決める。
+	// CheckFormat 後 (InputFile オープン済み) に Create からメインスレッドで呼ぶ。
+	void SetupGain(const ttstr & url) {
+		if(!InputFileInit) return;
+		double db = gVorbisGlobalGainDb;
+		if(gVorbisReplayGainMode != 0) {
+			vorbis_comment *vc = ov_comment(&InputFile, -1);
+			if(vc) {
+				const char *track = vorbis_comment_query(vc, "replaygain_track_gain", 0);
+				const char *album = vorbis_comment_query(vc, "replaygain_album_gain", 0);
+				const char *sel = (gVorbisReplayGainMode == 2) ? (album ? album : track) : track;
+				if(sel) db += std::atof(sel); // dB
+			}
+		}
+		db += TVPQueryUserSoundGainDB(url); // 曲別コールバック (未登録は 0)
+		GainFactor = (db != 0.0) ? (float)std::pow(10.0, db / 20.0) : 1.0f;
+	}
+
 	/** Retrieve PCM format, etc. */
 	void GetFormat(tTVPWaveFormat & format) override { format = Format; }
 
@@ -127,6 +160,33 @@ public:
 	bool Render(void *buf, tjs_uint bufsamplelen, tjs_uint& rendered)  override {
 		// render output PCM
 		if(!InputFileInit) return false; // InputFile is yet not inited
+
+		// --- ゲイン適用経路: float でデコード→線形スケール→int16 変換 (clamp) ---
+		// GainFactor==1 (既定) の通常時はこの分岐を通らないので追加コスト無し。
+		// float 域で乗算してから量子化するため gain>1 でも適切に clip する。
+		if( !FloatExtraction && GainFactor != 1.0f ) {
+			const int ch = Format.Channels;
+			const float g = GainFactor;
+			tjs_uint done = 0;            // 書き込んだサンプル (per channel)
+			tjs_int16 *out = (tjs_int16*)buf;
+			while( done < bufsamplelen ) {
+				float **pcm = nullptr;
+				long ns = ov_read_float(&InputFile, &pcm, (int)(bufsamplelen - done), &CurrentSection);
+				if( ns < 0 ) continue;   // デコード未準備。リトライ
+				if( ns == 0 ) break;     // 終端
+				for(long i = 0; i < ns; i++) {
+					for(int c = 0; c < ch; c++) {
+						float v = pcm[c][i] * g;
+						int s = (int)std::lround(v * 32767.0f);
+						if(s > 32767) s = 32767; else if(s < -32768) s = -32768;
+						*out++ = (tjs_int16)s;
+					}
+				}
+				done += (tjs_uint)ns;
+			}
+			rendered = done;
+			return done >= bufsamplelen;
+		}
 
 		int pcmsize = FloatExtraction ? 4 : 2;
 		int res;
@@ -248,6 +308,7 @@ tTVPWaveDecoder * tTVPWDC_Vorbis::Create(const ttstr & storagename, const ttstr 
 		if( decoder->CheckFormat() == false ) {
 			return nullptr;
 		}
+		decoder->SetupGain(storagename); // 全体/ReplayGain/曲別コールバックのゲイン決定
 		return decoder.release();
 	} catch(...) {
 		return nullptr;

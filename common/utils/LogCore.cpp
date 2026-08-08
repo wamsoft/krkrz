@@ -19,6 +19,8 @@
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <mutex>
+#include <thread>
 #include <vector>
 #include <string>
 #include <time.h>
@@ -72,6 +74,11 @@ static ttstr *TVPImportantLogs = NULL;
 ttstr TVPLogLocation;
 tjs_char TVPNativeLogLocation[MAX_PATH];
 
+// ログ状態 (リングバッファ / important cache / タイムスタンプキャッシュ / ファイル出力)
+// の保護。TVPLogDispatchLine は REPL チャネルスレッド等の非 main スレッドからも
+// 呼ばれる (doc/TtstrDataRetention.md M11)。recursive なのは handler 実行中の再入対策。
+static std::recursive_mutex TVPLogStateMutex;
+
 static bool TVPLogObjectsInitialized = false;
 static void TVPEnsureLogObjects()
 {
@@ -80,18 +87,50 @@ static void TVPEnsureLogObjects()
 	TVPLogDeque = new std::deque<tTVPLogItem>();
 	TVPImportantLogs = new ttstr();
 }
+static void TVPDestroyPendingLogLines();
 static void TVPDestroyLogObjects()
 {
+	std::lock_guard<std::recursive_mutex> lock(TVPLogStateMutex);
 	if(TVPLogDeque) { delete TVPLogDeque; TVPLogDeque = NULL; }
 	if(TVPImportantLogs) { delete TVPImportantLogs; TVPImportantLogs = NULL; }
+	TVPDestroyPendingLogLines();
 }
 static tTVPAtExit TVPDestroyLogObjectsAtExit(TVP_ATEXIT_PRI_CLEANUP, TVPDestroyLogObjects);
 
 //---------------------------------------------------------------------------
 // TJS logging handler 列
+//
+// handler の FuncCall は TJS VM を共有する main thread 限定。ベクタの登録/解除は
+// TJS (Debug.addLoggingHandler) 経由 = main thread からのみ行われる前提で、
+// 非 main スレッド発のログ行は TVPPendingLogLines に保留し、main thread が
+// TVPFlushQueuedLoggingEvents() (イベントポンプ毎フレーム) で配送する。
+// 直接 FuncCall するとチャネルスレッド上で VM が走りメインスレッドと競合する
+// (-replfile 起動時クラッシュの原因)。
 //---------------------------------------------------------------------------
-static std::vector<tTJSVariantClosure> TVPLoggingHandlerVector;
+static std::vector<tTJSVariantClosure> TVPLoggingHandlerVector; // main thread のみが触る
 static bool TVPInDeliverLoggingEvent = false;
+static std::atomic<bool> TVPHasLoggingHandlers{false};       // 有効 handler の有無 (他スレッド早期判定用)
+static std::atomic<std::thread::id> TVPLoggingMainThreadId{}; // handler 登録スレッド = main
+static std::mutex TVPPendingLogLinesMutex;
+static std::deque<ttstr> *TVPPendingLogLines = NULL;         // 非 main 発の配送保留行 (stamped 済)
+static const size_t TVPPendingLogLinesMax = 1024;            // 溢れたら古い行から捨てる
+
+static void TVPDestroyPendingLogLines()
+{
+	std::lock_guard<std::mutex> lock(TVPPendingLogLinesMutex);
+	if(TVPPendingLogLines) { delete TVPPendingLogLines; TVPPendingLogLines = NULL; }
+}
+
+static void TVPUpdateHasLoggingHandlers()
+{
+	bool has = false;
+	for(std::vector<tTJSVariantClosure>::const_iterator i = TVPLoggingHandlerVector.begin();
+		i != TVPLoggingHandlerVector.end(); ++i)
+	{
+		if(i->Object) { has = true; break; }
+	}
+	TVPHasLoggingHandlers.store(has, std::memory_order_release);
+}
 
 static void TVPCleanupLoggingHandlerVector()
 {
@@ -118,6 +157,7 @@ static void TVPDestroyLoggingHandlerVector()
 		i->Release();
 	}
 	TVPLoggingHandlerVector.clear();
+	TVPHasLoggingHandlers.store(false, std::memory_order_release);
 }
 static tTVPAtExit TVPDestroyLoggingHandlerAtExit
 	(TVP_ATEXIT_PRI_PREPARE, TVPDestroyLoggingHandlerVector);
@@ -132,6 +172,9 @@ void TVPAddLoggingHandler(tTJSVariantClosure clo)
 		clo.AddRef();
 		TVPLoggingHandlerVector.push_back(clo);
 	}
+	// 登録は TJS 経由 = main thread からのみ来る前提。ここで main を覚える。
+	TVPLoggingMainThreadId.store(std::this_thread::get_id(), std::memory_order_release);
+	TVPUpdateHasLoggingHandlers();
 }
 
 void TVPRemoveLoggingHandler(tTJSVariantClosure clo)
@@ -148,6 +191,7 @@ void TVPRemoveLoggingHandler(tTJSVariantClosure clo)
 	{
 		TVPCleanupLoggingHandlerVector();
 	}
+	TVPUpdateHasLoggingHandlers();
 }
 
 static void TVPDeliverLoggingEvent(const ttstr &timestampedLine)
@@ -195,9 +239,67 @@ static void TVPDeliverLoggingEvent(const ttstr &timestampedLine)
 	catch(...)
 	{
 		TVPInDeliverLoggingEvent = false;
+		TVPUpdateHasLoggingHandlers();
 		throw;
 	}
 	TVPInDeliverLoggingEvent = false;
+	TVPUpdateHasLoggingHandlers();
+}
+
+//---------------------------------------------------------------------------
+// 非 main スレッド発の行を保留 (main thread が TVPFlushQueuedLoggingEvents で配送)
+//---------------------------------------------------------------------------
+static void TVPQueueLoggingEvent(const ttstr &stamped)
+{
+	std::lock_guard<std::mutex> lock(TVPPendingLogLinesMutex);
+	if(!TVPPendingLogLines) TVPPendingLogLines = new std::deque<ttstr>();
+	if(TVPPendingLogLines->size() >= TVPPendingLogLinesMax)
+		TVPPendingLogLines->pop_front();
+	TVPPendingLogLines->push_back(stamped);
+}
+
+//---------------------------------------------------------------------------
+// main thread: 保留分の配送。イベントポンプ (TVPDeliverAllEvents) と
+// TVPDrainREPL から毎フレーム呼ばれる。
+//---------------------------------------------------------------------------
+void TVPFlushQueuedLoggingEvents()
+{
+	if(TVPInDeliverLoggingEvent) return; // handler 実行中の再入は不可
+	if(TVPHasLoggingHandlers.load(std::memory_order_acquire) &&
+	   TVPLoggingMainThreadId.load(std::memory_order_acquire) != std::this_thread::get_id())
+		return; // 保険: main 以外からは配送しない
+	for(;;)
+	{
+		ttstr line;
+		{
+			std::lock_guard<std::mutex> lock(TVPPendingLogLinesMutex);
+			if(!TVPPendingLogLines || TVPPendingLogLines->empty()) return;
+			if(!TVPHasLoggingHandlers.load(std::memory_order_acquire))
+			{
+				TVPPendingLogLines->clear(); // handler 全解除後の残骸は破棄
+				return;
+			}
+			line = TVPPendingLogLines->front();
+			TVPPendingLogLines->pop_front();
+		}
+		TVPDeliverLoggingEvent(line);
+	}
+}
+
+//---------------------------------------------------------------------------
+// dispatch からの handler 配送入口。FuncCall は main thread 限定 —
+// 非 main スレッド (REPL チャネル等) 発の行は保留キューへ回す。
+//---------------------------------------------------------------------------
+static void TVPDeliverLoggingEventThreadSafe(const ttstr &stamped)
+{
+	if(!TVPHasLoggingHandlers.load(std::memory_order_acquire)) return;
+	if(TVPLoggingMainThreadId.load(std::memory_order_acquire) != std::this_thread::get_id())
+	{
+		TVPQueueLoggingEvent(stamped);
+		return;
+	}
+	TVPFlushQueuedLoggingEvents(); // 保留分を先に流して順序を保つ
+	TVPDeliverLoggingEvent(stamped);
 }
 
 //---------------------------------------------------------------------------
@@ -356,8 +458,6 @@ void TVPLogDispatchLine(TVPLogLevel level, const char *utf8_line)
 {
 	if(!utf8_line) return;
 
-	TVPEnsureLogObjects();
-
 	// UTF-8 → UTF-16 (以降の処理は全部 ttstr ベース)
 	tjs_string wide;
 	TVPUtf8ToUtf16(wide, utf8_line);
@@ -366,56 +466,67 @@ void TVPLogDispatchLine(TVPLogLevel level, const char *utf8_line)
 		wide.pop_back();
 	ttstr line(wide.c_str());
 
-	// タイムスタンプ (1 秒単位でキャッシュ)
-	static time_t prevlogtime = 0;
-	static ttstr prevtimebuf;
-	static tjs_char timebuf[40];
-	time_t timer = time(NULL);
-	if(prevlogtime != timer)
-	{
-		tm *struct_tm = localtime(&timer);
-		TJS_snprintf(timebuf, 39, TJS_W("%02d:%02d:%02d"),
-			struct_tm->tm_hour, struct_tm->tm_min, struct_tm->tm_sec);
-		prevlogtime = timer;
-		prevtimebuf = timebuf;
-	}
-
 	bool important = (level >= TVPLOG_LEVEL_WARNING);
-
-	// リングバッファ
-	if(TVPLogDeque)
+	ttstr stamped;
 	{
-		TVPLogDeque->push_back(tTVPLogItem(line, prevtimebuf, level));
-		while(TVPLogDeque->size() >= TVPLogMaxLines + 100)
+		// 非 main スレッドからも呼ばれる: 共有状態 (タイムスタンプキャッシュ /
+		// リングバッファ / important cache) はロック下で触る
+		std::lock_guard<std::recursive_mutex> lock(TVPLogStateMutex);
+
+		TVPEnsureLogObjects();
+
+		// タイムスタンプ (1 秒単位でキャッシュ)
+		static time_t prevlogtime = 0;
+		static ttstr prevtimebuf;
+		static tjs_char timebuf[40];
+		time_t timer = time(NULL);
+		if(prevlogtime != timer)
 		{
-			std::deque<tTVPLogItem>::iterator i = TVPLogDeque->begin();
-			TVPLogDeque->erase(i, i + 100);
+			tm *struct_tm = localtime(&timer);
+			TJS_snprintf(timebuf, 39, TJS_W("%02d:%02d:%02d"),
+				struct_tm->tm_hour, struct_tm->tm_min, struct_tm->tm_sec);
+			prevlogtime = timer;
+			prevtimebuf = timebuf;
+		}
+
+		// リングバッファ
+		if(TVPLogDeque)
+		{
+			TVPLogDeque->push_back(tTVPLogItem(line, prevtimebuf, level));
+			while(TVPLogDeque->size() >= TVPLogMaxLines + 100)
+			{
+				std::deque<tTVPLogItem>::iterator i = TVPLogDeque->begin();
+				TVPLogDeque->erase(i, i + 100);
+			}
+		}
+
+		// "HH:MM:SS [marker ]本文" 形式に組み立て
+		stamped = prevtimebuf + TJS_W(" ");
+		if(important) stamped += TJS_W("! ");
+		stamped += line;
+
+		// important log cache
+		if(important && TVPImportantLogs)
+		{
+#ifdef TJS_TEXT_OUT_CRLF
+			*TVPImportantLogs += stamped + TJS_W("\r\n");
+#else
+			*TVPImportantLogs += stamped + TJS_W("\n");
+#endif
 		}
 	}
 
-	// "HH:MM:SS [marker ]本文" 形式に組み立て
-	ttstr stamped = prevtimebuf + TJS_W(" ");
-	if(important) stamped += TJS_W("! ");
-	stamped += line;
-
-	// important log cache
-	if(important && TVPImportantLogs)
-	{
-#ifdef TJS_TEXT_OUT_CRLF
-		*TVPImportantLogs += stamped + TJS_W("\r\n");
-#else
-		*TVPImportantLogs += stamped + TJS_W("\n");
-#endif
-	}
-
-	// TJS logging handlers
-	TVPDeliverLoggingEvent(stamped);
+	// TJS logging handlers (FuncCall は main thread 限定 — 非 main 発は保留キューへ)
+	TVPDeliverLoggingEventThreadSafe(stamped);
 
 	// debugger 接続中はログを DAP `output` event として転送する (Phase 1: stub)
 	if(TJS::TVPDebuggerWantsHook()) TJS::TJSDebuggerLog(stamped, important);
 
 	// ファイル出力
-	if(TVPLoggingToFile) TVPLogStreamHolder.Log(stamped);
+	{
+		std::lock_guard<std::recursive_mutex> lock(TVPLogStateMutex);
+		if(TVPLoggingToFile) TVPLogStreamHolder.Log(stamped);
+	}
 
 	// コンソール出力: sink (REPL) 優先、無ければ既定書き出し
 	if(auto hook = g_console_sink.load(std::memory_order_acquire))
@@ -458,12 +569,14 @@ void TVPAddImportantLog(const ttstr &line)
 //---------------------------------------------------------------------------
 ttstr TVPGetImportantLog()
 {
+	std::lock_guard<std::recursive_mutex> lock(TVPLogStateMutex);
 	if(!TVPImportantLogs) return ttstr();
 	return *TVPImportantLogs;
 }
 
 ttstr TVPGetLastLog(tjs_uint n)
 {
+	std::lock_guard<std::recursive_mutex> lock(TVPLogStateMutex);
 	TVPEnsureLogObjects();
 	if(!TVPLogDeque) return TJS_W("");
 
@@ -507,6 +620,7 @@ ttstr TVPGetLastLog(tjs_uint n)
 
 void TVPStartLogToFile(bool clear)
 {
+	std::lock_guard<std::recursive_mutex> lock(TVPLogStateMutex);
 	TVPEnsureLogObjects();
 	if(!TVPImportantLogs) return;
 	if(TVPLoggingToFile) return;

@@ -84,7 +84,7 @@ public:
 			dname = tjs_string(p, q-p);
 			fname = tjs_string(q+1);
 		} else {
-			TVPThrowExceptionMessage(TJS_W("invalid path:%1"), name);
+			TVPThrowExceptionMessage(TVPInvalidPathName, name);
 		}
     }
 
@@ -132,7 +132,7 @@ public:
         }
 
         if (readonly) {
-            TVPThrowExceptionMessage(TJS_W("Failed to open storage:readonly media"));
+            TVPThrowExceptionMessage(TVPFailedToOpenStorageReadonlyMedia);
         }
 
         if (access == TJS_BS_WRITE) {
@@ -266,7 +266,7 @@ void InitStorageSystem(const char *orgname, const char *appname)
     } else {
         const char *err = SDL_GetError();
         TVPLOG_ERROR("Failed to open user storage: {}", err);
-        TVPThrowExceptionMessage(TJS_W("Failed to open user storage"));
+        TVPThrowExceptionMessage(TVPFailedToOpenUserStorage);
     }
 }
 

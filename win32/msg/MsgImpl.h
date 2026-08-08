@@ -1,4 +1,4 @@
-// generated from gentext.pl Messages.xlsx
+// generated from gen_messages.py messages.csv
 #ifndef MsgImplH
 #define MsgImplH
 
@@ -12,7 +12,6 @@
 //---------------------------------------------------------------------------
 // Message Strings
 //---------------------------------------------------------------------------
-//TVP_MSG_DECL_NULL(TVPScriptExceptionRaised)
 TVP_MSG_DECL_NULL(TVPHardwareExceptionRaised)
 TVP_MSG_DECL_NULL(TVPMainCDPName)
 TVP_MSG_DECL_NULL(TVPExceptionCDPName)
@@ -28,7 +27,6 @@ TVP_MSG_DECL_NULL(TVPSusiePluginError)
 TVP_MSG_DECL_NULL(TVPCannotReleasePlugin)
 TVP_MSG_DECL_NULL(TVPNotLoadedPlugin)
 TVP_MSG_DECL_NULL(TVPCannotAllocateBitmapBits)
-//TVP_MSG_DECL_NULL(TVPScanLineRangeOver)
 TVP_MSG_DECL_NULL(TVPPluginError)
 TVP_MSG_DECL_NULL(TVPInvalidCDDADrive)
 TVP_MSG_DECL_NULL(TVPCDDADriveNotFound)
@@ -37,7 +35,6 @@ TVP_MSG_DECL_NULL(TVPInvalidSMF)
 TVP_MSG_DECL_NULL(TVPMalformedMIDIMessage)
 TVP_MSG_DECL_NULL(TVPCannotInitDirectSound)
 TVP_MSG_DECL_NULL(TVPCannotCreateDSSecondaryBuffer)
-//TVP_MSG_DECL_NULL(TVPInvalidLoopInformation)
 TVP_MSG_DECL_NULL(TVPNotChildMenuItem)
 TVP_MSG_DECL_NULL(TVPCannotInitDirect3D)
 TVP_MSG_DECL_NULL(TVPCannotFindDisplayMode)
@@ -49,7 +46,6 @@ TVP_MSG_DECL_NULL(TVPCannotLoadKrMovieDLL)
 TVP_MSG_DECL_NULL(TVPInvalidKrMovieDLL)
 TVP_MSG_DECL_NULL(TVPErrorInKrMovieDLL)
 TVP_MSG_DECL_NULL(TVPWindowAlreadyMissing)
-//TVP_MSG_DECL_NULL(TVPPrerenderedFontMappingFailed)
 TVP_MSG_DECL_NULL(TVPConfigFailOriginalFileCannotBeRewritten)
 TVP_MSG_DECL_NULL(TVPConfigFailTempExeNotErased)
 TVP_MSG_DECL_NULL(TVPExecutionFail)

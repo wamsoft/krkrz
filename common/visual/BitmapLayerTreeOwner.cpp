@@ -79,7 +79,7 @@ void tTJSNI_BitmapLayerTreeOwner::SetDirtyRectObject( const tTJSVariant & val ) 
 		if( clo.Object ) {
 			if( TJS_FAILED( clo.Object->NativeInstanceSupport( TJS_NIS_GETINSTANCE, tTJSNC_Rect::ClassID, (iTJSNativeInstance**)&DirtyRectInstance ) ) ) {
 				DirtyRectInstance = nullptr;
-				TVPThrowExceptionMessage( TJS_W( "Cannot retrive rect instance." ) );
+				TVPThrowExceptionMessage(TVPCannotRetriveInstance, TJS_W("rect"));
 			}
 		}
 	}
@@ -695,7 +695,7 @@ TJS_BEGIN_NATIVE_PROP_DECL(primaryLayer)
 	{
 		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_BitmapLayerTreeOwner);
 		tTJSNI_BaseLayer *pri = _this->GetPrimaryLayer();
-		if(!pri) TVPThrowExceptionMessage(TJS_W("Not have primary layer"));
+		if(!pri) TVPThrowExceptionMessage(TVPNotHavePrimaryLayer);
 
 		if(pri && pri->GetOwnerNoAddRef())
 			*result = tTJSVariant(pri->GetOwnerNoAddRef(), pri->GetOwnerNoAddRef());

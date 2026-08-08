@@ -42,7 +42,7 @@ void InitGLES()
 		// glad の GLES を初期化
 		int gles_version = gladLoadGLES2(gladload);
 		if (!gles_version) {
-			TVPThrowExceptionMessage(TJS_W("Unable to load glad GLES.\n"));
+			TVPThrowExceptionMessage(TVPUnableToLoadGladGLESN);
 		}
 		int major = GLAD_VERSION_MAJOR(gles_version);
 		int minor = GLAD_VERSION_MINOR(gles_version);

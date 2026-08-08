@@ -4,6 +4,7 @@
 #include "tjsCommHead.h"
 #include "ReplFileChannel.h"
 #include "ReplMainQueue.h"
+#include "ReplModal.h"        // TVPSetReplModalChannelDir
 #include "SysInitIntf.h"      // TVPGetCommandLine
 #include "DebugIntf.h"        // TVPPrettyPrint, TVPAddLog
 #include "CharacterSet.h"     // TVPUtf16ToUtf8 / TVPUtf8ToUtf16
@@ -134,6 +135,9 @@ void tTVPReplFileChannel::Execute()
 
 	TVPAddImportantLog(ttstr(TJS_W("ReplFileChannel: watching ")) + dir_tt);
 
+	// モーダル応答チャネル (confirm / ファイル選択 等) の監視 dir を登録。
+	TVPSetReplModalChannelDir(dir_tt);
+
 	while (!GetTerminated()) {
 		// 未読の resp が残っている間は次コマンドを処理しない (lockstep)。
 		bool has_cmd  = fs::exists(cmd, ec);
@@ -183,6 +187,9 @@ void tTVPReplFileChannel::Execute()
 
 		std::this_thread::sleep_for(std::chrono::milliseconds(50));
 	}
+
+	// モーダル応答チャネルを解除 (待機中の要求があれば中断され既定へ戻る)。
+	TVPSetReplModalChannelDir(ttstr());
 
 	TVPAddImportantLog(TJS_W("ReplFileChannel: stopped"));
 }

@@ -79,8 +79,11 @@ public:
 // する。 これで engine 内蔵の tTVPElementsDialogManager が具象型を知らずに overlay
 // ダイアログを描画する。 通常は DrawDevice の生成/破棄 (or context init/done) で呼ぶ。
 // (engine 内蔵 DrawDevice は直接 manager を呼ぶのでこの API は使わない。)
+//
+// KRKRZ_USE_ELEMENTS=OFF ビルドでは実装 (ElementsDialogManager.cpp) がリンクされない
+// ため、 stub 生成も KRKRZ_HAS_ELEMENTS でガードする (_ENV 版マクロ)。
 //---------------------------------------------------------------------------
-TJS_EXP_FUNC_DEF(void, TVPRegisterDialogHost, (iTVPDrawDevice* device, iTVPDialogRendererHost* host));
-TJS_EXP_FUNC_DEF(void, TVPUnregisterDialogHost, (iTVPDrawDevice* device));
+TJS_EXP_FUNC_DEF_ENV(KRKRZ_HAS_ELEMENTS, void, TVPRegisterDialogHost, (iTVPDrawDevice* device, iTVPDialogRendererHost* host));
+TJS_EXP_FUNC_DEF_ENV(KRKRZ_HAS_ELEMENTS, void, TVPUnregisterDialogHost, (iTVPDrawDevice* device));
 
 #endif

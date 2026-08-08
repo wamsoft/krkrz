@@ -18,11 +18,16 @@
 #include "SysInitIntf.h"
 #include "StorageIntf.h"
 //#include "StorageImpl.h"
+#ifdef KRKRZ_USE_REPL_FILECHANNEL
+#include "ReplModal.h"   // TVPReplConfirm / TVPReplInputString / TVPReplTrySelect
+#endif
+#ifdef KRKRZ_REPL_WEB
+#include "ReplWebServer.h"   // TVPReplWeb::GetURL (System.replWebURL)
+#endif
 #include "TickCount.h"
 #include "ComplexRect.h"
 //#include "WindowImpl.h"
 #include "EventIntf.h"
-//#include "DInputMgn.h"
 
 #include "Application.h"
 //#include "CompatibleNativeFuncs.h"
@@ -286,6 +291,75 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/inform)
 TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
 	/*func. name*/inform)
 //----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/confirm)
+{
+	// Yes/No モーダル確認。Yes なら真、No なら偽を返す。
+	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
+
+	ttstr text = *param[0];
+
+	ttstr caption;
+	if(numparams >= 2 && param[1]->Type() != tvtVoid)
+		caption = *param[1];
+	else
+		caption = TJS_W("Confirmation");
+
+	bool ret;
+	if (TVPReplActive) {
+		ret = true; // 既定 (Yes)
+		bool handled = false;
+#ifdef KRKRZ_USE_REPL_FILECHANNEL
+		// REPL ファイルチャネルが応答口を持っていれば、エージェントの応答を待つ。
+		bool ans = false;
+		if (TVPReplConfirm(text, caption, ans)) { ret = ans; handled = true; }
+#endif
+		if (!handled) {
+			// チャネル無し (console のみ等) はブロックせず、内容をログへ流し既定 (Yes)。
+			TVPAddImportantLog(ttstr(TJS_W("[confirm] ")) + caption +
+				ttstr(TJS_W(": ")) + text + ttstr(TJS_W(" -> (REPL: Yes)")));
+		}
+	} else {
+		ret = Application ? Application->ConfirmYesNo(text.AsStdString(), caption.AsStdString()) : true;
+	}
+
+	if(result) *result = ret;
+
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
+	/*func. name*/confirm)
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/inputString)
+{
+	// System.inputString(caption, prompt, default="") -> 入力文字列 / キャンセルで void
+	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
+
+	ttstr caption = *param[0];
+	ttstr prompt  = (numparams >= 2 && param[1]->Type() != tvtVoid) ? ttstr(*param[1]) : caption;
+	ttstr def;
+	if(numparams >= 3 && param[2]->Type() != tvtVoid) def = *param[2];
+
+	ttstr out;
+#ifdef KRKRZ_USE_REPL_FILECHANNEL
+	if(TVPReplActive) {
+		bool cancelled = false;
+		if(TVPReplInputString(caption, prompt, def, out, cancelled)) {
+			if(result) { if(cancelled) result->Clear(); else *result = out; }
+			return TJS_S_OK;
+		}
+		if(result) *result = def; // チャネル無しは既定値
+		return TJS_S_OK;
+	}
+#endif
+	tjs_string r;
+	bool ok = Application ? Application->InputString(caption.AsStdString(),
+		prompt.AsStdString(), def.AsStdString(), r) : false;
+	if(result) { if(ok) *result = ttstr(r.c_str()); else result->Clear(); }
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
+	/*func. name*/inputString)
+//----------------------------------------------------------------------
 TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/getTickCount)
 {
 	if(result)
@@ -531,6 +605,24 @@ TJS_BEGIN_NATIVE_PROP_DECL(exePath)
 }
 TJS_END_NATIVE_STATIC_PROP_DECL_OUTER(cls, exePath)
 //----------------------------------------------------------------------
+// -replweb で開いているブラウザ REPL ビューワーの URL。未起動なら空文字列。
+TJS_BEGIN_NATIVE_PROP_DECL(replWebURL)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+#ifdef KRKRZ_REPL_WEB
+		*result = TVPReplWeb::GetURL();
+#else
+		*result = ttstr();
+#endif
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_DENY_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_STATIC_PROP_DECL_OUTER(cls, replWebURL)
+//----------------------------------------------------------------------
 TJS_BEGIN_NATIVE_PROP_DECL(dataPath)
 {
 	TJS_BEGIN_NATIVE_PROP_GETTER
@@ -719,6 +811,27 @@ TVP_DEF_PAD_AXIS_PROP(padAxisLeftTrigger,   tTVPApplication::TVP_PAD_AXIS_LEFT_T
 TVP_DEF_PAD_AXIS_PROP(padAxisRightTrigger,  tTVPApplication::TVP_PAD_AXIS_RIGHT_TRIGGER)
 
 #undef TVP_DEF_PAD_AXIS_PROP
+
+
+// ゲームパッド機能の有効/無効 (読み書き)。CLI -joypad より優先される。
+// 他デバイスの誤パッド認識による誤動作を実行時に回避する用途など。
+TJS_BEGIN_NATIVE_PROP_DECL(padEnabled)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		*result = (tjs_int)(Application->GetJoypadEnabled() ? 1 : 0);
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_BEGIN_NATIVE_PROP_SETTER
+	{
+		Application->SetJoypadEnabled(param->operator bool());
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_STATIC_PROP_DECL_OUTER(cls, padEnabled)
 
 
 TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/addFont)

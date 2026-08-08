@@ -773,7 +773,7 @@ void tTJSNI_Window::SetViewportWallpaper(const tTJSVariant &image, tjs_int fit,
 			bool isLayer  = obj->IsInstanceOf(0, nullptr, nullptr, TJS_W("Layer"),  obj) == TJS_S_TRUE;
 			bool isBitmap = obj->IsInstanceOf(0, nullptr, nullptr, TJS_W("Bitmap"), obj) == TJS_S_TRUE;
 			if(!isLayer && !isBitmap)
-				TVPThrowExceptionMessage(TJS_W("setViewportWallpaper: wallpaper must be a string, Layer or Bitmap"));
+				TVPThrowExceptionMessage(TVPSetViewportWallpaperWallpaperMustBeAStringLayerOrBitmap);
 			Form->SetViewportWallpaper(image, (tTVPViewportFit)fit, alignX, alignY);
 			return;
 		}
