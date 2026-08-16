@@ -30,6 +30,7 @@ public:
 	void GetDestRect(int& x, int& y, int& w, int& h) override;
 	uint32_t * AcquireBuffer(const void* layer, int w, int h) override;
 	void ReleaseBuffer(const void* layer) override;
+	void ReleaseBufferRect(const void* layer, int x, int y, int w, int h) override;
 	void PresentOverlay(const void* layer, int x, int y, int w, int h) override;
 	void ReleaseLayer(const void* layer) override;
 

@@ -85,7 +85,7 @@ class ElementsGalleryScene extends DemoScene
             content : %[
                 type : "margin", padding : 12,
                 child : %[ type : "vtile", children : [
-                    %[ type : "hspacer", width : 644 ],
+                    %[ type : "vsize", height : 0, child : %[ type : "hspacer", width : 644 ] ],
                     %[ type : "align_center",
                        child : %[ type : "label", text : "Elements ギャラリー", size_scale : 1.4 ] ],
                     %[ type : "vspacer", height : 8 ],

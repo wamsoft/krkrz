@@ -16,6 +16,7 @@
 #include <elements/support/resource_loader.hpp>
 #include <elements/support/theme.hpp>
 #include <elements_modal/modal.h>   // refresh_mem_image (registerImage 差替時の即時反映)
+#include "ElementsDialogManager.h"  // InvalidateOverlays (renderCache への再描画要求)
 
 // ThorVG: Text::info() で読込み済みフォントから embedded family / style 名を
 // 取り出す。 元データの再パース無しで、 ロード時 ThorVG が掴んだ FT_Face の
@@ -450,6 +451,16 @@ void TVPRegisterElementsFontsFromWinResources()
 		SplitStemExt(fname_utf8, stem, ext_lc);
 		if (ext_lc != ".ttf" && ext_lc != ".otf") continue;
 
+		FontFileInfo info = ParseFontFilename(stem);
+
+#ifdef KRKRZ_USE_GLYPHWARE
+		// gw ローダビルド: 埋め込みリソースは resource:// ストレージとして
+		// 読めるので、キー渡しで登録する (FontStream 共有バッファ = 本体
+		// drawText の同フォント使用と 1 バッファ共有、コピー無し)。
+		std::string key = "resource://./" + fname_utf8;
+		std::string embedded = cycfi::elements::register_font(
+			info.family, key, info.weight, info.slant, info.stretch);
+#else
 		HRSRC hrsrc = ::FindResourceW(module, wname.c_str(), L"BINARY");
 		if (!hrsrc) continue;
 		DWORD   size  = ::SizeofResource(module, hrsrc);
@@ -458,8 +469,6 @@ void TVPRegisterElementsFontsFromWinResources()
 		const auto* data = static_cast<const std::uint8_t*>(::LockResource(hglob));
 		if (!data) continue;
 
-		FontFileInfo info = ParseFontFilename(stem);
-
 		// key は path 代替のキャッシュキー。 リソース名で一意にする。
 		// register_font_buffer は内部で stem_from_path(key) を ThorVG 登録名に使う
 		// (path 版 register_font と同規約) ので、 dir/拡張子付きの key を渡してよい。
@@ -467,6 +476,7 @@ void TVPRegisterElementsFontsFromWinResources()
 		std::string embedded = cycfi::elements::register_font_buffer(
 			info.family, key, data, static_cast<std::size_t>(size),
 			info.weight, info.slant, info.stretch);
+#endif
 		const std::string& canonical = !embedded.empty() ? embedded : info.family;
 		NoteRegisteredFamily(canonical);
 		++registered;
@@ -643,6 +653,9 @@ bool TVPRegisterElementsImageFile(const ttstr& name, const ttstr& path)
 	// 解放してから呼ぶ (refresh 内の set_image が resource_loader 経由で
 	// ImageStore を読むため、 保持したままだと同一 mutex を再入してデッドロック)。
 	elements_modal::refresh_mem_image(key);
+	// set_image は widget を直接差し替えるだけでセッションのダーティにならない
+	// ため、 renderCache が効いていても反映されるよう明示的に再描画を要求する。
+	tTVPElementsDialogManager::Instance().InvalidateOverlays();
 	return true;
 }
 

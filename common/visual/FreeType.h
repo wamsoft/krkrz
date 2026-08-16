@@ -99,8 +99,14 @@ private:
 		tjs_int upe = face->units_per_EM;
 		tjs_int liney = 0; //下線の位置
 		tjs_int height = FT_PosToInt( face->size->metrics.height );
-		liney = ((face->ascender - face->underline_position) * ppem) / upe;
-		thickness = (face->underline_thickness * ppem) / upe;
+		if( upe > 0 ) {
+			liney = ((face->ascender - face->underline_position) * ppem) / upe;
+			thickness = (face->underline_thickness * ppem) / upe;
+		} else {
+			// bitmap-strike のみのフォント: font units が使えないため近似
+			liney = height;
+			thickness = 1;
+		}
 		if( thickness < 1 ) thickness = 1;
 		if( liney > height ) {
 			liney = height - 1;
@@ -111,9 +117,15 @@ private:
 		FT_Face face = Faces[index]->FTFace;
 		tjs_int ppem = face->size->metrics.y_ppem;
 		tjs_int upe = face->units_per_EM;
-		thickness = face->underline_thickness * ppem / upe;
+		if( upe > 0 ) {
+			thickness = face->underline_thickness * ppem / upe;
+			pos = face->ascender * 7 * ppem / (10 * upe);
+		} else {
+			// bitmap-strike のみのフォント: strike の ascent から近似
+			thickness = 1;
+			pos = FT_PosToInt( face->size->metrics.ascender ) * 7 / 10;
+		}
 		if( thickness < 1 ) thickness = 1;
-		pos = face->ascender * 7 * ppem / (10 * upe);
 	}
 
 public:
@@ -155,7 +167,17 @@ public:
 		FT_Face face = Faces[0]->FTFace;
 		tjs_int ppem = face->size->metrics.y_ppem;
 		tjs_int upe = face->units_per_EM;
-		return face->ascender * ppem / upe;
+		if( upe > 0 ) return face->ascender * ppem / upe;
+		// bitmap-strike のみのフォント (CBDT/sbix カラー絵文字等) は
+		// units_per_EM が 0 でゼロ除算になる (face に直接指定されると
+		// Faces[0] がこの種のフォントになり得る)。グリフは strike から
+		// 目標サイズ (Height) へ縮小される (GetGlyphFromCharcode) ので、
+		// strike の ascent も Height 空間へスケールして返す。
+		if( ppem > 0 ) {
+			tjs_int a = FT_PosToInt( face->size->metrics.ascender );
+			return a * Height / ppem;
+		}
+		return Height;
 	}
 	tTVPCharacterData * GetGlyphFromCharcode(tjs_uint32 code);
 	bool GetGlyphRectFromCharcode(struct tTVPRect& rt, tjs_uint32 code, tjs_int& advancex, tjs_int& advancey );

@@ -35,9 +35,20 @@ set(KRKRZ_VCPKG_EXTRA_MANIFESTS "" CACHE STRING
 # pre-project のマージ判定で使うためここで定義する。
 option(KRKRZ_USE_MOVIE "build video overlay support via external/movie-player" ON)
 
+# glyphware (統一フォントエンジン: FreeType + HarfBuzz + SheenBidi) を組み込むか。
+option(KRKRZ_USE_GLYPHWARE "build the glyphware font engine (external/glyphware)" ON)
+
 set(_KRKRZ_VCPKG_SUBDIRS "")
 if(KRKRZ_USE_MOVIE)
     list(APPEND _KRKRZ_VCPKG_SUBDIRS "${CMAKE_CURRENT_SOURCE_DIR}/external/movie-player")
+endif()
+# glyphware は harfbuzz を必要とするが、umbrella (krkrz_dev) では
+# cmake/CommonExternals.cmake が harfbuzz を FetchContent で一括提供し、各
+# プラグインと ABI を揃える。そのため harfbuzz ターゲットが既にある場合は
+# vcpkg マニフェストに glyphware/vcpkg.json を足さない (= 全体で harfbuzz を
+# vcpkg 導入しない)。src/core / glyphware 単体ビルド時のみ vcpkg から取り込む。
+if(KRKRZ_USE_GLYPHWARE AND NOT TARGET harfbuzz)
+    list(APPEND _KRKRZ_VCPKG_SUBDIRS "${CMAKE_CURRENT_SOURCE_DIR}/external/glyphware")
 endif()
 if(KRKRZ_VCPKG_EXTRA_MANIFESTS)
     list(APPEND _KRKRZ_VCPKG_SUBDIRS ${KRKRZ_VCPKG_EXTRA_MANIFESTS})
@@ -338,6 +349,46 @@ __CODEGUARD__
 KRKRZ_VARIANT=${KRKRZ_VARIANT}
 )
 
+# ----------------------------------------------------
+# バージョン情報の単一供給元
+#
+#   PROJECT_VERSION (先頭で定義) + KRKRZ_VERSION_BUILD を元に
+#     - ${CMAKE_BINARY_DIR}/krkrz_version.h   … C++ 側 (generic の版情報取得)
+#     - ${CMAKE_BINARY_DIR}/krkrz_version.rc  … Windows の VERSIONINFO
+#   を生成する。 これ以前は WINVER が rc 手書きの 2.0.0.0、 SDL が
+#   generic/base/PluginImpl.cpp 手書きの 1.0.0.1 と食い違っていた。
+#
+#   4 桁目 (build) は既定 0。 CI 等で振りたい場合のみ -DKRKRZ_VERSION_BUILD=N。
+# ----------------------------------------------------
+set(KRKRZ_VERSION_BUILD "0" CACHE STRING "4th version component (build number)")
+
+if (KRKRZ_VARIANT STREQUAL "WIN")
+	set(KRKRZ_PLATFORM_LABEL "Win32")
+elseif (KRKRZ_VARIANT STREQUAL "LIB")
+	set(KRKRZ_PLATFORM_LABEL "Library")
+else()
+	set(KRKRZ_PLATFORM_LABEL "SDL3")
+endif()
+set(KRKRZ_PRODUCT_NAME
+    "TVP(KIRIKIRI) Z Core Wamsoft Edition / Scripting Platform for ${KRKRZ_PLATFORM_LABEL}")
+
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/krkrz_version.h.in
+    ${CMAKE_BINARY_DIR}/krkrz_version.h
+    @ONLY)
+
+if (WIN32)
+	configure_file(
+	    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/krkrz_version.rc.in
+	    ${CMAKE_BINARY_DIR}/krkrz_version.rc
+	    @ONLY)
+	set(KRKRZ_VERSION_RC ${CMAKE_BINARY_DIR}/krkrz_version.rc)
+else()
+	set(KRKRZ_VERSION_RC "")
+endif()
+
+message(STATUS "krkrz version: ${PROJECT_VERSION}.${KRKRZ_VERSION_BUILD} (${KRKRZ_PRODUCT_NAME})")
+
 if(NOT WIN32)
 list(APPEND KRKRZ_DEFINES
 TVP_NO_NORMALIZE_PATH
@@ -523,6 +574,21 @@ endif()
 if (NOT TARGET freetype)
 	find_package(freetype CONFIG REQUIRED)
 endif()
+# glyphware (統一フォントエンジン)。tests は本体ビルドでは無効化。harfbuzz は
+# umbrella では CommonExternals が提供 (TARGET harfbuzz)、単体ビルドでは
+# glyphware/vcpkg.json のマニフェストマージ経由 (上の NOT TARGET harfbuzz 参照)。
+# glyphware 側 CMakeLists も if(NOT TARGET harfbuzz) で find_package をガードする。
+set(KRKRZ_LIB_GLYPHWARE "")
+if (KRKRZ_USE_GLYPHWARE)
+	if (NOT TARGET glyphware)
+		set(GLYPHWARE_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+		# 配布物に glyphware/SheenBidi の lib/include を混入させない
+		set(GLYPHWARE_INSTALL OFF CACHE BOOL "" FORCE)
+		add_subdirectory(external/glyphware)
+	endif()
+	set(KRKRZ_LIB_GLYPHWARE glyphware)
+	add_compile_definitions(KRKRZ_USE_GLYPHWARE)
+endif()
 # libogg + libvorbis は krkrz/external/sound-codecs/ で FetchContent して
 # 自前ビルドする。これにより _ogg_malloc/_ogg_calloc/_ogg_realloc/_ogg_free を
 # SoundAllocator (sound_malloc 等) に差し替えられる。
@@ -625,7 +691,15 @@ if (KRKRZ_USE_ELEMENTS AND NOT KRKRZ_VARIANT STREQUAL "LIB")
 		# 相互排他)。Elements 側のデフォルトと同じだが、cache を旧値で持ち越して
 		# しまうケースがあるため明示 force-set する。
 		set(TVG_LOADER_TTF OFF CACHE BOOL "Disable built-in TTF loader" FORCE)
-		set(TVG_LOADER_FT  ON  CACHE BOOL "Enable FT+HarfBuzz multilingual text loader" FORCE)
+		if(KRKRZ_USE_GLYPHWARE)
+			# glyphware ホストブリッジ経由 (thorvg 内の FreeType+HarfBuzz を使わない。
+			# ブリッジ実装 = common/visual/elements/GlyphwareTvgBridge.cpp)
+			set(TVG_LOADER_FT OFF CACHE BOOL "Disable in-tree FT+HarfBuzz text loader" FORCE)
+			set(TVG_LOADER_GW ON  CACHE BOOL "Enable host-bridge (glyphware) text loader" FORCE)
+		else()
+			set(TVG_LOADER_FT ON  CACHE BOOL "Enable FT+HarfBuzz multilingual text loader" FORCE)
+			set(TVG_LOADER_GW OFF CACHE BOOL "Disable host-bridge text loader" FORCE)
+		endif()
 		# Elements / ThorVG が直接ファイル I/O することを禁止する。 krkrz では
 		# 全てのリソース読み込み (フォント / 画像 / Dialog JSON) を Storages 経由に
 		# 統一する (XP3 / Switch サンドボックス対応)。 OFF で default resource_loader が
@@ -693,6 +767,7 @@ target_include_directories( ${LIBNAME} PUBLIC
 target_include_directories( ${LIBNAME} PRIVATE 
 	${JPEG_INCLUDE_DIR}
 	${PICOJSON_INCLUDE_DIRS}
+	${CMAKE_BINARY_DIR}          # 生成 krkrz_version.h
 )
 
 target_compile_definitions( ${LIBNAME} PUBLIC
@@ -707,6 +782,7 @@ target_compile_definitions( ${LIBNAME} PUBLIC
 
 target_link_libraries( ${LIBNAME} PUBLIC
 	freetype
+	${KRKRZ_LIB_GLYPHWARE}
 	${JPEG_LIBRARIES}
 	Ogg::ogg
 	Vorbis::vorbis
@@ -1032,6 +1108,7 @@ add_executable(${EXENAME} ${KRKRZ_SDL_EXE_TYPE}
 	${KRKRZ_SRC_PLATFORM}
 	${KRKRZ_SRC_ADD}
 	${RC_FILE}
+	${KRKRZ_VERSION_RC}
 )
 
 endif()
@@ -1043,6 +1120,7 @@ target_include_directories(${EXENAME} PRIVATE
 	${KRKRZ_INC_PLATFORM}
 	${JPEG_INCLUDE_DIR}
 	${PICOJSON_INCLUDE_DIRS}
+	${CMAKE_BINARY_DIR}          # 生成 krkrz_version.h
 )
 
 target_compile_definitions(${EXENAME} PRIVATE
@@ -1057,6 +1135,7 @@ target_compile_definitions(${EXENAME} PRIVATE
 
 target_link_libraries( ${EXENAME} PRIVATE
 	freetype
+	${KRKRZ_LIB_GLYPHWARE}
 	${JPEG_LIBRARIES}
 	Ogg::ogg
 	Vorbis::vorbis
@@ -1075,6 +1154,7 @@ target_link_libraries( ${EXENAME} PRIVATE
 	${KRKRZ_LIB_PLATFORM}
 	${KRKRZ_LIB_DAP}
 	${RESOURCE_LIB}
+	$<$<PLATFORM_ID:Windows>:shell32>   # TVPExecuteProgram: ShellExecuteW (App Paths 解決)
 )
 
 if(APPLE)
@@ -1193,6 +1273,7 @@ add_executable( ${EXENAME} WIN32
 	${KRKRZ_SRC_WIN32_OPENGL}
 	${KRKRZ_SRC_ADD}
 	${RC_FILE}
+	${KRKRZ_VERSION_RC}
 )
 
 target_include_directories( ${EXENAME} PRIVATE 
@@ -1200,6 +1281,7 @@ target_include_directories( ${EXENAME} PRIVATE
 	${KRKRZ_INC_WIN32} 
 	${JPEG_INCLUDE_DIR}
 	${PICOJSON_INCLUDE_DIRS}
+	${CMAKE_BINARY_DIR}          # 生成 krkrz_version.h
 )
 
 target_compile_definitions( ${EXENAME} PRIVATE
@@ -1215,6 +1297,7 @@ target_compile_definitions( ${EXENAME} PRIVATE
 
 target_link_libraries( ${EXENAME} PRIVATE
 	freetype
+	${KRKRZ_LIB_GLYPHWARE}
 	${JPEG_LIBRARIES}
 	Ogg::ogg
 	Opus::opus
@@ -1230,6 +1313,7 @@ target_link_libraries( ${EXENAME} PRIVATE
 	dxgi
 	d3dcompiler
 	shlwapi
+	shell32   # TVPExecuteProgram: ShellExecute (App Paths 解決)
 	movieplayer
 	${KRKRZ_LIB_REPL}
 	${KRKRZ_LIB_ELEMENTS}
@@ -1242,6 +1326,32 @@ install(TARGETS ${EXENAME}
 )
 
 endif() # KRKRZ_VARIANT
+
+# ----------------------------------------------------
+# ライセンス文の配布同梱
+#   - LICENSE → license.txt (配布物ルート)
+#   - licenses/manifest.json の全エントリ → licenses/<slug>.txt
+#     (本体内蔵テーブルと同じ収録内容をテキストとしても同梱する。
+#      仕組みは doc/LicenseSystem.md 参照)
+# ----------------------------------------------------
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/LICENSE DESTINATION . RENAME license.txt)
+file(READ ${CMAKE_CURRENT_SOURCE_DIR}/licenses/manifest.json _LIC_JSON)
+string(JSON _LIC_COUNT LENGTH ${_LIC_JSON} entries)
+math(EXPR _LIC_LAST "${_LIC_COUNT} - 1")
+foreach(_LIC_I RANGE ${_LIC_LAST})
+	string(JSON _LIC_NAME GET ${_LIC_JSON} entries ${_LIC_I} name)
+	string(JSON _LIC_FILE GET ${_LIC_JSON} entries ${_LIC_I} file)
+	string(TOLOWER "${_LIC_NAME}" _LIC_SLUG)
+	string(REGEX REPLACE "[^a-z0-9.+_]+" "-" _LIC_SLUG "${_LIC_SLUG}")
+	string(REGEX REPLACE "^-+" "" _LIC_SLUG "${_LIC_SLUG}")
+	string(REGEX REPLACE "-+$" "" _LIC_SLUG "${_LIC_SLUG}")
+	get_filename_component(_LIC_ABS "${CMAKE_CURRENT_SOURCE_DIR}/licenses/${_LIC_FILE}" ABSOLUTE)
+	if(EXISTS "${_LIC_ABS}")
+		install(FILES "${_LIC_ABS}" DESTINATION licenses RENAME "${_LIC_SLUG}.txt")
+	else()
+		message(WARNING "license text not found: ${_LIC_NAME} (${_LIC_ABS})")
+	endif()
+endforeach()
 
 # ----------------------------------------------------
 # tests (Phase 3: SIMD パリティテスト)

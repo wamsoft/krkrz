@@ -1,0 +1,50 @@
+{
+  "comment": "本体内蔵ライセンステーブルの収録リスト。リポジトリ内にソースツリーを持つライブラリ (submodule 等) はそのツリーの LICENSE を直接参照し、外部取得 (vcpkg/FetchContent) 分は texts/ にコピーを置く。編集したら gen_licenses_c.py で common/base/BuiltinLicenses.cpp を再生成する。",
+  "entries": [
+    { "name": "Kirikiri Z",            "group": "engine",   "file": "../LICENSE" },
+
+    { "name": "zlib",                  "group": "engine",   "file": "texts/zlib.txt" },
+    { "name": "libpng",                "group": "engine",   "file": "texts/libpng.txt" },
+    { "name": "libjpeg-turbo",         "group": "engine",   "file": "texts/libjpeg-turbo.txt" },
+    { "name": "Oniguruma",             "group": "engine",   "file": "texts/oniguruma.txt" },
+    { "name": "GLM",                   "group": "engine",   "file": "texts/glm.txt" },
+    { "name": "plog",                  "group": "engine",   "file": "texts/plog.txt" },
+    { "name": "icline",                "group": "engine",   "file": "texts/icline.txt" },
+    { "name": "Brotli",                "group": "engine",   "file": "texts/brotli.txt" },
+    { "name": "bzip2",                 "group": "engine",   "file": "texts/bzip2.txt" },
+    { "name": "liblzma (XZ Utils)",    "group": "engine",   "file": "texts/liblzma.txt" },
+
+    { "name": "glyphware",             "group": "font-engine", "file": "../external/glyphware/LICENSE" },
+    { "name": "FreeType",              "group": "font-engine", "file": "texts/freetype.txt" },
+    { "name": "HarfBuzz",              "group": "font-engine", "file": "texts/harfbuzz.txt" },
+    { "name": "SheenBidi",             "group": "font-engine", "file": "texts/sheenbidi.txt" },
+    { "name": "picojson",              "group": "font-engine", "file": "texts/picojson.txt" },
+
+    { "name": "libogg",                "group": "audio",    "file": "texts/libogg.txt" },
+    { "name": "libvorbis",             "group": "audio",    "file": "texts/libvorbis.txt" },
+    { "name": "Opus",                  "group": "audio",    "file": "texts/opus.txt" },
+    { "name": "miniaudio",             "group": "audio",    "file": "texts/miniaudio.txt" },
+
+    { "name": "movie-player",          "group": "video",    "file": "../external/movie-player/LICENSE" },
+    { "name": "libvpx",                "group": "video",    "file": "texts/libvpx.txt" },
+    { "name": "libyuv",                "group": "video",    "file": "../external/movie-player/extlibs/libyuv/LICENSE" },
+    { "name": "nestegg",               "group": "video",    "file": "../external/movie-player/extlibs/nestegg/LICENSE" },
+    { "name": "PL_MPEG",               "group": "video",    "file": "texts/pl_mpeg.txt" },
+
+    { "name": "Elements (cycfi)",      "group": "ui",       "file": "../external/elements/LICENSE" },
+    { "name": "ThorVG",                "group": "ui",       "file": "../external/elements/external/thorvg/LICENSE" },
+    { "name": "JerryScript",           "group": "ui",       "file": "texts/jerryscript.txt" },
+    { "name": "RapidJSON",             "group": "ui",       "file": "texts/rapidjson.txt" },
+
+    { "name": "SDL3",                  "group": "platform", "file": "texts/sdl3.txt" },
+    { "name": "glad",                  "group": "platform", "file": "texts/glad.txt" },
+    { "name": "ANGLE",                 "group": "platform", "file": "texts/angle.txt" },
+    { "name": "D3DCompiler",           "group": "platform", "file": "texts/d3dcompiler.txt" },
+    { "name": "MemoryModule",          "group": "platform", "file": "texts/memorymodule.txt" },
+    { "name": "SDL_GameControllerDB",  "group": "platform", "file": "texts/gamecontrollerdb.txt" },
+
+    { "name": "Noto Fonts",            "group": "font",     "file": "texts/fonts-noto.txt" },
+    { "name": "Roboto",                "group": "font",     "file": "texts/fonts-roboto.txt" },
+    { "name": "elements_basic (fontello icons)", "group": "font", "file": "texts/fontello.txt" }
+  ]
+}

@@ -31,14 +31,14 @@
 #include "Application.h"
 #include "CharacterSet.h"
 
-// XXX Version Code 
-static const tjs_int TVP_VERSION_MAJOR = 1;
-static const tjs_int TVP_VERSION_MINOR = 0;
-static const tjs_int TVP_VERSION_RELEASE = 0;
-static const tjs_int TVP_VERSION_BUILD = 1;
+// バージョン番号は CMake の PROJECT_VERSION から生成される krkrz_version.h が
+// 単一の供給元 (WINVER は実行ファイルの VERSIONINFO を読むが、そちらも同じ
+// 供給元から生成した rc なので値は一致する)。
+#include "krkrz_version.h"
 
 /**
- * GENERIC版のバージョンコード取得。別途再検討のこと
+ * GENERIC 版のバージョンコード取得。
+ * module_filename は無視して自身 (エンジン) の版を返す。
 */
 bool TVPGetFileVersionOf(const tjs_char* module_filename, tjs_int& major, tjs_int& minor, tjs_int& release, tjs_int& build ) {
 	major = TVP_VERSION_MAJOR;

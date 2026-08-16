@@ -160,8 +160,16 @@ public:
             upload_pitch = (int)row_bytes;
         }
 
-        if (!SDL_UpdateTexture(texture, &rect, upload_src, upload_pitch)) {
-            TVPLOG_ERROR("SDLTextureUpdateRect::Update SDL_UpdateTexture failed:{}", SDL_GetError());
+        {
+            // 転送だけを常時計測する (System.renderStats)。
+            const auto _up_t0 = std::chrono::steady_clock::now();
+            if (!SDL_UpdateTexture(texture, &rect, upload_src, upload_pitch)) {
+                TVPLOG_ERROR("SDLTextureUpdateRect::Update SDL_UpdateTexture failed:{}", SDL_GetError());
+            }
+            TVPRenderStatsAddTexUpload(
+                (tjs_uint64)std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - _up_t0).count(),
+                (tjs_uint64)w * (tjs_uint64)h * 4);
         }
 
         mHasUpdate = true;
@@ -177,6 +185,7 @@ public:
     void RenderToTexture(SDL_Texture *texture) {
         (void)texture;
         mHasUpdate = false;
+        TVPRenderStatsBumpUploadFrame();
 #ifdef KRKRZ_DRAW_STATS
         TVPRenderStatsBumpFrame();
         // TexRen は Update 側に統合された (常に ~0)。互換のためカウンタ自体は残す。

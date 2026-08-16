@@ -20,6 +20,8 @@
 #include "cp932_uni.h"
 
 #include "StorageCache.h"
+#include "FontStream.h"
+#include "FontSystem.h"   // TVPFontSystem->RecordLoadedFontStorage
 #include "MsgIntf.h"
 #include "SysInitIntf.h"
 #include "ComplexRect.h"
@@ -44,43 +46,12 @@
 
 extern bool TVPEncodeUTF8ToUTF16( tjs_string &output, const std::string &source );
 
-static size_t fontCacheMax = 10;
-// フォントファイルキャッシュ用
-std::map<tjs_string, std::weak_ptr<iTJSBinaryStream>> _fontfiles;
-std::vector<std::shared_ptr<iTJSBinaryStream>> _fontlist;
-
-void entryFont(std::shared_ptr<iTJSBinaryStream> target)
+// フォントファイルは共有オンメモリ・フォントストリーム (FontStream.cpp、
+// glyphware 等と同一バッファ共有 + MRU pin) 経由で開く
+std::shared_ptr<iTJSBinaryStream>
+OpenFontFile(const tjs_string &path)
 {
-	// リストから削除
-	auto i = std::remove( _fontlist.begin(), _fontlist.end(), target );
-	_fontlist.erase( i, _fontlist.end() );
-
-	// 末尾に追加
-	while (_fontlist.size() > fontCacheMax) {
-		_fontlist.erase(_fontlist.begin());
-	}
-	_fontlist.push_back(target);
-}
-
-std::shared_ptr<iTJSBinaryStream> 
-OpenFontFile(const tjs_string &path) 
-{
-    auto n = _fontfiles.find(path);
-    if (n != _fontfiles.end()) {
-        if (!n->second.expired()) {
-			auto ret = n->second.lock();
-			entryFont(ret);
-			//TVPAddLog(TVPFormatMessage(TJS_W("openFont(cache):%1"), ttstr(path.c_str())));
-			return ret;
-        }
-        _fontfiles.erase(n);
-    }
-	// フォント用のファイルはキャッシュを介してオンメモリになるようにする
-	auto fontfile = std::shared_ptr<iTJSBinaryStream>(TVPGetStorageCache(path, true));
-    _fontfiles[path] = fontfile;
-	entryFont(fontfile);
-	//TVPAddLog(TVPFormatMessage(TJS_W("openFont:%1"), ttstr(path.c_str())));
-    return fontfile;
+	return TVPGetFontStream(ttstr(path.c_str()));
 }
 
 
@@ -169,6 +140,9 @@ public:
 	bool LoadFont( tjs_string filename, std::vector<tjs_string>* faces );
 	void LoadSystemFont( tjs_string path, std::vector<tjs_string>* faces );
 	void GetSystemFontList( std::vector<tjs_string>& faces );
+	// ロード済みシステム/同梱フォントの face 名→storage を FontSystem へ記録する
+	// (TVPFontSystem 生成前にロードされた分の後追い記録用)
+	void RecordSystemFontStorages();
 
 	tBaseFreeTypeFace* GetFace( const tjs_string& facename, tjs_uint32 options ) const;
 	tBaseFreeTypeFace* GetDefaultFace() const;
@@ -225,7 +199,31 @@ bool TVPAddFontToFreeType( const ttstr& storage, std::vector<tjs_string>* faces 
 //---------------------------------------------------------------------------
 void TVPAddSystemFontToFreeType( const tjs_string& storage, std::vector<tjs_string>* faces ) {
 	TVPInitializeFaceList();
-	FreeTypeFaceList->LoadSystemFont( storage, faces );
+	std::vector<tjs_string> loaded;
+	FreeTypeFaceList->LoadSystemFont( storage, &loaded );
+	// 実 face 名 → storage を FontSystem へ記録する (glyphware 等、FreeType の
+	// face リストとは別経路の名前解決用。WINVER の AddExtraFont 経路と対称)。
+	// 起動時 (FontSystem コンストラクタ内) は TVPFontSystem がまだ NULL のため
+	// スキップされるが、その分は TVPFlushSystemFontStorageRecords が後追い記録する
+	if( TVPFontSystem ) {
+		for( const auto& n : loaded ) TVPFontSystem->RecordLoadedFontStorage( n, storage );
+	}
+	if( faces ) faces->insert( faces->end(), loaded.begin(), loaded.end() );
+}
+//---------------------------------------------------------------------------
+void tTVPFreeTypeFaceList::RecordSystemFontStorages() {
+	if( !TVPFontSystem ) return;
+	for( auto i = systemfaces_.begin(); i != systemfaces_.end(); i++ ) {
+		const tjs_string& st = (*i)->path.empty() ? (*i)->filename : (*i)->path;
+		if( !st.empty() && !(*i)->facename.empty() )
+			TVPFontSystem->RecordLoadedFontStorage( (*i)->facename, st );
+	}
+}
+//---------------------------------------------------------------------------
+// FontSystem 生成前にロードされたシステム/同梱フォントの名前→storage を
+// 後追いで記録する (TVPInializeFontRasterizers の FontSystem 生成直後に呼ぶ)
+void TVPFlushSystemFontStorageRecords() {
+	if( FreeTypeFaceList ) FreeTypeFaceList->RecordSystemFontStorages();
 }
 //---------------------------------------------------------------------------
 void TVPGetFontListFromFreeType(std::vector<ttstr> & list, tjs_uint32 flags, const tTVPFont & font ) {
@@ -1275,6 +1273,13 @@ tjs_int tFreeTypeFace::LoadGlyphSlotFromCharcode(tjs_uint32 code)
 		if(Options & TVP_FACE_OPTIONS_COLOR) {
 			// カラーグリフ(COLR/CBDT/sbix等)を BGRA で読み込む。
 			// 埋め込みカラービットマップも許可したいので FT_LOAD_NO_BITMAP は付けない。
+			load_glyph_flag |= FT_LOAD_COLOR;
+		} else if( !FT_IS_SCALABLE(faceset->FTFace) ) {
+			// bitmap-strike のみのフォント (CBDT/sbix カラー絵文字等が face に
+			// 直接指定された場合)。アウトラインを持たず FT_LOAD_NO_BITMAP では
+			// 常に失敗する (全 face 失敗 → ラスタライズエラー例外) ため、
+			// ビットマップ (カラー込み) の読み込みを許可する。後段の BGRA 経路
+			// (GetGlyphFromCharcode) が strike から目標サイズへ縮小する。
 			load_glyph_flag |= FT_LOAD_COLOR;
 		} else if(!(Options & TVP_FACE_OPTIONS_NO_ANTIALIASING))
 			load_glyph_flag |= FT_LOAD_NO_BITMAP;

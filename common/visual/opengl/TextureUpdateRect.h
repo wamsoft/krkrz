@@ -3,7 +3,9 @@
 #include "TextureIntf.h"
 #include "Application.h"
 #include <vector>
+#include <chrono>
 #include "BitmapBitsAlloc.h"
+#include "ThreadIntf.h"   // TVPRenderStatsAddTexUpload / BumpUploadFrame
 
 //---------------------------------------------------------------------------
 // テクスチャ更新用クラス
@@ -114,11 +116,13 @@ public:
 
         if (!mBuffer) return;
 
+        TVPRenderStatsBumpUploadFrame();
         int src_pitch = mPitch;
         for (auto const it : mUpdateRects) {
             int x, y, w, h;
             it(x, y, w, h);
             const tjs_uint8 *srcp = mBuffer + src_pitch * y + x * 4;
+            const auto _up_t0 = std::chrono::steady_clock::now();
             texture->UpdateTexture(x, y, w, h, [srcp,src_pitch,w,h](char *dest, int pitch) {
                 const tjs_uint8 *src = srcp;
                 for (int line=0; line < h; line++) {
@@ -127,6 +131,11 @@ public:
                     src  += src_pitch;
                 }
             });
+            // 転送コストは常時計測する (System.renderStats)。
+            TVPRenderStatsAddTexUpload(
+                (tjs_uint64)std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - _up_t0).count(),
+                (tjs_uint64)w * (tjs_uint64)h * 4);
         }
 
         Clear();

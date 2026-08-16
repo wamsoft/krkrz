@@ -383,16 +383,11 @@ const char *kLabels[16] = {
 };
 
 //===========================================================================
-// パッド状態クエリ。SDL3 build (generic/environ/Application.h) は tTVPApplication
-// に HasJoypad/GetPadState/GetJoypadType を持つ。WINVER (win32/environ/
-// Application.h) は持たないので stub。
+// パッド状態クエリ。 論理層 (tTVPPadManager) は全ビルド共通で、
+// generic / win32 いずれの tTVPApplication も HasJoypad / GetPadState /
+// GetPadAxis / GetJoypadType を持つ (WINVER は XInput プロバイダ)。
+// ※ 以前は WINVER で stub にしていたが、 パッド論理層の共通化により不要になった。
 //===========================================================================
-#ifdef __WINVER__
-bool QueryHasPad() { return false; }
-tjs_uint32 QueryPadState() { return 0; }
-std::string QueryPadName() { return ""; }
-void QueryPadAxes(float (&out)[6]) { for (int i = 0; i < 6; ++i) out[i] = 0.0f; }
-#else
 bool QueryHasPad() {
     return Application && Application->HasJoypad(0);
 }
@@ -411,7 +406,6 @@ void QueryPadAxes(float (&out)[6]) {
         out[i] = has ? Application->GetPadAxis(0, i) : 0.0f;
     }
 }
-#endif
 
 } // anonymous namespace
 

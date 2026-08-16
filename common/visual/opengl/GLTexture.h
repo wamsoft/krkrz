@@ -144,6 +144,57 @@ public:
     void UpdateTexture(int x, int y, int w, int h, std::function<void(char *dest, int pitch)> updator);
 
     /**
+     * PBO を経由せず、 呼出側が既に持っている連続メモリから直接
+     * glTexSubImage2D する。 src_pitch (バイト) が w*4 と異なる場合は
+     * GL_UNPACK_ROW_LENGTH で読み飛ばすので、 大きなバッファの部分矩形を
+     * コピーなしで送れる。
+     *
+     * PBO 経路は「CPU が map したメモリへ書く → GPU が非同期に吸い上げる」形を
+     * 狙ったものだが、 ANGLE (GLES→D3D11) では PBO からの glTexSubImage2D が
+     * 内部でバッファを読み戻すため、 毎フレーム書き換えるテクスチャでは
+     * かえって同期待ち (しかもビジーウェイト) になる。 CPU 側に既にデータが
+     * あるならこちらの方が速い。
+     */
+    void UpdateTextureDirect(int x, int y, int w, int h, const void * src, int src_pitch);
+
+    /**
+     * この 1 回の転送に PBO を使うべきか。 実測 (data/upload_bench) に基づく:
+     *
+     *  - PBO 経路は **1 回あたりの固定コストが大きく、 大量転送は速い**
+     *    (NX 実測で 121us/回 + 2.5GB/s)
+     *  - 直接転送は **固定コストが小さく、 大量転送は遅い**
+     *    (同 16us/回 + 1.25GB/s)
+     *  → 交差点は約 256KB。 それ未満は直接、 以上は PBO が速い。
+     *
+     *  - ただし **ANGLE (Windows の GLES→D3D11) は PBO からの転送で内部的に
+     *    バッファを読み戻すため、 サイズに関係なく PBO が致命的に遅い**
+     *    (全画面 1 枚で 10〜13ms、 実時間の 60〜80% を消費)。 ANGLE では常に直接。
+     *
+     * 立ち絵 + UI が散在して個別更新される実案件の形 (小矩形が多数) では
+     * 1 回あたりの固定コストが効くので、 この判定が大きく効く
+     * (NX 実測: 小矩形 40 個/フレームで PBO 30.0% 対 直接 5.8%)。
+     *
+     * @param bytes この転送で送るバイト数
+     */
+    static bool UsePBOForUpload(std::size_t bytes);
+
+    /**
+     * 転送経路の強制指定 (計測・比較用)。 環境変数 KRKRZ_GLTEXUP=pbo|direct と
+     * TJS の System.texUploadUsePBO から設定される。 環境変数を渡せない実機では
+     * TJS 側を使う。
+     *
+     * @param v  1=PBO 強制 / 0=直接転送 強制 / -1=サイズ判定に戻す (既定)
+     */
+    static void SetUploadOverride(int v);
+    static int  GetUploadOverride();
+
+    //! @brief 実装が ANGLE (GLES→D3D11 エミュレーション) か。要 current context。
+    static bool IsANGLE();
+
+    //! PBO を使う下限バイト数 (これ未満は直接転送)。
+    static const std::size_t PBOUploadThreshold = 256 * 1024;
+
+    /**
      * 外部から所有権を引き取る形で texture_id_ を差し替える。
      * 旧 ID は glDeleteTextures せず単に上書きする (所有権は呼び出し側で
      * 別コンテナに移譲済みであることが前提)。Offscreen の ExchangeTexture

@@ -3,6 +3,9 @@
 #include "GLTexture.h"
 
 #include <memory>
+#include <vector>
+#include <cstdlib>
+#include <cstring>
 
 extern int TVPOpenGLESVersion;
 
@@ -181,7 +184,7 @@ GLTexture::UpdateTexture(GLuint tex_id, GLuint pbo, int format, int x, int y, in
     int size = w*h*4;
     int pitch = w*4;
 
-    if (pbo) {
+    if (pbo && GLTexture::UsePBOForUpload((std::size_t)size)) {
         glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
         // GL_MAP_INVALIDATE_BUFFER_BIT で「以前の PBO 内容は破棄して良い」を driver に伝える。
         // これにより GPU が前 frame の PBO を読み中でも CPU map が wait せず、
@@ -205,22 +208,103 @@ GLTexture::UpdateTexture(GLuint tex_id, GLuint pbo, int format, int x, int y, in
 
     } else {
 
-        std::unique_ptr<char[]> buffer(new char[size]);
-        updator(&buffer[0], pitch);
+        // 中間バッファは使い回す (毎フレーム数 MB の new/delete を避ける)。
+        // 転送は GL 呼び出し側 = 描画スレッドに限られるので thread_local で足りる。
+        static thread_local std::vector<char> buffer;
+        if ((int)buffer.size() < size) buffer.resize(size);
+        updator(buffer.data(), pitch);
         glBindTexture(GL_TEXTURE_2D, tex_id);
         glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-        glTexSubImage2D( GL_TEXTURE_2D, 0, x, y, w, h, format, GL_UNSIGNED_BYTE, &buffer[0]);
+        glTexSubImage2D( GL_TEXTURE_2D, 0, x, y, w, h, format, GL_UNSIGNED_BYTE, buffer.data());
         CheckGLErrorAndLog("glTexSubImage2D");
         glBindTexture(GL_TEXTURE_2D, 0);
     }
 };
 
-void 
+//---------------------------------------------------------------------------
+// 転送経路の強制指定 (-1 = 既定、 1 = PBO、 0 = 直接)。
+// 既定は用途で違う (GLTexture.h のコメント参照)。
+namespace {
+    int g_upload_override = -2;   // -2 = 未初期化 (環境変数をまだ読んでいない)
+}
+
+void
+GLTexture::SetUploadOverride(int v)
+{
+    g_upload_override = (v == 0 || v == 1) ? v : -1;
+}
+
+int
+GLTexture::GetUploadOverride()
+{
+    if (g_upload_override == -2) {
+        const char * e = std::getenv("KRKRZ_GLTEXUP");
+        if (e && std::strcmp(e, "pbo") == 0)          g_upload_override = 1;
+        else if (e && std::strcmp(e, "direct") == 0)  g_upload_override = 0;
+        else                                          g_upload_override = -1;
+    }
+    return g_upload_override;
+}
+
+bool
+GLTexture::IsANGLE()
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char * r = (const char *)glGetString(GL_RENDERER);
+        cached = (r && std::strstr(r, "ANGLE")) ? 1 : 0;
+    }
+    return cached != 0;
+}
+
+bool
+GLTexture::UsePBOForUpload(std::size_t bytes)
+{
+    const int o = GetUploadOverride();
+    if (o >= 0) return o == 1;          // 計測用の強制指定
+    if (IsANGLE()) return false;        // ANGLE は PBO がサイズに関係なく遅い
+    return bytes >= PBOUploadThreshold; // 小さい転送は固定コストの小さい直接転送
+}
+
+void
 GLTexture::UpdateTexture(int x, int y, int w, int h, std::function<void(char *dest, int pitch)> updator)
 {
     if (w==0) w = width_;
     if (h==0) h = height_;
     UpdateTexture(texture_id_, pbo_, glformat_, x, y, w, h, updator);
+}
+
+void
+GLTexture::UpdateTextureDirect(int x, int y, int w, int h, const void * src, int src_pitch)
+{
+    if (!texture_id_ || !src) return;
+    if (w == 0) w = width_;
+    if (h == 0) h = height_;
+    if (w <= 0 || h <= 0) return;
+
+    const int row_bytes = w * 4;
+    glBindTexture(GL_TEXTURE_2D, texture_id_);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+
+    if (src_pitch == row_bytes) {
+        glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, w, h, glformat_, GL_UNSIGNED_BYTE, src);
+    } else if (TVPOpenGLESVersion >= 300) {
+        // GLES3: 行間の読み飛ばしを GL に任せる (コピー不要)
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, src_pitch / 4);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, w, h, glformat_, GL_UNSIGNED_BYTE, src);
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+    } else {
+        // GLES2 には GL_UNPACK_ROW_LENGTH が無いので詰め直してから 1 回で送る
+        std::unique_ptr<char[]> buf(new char[static_cast<std::size_t>(row_bytes) * h]);
+        const char * sp = static_cast<const char *>(src);
+        for (int row = 0; row < h; ++row) {
+            memcpy(buf.get() + static_cast<std::size_t>(row) * row_bytes,
+                   sp + static_cast<std::size_t>(row) * src_pitch, row_bytes);
+        }
+        glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, w, h, glformat_, GL_UNSIGNED_BYTE, buf.get());
+    }
+    CheckGLErrorAndLog("glTexSubImage2D (direct)");
+    glBindTexture(GL_TEXTURE_2D, 0);
 }
 
 //---------------------------------------------------------------------------

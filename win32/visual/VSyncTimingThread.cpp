@@ -17,6 +17,8 @@ tTVPVSyncTimingThread::tTVPVSyncTimingThread(tTJSNI_Window* owner)
 	LastVBlankTick = 0;
 	VSyncInterval = 16; // 約60FPS
 	Enabled = false;
+	LastInVBlank = 0;
+	LastDelayed = 0;
 
 	// high-resolution waitable timer を用意する。これにより timeBeginPeriod で
 	// システム全体のタイマ分解能を上げなくても、~0.5ms 精度の短時間スリープが
@@ -99,12 +101,46 @@ void tTVPVSyncTimingThread::Execute()
 			PreciseSleep(5);
 		}
 
+		// vblank 待ちはこのワーカースレッドで行う。
+		//
+		//   以前はメインスレッド (下の Proc、 = ここから投函するメッセージの
+		//   ウィンドウプロシージャ内) で WaitForVBlank していたが、これは
+		//   IDXGIOutput::WaitForVBlank() が次の垂直帰線までブロックする同期待ち
+		//   なので、メッセージ 1 件の処理に丸々 1 フレームかかることになる。
+		//   Windows のメッセージ取り出し優先順位は「ポストされたメッセージ >
+		//   キュー入力 (マウス/キー)」なので、ウィンドウが複数あって
+		//   VSyncTimingThread が複数本走ると (例: モーダルウィンドウ表示中は
+		//   本体 + ダイアログの 2 本) 、ポストメッセージの処理だけでメインスレッド
+		//   が飽和し、マウス入力が永久にキューから取り出されなくなる。
+		//   実際にモーダルダイアログがマウス操作を一切受け付けなくなる不具合が
+		//   発生していた (WM_NCHITTEST は SendMessage なので届くが、
+		//   WM_MOUSEMOVE / WM_LBUTTONDOWN が届かない、という症状)。
+		//
+		//   ブロックしてよいのはこのワーカーなので、待ちをこちらへ移す。
+		//   メインスレッド側 (Proc) は結果を読んで画面更新するだけになる。
+		{
+			tjs_int in_vblank = 0;
+			tjs_int delayed = 0;
+			bool supportvwait = false;
+			if( OwnerWindow ) supportvwait = OwnerWindow->WaitForVBlank( &in_vblank, &delayed );
+			if( supportvwait == false ) {
+				// VBlank 待ちはサポートされていないので、気にせずそのまま進行
+				// (待ち時間はいい加減だが気にしないことにする)
+				in_vblank = 0;
+				delayed = 0;
+			}
+			tTJSCriticalSectionHolder holder(CS);
+			LastInVBlank = in_vblank;
+			LastDelayed = delayed;
+		}
+		if( GetTerminated() ) break;
+
 		// イベントをポストする
 		NativeEvent ev(TVP_EV_VSYNC_TIMING_THREAD);
 		ev.LParam = (LPARAM)sleep_start_tick;
 		EventQueue.PostEvent(ev);
 
-		Event.WaitFor(0x7fffffff); // vsync まで待つ
+		Event.WaitFor(0x7fffffff); // メインスレッドの描画完了まで待つ
 	}
 }
 //---------------------------------------------------------------------------
@@ -120,14 +156,16 @@ void tTVPVSyncTimingThread::Proc( NativeEvent& ev )
 	if( OwnerWindow == NULL ) return;
 
 	// tTVPVSyncTimingThread から投げられたメッセージ
+	// vblank 待ち自体は Execute() (ワーカースレッド) で済んでいる。ここで待つと
+	// メッセージポンプが 1 フレーム止まり、キュー入力が飢餓状態になる (Execute()
+	// のコメント参照)。
 
 	tjs_int in_vblank = 0;
 	tjs_int delayed = 0;
-	bool supportvwait = OwnerWindow->WaitForVBlank( &in_vblank, &delayed );
-	if( supportvwait == false )
-	{	// VBlank待ちはサポートされていないので、気にせずそのまま進行(待ち時間はいい加減だが気にしないことにする)
-		in_vblank = 0;
-		delayed = 0;
+	{
+		tTJSCriticalSectionHolder holder(CS);
+		in_vblank = LastInVBlank;
+		delayed = LastDelayed;
 	}
 
 	// タイマの時間原点を設定する

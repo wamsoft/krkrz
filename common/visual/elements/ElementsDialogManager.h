@@ -21,6 +21,26 @@ class iTVPDialogEventHandler;
 class iTVPDialogRenderer;
 class iTVPDialogRendererHost;
 
+//! @brief overlay 描画パイプラインの区間計測 (TJS: Dialog.renderStats)。
+//!        すべて累積値 (renderStatsReset() で 0 クリア)。 時間は microsecond。
+//!        呼出側は 2 回読んで差分を取り、 経過実時間に対する割合や
+//!        1 フレームあたりの平均を計算する (負荷比較・NX 実測用)。
+struct tTVPElementsRenderStats
+{
+	tjs_uint64 frames = 0;          //!< PaintOverlay 呼出回数 (提示フレーム数)
+	tjs_uint64 updates = 0;         //!< session->update() 実行回数 (インスタンス毎)
+	tjs_uint64 rasters = 0;         //!< render_to_buffer 実行回数 (= renderCount と同じ契機)
+	tjs_uint64 partials = 0;        //!< うち部分再描画 (ダーティ矩形限定) だった回数
+	tjs_uint64 cachedPresents = 0;  //!< renderCache による提示のみ (ラスタ省略) の回数
+	tjs_uint64 presents = 0;        //!< PresentOverlay 呼出回数
+	tjs_uint64 totalUs = 0;         //!< PaintOverlay 全体の所要時間
+	tjs_uint64 updateUs = 0;        //!< update() (poll / anim tick / dirty 判定)
+	tjs_uint64 rasterUs = 0;        //!< render_to_buffer (ThorVG CPU ラスタ + クリア)
+	tjs_uint64 acquireUs = 0;       //!< AcquireBuffer (staging 確保 / テクスチャ lock 待ち)
+	tjs_uint64 uploadUs = 0;        //!< ReleaseBuffer (テクスチャ転送)
+	tjs_uint64 presentUs = 0;       //!< PresentOverlay (提示)
+};
+
 class tTVPElementsDialogManager
 {
 public:
@@ -107,6 +127,22 @@ public:
 	//!        常駐 UI だけならウィンドウは閉じてよいので false。
 	bool HasModalInstance() const;
 
+	// === ホストホットキー (Elements バイパス) ===
+	// 登録されたキー / マウスボタン / パッドボタンは、 モーダルが居ない限り
+	// Elements ダイアログへ転送せず (Forward* が false を返し) 通常のゲーム入力
+	// 経路 (Window.onKeyDown / onMouseDown 等) へ直行する。 配送優先順位:
+	//   モーダル (全消費) > ホストホットキー (バイパス) >
+	//   フォーカスパネル (handled 素通し) > ゲーム
+	// vk はキーの他、 マウスボタン (VK_LBUTTON/VK_RBUTTON/VK_MBUTTON/
+	// VK_XBUTTON1/VK_XBUTTON2) と パッド (VK_PAD*) も同じ空間で受ける。
+	// mods は TVP_SS_SHIFT|ALT|CTRL の組合せで down は完全一致、 up は vk のみ
+	// 一致 (押下中の修飾変化で up がパネルへ漏れない)。
+	// duringTextInput=false (既定) はテキスト入力ウィジェット focus 中
+	// (focus_consumes_text) は抑止 = 入力欄と衝突するキーを奪わない。
+	void RegisterHostHotkey(tjs_uint vk, tjs_uint32 mods, bool duringTextInput);
+	void UnregisterHostHotkey(tjs_uint vk, tjs_uint32 mods);
+	void ClearHostHotkeys();
+
 	//! @brief 指定 handler が所有するインスタンスが今アクティブか。 TJS Dialog の
 	//!        active / close / Invalidate 判定、 ブロッキングモーダルの pump ループ
 	//!        終了判定 (自分のインスタンスが閉じたか) に使う。
@@ -146,6 +182,34 @@ public:
 	//!        動的反映に使う。 handler のインスタンスが非アクティブなら false。
 	bool SetVar(iTVPDialogEventHandler* handler,
 	            const ttstr& name, const ttstr& value);
+
+	//! @brief i18n の表示言語を設定する (画面 JSON の "strings" を引く言語)。
+	//!        表示中の全インスタンスへ即時適用し、 以後に開く画面の既定にもなる。
+	//!        text_id / text_list_id / options_id を持つ widget が再解決されて
+	//!        その場で表示が切り替わる (画面の作り直しは不要)。
+	//!        "strings" を持たない画面では何も起きない。
+	void SetLanguage(const ttstr& lang);
+
+	//! @brief 現在の表示言語 (SetLanguage で設定した値。 既定は空 = 画面 JSON の
+	//!        "lang" 任せ)。
+	ttstr GetLanguage() const;
+
+	//! @brief 内蔵仮想キーボードの動作モード。 テキスト欄に focus が入ったとき、
+	//!        OS のソフトキーボード (NX swkbd / PS5 IME) の代わりに Elements
+	//!        自身の英数キーボードを出すかどうか。
+	//!        - "auto"   … 既定。 物理キーボードが無いときだけ出す
+	//!        - "always" … 物理キーボードがあっても常に出す (テスト用)
+	//!        - "never"  … 出さない (OS 側に任せる)。 表示中なら閉じる
+	//!        初期値は環境変数 KRKRZ_FORCE_VIRTUAL_KEYBOARD=1 なら "always"。
+	void SetVirtualKeyboardMode(const ttstr& mode);
+
+	//! @brief 現在の仮想キーボード動作モード ("auto" / "always" / "never")。
+	ttstr GetVirtualKeyboardMode() const;
+
+	//! @brief 物理 (ハードウェア) キーボードが接続されているか。
+	//!        SDL_HasKeyboard() の値。 デスクトップは常に true。
+	//!        ゲーム側が独自ソフトキーボードを出すか判断するのに使う。
+	bool HasPhysicalKeyboard() const;
 
 	//! @brief index 番目のインスタンスの widget を id 指定でフォーカス + 起動
 	//!        (Enter 相当)。 座標を当てずにボタン押下 / トグルできる。
@@ -238,6 +302,38 @@ public:
 	//!        次回の RenderInstance から反映される (表示中の画面にも効く)。
 	void SetRenderScale(float scale);
 	float GetRenderScale() const;
+
+	//! @brief overlay の再ラスタライズ抑止 (TJS: Dialog.renderCache)。
+	//!        true (既定): 変化が無いフレームは ThorVG の再ラスタライズ +
+	//!        テクスチャ再アップロードを省略し、 レンダラが保持する前回の
+	//!        描画結果をそのまま提示する (アイドル時 CPU 負荷の削減)。
+	//!        false: 従来どおり毎フレーム再描画 (負荷 A/B 比較・切り分け用)。
+	void SetRenderCache(bool enable);
+	bool GetRenderCache() const;
+
+	//! @brief overlay の部分再描画 (TJS: Dialog.partialRedraw)。
+	//!        true (既定): ダーティが矩形で特定できる変化 (テキスト欄キャレット
+	//!        点滅等) は、 その矩形だけをクリア + クリップ付き再ラスタライズし、
+	//!        テクスチャへも部分転送する。 renderCache 有効時のみ機能する
+	//!        (staging に前回フレームが残っていることが前提)。
+	//!        false: 変化フレームは常に全面再描画 (A/B 比較・切り分け用)。
+	void SetPartialRedraw(bool enable);
+	bool GetPartialRedraw() const;
+
+	//! @brief 実際にラスタライズ (render_to_buffer) した累計回数。 アイドル時に
+	//!        増えないことの確認・負荷比較用 (TJS: Dialog.renderCount 読取専用)。
+	tjs_uint64 GetRenderCount() const;
+
+	//! @brief overlay 描画パイプラインの区間計測を取得する
+	//!        (TJS: Dialog.renderStats 読取専用。 累積値)。
+	void GetRenderStats(tTVPElementsRenderStats& out) const;
+	//! @brief 計測カウンタを 0 クリアする (TJS: Dialog.renderStatsReset())。
+	void ResetRenderStats();
+
+	//! @brief 全インスタンスへ明示的な再描画を要求する。 セッションから観測
+	//!        できない外部変化 (registerImage による mem:// 画像バイト差替等)
+	//!        の反映に使う。
+	void InvalidateOverlays();
 
 private:
 	tTVPElementsDialogManager();

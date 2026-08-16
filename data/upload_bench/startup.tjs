@@ -1,0 +1,26 @@
+// -*- mode:tjs2 -*-
+// ======================================================================
+//  upload_bench — 画面転送コストの計測 (単体起動)
+// ----------------------------------------------------------------------
+//  System.renderStats で「画面バッファ → GPU テクスチャ」の転送コストを
+//  更新の形 (dense / sparse) 別に測る。実体は scene.tjs。
+//
+//  操作: 1 = dense / 2 = sparse / P = 経路切替 / C = 計測リセット
+//  自動: -uploadauto で全組合せを無操作計測 ("@upload ..." 行)
+// ======================================================================
+
+var demolibPath = void;
+{
+    // "demolib/" は datadir=data ルートから (-uploadauto ルーティング経由で)
+    // 呼ばれた場合用。"../demolib/" は単体起動用。
+    var cands = ["demolib/", "../demolib/", "../core/demolib/", "../../src/core/data/demolib/"];
+    for (var i = 0; i < cands.count; i++) {
+        if (Storages.isExistentStorage(cands[i] + "demo_common.tjs")) { demolibPath = cands[i]; break; }
+    }
+}
+if (demolibPath === void) { System.inform("demolib が見つかりません"); System.exit(1); }
+Scripts.execStorage(demolibPath + "demo_common.tjs");
+Scripts.execStorage(Storages.isExistentStorage("scene.tjs")
+                    ? "scene.tjs" : "upload_bench/scene.tjs");
+
+runDemoShell([new UploadBenchScene()], "転送コスト計測");

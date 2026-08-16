@@ -29,7 +29,8 @@ public:
 
 	virtual void Dispatch( class NativeEvent& event ) = 0;
 
-	virtual void PostEvent( const NativeEvent& event ) = 0;
+	//! イベントを投函する。失敗 (メッセージキュー満杯等) で false。
+	virtual bool PostEvent( const NativeEvent& event ) = 0;
 };
 
 class NativeEventQueueImplement : public NativeEventQueueIntarface {
@@ -51,7 +52,7 @@ public:
 	// Queue の削除
 	void Deallocate();
 
-	void PostEvent( const NativeEvent& event );
+	bool PostEvent( const NativeEvent& event );
 
 	HWND GetOwner() { return window_handle_; }
 };

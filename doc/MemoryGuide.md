@@ -52,7 +52,7 @@ GlobalAlloc[Krkrz] に **TJS 言語側オブジェクトの追跡** が乗る:
 //   per-allocator stats + per-tag 内訳 + サイズビン + プロセス全体メモリ
 System.dumpHeap();
 
-// オーバレイ表示 (SDL3 build のみ実描画、WINVER は flag のみ)
+// オーバレイ表示 (描画は OGL 系 / SDL の DrawDevice。WINVER 既定の D3D11 は flag のみ)
 System.setMemoryOverlay(true);   // 表示開始
 System.setMemoryOverlay(false);  // 表示停止
 System.setMemoryOverlay();       // toggle (戻り値は新しい状態 0/1)
@@ -122,7 +122,7 @@ CLI と `config.cf` の両方で指定可能。
 | `-memstatinterval=N` | N 秒ごとに `TVPHeapDump()` をログへ出力する常駐スレッドを起動 |
 | `-memstatonexit=1` | 終了時に `TVPHeapDump()` を 1 回実行 |
 | `-cachelistonexit=<m>` | 終了時にキャッシュ一覧をダンプ (`file`/`image`/`all`/`none`) |
-| `-memoverlay=1` | 起動時から画面オーバレイ ON (SDL3 build のみ実描画) |
+| `-memoverlay=1` | 起動時から画面オーバレイ ON (描画は OGL 系 / SDL の DrawDevice) |
 | `-krkrzpoolsize=N` | Krkrz pool 容量 (MB)。`none`/`off`/`0` で pool 無効化 (= stats のみ) |
 | `-filepoolsize=N` | File pool 容量 (MB)。`none`/`off`/`0` で BasicFileAllocator (raw malloc) にフォールバック (既定 512MB) |
 | `-bitmappoolsize=N` | Bitmap pool 容量 (MB)。`none`/`off`/`0` で raw malloc にフォールバック |
@@ -264,7 +264,7 @@ TJSObjectStats:     fp[0] count=12988 keys=[textlength|speechtext|text]
 
 ---
 
-## 8. 画面オーバレイの読み方 (SDL3 build)
+## 8. 画面オーバレイの読み方
 
 `System.setMemoryOverlay(true)` または `-memoverlay=1` で右上に表示:
 

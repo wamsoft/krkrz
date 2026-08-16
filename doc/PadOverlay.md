@@ -1,12 +1,17 @@
 # PadOverlay (ゲームパッド状態オーバレイ)
 
-SDL3 ビルドで、画面左上に現在のゲームパッド状態 (16 ボタンの ON/OFF
-マトリクス + 6 軸のアナログ値) をリアルタイム表示するデバッグ用
-オーバレイです。memoverlay (画面右上) と独立に動き、両方同時に出せます。
+画面左上に現在のゲームパッド状態 (16 ボタンの ON/OFF マトリクス + 6 軸の
+アナログ値) をリアルタイム表示するデバッグ用オーバレイです。
+memoverlay (画面右上) と独立に動き、両方同時に出せます。
 
-WINVER ビルドでも flag は持つが、`tTVPApplication` がパッド抽象 API を
-持たないため OGLDrawDevice 経路で出した場合は `Pad: (none)` + 全 OFF +
-全軸 +0.00 の表示になります。
+**描画するのは OGL 系 DrawDevice (`OGLDrawDevice` / `SDLOGLDrawDevice`) と
+SDL の `SDLDrawDevice`**。 flag は全ビルド共通で、WINVER 既定の
+`BasicDrawDevice` (D3D11) には描画フックが無いため表示されませんが、
+WINVER でも drawDevice を OGL 系へ切り替えれば表示されます。
+
+パッド状態の取得は全ビルド共通の論理層 (`tTVPPadManager`) を使うので、
+WINVER でも XInput のパッド名・ボタン・軸がそのまま出ます
+(2026-08-16 まで WINVER は stub で `Pad: (none)` 固定でした)。
 
 ## 表示例
 
@@ -64,7 +69,7 @@ krkrz64.exe data/ -padoverlay=1
 
 `config.cf` にも書ける (`-padoverlay=1` 行を追加)。`0` または省略時は OFF。
 WINVER でも flag は立つが、既定 `BasicDrawDevice` には描画フックがないため
-画面には何も出ない (`tTVPOGLDrawDevice` に切替えれば `(none)` 状態で出る)。
+画面には何も出ない (`tTVPOGLDrawDevice` に切替えれば実パッドの状態が出る)。
 
 ### TJS
 

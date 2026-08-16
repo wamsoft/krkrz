@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>krkrz webui デモ</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; padding: 24px;
+    background: #141821; color: #dfe6f2;
+    font-family: "Segoe UI", "Noto Sans JP", system-ui, sans-serif;
+    line-height: 1.6;
+  }
+  h1 { font-size: 20px; color: #ffd76a; margin: 0 0 4px; }
+  p.lead { margin: 0 0 20px; color: #9fb0c8; font-size: 14px; }
+  .card {
+    background: #1b2130; border-radius: 8px; padding: 16px 18px;
+    margin-bottom: 16px; max-width: 720px;
+  }
+  .card h2 { font-size: 15px; color: #ffd76a; margin: 0 0 12px; font-weight: 600; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+  label { color: #9fb0c8; font-size: 13px; min-width: 5.5em; }
+  input[type=text] {
+    background: #101520; border: 1px solid #2c3d63; border-radius: 4px;
+    color: #dfe6f2; padding: 6px 8px; font: inherit; font-size: 14px; flex: 1; min-width: 12em;
+  }
+  button {
+    background: #2c3d63; border: none; border-radius: 4px; color: #dfe6f2;
+    padding: 7px 14px; font: inherit; font-size: 14px; cursor: pointer;
+  }
+  button:hover { background: #3a5085; }
+  .swatch { width: 28px; height: 28px; border-radius: 4px; border: 1px solid #2c3d63; }
+  .state { font-family: ui-monospace, "Consolas", monospace; font-size: 13px; color: #9fd6a0; }
+  #log {
+    font-family: ui-monospace, "Consolas", monospace; font-size: 12px;
+    background: #101520; border-radius: 6px; padding: 10px 12px;
+    height: 190px; overflow-y: auto; white-space: pre-wrap;
+  }
+  .muted { color: #8899b0; font-size: 12px; }
+</style>
+</head>
+<body>
+<h1>krkrz webui デモ</h1>
+<p class="lead">このページは吉里吉里Z 本体が配信しています (WebServer.serveStatic)。
+ボタンを押すとゲーム画面が変わり、ゲーム側の変化は SSE でこのページへ届きます。</p>
+
+<div class="card">
+  <h2>ゲームの状態</h2>
+  <div class="row">
+    <label>メッセージ</label>
+    <input type="text" id="msg" placeholder="ゲーム画面に出す文字">
+    <button id="send">送信</button>
+  </div>
+  <div class="row">
+    <label>色</label>
+    <button data-color="ff6a6a">赤</button>
+    <button data-color="9fd6a0">緑</button>
+    <button data-color="6aa8ff">青</button>
+    <button data-color="ffd76a">黄</button>
+    <div class="swatch" id="swatch"></div>
+  </div>
+  <div class="row">
+    <label>カウンタ</label>
+    <button id="bump">+1</button>
+    <span class="state" id="state">(取得中…)</span>
+  </div>
+  <p class="muted">送信は <code>POST /api/message</code> (body) /
+  <code>POST /api/color</code> (body) / <code>POST /api/bump?by=N</code> (query)、
+  取得は <code>GET /api/state</code>。</p>
+</div>
+
+<div class="card">
+  <h2>ゲームからの通知 (SSE: /sub/webui)</h2>
+  <div id="log"></div>
+  <p class="muted">ゲーム画面のパネルを操作すると、ここに push されます。</p>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+function log(line) {
+  const el = $("log");
+  const now = new Date().toLocaleTimeString();
+  el.textContent += `[${now}] ${line}\n`;
+  el.scrollTop = el.scrollHeight;
+}
+
+function applyState(s) {
+  $("state").textContent = `count=${s.count}  message="${s.message}"  color=#${s.color}`;
+  $("swatch").style.background = "#" + s.color;
+  if (document.activeElement !== $("msg")) $("msg").value = s.message;
+}
+
+async function refresh() {
+  try {
+    const r = await fetch("/api/state");
+    applyState(await r.json());
+  } catch (e) {
+    $("state").textContent = "(取得できません: " + e + ")";
+  }
+}
+
+// 日本語を含む値は body で送る (クエリの percent-encoding を戻す手段が
+// 本体側に無いビルドがあるため)。数値の指定はクエリで送る。
+async function post(path, body) {
+  try {
+    const r = await fetch(path, { method: "POST", body: body });
+    applyState(await r.json());
+  } catch (e) {
+    log("送信失敗: " + e);
+  }
+}
+
+$("send").onclick = () => post("/api/message", $("msg").value);
+$("bump").onclick = () => post("/api/bump?by=1");
+document.querySelectorAll("button[data-color]").forEach((b) => {
+  b.onclick = () => post("/api/color", b.dataset.color);
+});
+$("msg").addEventListener("keydown", (e) => { if (e.key === "Enter") $("send").click(); });
+
+// ゲーム側の WebServer.broadcast("webui", ...) を購読する
+const es = new EventSource("/sub/webui");
+es.onmessage = (e) => { log(e.data); refresh(); };
+es.onerror = () => log("SSE 切断 (再接続します)");
+
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>

@@ -59,6 +59,15 @@ public:
 	// 処理を実行して、ペンディングカウントをクリアする。メインスレッドで呼ばれる。
 	void FirePendingEventsAndClear();
 
+	// ペンディング数を取り出してゼロにする (ロック下で呼ぶこと)。
+	// 先にゼロにしておくと、Fire 中にタイマースレッドが Trigger しても
+	// 「PendingCount == 0 なので pending リストへ再登録」の経路に乗るため、
+	// ロックを手放した状態で Fire してもティックを取りこぼさない。
+	tjs_int TakePendingCount() { tjs_int n = PendingCount; PendingCount = 0; return n; }
+
+	// TakePendingCount で取り出した数でイベントを発生させる (ロックの外で呼ぶ)。
+	void FirePendingEvents(tjs_int n) { if(n > 0) Fire((tjs_uint)n); }
+
 protected:
 	// タイマー処理実態。メインスレッドで呼ばれる。
 	virtual void Fire(tjs_uint n) = 0;
@@ -80,7 +89,6 @@ class tTVPTimerThread : public tTVPThread
 
 	std::vector<tTVPTimerBase *> List;
 	std::vector<tTVPTimerBase *> Pending; // timer object which has pending events
-	std::vector<tTVPTimerBase *> ProcWork;
 	bool PendingEventsAvailable;
 	tTVPThreadEvent Event;
 

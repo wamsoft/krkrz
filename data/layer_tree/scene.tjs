@@ -1,0 +1,446 @@
+// -*- mode:tjs2 -*-
+// ======================================================================
+//  layer_tree シーン (LayerTreeScene)
+//    レイヤツリーの構造 (親子 / 重ね順 / 絶対配置)、ヒットテスト
+//    (hitType / hitThreshold / onHitTest)、フォーカス連鎖
+//    (focusable / focus / focusNext / joinFocusChain) を 1 画面で試す。
+// ======================================================================
+
+// ----------------------------------------------------------------------
+// カード = デモ用の対話レイヤ。イベントを scene へ中継する。
+// ----------------------------------------------------------------------
+class TreeCard extends Layer
+{
+    var scene;
+    var cardName;
+    var baseColor;
+    var halfHit = false;   // true: onHitTest で左半分だけ当たりにする
+
+    function TreeCard(win, par, sc, nm, col)
+    {
+        super.Layer(win, par);
+        scene = sc; cardName = nm; baseColor = col;
+        // hitType は htMask (マスク濃度で判定) と htProvince (領域画像で判定)
+        // の 2 種類。 矩形全面で受けたいときは hitThreshold = 0 にする。
+        hitType = htMask;
+        hitThreshold = 8;
+        cursor = crHandPoint;
+        focusable = false;
+        visible = true;        // Layer.visible の既定は false (表示忘れの定番)
+    }
+
+    // --- ヒットテスト --------------------------------------------------
+    // hitType / hitThreshold で「当たり」と判定された後にだけ呼ばれる。
+    // ここで false を返せば、より奥のレイヤへマウスが透過する。
+    function onHitTest(x, y, hit)
+    {
+        if (halfHit && hit && x >= width \ 2) hit = false;
+        super.onHitTest(x, y, hit);
+    }
+
+    function onMouseDown(x, y, button, shift)
+    {
+        super.onMouseDown(...);
+        scene.noteHit(cardName, x, y);
+        if (focusable) focus();
+    }
+    function onMouseEnter() { super.onMouseEnter(...); scene.noteHover(cardName); }
+    function onMouseLeave() { super.onMouseLeave(...); scene.noteHover("(なし)"); }
+    function onFocus(prev)  { super.onFocus(...); scene.noteFocus(cardName); }
+    function onBlur(next)   { super.onBlur(...); }
+}
+
+class LayerTreeScene extends DemoScene
+{
+    // セクション 1: ヒットテスト
+    var backdrop, cardA, cardP;
+    // セクション 2: 親子とノード状態
+    var parentCard, childA, childB;
+    // セクション 3: 重ね順とフォーカス
+    var stack = [];
+    var focusFrame;   // フォーカス中のカードを囲む枠 (enabled=false で入力を素通し)
+
+    var threshold = 8;
+    var halfHit = false;
+    var parentVisible = true, parentEnabled = true;
+
+    var lastHit = "(まだ)", lastHitPos = "", hoverName = "(なし)", focusName = "(なし)";
+    var pendingInfo = true;
+
+    var SEC_X = 24, INFO_X = 600, INFO_W = 330;
+
+    function LayerTreeScene() { super.DemoScene("レイヤツリー / ヒットテスト / フォーカス"); }
+
+    function create()
+    {
+        stage.fillRect(0, 0, 1280, 720, 0xff141821);
+        buildHitSection();
+        buildNodeSection();
+        buildStackSection();
+        buildFocusFrame();
+        drawStatic();
+        redrawInfo();
+        setInfo("カードをクリック / Tab でフォーカス移動。パネルでヒット判定と重ね順を操作");
+        showPanelDict(panelDict());
+    }
+
+    function onExit()
+    {
+        // 子レイヤはシェルが stage ごと破棄するのでここでは参照だけ落とす
+        backdrop = cardA = cardP = parentCard = childA = childB = focusFrame = void;
+        stack = [];
+    }
+
+    // ------------------------------------------------------------------
+    // セクション 1 — hitType / hitThreshold / onHitTest
+    //   背面に BACK レイヤ、その上に
+    //     A: htMask (透明 / 半透明 / 不透明の 3 帯)
+    //     P: htProvince (領域画像で円の内側だけ当たる)
+    //   を重ねる。 どのレイヤがクリックを受けたかを表示する。
+    // ------------------------------------------------------------------
+    function buildHitSection()
+    {
+        backdrop = new TreeCard(window, stage, this, "BACK (背面)", 0xff2a3550);
+        backdrop.setPos(SEC_X, 76);
+        backdrop.setSize(556, 150);
+        backdrop.type = ltAlpha;
+        backdrop.fillRect(0, 0, 556, 150, 0xff2a3550);
+        backdrop.font.height = 16;
+        backdrop.drawText(10, 120, "BACK — 手前が透過するとここに当たる", 0x8fa6d8, 255);
+        window.add(backdrop);
+
+        cardA = new TreeCard(window, stage, this, "A (htMask 3 帯)", 0xff3d7ac8);
+        cardA.setPos(SEC_X + 16, 90);
+        cardA.setSize(300, 100);
+        cardA.type = ltAlpha;
+        drawBands(cardA);
+        window.add(cardA);
+
+        cardP = new TreeCard(window, stage, this, "P (htProvince 円)", 0xffc86a3d);
+        cardP.setPos(SEC_X + 344, 90);
+        cardP.setSize(160, 100);
+        cardP.type = ltAlpha;
+        buildProvinceCard(cardP);
+        window.add(cardP);
+    }
+
+    // 領域 (province) 画像をコードで作る。 円の内側だけ province != 0 にし、
+    // hitType = htProvince にすると「円の中だけ当たる」レイヤになる。
+    // 見た目 (mask) は矩形全面なので、 マスクと当たり判定が独立なことが分かる。
+    function buildProvinceCard(lay)
+    {
+        var w = lay.width, h = lay.height;
+        lay.fillRect(0, 0, w, h, 0x40c86a3d);            // 全面うっすら
+        lay.independProvinceImage();
+        var cx = w / 2.0, cy = h / 2.0, rx = w / 2.0 - 6, ry = h / 2.0 - 6;
+        for (var y = 0; y < h; y++) {
+            var dy = (y + 0.5 - cy) / ry;
+            var t = 1.0 - dy * dy;
+            if (t <= 0) continue;
+            var half = Math.floor(rx * Math.sqrt(t));
+            var x0 = Math.floor(cx) - half, x1 = Math.floor(cx) + half;
+            if (x0 < 0) x0 = 0;
+            if (x1 > w) x1 = w;
+            lay.fillRect(x0, y, x1 - x0, 1, 0xffc86a3d);  // 見た目の円
+            for (var x = x0; x < x1; x++) lay.setProvincePixel(x, y, 1);
+        }
+        lay.hitType = htProvince;
+        lay.font.height = 15;
+        lay.drawText(8, 8, "P: 円内のみ", 0x2a1206, 255);
+    }
+
+    // 左から アルファ 0 / 128 / 255 の 3 帯。hitThreshold との比較で
+    // 「当たる帯」が変わる。
+    function drawBands(lay)
+    {
+        var w = lay.width \ 3, h = lay.height;
+        lay.fillRect(0, 0, lay.width, h, 0x00000000);
+        lay.fillRect(0,     0, w, h, 0x00000000);          // α=0   常に透過
+        lay.fillRect(w,     0, w, h, 0x803d7ac8);          // α=128
+        lay.fillRect(w * 2, 0, lay.width - w * 2, h, 0xff3d7ac8);  // α=255
+        lay.font.height = 15;
+        lay.drawText(8,         8, "α=0", 0xffffff, 255);
+        lay.drawText(w + 8,     8, "α=128", 0xffffff, 255);
+        lay.drawText(w * 2 + 8, 8, "α=255", 0xffffff, 255);
+    }
+
+    // ------------------------------------------------------------------
+    // セクション 2 — 親の状態が子に伝わる (nodeVisible / nodeEnabled)
+    // ------------------------------------------------------------------
+    function buildNodeSection()
+    {
+        parentCard = new TreeCard(window, stage, this, "親", 0xff2f6b4f);
+        parentCard.setPos(SEC_X, 286);
+        parentCard.setSize(400, 150);
+        parentCard.type = ltAlpha;
+        parentCard.fillRect(0, 0, 400, 150, 0xff2f6b4f);
+        parentCard.font.height = 16;
+        parentCard.drawText(10, 8, "親レイヤ (visible / enabled をパネルで切替)", 0xffffff, 255);
+        window.add(parentCard);
+
+        childA = new TreeCard(window, parentCard, this, "子1", 0xff58b08a);
+        childA.setPos(16, 40);
+        childA.setSize(170, 90);
+        childA.type = ltAlpha;
+        childA.fillRect(0, 0, 170, 90, 0xff58b08a);
+        childA.font.height = 15;
+        childA.drawText(10, 34, "子1", 0x0a2015, 255);
+        window.add(childA);
+
+        childB = new TreeCard(window, parentCard, this, "子2", 0xff7fd0aa);
+        childB.setPos(206, 40);
+        childB.setSize(170, 90);
+        childB.type = ltAlpha;
+        childB.fillRect(0, 0, 170, 90, 0xff7fd0aa);
+        childB.font.height = 15;
+        childB.drawText(10, 34, "子2", 0x0a2015, 255);
+        window.add(childB);
+    }
+
+    // ------------------------------------------------------------------
+    // セクション 3 — 重ね順 (order / bringToFront) とフォーカス連鎖
+    // ------------------------------------------------------------------
+    function buildStackSection()
+    {
+        var cols = [0xffc85a5a, 0xffc8a05a, 0xff8a5ac8, 0xff5aa8c8];
+        for (var i = 0; i < 4; i++) {
+            var c = new TreeCard(window, stage, this, "F" + (i + 1), cols[i]);
+            c.setPos(SEC_X + i * 60, 486 + i * 20);
+            c.setSize(220, 110);
+            c.type = ltAlpha;
+            c.fillRect(0, 0, 220, 110, cols[i]);
+            c.font.height = 16;
+            c.drawText(10, 8, "F" + (i + 1) + " (focusable)", 0xffffff, 255);
+            c.focusable = true;
+            window.add(c);
+            stack.add(c);
+        }
+    }
+
+    // フォーカス枠。 enabled = false のレイヤは htMask 時に全面透明とみなされ
+    // ヒットテストを素通しするので、 カードのクリックを邪魔しない。
+    function buildFocusFrame()
+    {
+        focusFrame = new Layer(window, stage);
+        focusFrame.type = ltAlpha;
+        focusFrame.enabled = false;
+        focusFrame.visible = false;
+        window.add(focusFrame);
+    }
+
+    function updateFocusFrame(card)
+    {
+        if (!(isvalid focusFrame)) return;
+        if (card === void || !(isvalid card)) { focusFrame.visible = false; return; }
+        var w = card.width + 8, h = card.height + 8;
+        focusFrame.setSize(w, h);
+        focusFrame.fillRect(0, 0, w, h, 0x00000000);
+        var t = 3, c = 0xffffe066;
+        focusFrame.fillRect(0, 0, w, t, c);
+        focusFrame.fillRect(0, h - t, w, t, c);
+        focusFrame.fillRect(0, 0, t, h, c);
+        focusFrame.fillRect(w - t, 0, t, h, c);
+        focusFrame.setPos(card.left - 4, card.top - 4);
+        focusFrame.visible = true;
+        focusFrame.bringToFront();
+    }
+
+    // ------------------------------------------------------------------
+    // 固定の見出し / 説明
+    // ------------------------------------------------------------------
+    function drawStatic()
+    {
+        stage.font.height = 19;
+        stage.drawText(SEC_X, 44,  "1. ヒットテスト (htMask / htProvince / hitThreshold / onHitTest)", 0xffd76a, 255);
+        stage.drawText(SEC_X, 262, "2. 親の状態が子に伝わる (nodeVisible / nodeEnabled)", 0xffd76a, 255);
+        stage.drawText(SEC_X, 462, "3. 重ね順 (order) とフォーカス連鎖 (focusNext)", 0xffd76a, 255);
+        stage.font.height = 15;
+        stage.drawText(SEC_X, 234, "A=マスク濃度で判定 / P=領域画像で判定。外れたクリックは背面 BACK が受ける",
+                       0x9fb0c8, 255);
+        stage.update();
+    }
+
+    // ------------------------------------------------------------------
+    // 右側の状態表示
+    // ------------------------------------------------------------------
+    function redrawInfo()
+    {
+        stage.fillRect(INFO_X, 40, INFO_W, 620, 0xff1b2130);
+        stage.fillRect(INFO_X, 40, INFO_W, 2, 0xff3a4560);
+        stage.font.height = 18;
+        stage.drawText(INFO_X + 14, 52, "状態", 0xffd76a, 255);
+        stage.font.height = 16;
+        var y = 86;
+        y = line(y, "マウス下: " + hoverName);
+        y = line(y, "最後のクリック: " + lastHit);
+        y = line(y, lastHitPos);
+        y += 10;
+        y = line(y, "フォーカス: " + focusName);
+        y += 16;
+        y = line(y, "-- ヒット設定 --", 0xffd76a);
+        y = line(y, "A: htMask / P: htProvince");
+        y = line(y, "A の hitThreshold: " + threshold);
+        y = line(y, "  (0=全面ヒット / 256=全透過)");
+        y = line(y, "A の onHitTest 右半分無効: " + (halfHit ? "ON" : "OFF"));
+        y += 16;
+        y = line(y, "-- 親ノード --", 0xffd76a);
+        y = line(y, "親 visible: " + (parentVisible ? "true" : "false"));
+        y = line(y, "親 enabled: " + (parentEnabled ? "true" : "false"));
+        if (isvalid childA) {
+            y = line(y, "子1 nodeVisible: " + (childA.nodeVisible ? "true" : "false"));
+            y = line(y, "子1 nodeEnabled: " + (childA.nodeEnabled ? "true" : "false"));
+        }
+        y += 16;
+        y = line(y, "-- 重ね順 (手前が上) --", 0xffd76a);
+        y = line(y, stackOrderText());
+        stage.update();
+    }
+
+    function line(y, text, col)
+    {
+        if (col === void) col = 0xdfe6f2;
+        stage.drawText(INFO_X + 14, y, text, col, 255);
+        return y + 24;
+    }
+
+    // stage の子のうち stack に含まれるものを、奥→手前の順で並べた文字列
+    function stackOrderText()
+    {
+        var names = [];
+        var cs = stage.children;
+        for (var i = 0; i < cs.count; i++) {
+            for (var j = 0; j < stack.count; j++) {
+                if (cs[i] === stack[j]) { names.add(stack[j].cardName); break; }
+            }
+        }
+        if (names.count == 0) return "(なし)";
+        return names.join(" < ");
+    }
+
+    // ------------------------------------------------------------------
+    // カードからの通知
+    // ------------------------------------------------------------------
+    function noteHit(name, x, y)
+    {
+        lastHit = name;
+        lastHitPos = "  (レイヤ内 " + x + ", " + y + ")";
+        pendingInfo = true;
+    }
+    function noteHover(name) { hoverName = name; pendingInfo = true; }
+    function noteFocus(name)
+    {
+        focusName = name;
+        updateFocusFrame(focusedCard());
+        pendingInfo = true;
+    }
+
+    // ------------------------------------------------------------------
+    // 操作
+    // ------------------------------------------------------------------
+    function applyHitSettings()
+    {
+        if (isvalid cardA) {
+            cardA.hitThreshold = threshold;
+            cardA.halfHit = halfHit;
+        }
+        pendingInfo = true;
+    }
+
+    function applyParentState()
+    {
+        if (isvalid parentCard) {
+            parentCard.visible = parentVisible;
+            parentCard.enabled = parentEnabled;
+        }
+        pendingInfo = true;
+    }
+
+    function bringFocusedToFront()
+    {
+        var t = focusedCard();
+        if (t !== void) { t.bringToFront(); updateFocusFrame(t); pendingInfo = true; }
+    }
+    function bringFocusedToBack()
+    {
+        var t = focusedCard();
+        if (t !== void) { t.bringToBack(); updateFocusFrame(t); pendingInfo = true; }
+    }
+    function focusedCard()
+    {
+        for (var i = 0; i < stack.count; i++)
+            if (isvalid stack[i] && stack[i].focused) return stack[i];
+        return stack.count > 0 ? stack[0] : void;
+    }
+
+    function moveFocus(forward)
+    {
+        var t = focusedCard();
+        if (t === void) return;
+        if (!t.focused) { t.focus(); return; }
+        var n = forward ? t.nextFocusable : t.prevFocusable;
+        if (isvalid n) n.focus();
+    }
+
+    // ------------------------------------------------------------------
+    function onKeyDown(key, shift)
+    {
+        if (key == VK_TAB) moveFocus((shift & ssShift) == 0);
+    }
+
+    function onPanelAction(id, payload)
+    {
+        switch (id) {
+        case "th":       threshold = Math.floor(payload + 0.5); applyHitSettings(); break;
+        case "half":     halfHit = (payload == true); applyHitSettings(); break;
+        case "pvis":     parentVisible = (payload == true); applyParentState(); break;
+        case "pena":     parentEnabled = (payload == true); applyParentState(); break;
+        case "front":    bringFocusedToFront(); break;
+        case "back":     bringFocusedToBack(); break;
+        case "fnext":    moveFocus(true); break;
+        case "fprev":    moveFocus(false); break;
+        }
+    }
+
+    function onDemoFrame(tick)
+    {
+        if (pendingInfo) { pendingInfo = false; redrawInfo(); }
+    }
+
+    function onDemoTest()
+    {
+        dm(@"@demotest:layer_tree cards=${stack.count} province=${isvalid cardP} threshold=${threshold}");
+    }
+
+    function panelDict()
+    {
+        return %[
+            size : [300, 430], background : [26, 30, 40, 236], locale : "ja-JP",
+            align : "bottom_right", margin : 16,
+            content : %[ type : "margin", padding : 14, child : %[ type : "vtile", children : [
+                %[ type : "vsize", height : 0, child : %[ type : "hspacer", width : 268 ] ],
+                %[ type : "align_center", child : %[ type : "label", text : "レイヤツリー操作", size_scale : 1.2 ] ],
+                %[ type : "vspacer", height : 10 ],
+                %[ type : "label", text : "A の hitThreshold (0〜256)" ],
+                %[ type : "slider_with_range", id : "th", min : 0, max : 256, initial : threshold ],
+                %[ type : "vspacer", height : 6 ],
+                %[ type : "check_box", id : "half", text : "A の onHitTest で右半分を無効化", value : false ],
+                %[ type : "vspacer", height : 10 ],
+                %[ type : "check_box", id : "pvis", text : "親 visible", value : true ],
+                %[ type : "check_box", id : "pena", text : "親 enabled", value : true ],
+                %[ type : "vspacer", height : 10 ],
+                %[ type : "label", text : "フォーカス中のカード" ],
+                %[ type : "htile", children : [
+                    %[ type : "button", id : "front", text : "前面へ" ],
+                    %[ type : "hspacer", width : 8 ],
+                    %[ type : "button", id : "back",  text : "背面へ" ]
+                ] ],
+                %[ type : "vspacer", height : 6 ],
+                %[ type : "htile", children : [
+                    %[ type : "button", id : "fprev", text : "← フォーカス" ],
+                    %[ type : "hspacer", width : 8 ],
+                    %[ type : "button", id : "fnext", text : "フォーカス →" ]
+                ] ]
+            ] ] ]
+        ];
+    }
+}

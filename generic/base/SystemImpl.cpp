@@ -10,6 +10,9 @@
 //---------------------------------------------------------------------------
 #include "tjsCommHead.h"
 #include "tjsDictionary.h"         // TJSCreateDictionaryObject
+#ifdef _WIN32
+#include <shellapi.h>              // TVPExecuteProgram: ShellExecuteW (App Paths 解決)
+#endif
 
 //#include "GraphicsLoaderImpl.h"
 
@@ -141,6 +144,26 @@ tjs_int TVPGetOSBits()
 bool TVPShellExecute(const ttstr &target, const ttstr &param)
 {
 	return Application->ShellExecute(target.AsStdString().c_str(), param.length() == 0 ? NULL : param.AsStdString().c_str());
+}
+//---------------------------------------------------------------------------
+// TVPExecuteProgram — 実行ファイルを引数付きで起動する (プログラム実行専用)。
+// URL/ファイルを既定ハンドラで開く TVPShellExecute (SDL_OpenURL 経由・引数不可) とは
+// 別処理。デスクトップ Windows では App Paths / PATH 解決込みの Win32 ShellExecute で
+// 機種依存に実装する (例 "msedge.exe" --app=<url>)。非 Windows は未対応 (false)。
+//---------------------------------------------------------------------------
+bool TVPExecuteProgram(const ttstr &exe, const ttstr &args)
+{
+#ifdef _WIN32
+	if(exe.IsEmpty()) return false;
+	return (INT_PTR)::ShellExecuteW(NULL, L"open",
+		(const wchar_t*)exe.c_str(),
+		args.IsEmpty() ? NULL : (const wchar_t*)args.c_str(),
+		NULL,
+		SW_SHOWNORMAL) > 32;
+#else
+	(void)exe; (void)args;
+	return false;
+#endif
 }
 //---------------------------------------------------------------------------
 
@@ -519,8 +542,9 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/endAllocTag)
 TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
 	/*func. name*/endAllocTag)
 //----------------------------------------------------------------------
-// SDL3 build 限定: 画面右上にメモリ状態のリアルタイム折れ線グラフを
-// オーバレイ表示する。引数なしで toggle、bool 引数指定で明示制御。
+// 画面右上にメモリ状態のリアルタイム折れ線グラフをオーバレイ表示する。
+// 引数なしで toggle、bool 引数指定で明示制御。 flag は全ビルド共通で、
+// 描画するのは OGL 系 DrawDevice と SDLDrawDevice。
 TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/setMemoryOverlay)
 {
 	bool enable;
@@ -536,8 +560,8 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/setMemoryOverlay)
 TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
 	/*func. name*/setMemoryOverlay)
 //----------------------------------------------------------------------
-// SDL3 build 限定: 画面左上にゲームパッド 16 ボタンのマトリクスを
-// オーバレイ表示する。引数なしで toggle、bool 引数指定で明示制御。
+// 画面左上にゲームパッド 16 ボタンのマトリクスをオーバレイ表示する。
+// 引数なしで toggle、bool 引数指定で明示制御。 描画条件は setMemoryOverlay と同じ。
 TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/setPadOverlay)
 {
 	bool enable;

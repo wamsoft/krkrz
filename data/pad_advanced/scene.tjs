@@ -1,0 +1,418 @@
+// -*- mode:tjs2 -*-
+// ======================================================================
+//  pad_advanced シーン (PadAdvancedScene)
+//    ゲームパッドまわりを 1 画面で確認する:
+//      - 接続状態      System.getJoypadCount / hasJoypad / getJoypadType
+//      - 論理番号      0 = 最後に操作したパッド / 1..N = 接続順の実パッド
+//      - アナログ軸    System.getPadAxis (スティック 2 本 + トリガ 2 本を可視化)
+//      - ボタン        VK_PAD* のキーイベント + System.getKeyState
+//      - 振動          System.rumblePad / stopRumblePad
+//      - オーバレイ    System.setPadOverlay (SDL3 ビルド限定)
+//      - 抜き差し通知  System.onJoypadChange
+//
+//    rawPadKeys = true にしているので、demolib による論理キー変換
+//    (十字→矢印, A→Enter 等) を経ずに生の VK_PAD* が届く。
+// ======================================================================
+
+class PadAdvancedScene extends DemoScene
+{
+    // --- レイアウト ---
+    var CX = 24,  CY = 128, CW = 420, CH = 250;    // 接続情報
+    var BX = 24,  BY = 392, BW = 420, BH = 268;    // ボタン
+    var AX = 460, AY = 128, AW = 470, AH = 532;    // 軸 (スティック/トリガ)
+
+    var padIndex = 0;           // 表示対象の論理番号 (0 = 最後に操作したパッド)
+    var padCount = 0;
+    var rumbleMs = 300;
+    var overlayOn = false;
+
+    var axisIds = [];           // 軸 ID 定数 (取得できたものだけ)
+    var axisNames = ["LX", "LY", "RX", "RY", "LT", "RT"];
+    var axis = [0, 0, 0, 0, 0, 0];
+    var prevAxis = [0, 0, 0, 0, 0, 0];
+
+    // ボタン表示に使う VK (名前, VK)
+    var btnDefs = [];
+    var btnState = [];
+    var prevBtnState = [];
+
+    var keyLog = [];
+    var KEY_MAX = 8;
+
+    var infoDirty = true;
+    var padChangeNote = "(通知なし)";
+    var hotkeyOn = true;        // パッドボタンをホストホットキーで確保するか
+
+    function PadAdvancedScene()
+    {
+        super.DemoScene("ゲームパッド (多パッド / 軸 / 振動)");
+        rawPadKeys = true;      // VK_PAD* を変換せずに受け取る
+    }
+
+    function create()
+    {
+        keyLog = [];
+        padChangeNote = "(通知なし)";
+        infoDirty = true;
+
+        // 軸 ID 定数。 System.padAxis* / グローバル paLeftX どちらでも取れる
+        axisIds = [ System.padAxisLeftX, System.padAxisLeftY,
+                    System.padAxisRightX, System.padAxisRightY,
+                    System.padAxisLeftTrigger, System.padAxisRightTrigger ];
+
+        buildButtonTable();
+
+        stage.fillRect(0, 0, 1280, 720, 0xff141821);
+        drawStatic();
+        drawAxisFrame();
+        redrawInfo();
+        redrawButtons();
+
+        // 論理 0 のパッドが変わったとき (抜き差し / 別パッド操作) の通知
+        System.onJoypadChange = onPadChange;
+
+        // ★Elements パネルを出していると VK_PAD* はパネルのウィジェット操作
+        //   (十字 = フォーカス移動 / A = 決定) に消費され、ゲーム側の
+        //   onKeyDown へ届かない。 このデモはボタン観測が目的なので、
+        //   パッドボタンをホストホットキーとして確保してバイパスさせる。
+        applyHotKeys();
+
+        setInfo("パッドを操作すると軸とボタンが動く。パネルから振動とオーバレイを試せる");
+        enableFps();
+        showPanelDict(panelDict());
+    }
+
+    function onExit()
+    {
+        System.onJoypadChange = void;
+        if (hasElements() && typeof Dialog.unregisterHotKey != "undefined") {
+            for (var i = 0; i < btnDefs.count; i++) Dialog.unregisterHotKey(btnDefs[i].vk);
+        }
+        if (overlayOn && typeof System.setPadOverlay != "undefined") {
+            System.setPadOverlay(false);
+            overlayOn = false;
+        }
+        // 鳴らしっぱなしにしない
+        try { System.stopRumblePad(padIndex); } catch (e) { }
+    }
+
+    function buildButtonTable()
+    {
+        // VK_PAD1..12 と十字。 ビルドに無い定数があっても落ちないように拾う
+        btnDefs = [];
+        var names = ["A(1)", "B(2)", "X(3)", "Y(4)", "LB(5)", "RB(6)",
+                     "LT(7)", "RT(8)", "BACK(9)", "START(10)", "L3(11)", "R3(12)"];
+        var vks   = [VK_PAD1, VK_PAD2, VK_PAD3, VK_PAD4, VK_PAD5, VK_PAD6,
+                     VK_PAD7, VK_PAD8, VK_PAD9, VK_PAD10, VK_PAD11, VK_PAD12];
+        for (var i = 0; i < names.count; i++) btnDefs.add(%[ name : names[i], vk : vks[i] ]);
+        btnDefs.add(%[ name : "←", vk : VK_PADLEFT ]);
+        btnDefs.add(%[ name : "→", vk : VK_PADRIGHT ]);
+        btnDefs.add(%[ name : "↑", vk : VK_PADUP ]);
+        btnDefs.add(%[ name : "↓", vk : VK_PADDOWN ]);
+
+        btnState = []; prevBtnState = [];
+        for (var i = 0; i < btnDefs.count; i++) { btnState.add(false); prevBtnState.add(false); }
+    }
+
+    // パッドボタンをホストホットキーとして確保 / 解除する
+    function applyHotKeys()
+    {
+        if (!hasElements() || typeof Dialog.registerHotKey == "undefined") return;
+        for (var i = 0; i < btnDefs.count; i++) {
+            if (hotkeyOn) Dialog.registerHotKey(btnDefs[i].vk);
+            else          Dialog.unregisterHotKey(btnDefs[i].vk);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    function drawStatic()
+    {
+        stage.font.height = 19;
+        stage.drawText(24, 44, "ゲームパッド: 多パッド / アナログ軸 / 振動", 0xffd76a, 255);
+        stage.font.height = 15;
+        stage.drawText(24, 76, "パッド番号は 0 = 最後に操作したパッド、1 以上 = 接続順の実パッド。ボタンは VK_PAD* のキーイベントで届く。", 0xc8d2e4, 255);
+        stage.drawText(24, 98, "軸は System.getPadAxis で取る (スティックは -1.0〜+1.0、トリガは 0.0〜+1.0)。", 0xc8d2e4, 255);
+        stage.update();
+    }
+
+    function card(x, y, w, h, title)
+    {
+        stage.fillRect(x, y, w, h, 0xff1b2130);
+        stage.font.height = 17;
+        stage.drawText(x + 12, y + 10, title, 0xffd76a, 255);
+        stage.font.height = 15;
+    }
+
+    function row(x, y, label, value, col)
+    {
+        if (col === void) col = 0xdfe6f2;
+        stage.drawText(x + 12, y, label, 0x9fb0c8, 255);
+        stage.drawText(x + 150, y, value, col, 255);
+        return y + 24;
+    }
+
+    // --- 接続情報 ------------------------------------------------------
+    function redrawInfo()
+    {
+        padCount = System.getJoypadCount();
+        card(CX, CY, CW, CH, "接続");
+        var y = CY + 40;
+        y = row(CX, y, "接続台数", padCount + " 台", padCount > 0 ? 0x9fd6a0 : 0xff9a9a);
+        y = row(CX, y, "パッド機能", System.padEnabled ? "有効" : "無効 (-joypad=no)");
+        y = row(CX, y, "表示対象", padIndex == 0 ? "0 (最後に操作したパッド)" : ("" + padIndex));
+        y = row(CX, y, "有効か", System.hasJoypad(padIndex) ? "はい" : "いいえ");
+        var t = System.getJoypadType(padIndex);
+        y = row(CX, y, "機種名", (t == "" || t === void) ? "(なし)" : t);
+        y = row(CX, y, "ボタンの行き先", hotkeyOn ? "ゲーム (ホットキー確保)" : "パネル (Elements)");
+        y += 6;
+        stage.font.height = 14;
+        stage.drawText(CX + 12, y, "抜き差し通知: " + padChangeNote, 0x9fd6a0, 255); y += 20;
+        for (var i = 1; i <= padCount && i <= 4; i++) {
+            stage.drawText(CX + 12, y, i + ": " + System.getJoypadType(i), 0x9fb0c8, 255);
+            y += 18;
+        }
+        stage.font.height = 15;
+        stage.update(CX, CY, CW, CH);
+    }
+
+    // --- ボタン --------------------------------------------------------
+    function redrawButtons()
+    {
+        card(BX, BY, BW, BH, "ボタン (VK_PAD*)");
+        var y = BY + 40;
+        stage.font.height = 13;
+        // 4 列 x 4 行のマトリクス
+        for (var i = 0; i < btnDefs.count; i++) {
+            var cx = BX + 14 + (i % 4) * 100;
+            var cy = y + ((i / 4) \ 1) * 30;
+            var on = btnState[i];
+            stage.fillRect(cx, cy, 92, 24, on ? 0xff2f6d3f : 0xff232b3c);
+            stage.drawText(cx + 8, cy + 5, btnDefs[i].name, on ? 0xffffff : 0x9fb0c8, 255);
+        }
+        y += 4 * 30 + 12;
+        stage.drawText(BX + 14, y, "-- 最近のキーイベント --", 0xffd76a, 255); y += 20;
+        for (var i = 0; i < keyLog.count; i++) {
+            stage.drawText(BX + 14, y, keyLog[i], 0xdfe6f2, 255);
+            y += 18;
+        }
+        stage.font.height = 15;
+        stage.update(BX, BY, BW, BH);
+    }
+
+    // --- 軸 ------------------------------------------------------------
+    function drawAxisFrame()
+    {
+        card(AX, AY, AW, AH, "アナログ軸 (System.getPadAxis)");
+        stage.font.height = 14;
+        stage.drawText(AX + 20,  AY + 46, "左スティック", 0x9fb0c8, 255);
+        stage.drawText(AX + 250, AY + 46, "右スティック", 0x9fb0c8, 255);
+        stage.drawText(AX + 20,  AY + 340, "トリガ (LT / RT)", 0x9fb0c8, 255);
+        stage.font.height = 15;
+        stage.update(AX, AY, AW, AH);
+        drawAxisValues();
+    }
+
+    // スティック 1 本ぶんの升目 + ドット
+    function drawStick(ox, oy, size, vx, vy)
+    {
+        stage.fillRect(ox, oy, size, size, 0xff101520);
+        // 十字の目盛り
+        stage.fillRect(ox, oy + size / 2, size, 1, 0xff2c3d63);
+        stage.fillRect(ox + size / 2, oy, 1, size, 0xff2c3d63);
+        var cx = ox + (int)((vx + 1.0) * 0.5 * (size - 14));
+        var cy = oy + (int)((vy + 1.0) * 0.5 * (size - 14));
+        stage.fillRect(cx, cy, 14, 14, 0xff6aa8ff);
+    }
+
+    function drawBar(ox, oy, w, h, v)
+    {
+        stage.fillRect(ox, oy, w, h, 0xff101520);
+        var fw = (int)(w * v);
+        if (fw > 0) stage.fillRect(ox, oy, fw, h, 0xff9fd6a0);
+    }
+
+    function drawAxisValues()
+    {
+        var S = 200;
+        drawStick(AX + 20,  AY + 66, S, axis[0], axis[1]);
+        drawStick(AX + 250, AY + 66, S, axis[2], axis[3]);
+
+        drawBar(AX + 20, AY + 362, 420, 26, axis[4]);
+        drawBar(AX + 20, AY + 400, 420, 26, axis[5]);
+
+        // 数値
+        stage.fillRect(AX + 20, AY + 436, 420, 80, 0xff1b2130);
+        stage.font.height = 15;
+        for (var i = 0; i < 6; i++) {
+            var tx = AX + 20 + (i % 3) * 145;
+            var ty = AY + 440 + ((i / 3) \ 1) * 28;
+            stage.drawText(tx, ty, axisNames[i] + ": " + "%+.2f".sprintf(axis[i]), 0xdfe6f2, 255);
+        }
+        stage.update(AX + 16, AY + 60, AW - 32, 460);
+    }
+
+    // ------------------------------------------------------------------
+    function onPadChange(no, name)
+    {
+        padChangeNote = (name == "") ? "パッドが外れた" : ("no=" + no + " " + name);
+        infoDirty = true;
+    }
+
+    function onKeyDown(key, shift)
+    {
+        addKeyLog("down " + padKeyName(key));
+    }
+
+    function onKeyUp(key, shift)
+    {
+        addKeyLog("up   " + padKeyName(key));
+    }
+
+    function padKeyName(key)
+    {
+        for (var i = 0; i < btnDefs.count; i++) {
+            if (btnDefs[i].vk == key) return btnDefs[i].name + " (VK=" + key + ")";
+        }
+        // スティックの 8 方向量子化 (VK_PAD_L_* / VK_PAD_R_*) 等はそのまま出す
+        return "VK=" + key;
+    }
+
+    function addKeyLog(line)
+    {
+        keyLog.add(line);
+        while (keyLog.count > KEY_MAX) keyLog.erase(0);
+    }
+
+    // ------------------------------------------------------------------
+    function onDemoFrame(tick)
+    {
+        // 軸は毎フレーム取得し、変化があったときだけ描き直す
+        var changed = false;
+        for (var i = 0; i < 6; i++) {
+            axis[i] = System.getPadAxis(padIndex, axisIds[i]);
+            if (axis[i] != prevAxis[i]) { prevAxis[i] = axis[i]; changed = true; }
+        }
+        if (changed) drawAxisValues();
+
+        // ボタンは getKeyState でポーリング (キーイベントとは別経路の確認)
+        var btnChanged = false;
+        for (var i = 0; i < btnDefs.count; i++) {
+            btnState[i] = System.getKeyState(btnDefs[i].vk);
+            if (btnState[i] != prevBtnState[i]) { prevBtnState[i] = btnState[i]; btnChanged = true; }
+        }
+        if (btnChanged) redrawButtons();
+
+        if (infoDirty) { infoDirty = false; redrawInfo(); }
+    }
+
+    function onPanelAction(id, payload)
+    {
+        switch (id) {
+        case "pad":
+            padIndex = (int)Math.floor(payload + 0.5);   // Math.floor は実数を返す
+            infoDirty = true;
+            setInfo("表示対象: " + (padIndex == 0 ? "0 (最後に操作したパッド)" : ("パッド " + padIndex)));
+            break;
+
+        case "ms":
+            rumbleMs = (int)Math.floor(payload + 0.5);
+            break;
+
+        case "weak":
+            doRumble(80, 0);
+            break;
+
+        case "strong":
+            doRumble(0, 255);
+            break;
+
+        case "both":
+            doRumble(255, 255);
+            break;
+
+        case "stop":
+            setInfo(System.stopRumblePad(padIndex) ? "振動停止" : "振動停止に失敗 (未接続?)");
+            break;
+
+        case "enabled":
+            System.padEnabled = (payload == true);
+            infoDirty = true;
+            setInfo("パッド機能: " + (System.padEnabled ? "有効" : "無効"));
+            break;
+
+        case "overlay":
+            // System.setPadOverlay は SDL3 ビルド限定 (他では何もしない)
+            overlayOn = (payload == true);
+            if (typeof System.setPadOverlay != "undefined") {
+                System.setPadOverlay(overlayOn);
+                setInfo("パッドオーバレイ: " + (overlayOn ? "表示" : "非表示") + " (SDL3 ビルド限定)");
+            } else {
+                setInfo("setPadOverlay はこのビルドには無い");
+            }
+            break;
+
+        case "hotkey":
+            hotkeyOn = (payload == true);
+            applyHotKeys();
+            setInfo(hotkeyOn ? "パッドボタンをホストで受ける (registerHotKey でパネルをバイパス)"
+                             : "パッドボタンはパネル操作に使われる (ゲーム側へは届かない)");
+            break;
+
+        case "refresh":
+            infoDirty = true;
+            break;
+        }
+    }
+
+    function doRumble(low, high)
+    {
+        // low = 低周波 (重い振動) / high = 高周波 (細かい振動)、いずれも 0〜255
+        var ok = System.rumblePad(padIndex, low, high, rumbleMs);
+        setInfo(ok ? ("振動: low=" + low + " high=" + high + " " + rumbleMs + "ms")
+                   : "振動に失敗 (未接続 / 振動非対応のパッド)");
+    }
+
+    function onDemoTest()
+    {
+        var n = System.getJoypadCount();
+        var t = (n > 0) ? System.getJoypadType(0) : "";
+        dm(@"@demotest:pad_advanced count=${n} type=${t} enabled=${System.padEnabled ? 1 : 0} axes=${axisIds.count}");
+    }
+
+    // ------------------------------------------------------------------
+    function panelDict()
+    {
+        return %[
+            size : [320, 500], background : [26, 30, 40, 236], locale : "ja-JP",
+            align : "bottom_right", margin : 16,
+            content : %[ type : "margin", padding : 14, child : %[ type : "vtile", children : [
+                %[ type : "vsize", height : 0, child : %[ type : "hspacer", width : 288 ] ],
+                %[ type : "align_center", child : %[ type : "label", text : "パッド操作", size_scale : 1.2 ] ],
+                %[ type : "vspacer", height : 8 ],
+                %[ type : "label", text : "対象パッド (0 = 最後に操作したもの)" ],
+                %[ type : "slider_with_range", id : "pad", min : 0, max : 4, initial : padIndex ],
+                %[ type : "vspacer", height : 6 ],
+                %[ type : "label", text : "振動時間 (ms)" ],
+                %[ type : "slider_with_range", id : "ms", min : 50, max : 2000, initial : rumbleMs ],
+                %[ type : "vspacer", height : 8 ],
+                %[ type : "htile", children : [
+                    %[ type : "button", id : "weak",   text : "弱" ],
+                    %[ type : "hspacer", width : 6 ],
+                    %[ type : "button", id : "strong", text : "強" ],
+                    %[ type : "hspacer", width : 6 ],
+                    %[ type : "button", id : "both",   text : "両方" ]
+                ] ],
+                %[ type : "vspacer", height : 6 ],
+                %[ type : "button", id : "stop", text : "振動停止" ],
+                %[ type : "vspacer", height : 10 ],
+                %[ type : "check_box", id : "hotkey", text : "ボタンをホストで受ける", value : true ],
+                %[ type : "vspacer", height : 4 ],
+                %[ type : "check_box", id : "enabled", text : "System.padEnabled", value : true ],
+                %[ type : "vspacer", height : 4 ],
+                %[ type : "check_box", id : "overlay", text : "パッドオーバレイ (SDL3)", value : false ],
+                %[ type : "vspacer", height : 8 ],
+                %[ type : "button", id : "refresh", text : "接続情報を取り直す" ]
+            ] ] ]
+        ];
+    }
+}

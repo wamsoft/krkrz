@@ -48,6 +48,7 @@ enum {
 	AM_MOUSE_MOVE,
 	AM_MOUSE_UP,
 	AM_MOUSE_WHEEL,
+	AM_MOUSE_DBLCLK,	//< ダブルクリック (この直後に AM_MOUSE_DOWN が続く)
 
 	// 処理開始
 	AM_STARTUP_SCRIPT,

@@ -317,7 +317,11 @@ struct screen_blend_func {
 		tmp |= ((d & 0xff00) >> 8) * (s & 0xff00) & 0xff0000;
 		tmp |= ((d & 0xff0000) >> 16) * (s & 0xff0000) & 0xff000000;
 		tmp >>= 8;
-		return tmp;
+		// screen = ~(~d * ~s) — 最終反転が必須 (HDA_o 版と同じ)。かつて
+		// ここが `return tmp;` で反転結果を返していた (x86 では常に SSE2 が
+		// 上書きするため未発覚)。alpha は ~0 = 0xff になる (非 HDA の screen
+		// は plain 版も alpha 0xff を出力する仕様)。
+		return ~tmp;
 	}
 };
 struct screen_blend_HDA_o_func {

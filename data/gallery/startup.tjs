@@ -8,12 +8,16 @@
 //
 //  操作: PgUp/PgDn または画面下部バーの ◀ ▶ でシーン切替、ESC = 終了。
 //        各シーン固有のキー/パネル操作はそのシーンに届く。
+//        パッド対応: 十字/左スティック=移動  Ⓐ=決定  Ⓑ=メニューへ戻る
+//        (demolib が VK_PAD* を論理キーへ正規化する)。
 // ======================================================================
 
 // --- demolib 読み込み --------------------------------------------------
 var demolibPath = void;
 {
-    var cands = ["../demolib/", "../core/demolib/", "../../src/core/data/demolib/"];
+    // "demolib/" は datadir=src/core/data から (親 data/startup.tjs 経由で)
+    // 呼ばれた場合用。"../demolib/" は datadir=gallery で直接起動した場合用。
+    var cands = ["demolib/", "../demolib/", "../core/demolib/", "../../src/core/data/demolib/"];
     for (var i = 0; i < cands.count; i++) {
         if (Storages.isExistentStorage(cands[i] + "demo_common.tjs")) { demolibPath = cands[i]; break; }
     }
@@ -44,14 +48,24 @@ function tryScene(file, ctor)
 tryScene("sysinfo/scene.tjs",      function() { return new SysInfoScene(); });
 tryScene("text_font/scene.tjs",    function() { return new TextFontScene(); });
 tryScene("text_font/scene.tjs",    function() { return new TextEmojiScene(); });
+tryScene("text_font/scene.tjs",    function() { return new TextGlyphwareScene(); });
+tryScene("text_font/scene.tjs",    function() { return new TextRasterizerScene(); });
 tryScene("image_ops/scene.tjs",    function() { return new ImageOpsScene(); });
 tryScene("layer_basic/scene.tjs",  function() { return new LayerBasicScene(); });
+tryScene("layer_tree/scene.tjs",   function() { return new LayerTreeScene(); });
+tryScene("window_multi/scene.tjs", function() { return new WindowMultiScene(); });
 tryScene("input/scene.tjs",        function() { return new InputScene(); });
 tryScene("timer_async/scene.tjs",  function() { return new TimerAsyncScene(); });
 tryScene("gl_canvas/scene.tjs",    function() { return new GLCanvasScene(); });
 tryScene("gl_particles/scene.tjs", function() { return new GLParticlesScene(); });
 tryScene("elements_gallery/scene.tjs", function() { return new ElementsGalleryScene(); });
 tryScene("elements_flow/scene.tjs",    function() { return new ElementsFlowScene(); });
+tryScene("elements_bench/scene.tjs",   function() { return new ElementsBenchScene(); });
+tryScene("perf_stats/scene.tjs",   function() { return new PerfStatsScene(); });
+tryScene("system_debug/scene.tjs", function() { return new SystemDebugScene(); });
+tryScene("webui/scene.tjs",        function() { return new WebUIScene(); });
+tryScene("softkey_ime/scene.tjs",  function() { return new SoftkeyImeScene(); });
+tryScene("pad_advanced/scene.tjs", function() { return new PadAdvancedScene(); });
 
 dm(@"gallery: ${scenes.count} scene(s)");
 if (scenes.count == 0) { System.inform("シーンが読み込めませんでした"); System.exit(1); }

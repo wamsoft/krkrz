@@ -1,0 +1,43 @@
+// krkrz_version.rc — 実行ファイルの VERSIONINFO (生成物。直接編集しない)
+//
+//   元は CMakeLists.txt の PROJECT_VERSION / KRKRZ_VERSION_BUILD /
+//   KRKRZ_PRODUCT_NAME。cmake/krkrz_version.rc.in から生成される。
+//   WINVER / SDL どちらの Windows ビルドでもこの rc をリンクするので、
+//   exe のプロパティに出る版情報が一致する。
+//
+//   WINVER は実行時にこの VERSIONINFO を読んで System.versionString を作る
+//   (win32/msg/MsgImpl.cpp の TVPGetVersion)。
+
+#include <winver.h>
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,@KRKRZ_VERSION_BUILD@
+ PRODUCTVERSION @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,@KRKRZ_VERSION_BUILD@
+ FILEFLAGSMASK 0x3fL
+#ifdef _DEBUG
+ FILEFLAGS 0x1L
+#else
+ FILEFLAGS 0x0L
+#endif
+ FILEOS 0x40004L
+ FILETYPE 0x1L
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "041104b0"
+        BEGIN
+            VALUE "FileDescription", "@KRKRZ_PRODUCT_NAME@"
+            VALUE "FileVersion", "@PROJECT_VERSION_MAJOR@.@PROJECT_VERSION_MINOR@.@PROJECT_VERSION_PATCH@.@KRKRZ_VERSION_BUILD@"
+            VALUE "InternalName", "tvp2/@KRKRZ_PLATFORM_LABEL@"
+            VALUE "LegalCopyright", "(KIRIKIRI core) (C) W.Dee and contributors All Rights Reserved. This software is based in part on the work of Independent JPEG Group. For details: Run this program with '-about' option."
+            VALUE "OriginalFilename", "@EXENAME@.exe"
+            VALUE "ProductName", "@KRKRZ_PRODUCT_NAME@"
+            VALUE "ProductVersion", "@PROJECT_VERSION_MAJOR@.@PROJECT_VERSION_MINOR@.@PROJECT_VERSION_PATCH@.@KRKRZ_VERSION_BUILD@"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x411, 1200
+    END
+END

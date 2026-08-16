@@ -1,0 +1,371 @@
+// -*- mode:tjs2 -*-
+// ======================================================================
+//  webui シーン (WebUIScene)
+//    内蔵 HTTP + SSE サーバ (WebServer) で「ブラウザからゲームを操作する
+//    UI」を組むデモ。
+//      - WebServer.start / stop         … サーバの起動と停止
+//      - WebServer.serveStatic          … ページ (web/index.html) の配信
+//      - WebServer.register             … 動的エンドポイント (/api/...)
+//      - WebServer.broadcast            … ゲーム → ブラウザの push (SSE)
+//    ハンドラは常にメインスレッドで実行されるので、TJS の状態をそのまま
+//    触ってよい (ロック不要)。
+// ======================================================================
+
+class WebUIScene extends DemoScene
+{
+    // --- レイアウト ---
+    var IX = 24,  IY = 128, IW = 560, IH = 250;    // サーバ情報
+    var SX = 24,  SY = 392, SW = 560, SH = 268;    // 状態
+    var LX = 600, LY = 128, LW = 330, LH = 532;    // リクエストログ
+
+    var PORT = 8900;            // REPL の -replweb 既定 (8899) とぶつけない
+
+    var available = false;      // WebServer クラスがあるビルドか
+    var startedByMe = false;    // このシーンが start したか (onExit で stop)
+    var webDir = "";            // 配信元ディレクトリ (見つからなければ空)
+    var url = "";
+
+    // ブラウザから操作される状態
+    var message = "ブラウザから書き換えてください";
+    var color = "ffd76a";
+    var count = 0;
+
+    var logs = [];
+    var LOG_MAX = 16;
+    var dirty = false;
+
+    function WebUIScene() { super.DemoScene("ブラウザ UI (WebServer)"); }
+
+    function create()
+    {
+        logs = [];
+        count = 0;
+        message = "ブラウザから書き換えてください";
+        color = "ffd76a";
+
+        stage.fillRect(0, 0, 1280, 720, 0xff141821);
+        drawStatic();
+
+        available = (typeof global.WebServer != "undefined");
+        if (available) {
+            webDir = findWebDir();
+            startServer();
+        }
+
+        redrawInfo();
+        redrawState();
+        redrawLog();
+        setInfo(available ? ("ブラウザで " + url + "ui/ を開く (パネルのボタンでも開けます)")
+                          : "このビルドには WebServer がありません (KRKRZ_REPL_WEB=OFF)");
+        showPanelDict(panelDict());
+    }
+
+    function onExit()
+    {
+        if (!available) return;
+        unregisterAll();
+        // 自分で起動したサーバだけ止める (-replweb で起動済みなら触らない)
+        if (startedByMe) { WebServer.stop(); startedByMe = false; }
+    }
+
+    // 単体起動 / gallery / hub のどこから呼ばれても web/ を見つける
+    function findWebDir()
+    {
+        var cands = [ "web/", "../webui/web/", "webui/web/",
+                      "core/webui/web/", "../core/webui/web/",
+                      "../../src/core/data/webui/web/" ];
+        for (var i = 0; i < cands.count; i++) {
+            if (Storages.isExistentStorage(cands[i] + "index.html")) return cands[i];
+        }
+        return "";
+    }
+
+    // ------------------------------------------------------------------
+    //  サーバ
+    // ------------------------------------------------------------------
+    function startServer()
+    {
+        if (!WebServer.active) {
+            // -replweb で既に動いていれば start は不要 (その URL に相乗りする)
+            startedByMe = WebServer.start(PORT);
+        }
+        url = WebServer.url;
+
+        if (webDir != "") WebServer.serveStatic("/ui/", webDir);
+        WebServer.register("/api/", onApiRequest);
+    }
+
+    function unregisterAll()
+    {
+        WebServer.unregister("/api/");
+        if (webDir != "") WebServer.unserveStatic("/ui/");
+    }
+
+    // --- エンドポイント -------------------------------------------------
+    //  ハンドラはメインスレッドで呼ばれる。 戻り値が文字列なら 200 の
+    //  application/json として返る。
+    //
+    //  ★日本語などマルチバイトの値は **body で受ける**。 クエリ文字列の
+    //    percent-encoding を戻す手段が本体側に無いビルドがあるため
+    //    (System.urldecode は Windows 拡張)。 query は ASCII の指定値だけに使う。
+    function onApiRequest(req)
+    {
+        addLog(req.method + " " + req.path + (req.query != "" ? "?" + req.query : ""));
+
+        switch (req.path) {
+        case "/api/state":
+            return stateJson();
+
+        case "/api/message":            // body = 表示する文字列 (UTF-8)
+            message = req.body;
+            dirty = true;
+            return stateJson();
+
+        case "/api/color":              // body = "rrggbb"
+            if (isHexColor(req.body)) color = req.body;
+            dirty = true;
+            return stateJson();
+
+        case "/api/bump":               // query = "by=N" (ASCII のみ)
+            var by = queryInt(req.query, "by", 1);
+            count += by;
+            dirty = true;
+            return stateJson();
+        }
+        return 404;     // 整数を返すとそのステータスで空ボディ
+    }
+
+    // "by=3&x=1" から整数値を 1 つ取り出す (ASCII 前提の最小実装)
+    function queryInt(query, key, defval)
+    {
+        if (query == "" || query === void) return defval;
+        var pairs = query.split("&");
+        for (var i = 0; i < pairs.count; i++) {
+            var eq = pairs[i].indexOf("=");
+            if (eq < 0) continue;
+            if (pairs[i].substring(0, eq) == key) {
+                var v = +pairs[i].substring(eq + 1);
+                if (v == v) return (int)v;      // 数値化できたときだけ採用
+            }
+        }
+        return defval;
+    }
+
+    function isHexColor(v)
+    {
+        if (v.length != 6) return false;
+        for (var i = 0; i < 6; i++) {
+            var c = v[i];
+            if (!((c >= "0" && c <= "9") || (c >= "a" && c <= "f") || (c >= "A" && c <= "F"))) return false;
+        }
+        return true;
+    }
+
+    // 小さい JSON なので手組みする (core だけで完結させるため。 json プラグインが
+    // あれば Scripts.toJSONString でもよい)
+    function stateJson()
+    {
+        return "{\"message\":\"" + jsonEscape(message) + "\",\"color\":\"" + color
+             + "\",\"count\":" + count + "}";
+    }
+
+    function jsonEscape(s)
+    {
+        var out = "";
+        for (var i = 0; i < s.length; i++) {
+            var c = s[i];
+            if (c == "\"")      out += "\\\"";
+            else if (c == "\\") out += "\\\\";
+            else if (c == "\n") out += "\\n";
+            else                out += c;
+        }
+        return out;
+    }
+
+    // ゲーム → ブラウザの push (ページ側は /sub/webui を EventSource で購読)
+    function push(text)
+    {
+        if (!available || !WebServer.active) return;
+        WebServer.broadcast("webui", text);
+        addLog("push: " + text);
+    }
+
+    // ------------------------------------------------------------------
+    //  描画
+    // ------------------------------------------------------------------
+    function drawStatic()
+    {
+        stage.font.height = 19;
+        stage.drawText(24, 44, "ブラウザ UI (内蔵 HTTP + SSE サーバ)", 0xffd76a, 255);
+        stage.font.height = 15;
+        stage.drawText(24, 76, "本体が HTTP サーバを持っているので、ブラウザ側にツール UI を置いてゲームを操作できる。", 0xc8d2e4, 255);
+        stage.drawText(24, 98, "ハンドラはメインスレッドで実行されるため、TJS の状態をそのまま触ってよい (ロック不要)。", 0xc8d2e4, 255);
+        stage.update();
+    }
+
+    function card(x, y, w, h, title)
+    {
+        stage.fillRect(x, y, w, h, 0xff1b2130);
+        stage.font.height = 17;
+        stage.drawText(x + 12, y + 10, title, 0xffd76a, 255);
+        stage.font.height = 15;
+    }
+
+    function row(x, y, label, value, col)
+    {
+        if (col === void) col = 0xdfe6f2;
+        stage.drawText(x + 12, y, label, 0x9fb0c8, 255);
+        stage.drawText(x + 150, y, value, col, 255);
+        return y + 24;
+    }
+
+    function redrawInfo()
+    {
+        card(IX, IY, IW, IH, "サーバ");
+        var y = IY + 40;
+        if (!available) {
+            y = row(IX, y, "WebServer", "(このビルドには無い)", 0xff9a9a);
+            stage.font.height = 14;
+            stage.drawText(IX + 12, y + 6, "KRKRZ_REPL_WEB=ON でビルドすると使えます", 0x9fb0c8, 255);
+            stage.font.height = 15;
+            stage.update(IX, IY, IW, IH);
+            return;
+        }
+        y = row(IX, y, "状態", WebServer.active ? "稼働中" : "停止中",
+                WebServer.active ? 0x9fd6a0 : 0xff9a9a);
+        y = row(IX, y, "URL", url != "" ? url : "-");
+        y = row(IX, y, "起動元", startedByMe ? "このデモ (WebServer.start)" : "-replweb (相乗り)");
+        y += 8;
+        stage.font.height = 14;
+        stage.drawText(IX + 12, y, "GET  /ui/          ページ配信 (serveStatic)", 0x9fd6a0, 255); y += 20;
+        stage.drawText(IX + 12, y, "GET  /api/state    現在の状態 (JSON)", 0x9fd6a0, 255); y += 20;
+        stage.drawText(IX + 12, y, "POST /api/message  body = 表示文字列 (UTF-8)", 0x9fd6a0, 255); y += 20;
+        stage.drawText(IX + 12, y, "POST /api/color    body = \"rrggbb\"", 0x9fd6a0, 255); y += 20;
+        stage.drawText(IX + 12, y, "POST /api/bump     ?by=N (既定 1)", 0x9fd6a0, 255); y += 20;
+        stage.drawText(IX + 12, y, "GET  /sub/webui    ゲームからの push (SSE)", 0x9fd6a0, 255);
+        stage.font.height = 15;
+        stage.update(IX, IY, IW, IH);
+    }
+
+    function redrawState()
+    {
+        card(SX, SY, SW, SH, "ブラウザから操作される状態");
+        var y = SY + 44;
+        // color は "rrggbb" 文字列。 drawText の色は 24bit RGB なので 0x を付けて数値化する
+        var col = (int)("0x" + color);
+        stage.font.height = 26;
+        stage.drawText(SX + 16, y, message, col, 255);
+        y += 46;
+        stage.fillRect(SX + 16, y, 120, 40, 0xff000000 + col);
+        stage.font.height = 15;
+        stage.drawText(SX + 150, y + 10, "#" + color, 0xdfe6f2, 255);
+        y += 58;
+        stage.font.height = 22;
+        stage.drawText(SX + 16, y, "カウンタ: " + count, 0xdfe6f2, 255);
+        stage.font.height = 14;
+        stage.drawText(SX + 16, SY + SH - 30, "ページ側は 3 秒ごとに GET /api/state でも同期している", 0x8899b0, 255);
+        stage.font.height = 15;
+        stage.update(SX, SY, SW, SH);
+    }
+
+    function redrawLog()
+    {
+        card(LX, LY, LW, LH, "リクエスト / push ログ");
+        var y = LY + 40;
+        stage.font.height = 13;
+        if (logs.count == 0) {
+            stage.drawText(LX + 12, y, "(まだアクセスがありません)", 0x9fb0c8, 255);
+        } else {
+            for (var i = 0; i < logs.count; i++) {
+                var t = logs[i];
+                if (t.length > 40) t = t.substring(0, 39) + "…";
+                stage.drawText(LX + 12, y, t, 0xdfe6f2, 255);
+                y += 20;
+            }
+        }
+        stage.font.height = 15;
+        stage.update(LX, LY, LW, LH);
+    }
+
+    function addLog(text)
+    {
+        logs.add(text);
+        while (logs.count > LOG_MAX) logs.erase(0);
+        dirty = true;
+    }
+
+    // ------------------------------------------------------------------
+    function onDemoFrame(tick)
+    {
+        if (dirty) {
+            dirty = false;
+            redrawState();
+            redrawLog();
+            redrawInfo();
+        }
+    }
+
+    function onPanelAction(id, payload)
+    {
+        switch (id) {
+        case "open":
+            if (available && WebServer.active) {
+                WebServer.openBrowser(url + "ui/");
+                setInfo("ブラウザで " + url + "ui/ を開きました");
+            }
+            break;
+
+        case "push":
+            // ゲーム側の変化をブラウザへ通知する例
+            count++;
+            push("ゲーム側でカウンタを " + count + " にしました");
+            dirty = true;
+            break;
+
+        case "toggle":
+            if (!available) break;
+            if (WebServer.active) {
+                unregisterAll();
+                WebServer.stop();
+                startedByMe = false;
+                setInfo("サーバを停止しました");
+            } else {
+                startServer();
+                setInfo("サーバを起動しました: " + url);
+            }
+            dirty = true;
+            break;
+
+        case "clear":
+            logs = [];
+            dirty = true;
+            break;
+        }
+    }
+
+    function onDemoTest()
+    {
+        dm(@"@demotest:webui available=${available ? 1 : 0} active=${(available && WebServer.active) ? 1 : 0} url=${url} webdir=${webDir}");
+    }
+
+    // ------------------------------------------------------------------
+    function panelDict()
+    {
+        return %[
+            size : [320, 300], background : [26, 30, 40, 236], locale : "ja-JP",
+            align : "bottom_right", margin : 16,
+            content : %[ type : "margin", padding : 14, child : %[ type : "vtile", children : [
+                %[ type : "vsize", height : 0, child : %[ type : "hspacer", width : 288 ] ],
+                %[ type : "align_center", child : %[ type : "label", text : "ブラウザ UI", size_scale : 1.2 ] ],
+                %[ type : "vspacer", height : 10 ],
+                %[ type : "button", id : "open",   text : "ブラウザで開く" ],
+                %[ type : "vspacer", height : 8 ],
+                %[ type : "button", id : "push",   text : "ブラウザへ push (SSE)" ],
+                %[ type : "vspacer", height : 8 ],
+                %[ type : "button", id : "toggle", text : "サーバ 起動 / 停止" ],
+                %[ type : "vspacer", height : 8 ],
+                %[ type : "button", id : "clear",  text : "ログ消去" ]
+            ] ] ]
+        ];
+    }
+}

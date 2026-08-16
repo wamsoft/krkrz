@@ -76,6 +76,8 @@ extern void TVPHideModalAtAppDeactivate();
 extern HDWP TVPShowModalAtTimer(HDWP);
 class TTVPWindowForm;
 extern TTVPWindowForm * TVPFullScreenedWindow;
+//! 現在モーダル表示中の最前面フォーム (無ければ nullptr)
+extern TTVPWindowForm * TVPGetModalWindowForm();
 //---------------------------------------------------------------------------
 struct tTVPMessageReceiverRecord
 {

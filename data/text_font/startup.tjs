@@ -15,4 +15,4 @@ if (demolibPath === void) { System.inform("demolib が見つかりません"); S
 Scripts.execStorage(demolibPath + "demo_common.tjs");
 Scripts.execStorage("scene.tjs");
 
-runDemoShell([ new TextFontScene(), new TextEmojiScene() ], "text_font — フォントと文字描画");
+runDemoShell([ new TextFontScene(), new TextEmojiScene(), new TextGlyphwareScene(), new TextRasterizerScene() ], "text_font — フォントと文字描画");

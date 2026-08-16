@@ -16,61 +16,66 @@ if (NOT (KRKRZ_TARGET_X86 OR KRKRZ_TARGET_ARM))
     return()
 endif()
 
+# engine ルート。umbrella (krkrz_dev) から add_subdirectory される場合
+# CMAKE_SOURCE_DIR は umbrella ルートを指すため、この CMakeLists からの
+# 相対で解決する (engine 単体 checkout でも同じパスになる)。
+get_filename_component(KRKRZ_CORE_DIR ${CMAKE_CURRENT_LIST_DIR}/.. ABSOLUTE)
+
 set(SIMD_TEST_TARGET krkrz_simd_parity_test)
 
 set(SIMD_TEST_SRC
     ${CMAKE_CURRENT_LIST_DIR}/simd_parity_test.cpp
-    ${CMAKE_SOURCE_DIR}/common/visual/tvpgl.c
-    ${CMAKE_SOURCE_DIR}/common/visual/gl/blend_function.cpp
-    ${CMAKE_SOURCE_DIR}/common/visual/cpu_detect.cpp
+    ${KRKRZ_CORE_DIR}/common/visual/tvpgl.c
+    ${KRKRZ_CORE_DIR}/common/visual/gl/blend_function.cpp
+    ${KRKRZ_CORE_DIR}/common/visual/cpu_detect.cpp
 )
 
 if (KRKRZ_TARGET_X86)
     list(APPEND SIMD_TEST_SRC
-        ${CMAKE_SOURCE_DIR}/common/visual/gl/blend_function_sse2.cpp
-        ${CMAKE_SOURCE_DIR}/common/visual/gl/blend_function_avx2.cpp
-        ${CMAKE_SOURCE_DIR}/common/visual/gl/adjust_color_sse2.cpp
-        ${CMAKE_SOURCE_DIR}/common/visual/gl/boxblur_sse2.cpp
-        ${CMAKE_SOURCE_DIR}/common/visual/gl/colorfill_sse2.cpp
-        ${CMAKE_SOURCE_DIR}/common/visual/gl/colorfill_avx2.cpp
-        ${CMAKE_SOURCE_DIR}/common/visual/gl/colormap_sse2.cpp
-        ${CMAKE_SOURCE_DIR}/common/visual/gl/colormap_avx2.cpp
-        ${CMAKE_SOURCE_DIR}/common/visual/gl/pixelformat_sse2.cpp
-        ${CMAKE_SOURCE_DIR}/common/visual/gl/tlg_sse2.cpp
-        ${CMAKE_SOURCE_DIR}/common/visual/gl/univtrans_sse2.cpp
-        ${CMAKE_SOURCE_DIR}/common/visual/gl/x86simdutil.cpp
-        ${CMAKE_SOURCE_DIR}/common/visual/gl/x86simdutilAVX2.cpp
-        ${CMAKE_SOURCE_DIR}/common/visual/IA32/detect_cpu.cpp
-        ${CMAKE_SOURCE_DIR}/common/visual/IA32/tvpgl_ia32_intf.c
+        ${KRKRZ_CORE_DIR}/common/visual/gl/blend_function_sse2.cpp
+        ${KRKRZ_CORE_DIR}/common/visual/gl/blend_function_avx2.cpp
+        ${KRKRZ_CORE_DIR}/common/visual/gl/adjust_color_sse2.cpp
+        ${KRKRZ_CORE_DIR}/common/visual/gl/boxblur_sse2.cpp
+        ${KRKRZ_CORE_DIR}/common/visual/gl/colorfill_sse2.cpp
+        ${KRKRZ_CORE_DIR}/common/visual/gl/colorfill_avx2.cpp
+        ${KRKRZ_CORE_DIR}/common/visual/gl/colormap_sse2.cpp
+        ${KRKRZ_CORE_DIR}/common/visual/gl/colormap_avx2.cpp
+        ${KRKRZ_CORE_DIR}/common/visual/gl/pixelformat_sse2.cpp
+        ${KRKRZ_CORE_DIR}/common/visual/gl/tlg_sse2.cpp
+        ${KRKRZ_CORE_DIR}/common/visual/gl/univtrans_sse2.cpp
+        ${KRKRZ_CORE_DIR}/common/visual/gl/x86simdutil.cpp
+        ${KRKRZ_CORE_DIR}/common/visual/gl/x86simdutilAVX2.cpp
+        ${KRKRZ_CORE_DIR}/common/visual/IA32/detect_cpu.cpp
+        ${KRKRZ_CORE_DIR}/common/visual/IA32/tvpgl_ia32_intf.c
     )
 endif()
 
 if (KRKRZ_TARGET_ARM)
     list(APPEND SIMD_TEST_SRC
-        ${CMAKE_SOURCE_DIR}/common/visual/gl/blend_function_neon.cpp
-        ${CMAKE_SOURCE_DIR}/common/visual/gl/adjust_color_neon.cpp
-        ${CMAKE_SOURCE_DIR}/common/visual/gl/colormap_neon.cpp
-        ${CMAKE_SOURCE_DIR}/common/visual/gl/colorfill_neon.cpp
-        ${CMAKE_SOURCE_DIR}/common/visual/gl/pixelformat_neon.cpp
+        ${KRKRZ_CORE_DIR}/common/visual/gl/blend_function_neon.cpp
+        ${KRKRZ_CORE_DIR}/common/visual/gl/adjust_color_neon.cpp
+        ${KRKRZ_CORE_DIR}/common/visual/gl/colormap_neon.cpp
+        ${KRKRZ_CORE_DIR}/common/visual/gl/colorfill_neon.cpp
+        ${KRKRZ_CORE_DIR}/common/visual/gl/pixelformat_neon.cpp
     )
 endif()
 
 add_executable(${SIMD_TEST_TARGET} ${SIMD_TEST_SRC})
 
 target_include_directories(${SIMD_TEST_TARGET} PRIVATE
-    ${CMAKE_SOURCE_DIR}/common/environ
-    ${CMAKE_SOURCE_DIR}/common/tjs2
-    ${CMAKE_SOURCE_DIR}/common/base
-    ${CMAKE_SOURCE_DIR}/common/extension
-    ${CMAKE_SOURCE_DIR}/common/utils
-    ${CMAKE_SOURCE_DIR}/common/visual
-    ${CMAKE_SOURCE_DIR}/common/visual/gl
-    ${CMAKE_SOURCE_DIR}/common/visual/IA32
-    ${CMAKE_SOURCE_DIR}/external
+    ${KRKRZ_CORE_DIR}/common/environ
+    ${KRKRZ_CORE_DIR}/common/tjs2
+    ${KRKRZ_CORE_DIR}/common/base
+    ${KRKRZ_CORE_DIR}/common/extension
+    ${KRKRZ_CORE_DIR}/common/utils
+    ${KRKRZ_CORE_DIR}/common/visual
+    ${KRKRZ_CORE_DIR}/common/visual/gl
+    ${KRKRZ_CORE_DIR}/common/visual/IA32
+    ${KRKRZ_CORE_DIR}/external
     # tjsCommHead.h は Windows ビルド時 targetver.h を引くので
-    ${CMAKE_SOURCE_DIR}/win32/vcproj
+    ${KRKRZ_CORE_DIR}/win32/vcproj
     # blend_function.cpp は _WIN32 で DetectCPU.h を引く
-    ${CMAKE_SOURCE_DIR}/win32/environ
+    ${KRKRZ_CORE_DIR}/win32/environ
 )
 
 target_compile_definitions(${SIMD_TEST_TARGET} PRIVATE
@@ -104,18 +109,18 @@ if (KRKRZ_TARGET_X86)
     endif()
 
     foreach(_f
-            ${CMAKE_SOURCE_DIR}/common/visual/gl/blend_function_avx2.cpp
-            ${CMAKE_SOURCE_DIR}/common/visual/gl/colormap_avx2.cpp
-            ${CMAKE_SOURCE_DIR}/common/visual/gl/colorfill_avx2.cpp
-            ${CMAKE_SOURCE_DIR}/common/visual/gl/x86simdutilAVX2.cpp)
+            ${KRKRZ_CORE_DIR}/common/visual/gl/blend_function_avx2.cpp
+            ${KRKRZ_CORE_DIR}/common/visual/gl/colormap_avx2.cpp
+            ${KRKRZ_CORE_DIR}/common/visual/gl/colorfill_avx2.cpp
+            ${KRKRZ_CORE_DIR}/common/visual/gl/x86simdutilAVX2.cpp)
         set_source_files_properties(${_f}
             PROPERTIES COMPILE_OPTIONS "${_stest_avx2_flags}")
     endforeach()
 
     if (_stest_ssse3_flags)
         set_source_files_properties(
-            ${CMAKE_SOURCE_DIR}/common/visual/gl/blend_function_sse2.cpp
-            ${CMAKE_SOURCE_DIR}/common/visual/gl/pixelformat_sse2.cpp
+            ${KRKRZ_CORE_DIR}/common/visual/gl/blend_function_sse2.cpp
+            ${KRKRZ_CORE_DIR}/common/visual/gl/pixelformat_sse2.cpp
             PROPERTIES COMPILE_OPTIONS "${_stest_ssse3_flags}")
     endif()
 endif()
@@ -138,38 +143,38 @@ set(SOUND_TEST_TARGET krkrz_sound_parity_test)
 
 set(SOUND_TEST_SRC
     ${CMAKE_CURRENT_LIST_DIR}/sound_parity_test.cpp
-    ${CMAKE_SOURCE_DIR}/common/sound/MathAlgorithms.cpp
-    ${CMAKE_SOURCE_DIR}/common/sound/RealFFT.cpp
+    ${KRKRZ_CORE_DIR}/common/sound/MathAlgorithms.cpp
+    ${KRKRZ_CORE_DIR}/common/sound/RealFFT.cpp
 )
 
 if (KRKRZ_TARGET_X86)
     list(APPEND SOUND_TEST_SRC
-        ${CMAKE_SOURCE_DIR}/common/sound/MathAlgorithms_SSE.cpp
-        ${CMAKE_SOURCE_DIR}/common/sound/RealFFT_SSE.cpp
-        ${CMAKE_SOURCE_DIR}/common/sound/xmmlib.cpp
+        ${KRKRZ_CORE_DIR}/common/sound/MathAlgorithms_SSE.cpp
+        ${KRKRZ_CORE_DIR}/common/sound/RealFFT_SSE.cpp
+        ${KRKRZ_CORE_DIR}/common/sound/xmmlib.cpp
     )
 endif()
 
 if (KRKRZ_TARGET_ARM)
     list(APPEND SOUND_TEST_SRC
-        ${CMAKE_SOURCE_DIR}/common/sound/MathAlgorithms_NEON.cpp
-        ${CMAKE_SOURCE_DIR}/common/sound/RealFFT_NEON.cpp
+        ${KRKRZ_CORE_DIR}/common/sound/MathAlgorithms_NEON.cpp
+        ${KRKRZ_CORE_DIR}/common/sound/RealFFT_NEON.cpp
     )
 endif()
 
 add_executable(${SOUND_TEST_TARGET} ${SOUND_TEST_SRC})
 
 target_include_directories(${SOUND_TEST_TARGET} PRIVATE
-    ${CMAKE_SOURCE_DIR}/common/environ
-    ${CMAKE_SOURCE_DIR}/common/tjs2
-    ${CMAKE_SOURCE_DIR}/common/base
-    ${CMAKE_SOURCE_DIR}/common/extension
-    ${CMAKE_SOURCE_DIR}/common/utils
-    ${CMAKE_SOURCE_DIR}/common/sound
-    ${CMAKE_SOURCE_DIR}/common/visual
-    ${CMAKE_SOURCE_DIR}/common/visual/IA32
-    ${CMAKE_SOURCE_DIR}/external
-    ${CMAKE_SOURCE_DIR}/win32/vcproj
+    ${KRKRZ_CORE_DIR}/common/environ
+    ${KRKRZ_CORE_DIR}/common/tjs2
+    ${KRKRZ_CORE_DIR}/common/base
+    ${KRKRZ_CORE_DIR}/common/extension
+    ${KRKRZ_CORE_DIR}/common/utils
+    ${KRKRZ_CORE_DIR}/common/sound
+    ${KRKRZ_CORE_DIR}/common/visual
+    ${KRKRZ_CORE_DIR}/common/visual/IA32
+    ${KRKRZ_CORE_DIR}/external
+    ${KRKRZ_CORE_DIR}/win32/vcproj
 )
 
 target_compile_definitions(${SOUND_TEST_TARGET} PRIVATE

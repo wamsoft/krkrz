@@ -100,17 +100,25 @@ void FreeTypeFontRasterizer::ApplyFont( const tTVPFont& font ) {
 	// 指定 face が未登録 (リソース未収納等) の場合は追加せずスルー (原フォントのまま)。
 	tjs_int emode = TVPResolveEmojiMode( font.EmojiMode );
 	if( emode == TVP_EMOJI_MONO || emode == TVP_EMOJI_COLOR ) {
-		const tjs_char* ename = TVPGetEmojiFaceName( emode );
-		if( ename && ename[0] ) {
+		// 指定モードの絵文字 face を試し、解決できなければ埋め込みの mono 絵文字へ
+		// フォールバックする (カラー絵文字フォントは exe 未埋め込みのため、fonts.json
+		// が無い単体起動等では解決できない。その場合でも豆腐にせず mono で表示する)。
+		tjs_int tryModes[2] = { emode, TVP_EMOJI_MONO };
+		int nTry = ( emode == TVP_EMOJI_COLOR ) ? 2 : 1;
+		for( int t = 0; t < nTry; t++ ) {
+			const tjs_char* ename = TVPGetEmojiFaceName( tryModes[t] );
+			if( !ename || !ename[0] ) continue;
 			// 未登録の場合の登録試行:
 			//  1) data/fonts.json のメタデータ経由 (data/ 外だしのカラー絵文字等)
-			//  2) 埋め込みリソース (resource://) 経由 (モノクロ絵文字等の同梱分・後方互換)
+			//  2) 埋め込みリソース (resource://) 経由 (モノクロ絵文字等の同梱分)
 			if( !TVPFontSystem->FontExists( tjs_string(ename) ) )
 				TVPFontSystem->EnsureLazyFontLoaded( tjs_string(ename) );
 			if( !TVPFontSystem->FontExists( tjs_string(ename) ) )
-				TVPEnsureBundledEmojiFontRegistered( emode );
-			if( TVPFontSystem->FontExists( tjs_string(ename) ) )
+				TVPEnsureBundledEmojiFontRegistered( tryModes[t] );
+			if( TVPFontSystem->FontExists( tjs_string(ename) ) ) {
 				faces.push_back( tjs_string(ename) );
+				break;
+			}
 		}
 	}
 

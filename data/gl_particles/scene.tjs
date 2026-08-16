@@ -216,7 +216,7 @@ class GLParticlesScene extends DemoScene
             size : [300, 250], background : [26, 30, 40, 236], locale : "ja-JP",
             align : "top_right", margin : 12,
             content : %[ type : "margin", padding : 14, child : %[ type : "vtile", children : [
-                %[ type : "hspacer", width : 268 ],
+                %[ type : "vsize", height : 0, child : %[ type : "hspacer", width : 268 ] ],
                 %[ type : "align_center", child : %[ type : "label", text : "パーティクル設定", size_scale : 1.2 ] ],
                 %[ type : "vspacer", height : 10 ],
                 %[ type : "labeled_row", label : "粒子数", label_width : 70,

@@ -1,0 +1,364 @@
+// -*- mode:tjs2 -*-
+// ======================================================================
+//  system_debug シーン (SystemDebugScene)
+//    デバッグ支援まわりを 1 画面で試す:
+//      - Scripts.eval / Debug.prettyPrint … その場で式を評価して結果を整形表示
+//      - 例外オブジェクト (message / trace) … 種類別に発生させて中身を見る
+//      - System.exceptionHandler         … 未捕捉例外を自前で処理する
+//      - Debug.addLoggingHandler          … エンジンのログを画面へ引き込む
+// ======================================================================
+
+class SystemDebugScene extends DemoScene
+{
+    // --- レイアウト ---
+    var EVX = 24,  EVY = 128, EVW = 560, EVH = 250;    // 式の評価
+    var LGX = 24,  LGY = 392, LGW = 560, LGH = 268;    // ログ
+    var EXX = 600, EXY = 128, EXW = 330, EXH = 532;    // 例外
+
+    // --- 式の評価 ---
+    var expr = "%[ name : \"krkrz\", ver : System.versionString, ok : true ]";
+    var evalResult = [];        // 整形済み結果の行配列
+    var evalError = "";
+
+    // --- 例外 ---
+    var excType = "(未発生)";
+    var excMessage = "";
+    var excTrace = "";
+    var excViaHandler = false;  // 直近の例外が exceptionHandler 経由か
+    var handlerOn = false;      // System.exceptionHandler を差し替え中か
+    var prevHandler;            // 元のハンドラ (戻す用)
+    var throwTimer;             // 未捕捉例外を発生させる one-shot タイマ
+
+    // --- ログ ---
+    var logs = [];              // 画面表示用 (最新 LOG_MAX 行)
+    var LOG_MAX = 9;
+    var logHandler;             // Debug.addLoggingHandler に登録した関数
+    var logDirty = false;       // ログハンドラ内で描画しないための遅延フラグ
+
+    function SystemDebugScene() { super.DemoScene("デバッグ支援 (eval / 例外 / ログ)"); }
+
+    function create()
+    {
+        evalResult = [];
+        evalError = "";
+        logs = [];
+        excType = "(未発生)"; excMessage = ""; excTrace = ""; excViaHandler = false;
+
+        stage.fillRect(0, 0, 1280, 720, 0xff141821);
+        drawStatic();
+        installLogHandler();
+        redrawEval();
+        redrawExc();
+        redrawLog();
+        setInfo("パネルの入力欄に式を書いて「評価」。例外は種類別に発生させて中身を見る");
+        showPanelDict(panelDict());
+    }
+
+    function onExit()
+    {
+        removeLogHandler();
+        setHandler(false);
+        if (throwTimer !== void) { throwTimer.enabled = false; invalidate throwTimer; throwTimer = void; }
+    }
+
+    // ------------------------------------------------------------------
+    function drawStatic()
+    {
+        stage.font.height = 19;
+        stage.drawText(24, 44, "デバッグ支援: 式の評価 / 例外 / ログ", 0xffd76a, 255);
+        stage.font.height = 15;
+        stage.drawText(24, 76, "実行中の状態をその場で覗く手段 (Scripts.eval / Debug.prettyPrint) と、落ちたときに情報を残す手段", 0xc8d2e4, 255);
+        stage.drawText(24, 98, "(例外オブジェクト / System.exceptionHandler / Debug のログハンドラ) をまとめて試す。", 0xc8d2e4, 255);
+        stage.update();
+    }
+
+    function card(x, y, w, h, title)
+    {
+        stage.fillRect(x, y, w, h, 0xff1b2130);
+        stage.font.height = 17;
+        stage.drawText(x + 12, y + 10, title, 0xffd76a, 255);
+        stage.font.height = 15;
+    }
+
+    // 1 行を幅で切って描く (長い結果を折り返さずに省略する)
+    function clip(text, maxChars)
+    {
+        if (text.length <= maxChars) return text;
+        return text.substring(0, maxChars - 1) + "…";
+    }
+
+    // ------------------------------------------------------------------
+    //  式の評価 (Scripts.eval + Debug.prettyPrint)
+    // ------------------------------------------------------------------
+    function redrawEval()
+    {
+        card(EVX, EVY, EVW, EVH, "式の評価 (Scripts.eval → Debug.prettyPrint)");
+        var y = EVY + 40;
+        stage.font.height = 14;
+        stage.drawText(EVX + 12, y, "式: " + clip(expr, 64), 0x9fd6a0, 255);
+        y += 24;
+        if (evalError != "") {
+            stage.drawText(EVX + 12, y, "例外: " + clip(evalError, 64), 0xff9a9a, 255);
+        } else {
+            for (var i = 0; i < evalResult.count && i < 8; i++) {
+                stage.drawText(EVX + 12, y, clip(evalResult[i], 68), 0xdfe6f2, 255);
+                y += 20;
+            }
+        }
+        stage.font.height = 15;
+        stage.update(EVX, EVY, EVW, EVH);
+    }
+
+    function doEval()
+    {
+        evalError = "";
+        evalResult = [];
+        try {
+            // eval 内で起きた例外はここで捕捉できる (Scripts.eval は握り潰さない)
+            var v = Scripts.eval(expr, "system_debug", 0);
+            var s = Debug.prettyPrint(v, 2, false);
+            evalResult = s.split("\n");
+        } catch (e) {
+            evalError = e.message;
+        }
+        redrawEval();
+    }
+
+    // ------------------------------------------------------------------
+    //  例外
+    // ------------------------------------------------------------------
+    function redrawExc()
+    {
+        card(EXX, EXY, EXW, EXH, "例外");
+        var y = EXY + 40;
+        stage.font.height = 14;
+        stage.drawText(EXX + 12, y, "exceptionHandler: " + (handlerOn ? "自前ハンドラ" : "既定 (null)"),
+                       handlerOn ? 0x9fd6a0 : 0x9fb0c8, 255); y += 26;
+        stage.drawText(EXX + 12, y, "種類: " + clip(excType, 38), 0xffd76a, 255); y += 22;
+        stage.drawText(EXX + 12, y, "経路: " + (excViaHandler ? "未捕捉 → exceptionHandler" : "try / catch"),
+                       0xdfe6f2, 255); y += 26;
+        stage.drawText(EXX + 12, y, "message:", 0x9fb0c8, 255); y += 20;
+        // message は長いので 34 文字ずつ折り返す
+        var msg = excMessage;
+        for (var i = 0; i < 4 && msg != ""; i++) {
+            stage.drawText(EXX + 12, y, msg.substring(0, 34), 0xdfe6f2, 255);
+            msg = msg.substring(34);
+            y += 20;
+        }
+        y += 8;
+        stage.drawText(EXX + 12, y, "trace:", 0x9fb0c8, 255); y += 20;
+        var tr = excTrace != "" ? excTrace : "(空: -debug 起動時のみ取れる)";
+        for (var i = 0; i < 8 && tr != ""; i++) {
+            stage.drawText(EXX + 12, y, tr.substring(0, 34), 0x9fb0c8, 255);
+            tr = tr.substring(34);
+            y += 18;
+        }
+        stage.font.height = 15;
+        stage.update(EXX, EXY, EXW, EXH);
+    }
+
+    function setExc(e, viaHandler)
+    {
+        // 例外オブジェクトは message / trace を持つ。 trace は -debug 起動時のみ
+        // 中身が入る (デバッグモードが無効だと空文字列)。
+        // TJS2 の組込例外クラスは Exception のみ (MathException 等は無い)。
+        // 種類の判別は message か、自前クラスを Exception から派生させて行う。
+        excType = (e instanceof "Exception") ? "Exception" : "(Exception ではないオブジェクト)";
+        excMessage = (typeof e.message != "undefined") ? e.message : "" + e;
+        excTrace   = (typeof e.trace   != "undefined") ? e.trace : "";
+        excViaHandler = viaHandler;
+        redrawExc();
+    }
+
+    function throwSample(kind)
+    {
+        try {
+            switch (kind) {
+            case "zero":   var a = 1, b = 0; var c = a \ b;       break;  // ゼロ除算
+            case "member": var o = %[]; o.notExistMethod();       break;  // 未定義メンバ
+            case "custom": throw new Exception("デモ用に投げた例外"); break;
+            }
+            excType = "(例外が出なかった)"; excMessage = ""; excTrace = "";
+            redrawExc();
+        } catch (e) {
+            setExc(e, false);
+        }
+    }
+
+    // System.exceptionHandler の差し替え。 真を返すと本体の既定動作
+    // (イベント停止 + ログ書き出し + エラーダイアログ) が行われない。
+    function setHandler(on)
+    {
+        if (on == handlerOn) return;
+        if (on) {
+            prevHandler = System.exceptionHandler;
+            System.exceptionHandler = onUncaught;
+        } else {
+            System.exceptionHandler = prevHandler;
+            prevHandler = void;
+        }
+        handlerOn = on;
+        redrawExc();
+    }
+
+    function onUncaught(e)
+    {
+        setExc(e, true);
+        addLog("[exceptionHandler] " + excMessage);
+        return true;    // 既定動作 (ダイアログ表示等) を行わせない
+    }
+
+    // 未捕捉例外を発生させる。 パネルの onAction から直接 throw すると
+    // ダイアログ側で握られる可能性があるので、one-shot タイマから投げる。
+    function fireUncaught()
+    {
+        if (!handlerOn) {
+            setInfo("先に「exceptionHandler を使う」を ON にしてください (既定動作だとエラーダイアログが出る)");
+            return;
+        }
+        if (throwTimer === void) throwTimer = new Timer(uncaughtTick, "");
+        throwTimer.interval = 30;
+        throwTimer.enabled = true;
+    }
+
+    function uncaughtTick()
+    {
+        throwTimer.enabled = false;
+        throw new Exception("捕捉されないまま本体まで届いた例外");
+    }
+
+    // ------------------------------------------------------------------
+    //  ログ (Debug.addLoggingHandler)
+    // ------------------------------------------------------------------
+    function installLogHandler()
+    {
+        if (logHandler !== void) return;
+        logHandler = onEngineLog;
+        Debug.addLoggingHandler(logHandler);
+    }
+
+    function removeLogHandler()
+    {
+        if (logHandler === void) return;
+        Debug.removeLoggingHandler(logHandler);
+        logHandler = void;
+    }
+
+    // ★ハンドラ内でログを出しても再帰呼び出しにはならない (本体側で無視される)
+    //   が、ここで描画すると描画側のログでちらつくので、フラグだけ立てて
+    //   次フレームで描く。
+    function onEngineLog(msg)
+    {
+        addLog(msg);
+    }
+
+    function addLog(msg)
+    {
+        logs.add(msg);
+        while (logs.count > LOG_MAX) logs.erase(0);
+        logDirty = true;
+    }
+
+    function redrawLog()
+    {
+        card(LGX, LGY, LGW, LGH, "エンジンのログ (Debug.addLoggingHandler)");
+        var y = LGY + 40;
+        stage.font.height = 14;
+        if (logs.count == 0) {
+            stage.drawText(LGX + 12, y, "(まだログはありません)", 0x9fb0c8, 255);
+        } else {
+            for (var i = 0; i < logs.count; i++) {
+                stage.drawText(LGX + 12, y, clip(logs[i], 70), 0xdfe6f2, 255);
+                y += 20;
+            }
+        }
+        stage.font.height = 15;
+        stage.update(LGX, LGY, LGW, LGH);
+    }
+
+    // ------------------------------------------------------------------
+    function onDemoFrame(tick)
+    {
+        if (logDirty) { logDirty = false; redrawLog(); }
+    }
+
+    function onPanelAction(id, payload)
+    {
+        switch (id) {
+        case "expr":                       // input_box は値が変わるたびに届く
+            expr = payload;
+            break;
+
+        case "eval":
+            doEval();
+            break;
+
+        case "zero":   throwSample("zero");   break;
+        case "member": throwSample("member"); break;
+        case "custom": throwSample("custom"); break;
+
+        case "uncaught": fireUncaught(); break;
+
+        case "handler": setHandler(payload == true); break;
+
+        case "log":
+            // Debug.message はログレベル INFO、Debug.notice は「重要」扱い
+            Debug.message("Debug.message からの出力 tick=" + System.getTickCount());
+            Debug.notice("Debug.notice からの出力 (重要ログ)");
+            break;
+
+        case "clearlog":
+            logs = [];
+            redrawLog();
+            break;
+        }
+    }
+
+    function onDemoTest()
+    {
+        // 評価と例外捕捉が実際に動くかをヘッドレスで確認する
+        var ok = 0;
+        try { if (Scripts.eval("1+2*3") == 7) ok++; } catch (e) {}
+        try { var o = %[]; o.noSuchMethod(); } catch (e) { if (e.message != "") ok++; }
+        var pp = Debug.prettyPrint(%[ a : 1 ], 2, true);
+        if (pp != "") ok++;
+        dm(@"@demotest:system_debug checks=${ok}/3 handler=${handlerOn ? 1 : 0} logs=${logs.count}");
+    }
+
+    // ------------------------------------------------------------------
+    function panelDict()
+    {
+        return %[
+            size : [320, 486], background : [26, 30, 40, 236], locale : "ja-JP",
+            align : "bottom_right", margin : 16,
+            content : %[ type : "margin", padding : 14, child : %[ type : "vtile", children : [
+                %[ type : "vsize", height : 0, child : %[ type : "hspacer", width : 288 ] ],
+                %[ type : "align_center", child : %[ type : "label", text : "デバッグ操作", size_scale : 1.2 ] ],
+                %[ type : "vspacer", height : 8 ],
+                %[ type : "label", text : "評価する式" ],
+                %[ type : "input_box", id : "expr", placeholder : "1+2*3" ],
+                %[ type : "vspacer", height : 6 ],
+                %[ type : "button", id : "eval", text : "評価する" ],
+                %[ type : "vspacer", height : 12 ],
+                %[ type : "label", text : "例外を発生させる (try/catch で捕捉)" ],
+                %[ type : "htile", children : [
+                    %[ type : "button", id : "zero",   text : "ゼロ除算" ],
+                    %[ type : "hspacer", width : 6 ],
+                    %[ type : "button", id : "member", text : "未定義" ],
+                    %[ type : "hspacer", width : 6 ],
+                    %[ type : "button", id : "custom", text : "throw" ]
+                ] ],
+                %[ type : "vspacer", height : 8 ],
+                %[ type : "check_box", id : "handler", text : "exceptionHandler を使う", value : false ],
+                %[ type : "vspacer", height : 4 ],
+                %[ type : "button", id : "uncaught", text : "未捕捉例外を投げる" ],
+                %[ type : "vspacer", height : 12 ],
+                %[ type : "htile", children : [
+                    %[ type : "button", id : "log",      text : "ログを出す" ],
+                    %[ type : "hspacer", width : 8 ],
+                    %[ type : "button", id : "clearlog", text : "ログ消去" ]
+                ] ]
+            ] ] ]
+        ];
+    }
+}

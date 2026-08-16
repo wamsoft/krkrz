@@ -17,6 +17,9 @@ Switch 等の組み込み環境で典型的に発生するこの状況は、原�
 設計と背景は `memory/handoff_graphics_mt_redesign.md` (内部 handoff) を参照。
 本ドキュメントは使い方と出力の読み方を扱う。
 
+> 「合成結果を GPU へ送る」側 (画面転送) のコストは別軸。そちらは
+> [ScreenTransfer.md](ScreenTransfer.md) を参照 (`System.renderStats`)。
+
 ---
 
 ## 1. ビルド
@@ -82,10 +85,10 @@ System.setMemoryOverlay(true);
 
 memoverlay 全般の使い方は `doc/MemoryGuide.md` を参照。
 
-**SDL3 build 限定**: WINVER build (`BasicDrawDevice` = D3D11) には memoverlay
-の描画フックが無いため画面表示はできない。SDL3 build なら `SDLDrawDevice` /
-`SDLOGLDrawDevice` / `OGLDrawDevice` のいずれでも表示される (memoverlay の
-GLES 直接描画版 `MemoryOverlayGL.{h,cpp}` で OGL 系も対応済)。
+**描画デバイス依存**: memoverlay を描画するのは `SDLDrawDevice` /
+`SDLOGLDrawDevice` / `OGLDrawDevice`。WINVER 既定の `BasicDrawDevice` (D3D11)
+には描画フックが無いため表示できないが、**WINVER でも drawDevice を OGL 系へ
+切り替えれば表示される** (GLES 直接描画版 `MemoryOverlayGL.{h,cpp}`)。
 Switch ビルドでは memoverlay が表示される。
 
 ### 2.1 log への書き出し (`System.setDrawStatsLog`)

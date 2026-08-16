@@ -61,7 +61,10 @@ void NativeEventQueueImplement::Deallocate() {
 		window_handle_ = NULL;
 	}
 }
-void NativeEventQueueImplement::PostEvent( const NativeEvent& event ) {
-	::PostMessage( window_handle_, event.Message, event.WParam, event.LParam );
+bool NativeEventQueueImplement::PostEvent( const NativeEvent& event ) {
+	// PostMessage はスレッドのメッセージキューが上限 (既定 10000) に達すると
+	// 失敗する。 呼び元が「投函済み」を前提にラッチを立てる場合、失敗を無視すると
+	// 二度と起こされなくなるので結果を返す。
+	return ::PostMessage( window_handle_, event.Message, event.WParam, event.LParam ) != FALSE;
 }
 

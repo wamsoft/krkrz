@@ -14,8 +14,11 @@
 #include "WindowFormUnit.h"
 
 namespace {
+// 注入先のフォーム。モーダルウィンドウ表示中はそちらを対象にする
+// (実入力と同様、モーダル中はモーダルウィンドウしか操作できないため)。
 TTVPWindowForm* AgentMainForm()
 {
+	if (TTVPWindowForm* modal = TVPGetModalWindowForm()) return modal;
 	if (!Application) return nullptr;
 	return Application->MainWindowForm();
 }
@@ -33,8 +36,15 @@ bool TVPAgentInjectMouseButton(bool down, int button, int shift, int x, int y)
 {
 	TTVPWindowForm* form = AgentMainForm();
 	if (!form) return false;
-	if (down) form->OnMouseDown(button, shift, x, y);
-	else      form->OnMouseUp(button, shift, x, y);
+	if (down) {
+		form->OnMouseDown(button, shift, x, y);
+	} else {
+		// 実入力 (tTVPWindow::Proc の WM_LBUTTONUP) は mouse up の前に click を
+		// 発生させる。Agent 注入は WndProc を通らないのでここで同じ順序を補う。
+		// これが無いと Layer.onClick が発火せず、ボタン類が反応しない。
+		if (button == mbLeft) form->OnMouseClick(button, shift, x, y);
+		form->OnMouseUp(button, shift, x, y);
+	}
 	return true;
 }
 

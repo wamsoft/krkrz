@@ -20,6 +20,13 @@
 #include "LayerIntf.h"
 #include "LayerBitmapIntf.h"
 #include "Random.h"
+#include "LicenseIntf.h"
+#include "tjsArray.h"
+#include "tjsDictionary.h"
+#include "ThreadIntf.h"   // TVPGetTexUploadStats / TVPResetTexUploadStats
+#ifdef TVP_USE_OPENGL
+#include "GLTexture.h"    // texUploadUsePBO (転送経路の強制指定)
+#endif
 #include "ScriptMgnIntf.h"
 #include "DebugIntf.h"
 #ifdef KRKRZ_USE_REPL
@@ -294,6 +301,54 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/captureScreen)
 TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/captureScreen)
 //---------------------------------------------------------------------------
 #endif // KRKRZ_USE_REPL
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/getLicenseList)
+{
+	// getLicenseList() : 本体内蔵 + プラグイン登録 + storage (licenses/*.txt) の
+	// 全ライセンス一覧を %[name, group, source] の配列で返す。
+	// ライセンス表示 UI (フォント選択画面等) を TJS 側で自由に組むための口。
+	if(result)
+	{
+		std::vector<tTVPLicenseInfo> list;
+		TVPGetLicenseList(list);
+		iTJSDispatch2 *dsp = TJSCreateArrayObject();
+		tTJSVariant tmp(dsp, dsp);
+		*result = tmp;
+		dsp->Release();
+		for(tjs_uint i = 0; i < list.size(); i++)
+		{
+			iTJSDispatch2 *dic = TJSCreateDictionaryObject();
+			tTJSVariant tv;
+			tv = list[i].Name;   dic->PropSet(TJS_MEMBERENSURE, TJS_W("name"),   nullptr, &tv, dic);
+			tv = list[i].Group;  dic->PropSet(TJS_MEMBERENSURE, TJS_W("group"),  nullptr, &tv, dic);
+			tv = list[i].Source; dic->PropSet(TJS_MEMBERENSURE, TJS_W("source"), nullptr, &tv, dic);
+			tmp = tTJSVariant(dic, dic);
+			dic->Release();
+			dsp->PropSetByNum(TJS_MEMBERENSURE, i, &tmp, dsp);
+		}
+	}
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/getLicenseList)
+//---------------------------------------------------------------------------
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/getLicenseText)
+{
+	// getLicenseText(name) : 名前でライセンス文 (UTF-8 収録を文字列化) を返す。
+	// 見つからなければ void
+	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
+	ttstr name = *param[0];
+	ttstr text;
+	if(TVPGetLicenseText(name, text))
+	{
+		if(result) *result = text;
+	}
+	else
+	{
+		if(result) result->Clear();
+	}
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/getLicenseText)
+//---------------------------------------------------------------------------
 TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/removeContinuousHandler)
 {
 	// remove function from continuous handler list
@@ -663,6 +718,78 @@ TJS_BEGIN_NATIVE_PROP_DECL(openGLESVersion) {
 	TJS_DENY_NATIVE_PROP_SETTER
 }
 TJS_END_NATIVE_STATIC_PROP_DECL(openGLESVersion)
+#endif
+//----------------------------------------------------------------------
+// renderStats プロパティ (static・読取専用):
+//   画面バッファ → GPU テクスチャの転送コスト。 常時計測 (ビルドオプション不要)
+//   なので、 実機で 「転送が詰まっていないか」 をそのまま確認できる。
+//   すべて累積値なので **2 回読んで差分を取り、 経過実時間との比**で見る。
+//   Dialog.renderStats (overlay 側) と同じ使い方。
+TJS_BEGIN_NATIVE_PROP_DECL(renderStats)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		if (result) {
+			TVPTexUploadStats s;
+			TVPGetTexUploadStats(s);
+			iTJSDispatch2 * dic = TJSCreateDictionaryObject();
+			auto put = [dic](const tjs_char * name, tjs_uint64 v) {
+				tjs_int64 sv = (tjs_int64)v;
+				tTJSVariant tmp(sv);
+				dic->PropSet(TJS_MEMBERENSURE, name, NULL, &tmp, dic);
+			};
+			// 転送 1 回 = dirty 矩形 1 個。 frames は転送フェーズの実行回数
+			// (≒ 画面更新フレーム数) で、 更新の無いフレームは含まれない。
+			put(TJS_W("texUploadUs"),    s.upload_ns / 1000);
+			put(TJS_W("texUploads"),     s.upload_count);
+			put(TJS_W("texUploadBytes"), s.upload_bytes);
+			put(TJS_W("frames"),         s.frame_count);
+			*result = tTJSVariant(dic, dic);
+			dic->Release();
+		}
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+	TJS_DENY_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_STATIC_PROP_DECL(renderStats)
+//----------------------------------------------------------------------
+// renderStatsReset メソッド: renderStats のカウンタを 0 に戻す (計測区間の開始)。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/renderStatsReset)
+{
+	TVPResetTexUploadStats();
+	if (result) *result = 1;
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_METHOD_DECL(/*func. name*/renderStatsReset)
+//----------------------------------------------------------------------
+#ifdef TVP_USE_OPENGL
+// texUploadUsePBO プロパティ (static): 画面転送に PBO を使うかの強制指定。
+//   void (既定) = 用途ごとの既定 (本画面 = PBO / overlay = 直接転送)
+//   true / false = 両方まとめて強制する
+// 実機のように環境変数を渡せない環境で転送経路を A/B するための口。
+TJS_BEGIN_NATIVE_PROP_DECL(texUploadUsePBO)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		if (result) {
+			const int o = GLTexture::GetUploadOverride();
+			if (o < 0) result->Clear();          // void = 既定のまま
+			else       *result = (tjs_int)o;
+		}
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_BEGIN_NATIVE_PROP_SETTER
+	{
+		if (param->Type() == tvtVoid) GLTexture::SetUploadOverride(-1);
+		else                          GLTexture::SetUploadOverride((tjs_int)*param ? 1 : 0);
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_STATIC_PROP_DECL(texUploadUsePBO)
 #endif
 //----------------------------------------------------------------------
 	TJS_END_NATIVE_MEMBERS

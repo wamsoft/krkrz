@@ -1,0 +1,579 @@
+// -*- mode:tjs2 -*-
+// ======================================================================
+//  elements_bench シーン (ElementsBenchScene) — Elements overlay 負荷計測
+//  Dialog.renderStats (描画パイプラインの区間計測) を使い、更新パターンの
+//  異なるシナリオを切り替えながら renderCache の効果・ラスタ/転送コストを
+//  その場で数値確認する。部分再描画 (ダーティ矩形化) の要否判断用。
+//
+//  シナリオ:
+//    1: idle       … 静的パネル。renderCache 有効なら rasters が増えない
+//    2: caret      … input_box focus 中のキャレット点滅 (約500msごと全面再ラスタ)
+//    3: counter    … 毎フレーム setVar で HUD の数値 1 個だけ更新 (小パネル)
+//    4: anim 小    … 小パネル内の無限 yoyo アニメ (毎フレーム dirty)
+//    5: anim 広域  … 大パネル (760x560) 全面が毎フレーム再ラスタ
+//    6: 複合       … counter + idle + caret の 3 パネル同時
+//    0: なし       … ベースライン (overlay 無し)
+//  R: renderCache ON/OFF   C: 計測リセット
+//  ※ キーはホストホットキー登録なので caret パネルが focus 中でも効く
+//
+//  パッド (キーボードの無い実機向け): 十字←→ = シナリオ巡回 /
+//  X = renderCache トグル / Y = 計測リセット (demolib 正規化後のキーで受ける)
+//
+//  自動計測 (-benchauto): 入力なしで scenario 1/3/4/5/6 × renderCache ON/OFF
+//  を順に 3 秒ずつ計測し、結果を "@bench ..." 行でログへ出して終了する。
+//  RunOnTarget 等のログ回収だけで実機計測が完結する (caret はフォーカス操作が
+//  要るため自動対象外。cost 特性は counter の 500ms 版と同等)。
+// ======================================================================
+
+class BenchDialog extends Dialog
+{
+    function BenchDialog() { super.Dialog(); }
+    function onAction(id, payload) {}   // ベンチ用: 操作には反応しない
+}
+
+class ElementsBenchScene extends DemoScene
+{
+    var available = false;     // Dialog.renderStats が使えるビルドか
+    var dialogs = [];          // 表示中の Dialog インスタンス
+    var scenario = 1;
+    var counterDlg;            // counter シナリオの setVar 先 (void = なし)
+    var counterVal = 0;
+    var prevStats;             // 前回の renderStats スナップ (void = 未計測)
+    var prevTick = 0;
+    var retryWait = 0;         // showDict 失敗時のリトライ待ちフレーム数
+
+    // 自動計測 (-benchauto) の状態
+    var autoMode = false;
+    var autoList = [];         // [cache, scenario] の列
+    var autoIdx = 0;
+    var autoPhase = 0;         // 0=切替→settle待ち / 1=計測中
+    var autoT0 = 0;            // フェーズ開始 tick
+    var autoS0;                // 計測開始時の renderStats スナップ
+    var AUTO_SETTLE = 1200, AUTO_MEASURE = 3000;   // ms
+
+    // 統計パネルの描画領域 (stage 座標)
+    var SX = 24, SY = 316, SW = 460, SH = 330;
+
+    function ElementsBenchScene() { super.DemoScene("Elements 負荷計測 (renderStats)"); }
+
+    // @bench ログ用 ASCII スラッグ (RunOnTarget 等のログ収集経路は
+    // 日本語が化けることがあるため、機械可読行は ASCII のみにする)
+    function scenarioSlug(n)
+    {
+        switch (n) {
+        case 0: return "none";
+        case 1: return "idle";
+        case 2: return "caret";
+        case 3: return "counter";
+        case 4: return "anim_s";
+        case 5: return "anim_w";
+        case 6: return "multi";
+        }
+        return "?";
+    }
+
+    function scenarioName(n)
+    {
+        switch (n) {
+        case 0: return "なし (ベースライン)";
+        case 1: return "idle (静的パネル)";
+        case 2: return "caret (キャレット点滅)";
+        case 3: return "counter (毎フレーム setVar)";
+        case 4: return "anim 小 (無限 yoyo)";
+        case 5: return "anim 広域 (大パネル全面)";
+        case 6: return "複合 (counter+idle+caret)";
+        }
+        return "?";
+    }
+
+    function create()
+    {
+        available = typeof global.Dialog != "undefined"
+                 && typeof global.Dialog.renderStats != "undefined";
+        drawStatic();
+        if (!available) return;
+        // シナリオ切替キーをホストホットキー登録: caret シナリオでパネルが
+        // focus を持っていてもバイパスでシーンへ届く (テキスト入力中も有効)
+        for (var k = 0x30; k <= 0x36; k++) Dialog.registerHotKey(k, 0, true); // 0-6
+        Dialog.registerHotKey(0x52, 0, true);   // R
+        Dialog.registerHotKey(0x43, 0, true);   // C
+        Dialog.registerHotKey(0x50, 0, true);   // P
+
+        // 自動計測モード (-benchauto): 入力なしで一括スイープしてログ出力
+        var a = typeof global.System.getArgument != "undefined"
+                ? System.getArgument("-benchauto") : void;
+        autoMode = (a !== void && a != "no" && a != "false" && a != "0");
+        if (autoMode) {
+            // [cache, scenario, partial] の組を並べる。 caret (2) は Agent で
+            // 入力欄をクリックして点滅を起こせる場合のみ含める (partial 効果の
+            // 計測対象はここだけ — 他は矩形を特定できず全面再描画になる)。
+            autoList = [];
+            var caches = [1, 0];
+            var scens = [1, 3, 4, 5, 6];
+            for (var ci = 0; ci < caches.count; ci++)
+                for (var si = 0; si < scens.count; si++)
+                    autoList.add([caches[ci], scens[si], 1]);
+            // caret (部分再描画の A/B) は **-benchcaret を明示指定したときだけ**
+            // 計測する。 テキスト欄に focus するとソフトウェアキーボード
+            // (Switch / Android では OS のダイアログ) が開いてしまい、 画面が
+            // 覆われてフレームが進まず計測にならないため、 既定では回さない。
+            // デスクトップで部分再描画を測りたいときに手動で付ける。
+            if (System.getArgument("-benchcaret") !== void
+                && typeof global.Agent != "undefined"
+                && typeof global.Dialog.partialRedraw != "undefined") {
+                autoList.add([1, 2, 1]);   // caret 部分再描画 ON
+                autoList.add([1, 2, 0]);   // caret 部分再描画 OFF (A/B)
+            }
+            autoIdx = 0;
+            autoPhase = 0;
+            autoT0 = 0;
+            dm("@bench auto start (" + autoList.count + " combos, settle="
+               + AUTO_SETTLE + "ms measure=" + AUTO_MEASURE + "ms)");
+        }
+
+        switchScenario(1);
+        setInfo(autoMode
+            ? "自動計測モード (-benchauto): 結果は @bench 行でログに出ます"
+            : "1-6/←→: シナリオ  0: 全消去  R/X: renderCache  C/Y: 計測リセット");
+    }
+
+    function onExit()
+    {
+        if (!available) return;
+        closeAll();
+        for (var k = 0x30; k <= 0x36; k++) Dialog.unregisterHotKey(k, 0);
+        Dialog.unregisterHotKey(0x52, 0);
+        Dialog.unregisterHotKey(0x43, 0);
+        Dialog.unregisterHotKey(0x50, 0);
+    }
+
+    // --- シナリオ管理 ----------------------------------------------------
+
+    function closeAll()
+    {
+        for (var i = 0; i < dialogs.count; i++) dialogs[i].close();
+        dialogs.clear();
+        counterDlg = void;
+    }
+
+    function switchScenario(n)
+    {
+        closeAll();
+        scenario = n;
+        counterVal = 0;
+        retryWait = 0;
+        if (!applyScenario()) {
+            // DrawDevice 未登録等で失敗したら少し待ってリトライ (demolib の定石)
+            closeAll();
+            retryWait = 20;
+        }
+        resetStats();
+    }
+
+    function applyScenario()
+    {
+        var ok = true;
+        switch (scenario) {
+        case 0: break;
+        case 1: ok = makeIdle(); break;
+        case 2: ok = makeCaret(); break;
+        case 3: ok = makeCounter(); break;
+        case 4: ok = makeAnimSmall(); break;
+        case 5: ok = makeAnimWide(); break;
+        case 6: ok = makeCounter() && makeIdle() && makeCaret(); break;
+        }
+        return ok;
+    }
+
+    // --- 各シナリオのパネル ------------------------------------------------
+
+    function makeIdle()
+    {
+        var d = new BenchDialog();
+        var ok = d.showDict(%[
+            size: [420, 300], background: [24, 30, 46, 242],
+            align: "right", margin: 48,
+            content: %[ type: "margin", padding: 18, child: %[
+                type: "vtile", gap: 10, children: [
+                    %[ type: "label", text: "静的パネル (idle)", size_scale: 1.25 ],
+                    %[ type: "label", text: "変化なし。renderCache 有効なら",
+                       color: [196, 204, 218, 255] ],
+                    %[ type: "label", text: "rasters/s が 0 のまま",
+                       color: [196, 204, 218, 255] ],
+                    %[ type: "button", id: "b1", text: "ボタン (機能なし)" ],
+                    %[ type: "button", id: "b2", text: "hover で 1 回だけ再描画" ],
+                    %[ type: "check_box", id: "c1", text: "チェックボックス", value: 1 ],
+                ] ] ]
+        ], false);   // 表示専用 HUD (キーを受けない)
+        if (ok) dialogs.add(d);
+        return ok;
+    }
+
+    function makeCaret()
+    {
+        var d = new BenchDialog();
+        // 操作パネル形 (focus あり・非モーダル): input_box にキャレットを出す
+        var ok = d.showDict(%[
+            size: [430, 170], background: [26, 32, 50, 242],
+            align: "bottom_right", margin: 48,
+            content: %[ type: "margin", padding: 18, child: %[
+                type: "vtile", gap: 10, children: [
+                    %[ type: "label", text: "テキスト入力 (キャレット点滅)", size_scale: 1.2 ],
+                    %[ type: "label", text: "入力欄をクリックすると点滅開始。focus 中は",
+                       color: [196, 204, 218, 255] ],
+                    %[ type: "label", text: "約 500ms ごとに全面再ラスタが走る",
+                       color: [196, 204, 218, 255] ],
+                    // ※ initial_focus は付けない: テキスト欄に focus が入ると
+                    //    ソフトウェアキーボード (Switch / Android の OS ダイアログ)
+                    //    が開いてしまい、 表示するだけで計測にならなくなる。
+                    //    キャレット点滅は入力欄をクリックしてから始める。
+                    %[ type: "input_box", id: "in1",
+                       placeholder: "ここをクリックして入力" ],
+                ] ] ]
+        ], true, false);
+        if (ok) dialogs.add(d);
+        return ok;
+    }
+
+    function makeCounter()
+    {
+        var d = new BenchDialog();
+        var ok = d.showDict(%[
+            size: [300, 130], background: [20, 40, 32, 235],
+            align: "top_right", margin: 48,
+            vars: %[ n: "0" ],
+            content: %[ type: "margin", padding: 16, child: %[
+                type: "vtile", gap: 8, children: [
+                    %[ type: "label", text: "HUD カウンタ (毎フレーム setVar)",
+                       size_scale: 0.95 ],
+                    %[ type: "label", text_var: "n", size: 32,
+                       color: [140, 255, 190, 255] ],
+                ] ] ]
+        ], false);
+        if (ok) { dialogs.add(d); counterDlg = d; }
+        return ok;
+    }
+
+    function makeAnimSmall()
+    {
+        var d = new BenchDialog();
+        var ok = d.showDict(%[
+            size: [330, 210], background: [40, 30, 24, 238],
+            align: "right", margin: 48,
+            content: %[ type: "margin", padding: 18, child: %[
+                type: "vtile", gap: 12, children: [
+                    %[ type: "label", text: "小アニメ (無限 yoyo)", size_scale: 1.15 ],
+                    %[ type: "label", text: "再生中は毎フレーム dirty",
+                       color: [214, 204, 196, 255] ],
+                    %[ type: "align_center", child: %[
+                        type: "label", id: "pulse", text: "● PULSE ●",
+                        size_scale: 1.7, color: [255, 176, 80, 255],
+                        animate: %[ type: "fade", from: 25, to: 100,
+                                    frames: 36, easing: "in_out",
+                                    loops: -1, yoyo: 1 ] ] ],
+                ] ] ]
+        ], false);
+        if (ok) dialogs.add(d);
+        return ok;
+    }
+
+    function makeAnimWide()
+    {
+        var d = new BenchDialog();
+        var ok = d.showDict(%[
+            size: [760, 560], background: [24, 26, 40, 235],
+            align: "right", margin: 16,
+            content: %[ type: "margin", padding: 24, child: %[
+                type: "vtile", gap: 24, children: [
+                    %[ type: "label",
+                       text: "広域アニメ (パネル全面が毎フレーム再ラスタ)",
+                       size_scale: 1.2 ],
+                    %[ type: "vspacer", height: 60 ],
+                    %[ type: "align_center", child: %[
+                        type: "label", id: "mover", text: "◆◆ WIDE MOTION ◆◆",
+                        size_scale: 2.4, color: [120, 200, 255, 255],
+                        animate: [
+                            %[ type: "move", from: [-220, 0], to: [220, 0],
+                               frames: 90, easing: "in_out", loops: -1, yoyo: 1 ],
+                            %[ type: "scale", from: 0.8, to: 1.25,
+                               frames: 57, easing: "in_out", loops: -1, yoyo: 1 ],
+                        ] ] ],
+                    %[ type: "vspacer", height: 60 ],
+                    %[ type: "align_center", child: %[
+                        type: "label", id: "spin", text: "回 転",
+                        size_scale: 2.0, color: [255, 140, 180, 255],
+                        animate: %[ type: "rotate", from: 0, to: 360,
+                                    frames: 120, easing: "linear", loops: -1 ] ] ],
+                ] ] ]
+        ], false);
+        if (ok) dialogs.add(d);
+        return ok;
+    }
+
+    // --- 計測と表示 --------------------------------------------------------
+
+    function resetStats()
+    {
+        Dialog.renderStatsReset();
+        prevStats = void;
+        prevTick = 0;
+        drawStatsHeader("計測中...");
+    }
+
+    // 小数 1 桁の文字列化 (real の直接文字列化は "27.300000000000001" の
+    // ような全精度表示になるため整数演算で組み立てる)
+    function fmt1(x)
+    {
+        var n = (int)(x * 10 + (x >= 0 ? 0.5 : -0.5));
+        var i = n \ 10, f = n - i * 10;
+        if (f < 0) f = -f;
+        if (n < 0 && i == 0) return "-0." + f;
+        return i + "." + f;
+    }
+
+    function onDemoFrame(tick)
+    {
+        if (!available) return;
+        // counter シナリオ: 毎フレーム値を更新して「小部分の高頻度更新」を再現
+        if (counterDlg !== void) {
+            counterVal++;
+            counterDlg.setVar("n", "" + counterVal);
+        }
+        // 表示失敗時のリトライ (DrawDevice 登録待ち)
+        if (retryWait > 0) {
+            retryWait--;
+            if (retryWait == 0) {
+                if (!applyScenario()) { closeAll(); retryWait = 20; }
+                else resetStats();
+            }
+            return;
+        }
+        if (autoMode) { autoStep(tick); return; }
+        // 500ms ごとに統計を更新
+        if (prevTick == 0 || tick - prevTick >= 500) updateStats(tick);
+    }
+
+    // 自動計測の状態機械: settle → 計測 → 結果行出力 → 次の組へ
+    function autoStep(tick)
+    {
+        if (autoIdx >= autoList.count) return;
+        var combo = autoList[autoIdx];
+        if (autoT0 == 0) {
+            // この組の開始: cache / partial 設定 + シナリオ切替
+            Dialog.renderCache = combo[0] != 0;
+            if (typeof global.Dialog.partialRedraw != "undefined")
+                Dialog.partialRedraw = combo[2] != 0;
+            switchScenario(combo[1]);
+            autoPhase = 0;
+            autoT0 = tick;
+            return;
+        }
+        if (autoPhase == 0) {
+            if (tick - autoT0 < AUTO_SETTLE) return;
+            // caret シナリオはクリックで focus しないと点滅が始まらないので、
+            // 計測開始前に入力欄 (パネル下部中央) へクリックを注入する
+            if (combo[1] == 2 && typeof global.Agent != "undefined") {
+                var dl = Agent.dialogs();
+                if (dl !== void && dl.count > 0) {
+                    var r = dl[0];
+                    Agent.click(r.x + r.w \ 2, r.y + r.h - 30);
+                }
+            }
+            Dialog.renderStatsReset();
+            autoS0 = Dialog.renderStats;
+            autoPhase = 1;
+            autoT0 = tick;
+            return;
+        }
+        if (tick - autoT0 < AUTO_MEASURE) return;
+
+        // 計測終了 → 結果行 (時間は us、 *_f = 1 フレーム平均、 ras_r = ラスタ 1 回平均)
+        var ms = tick - autoT0;
+        var s = Dialog.renderStats;
+        var dF = s.frames - autoS0.frames;
+        var dR = s.rasters - autoS0.rasters;
+        var dC = s.cachedPresents - autoS0.cachedPresents;
+        var dTot = s.totalUs - autoS0.totalUs;
+        var dUpd = s.updateUs - autoS0.updateUs;
+        var dRas = s.rasterUs - autoS0.rasterUs;
+        var dAcq = s.acquireUs - autoS0.acquireUs;
+        var dUpl = s.uploadUs - autoS0.uploadUs;
+        var dPre = s.presentUs - autoS0.presentUs;
+        var dP = s.partials - autoS0.partials;
+        dm("@bench cache=" + combo[0] + " partial=" + combo[2]
+           + " scen=" + combo[1]
+           + " name=" + scenarioSlug(combo[1])
+           + " parts=" + dP
+           + " ms=" + ms + " f=" + dF + " fps=" + fmt1(dF * 1000.0 / ms)
+           + " rasters=" + dR + " r_s=" + fmt1(dR * 1000.0 / ms)
+           + " cached=" + dC
+           + (dF > 0 ? (" tot_f=" + fmt1(dTot / dF) + " upd_f=" + fmt1(dUpd / dF)
+                      + " ras_f=" + fmt1(dRas / dF) + " acq_f=" + fmt1(dAcq / dF)
+                      + " upl_f=" + fmt1(dUpl / dF) + " pre_f=" + fmt1(dPre / dF)) : "")
+           + (dR > 0 ? (" ras_r=" + fmt1(dRas / dR)) : "")
+           + " share=" + fmt1(dTot * 100.0 / (ms * 1000.0)));
+
+        autoIdx++;
+        autoT0 = 0;
+        if (autoIdx >= autoList.count) {
+            Dialog.renderCache = true;
+            if (typeof global.Dialog.partialRedraw != "undefined")
+                Dialog.partialRedraw = true;
+            dm("@bench done");
+            System.terminate();
+        }
+    }
+
+    function updateStats(tick)
+    {
+        var s = Dialog.renderStats;
+        if (prevStats !== void && tick > prevTick) {
+            var wallMs = tick - prevTick;
+            var dF = s.frames         - prevStats.frames;
+            var dU = s.updates        - prevStats.updates;
+            var dR = s.rasters        - prevStats.rasters;
+            var dC = s.cachedPresents - prevStats.cachedPresents;
+            var dTot = s.totalUs   - prevStats.totalUs;
+            var dUpd = s.updateUs  - prevStats.updateUs;
+            var dRas = s.rasterUs  - prevStats.rasterUs;
+            var dAcq = s.acquireUs - prevStats.acquireUs;
+            var dUpl = s.uploadUs  - prevStats.uploadUs;
+            var dPre = s.presentUs - prevStats.presentUs;
+
+            var lines = [];
+            lines.add("シナリオ " + scenario + ": " + scenarioName(scenario));
+            lines.add("renderCache=" + (Dialog.renderCache ? "ON" : "OFF")
+                    + "  renderScale=" + fmt1(Dialog.renderScale)
+                    + "  renderCount=" + Dialog.renderCount);
+            lines.add("");
+            lines.add("フレーム    : " + dF + " (" + fmt1(dF * 1000.0 / wallMs) + " fps)");
+            lines.add("ラスタ      : " + dR + " 回 (" + fmt1(dR * 1000.0 / wallMs) + " /s)");
+            lines.add("cached 提示 : " + dC + " 回 (ラスタ省略)");
+            lines.add("");
+            lines.add("― 1 フレーム平均 (us) ―");
+            if (dF > 0) {
+                lines.add("total   : " + fmt1(dTot / dF)
+                        + "   update: " + fmt1(dUpd / dF)
+                        + "   present: " + fmt1(dPre / dF));
+                lines.add("raster  : " + fmt1(dRas / dF)
+                        + "   acquire: " + fmt1(dAcq / dF)
+                        + "   upload: " + fmt1(dUpl / dF));
+            }
+            if (dR > 0)
+                lines.add("ラスタ 1 回あたり: " + fmt1(dRas / dR) + " us");
+            lines.add("");
+            lines.add("Elements CPU 占有率: "
+                    + fmt1(dTot * 100.0 / (wallMs * 1000.0)) + " %  (実時間比)");
+            drawStatsLines(lines);
+        }
+        prevStats = s;
+        prevTick = tick;
+    }
+
+    // --- stage 描画 ---------------------------------------------------------
+
+    function head(x, y, text)
+    {
+        var f = stage.font;
+        f.face = ""; f.bold = false; f.underline = false; f.emojiMode = 0;
+        f.height = 18;
+        stage.drawText(x, y, "■ " + text, 0x8fb8e8, 255);
+    }
+
+    function drawStatic()
+    {
+        var s = stage;
+        s.fillRect(0, 0, 1280, 720, 0xff181c24);
+        s.font.face = ""; s.font.height = 34;
+        s.drawText(40, 22, "Elements overlay 負荷計測 (Dialog.renderStats)", 0xffffff, 255, true);
+        if (!available) {
+            s.font.height = 24;
+            s.drawText(40, 90, "この環境では Dialog.renderStats が使えません (Elements 無効ビルド)", 0xf0a0a0, 255);
+            s.update();
+            return;
+        }
+        s.font.height = 18;
+        var y = 76;
+        s.drawText(48, y,      "1: idle (静的)          2: caret (キャレット点滅)   3: counter (毎フレーム setVar)", 0xc4ccda, 255);
+        s.drawText(48, y + 26, "4: anim 小 (無限 yoyo)  5: anim 広域 (大パネル)     6: 複合   0: 全消去", 0xc4ccda, 255);
+        s.drawText(48, y + 52, "R: renderCache ON/OFF   C: 計測リセット   (パネル focus 中でも効きます)", 0xc4ccda, 255);
+        s.drawText(48, y + 78, "パッド: ←→ = シナリオ巡回   X = renderCache   Y = リセット", 0xc4ccda, 255);
+        y = 186;
+        head(40, y, "見方");
+        s.font.face = ""; s.font.height = 16;
+        s.drawText(48, y + 26, "・idle で rasters/s = 0 → renderCache が効いている (アイドルゼロコスト)", 0x9aa4b8, 255);
+        s.drawText(48, y + 48, "・caret/counter/anim は「変化フレームは全面再ラスタ」= 現状の上限コスト", 0x9aa4b8, 255);
+        s.drawText(48, y + 70, "・部分再描画 (ダーティ矩形) 導入後は raster/upload の減少をここで確認する", 0x9aa4b8, 255);
+        head(SX + 16, SY - 30, "計測結果 (500ms ごと更新 / C でリセット)");
+        drawStatsHeader("計測中...");
+        s.update();
+    }
+
+    function drawStatsHeader(text)
+    {
+        var s = stage;
+        s.fillRect(SX, SY, SW, SH, 0xff20283a);
+        s.font.face = ""; s.font.height = 18; s.font.bold = false;
+        s.drawText(SX + 16, SY + 12, text, 0x8fb8e8, 255);
+        s.update();
+    }
+
+    function drawStatsLines(lines)
+    {
+        var s = stage;
+        s.fillRect(SX, SY, SW, SH, 0xff20283a);
+        s.font.face = ""; s.font.height = 18; s.font.bold = false;
+        var y = SY + 12;
+        for (var i = 0; i < lines.count; i++) {
+            if (lines[i] != "") s.drawText(SX + 16, y, lines[i], 0xe8ecf4, 255);
+            y += 24;
+        }
+        s.update();
+    }
+
+    // --- 入力 ---------------------------------------------------------------
+
+    function onKeyDown(key, shift)
+    {
+        if (!available || autoMode) return;
+        switch (key) {
+        case 0x30: switchScenario(0); break;
+        case 0x31: switchScenario(1); break;
+        case 0x32: switchScenario(2); break;
+        case 0x33: switchScenario(3); break;
+        case 0x34: switchScenario(4); break;
+        case 0x35: switchScenario(5); break;
+        case 0x36: switchScenario(6); break;
+        case VK_LEFT:   // パッド十字← (demolib 正規化): シナリオ巡回
+            switchScenario((scenario + 6) % 7);
+            break;
+        case VK_RIGHT:  // パッド十字→: シナリオ巡回
+            switchScenario((scenario + 1) % 7);
+            break;
+        case 0x52:      // R (キーボード)
+        case VK_PAD3:   // X (パッド): renderCache トグル (A/B 比較)
+            Dialog.renderCache = !Dialog.renderCache;
+            resetStats();
+            break;
+        case 0x50:      // P: partialRedraw トグル (部分再描画の A/B 比較)
+            if (typeof global.Dialog.partialRedraw != "undefined") {
+                Dialog.partialRedraw = !Dialog.partialRedraw;
+                resetStats();
+            }
+            break;
+        case 0x43:      // C (キーボード)
+        case VK_PAD4:   // Y (パッド): 計測リセット
+            resetStats();
+            break;
+        }
+    }
+
+    function onDemoTest()
+    {
+        if (!available) { dm("@demotest:elements_bench unavailable"); return; }
+        var s = Dialog.renderStats;
+        dm("@demotest:elements_bench scenario=" + scenario
+           + " frames=" + s.frames + " rasters=" + s.rasters
+           + " cached=" + s.cachedPresents);
+    }
+}

@@ -95,6 +95,9 @@ common/base/SystemIntf.cpp
 common/base/TextStream.cpp
 common/base/UtilStreams.cpp
 common/base/XP3Archive.cpp
+common/base/BuiltinLicenses.cpp
+common/base/LicenseIntf.cpp
+common/base/LicenseIntf.h
 common/base/StorageCache.cpp
 common/environ/TouchPoint.cpp
 common/environ/PadManager.cpp
@@ -143,7 +146,15 @@ common/visual/DrawDevice.cpp
 common/visual/VideoOverlayPresenter.cpp
 common/visual/VideoOverlayPresenter.h
 common/visual/ViewportConfig.h
+common/visual/FontServiceIntf.cpp
+common/visual/FontStream.cpp
 common/visual/FontSystem.cpp
+common/visual/GlyphwareHost.h
+common/visual/GlyphwareHost.cpp
+common/visual/GlyphwareText.h
+common/visual/GlyphwareText.cpp
+common/visual/GlyphwareFontRasterizer.h
+common/visual/GlyphwareFontRasterizer.cpp
 common/visual/FreeType.cpp
 common/visual/FreeTypeFontRasterizer.cpp
 common/visual/GraphicsLoaderIntf.cpp
@@ -297,6 +308,7 @@ win32/visual/BasicDrawDevice.cpp
 win32/visual/BitmapBitsAlloc.cpp
 win32/visual/DrawDeviceImpl.cpp
 win32/visual/GDIFontRasterizer.cpp
+win32/visual/GlyphwareGDIFont.cpp
 win32/visual/GraphicsLoaderImpl.cpp
 win32/visual/LayerImpl.cpp
 win32/visual/NativeFreeTypeFace.cpp
@@ -584,6 +596,11 @@ if (KRKRZ_USE_ELEMENTS)
 		common/visual/elements/WinElementsModalRunner.cpp
 		common/visual/elements/StoragesResourceLoader.cpp
 		common/visual/elements/StoragesResourceLoader.h
+		# ThorVG "gw" テキストローダへの glyphware ブリッジ (TVG_LOADER_GW)
+		common/visual/elements/GlyphwareTvgBridge.cpp
+		# Elements の矩形テキスト折返し (text_area) を glyphware layoutBlock で
+		# 実装する block_text_backend。本体 drawShapedTextArea と折返しが揃う。
+		common/visual/elements/BlockTextBackend.cpp
 		common/visual/elements/VariantJsonUtil.cpp
 		common/visual/elements/VariantJsonUtil.h
 		# SDL 拡張プラグイン向け C ABI サービス (tp_stub プラグインから
@@ -664,6 +681,7 @@ if (KRKRZ_USE_ELEMENTS)
 	set_source_files_properties(
 		common/visual/elements/ElementsDialogManager.cpp
 		common/visual/elements/StoragesResourceLoader.cpp
+		common/visual/elements/BlockTextBackend.cpp
 		sdl3/visual/SDLElementsUserConfig.cpp
 		sdl3/visual/SDLElementsModalRunner.cpp
 		PROPERTIES CXX_STANDARD 20
@@ -698,6 +716,13 @@ if (NOT KRKRZ_AUDIO_PLATFORM_OVERRIDE)
 			MA_NO_DEVICE_IO
 		)
 	endif()
+endif()
+
+# クリップボード: generic 版は「クリップボードを持たない環境」向けの空実装。
+# SDL3 デスクトップでは OS のクリップボードが使えるので差し替える。
+if (KRKRZ_VARIANT STREQUAL "SDL")
+	list(REMOVE_ITEM KRKRZ_SRC_GENERIC generic/utils/ClipboardImpl.cpp)
+	list(APPEND KRKRZ_SRC_SDL3 sdl3/utils/ClipboardImpl.cpp)
 endif()
 
 

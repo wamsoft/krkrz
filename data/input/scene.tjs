@@ -5,6 +5,7 @@
 
 class InputScene extends DemoScene
 {
+    var rawPadKeys = true;   // shell の VK_PAD*→論理キー読み替えを受けず生のまま観測する
     var vkname;
     var kb, ms, pad;
     var lastKey = -1, lastShift = 0, keyIsDown = false;
@@ -28,7 +29,7 @@ class InputScene extends DemoScene
         pad = new Layer(window, stage); pad.setSize(KB_W, 240); pad.setPos(KB_X, KB_Y + KB_H + 16); pad.visible = true; window.add(pad);
         try { hasPad = System.hasJoypad(0); } catch (e) { hasPad = false; }
         drawKb(); drawMs(); drawPad();
-        setInfo("キー / マウス / パッドを操作して可視化を確認");
+        setInfo("キー / マウス / パッドを操作して可視化を確認 (パッドは VK_PAD* キーとして届く)");
     }
 
     function buildKeyNames()
@@ -51,6 +52,14 @@ class InputScene extends DemoScene
         m[0xBD]="OEM_MINUS(-)"; m[0xBE]="OEM_PERIOD(.)"; m[0xBF]="OEM_2(/)";
         m[0xC0]="OEM_3(`)"; m[0xDB]="OEM_4([)"; m[0xDC]="OEM_5(\\)";
         m[0xDD]="OEM_6(])"; m[0xDE]="OEM_7(')";
+        // パッド (エンジンはパッド入力を VK_PAD* のキーとして通知する)
+        m[VK_PADLEFT]="PADLEFT"; m[VK_PADUP]="PADUP";
+        m[VK_PADRIGHT]="PADRIGHT"; m[VK_PADDOWN]="PADDOWN"; m[VK_PADCENTER]="PADCENTER";
+        var pb = ["PAD1(A)","PAD2(B)","PAD3(X)","PAD4(Y)","PAD5(LB)","PAD6(RB)",
+                  "PAD7(LT)","PAD8(RT)","PAD9(SELECT)","PAD10(START)","PAD11(L3)","PAD12(R3)"];
+        for (var i = 0; i < 12; i++) m[VK_PAD1 + i] = pb[i];
+        var st = ["LEFT","UP","RIGHT","DOWN"];
+        for (var i = 0; i < 4; i++) { m[VK_PAD_L_LEFT + i] = "PAD_L_" + st[i]; m[VK_PAD_R_LEFT + i] = "PAD_R_" + st[i]; }
     }
     function keyName(code)
     {
@@ -126,33 +135,56 @@ class InputScene extends DemoScene
         lay.drawText(x + 24, y + 7, label, on ? 0xffffff : 0x7a8498, 255);
     }
 
+    // ボタン押下表示: パッドボタンは VK_PAD* の押下状態 (System.getKeyState)
+    // として取れる (論理パッド0 = 最後に操作したパッド)
+    var padBtns = [
+        ["←", VK_PADLEFT], ["↑", VK_PADUP], ["→", VK_PADRIGHT], ["↓", VK_PADDOWN],
+        ["A", VK_PAD1], ["B", VK_PAD2], ["X", VK_PAD3], ["Y", VK_PAD4],
+        ["LB", VK_PAD5], ["RB", VK_PAD6], ["LT", VK_PAD7], ["RT", VK_PAD8],
+        ["SE", VK_PAD9], ["ST", VK_PAD10], ["L3", VK_PAD11], ["R3", VK_PAD12] ];
+
     function drawPad()
     {
         pad.fillRect(0, 0, pad.width, pad.height, 0xff181c26);
         pad.fillRect(0, 0, pad.width, 34, 0xff28324a);
         pad.font.height = 20;
-        pad.drawText(14, 7, "ゲームパッド (System.padAxis*)", 0x9fc0e8, 255);
+        pad.drawText(14, 7, "ゲームパッド (VK_PAD* / System.getPadAxis)", 0x9fc0e8, 255);
         if (!hasPad) {
             pad.font.height = 18;
-            pad.drawText(20, 60, "パッド未接続 (接続すると軸を表示)", 0x90a0a0, 255);
+            pad.drawText(20, 60, "パッド未接続 (接続すると自動表示)", 0x90a0a0, 255);
             pad.update();
             return;
         }
+        // アナログ軸: System.padAxis* は「軸 ID 定数」。値は getPadAxis で取る
         var lx = 0.0, ly = 0.0, rx = 0.0, ry = 0.0, lt = 0.0, rt = 0.0;
         try {
-            lx = System.padAxisLeftX; ly = System.padAxisLeftY;
-            rx = System.padAxisRightX; ry = System.padAxisRightY;
-            lt = System.padAxisLeftTrigger; rt = System.padAxisRightTrigger;
+            lx = System.getPadAxis(0, System.padAxisLeftX);
+            ly = System.getPadAxis(0, System.padAxisLeftY);
+            rx = System.getPadAxis(0, System.padAxisRightX);
+            ry = System.getPadAxis(0, System.padAxisRightY);
+            lt = System.getPadAxis(0, System.padAxisLeftTrigger);
+            rt = System.getPadAxis(0, System.padAxisRightTrigger);
         } catch (e) {}
-        drawStick(pad, 90, 150, "L stick", lx, ly);
-        drawStick(pad, 280, 150, "R stick", rx, ry);
+        drawStick(pad, 90, 130, "L stick", lx, ly);
+        drawStick(pad, 280, 130, "R stick", rx, ry);
         pad.font.height = 16;
-        pad.drawText(400, 70, "L trig", 0x90a0b8, 255);
-        pad.fillRect(400, 90, 120, 14, 0xff2a303c);
-        pad.fillRect(400, 90, (120 * clamp01(lt)) \ 1, 14, 0xff60a0ff);
-        pad.drawText(400, 120, "R trig", 0x90a0b8, 255);
-        pad.fillRect(400, 140, 120, 14, 0xff2a303c);
-        pad.fillRect(400, 140, (120 * clamp01(rt)) \ 1, 14, 0xff60a0ff);
+        pad.drawText(400, 50, "L trig", 0x90a0b8, 255);
+        pad.fillRect(400, 70, 120, 14, 0xff2a303c);
+        pad.fillRect(400, 70, (120 * clamp01(lt)) \ 1, 14, 0xff60a0ff);
+        pad.drawText(400, 100, "R trig", 0x90a0b8, 255);
+        pad.fillRect(400, 120, 120, 14, 0xff2a303c);
+        pad.fillRect(400, 120, (120 * clamp01(rt)) \ 1, 14, 0xff60a0ff);
+        // ボタン押下状態 (下段に一列)
+        var bw = 30, bh = 24, gap = 4, bx = 12, by = pad.height - bh - 10;
+        pad.font.height = 14;
+        for (var i = 0; i < padBtns.count; i++) {
+            var on = false;
+            try { on = System.getKeyState(padBtns[i][1]); } catch (e) {}
+            var x = bx + i * (bw + gap);
+            pad.fillRect(x, by, bw, bh, on ? 0xff3060c0 : 0xff2a303c);
+            var lw = pad.font.getTextWidth(padBtns[i][0]);
+            pad.drawText(x + (bw - lw) \ 2, by + 4, padBtns[i][0], on ? 0xffffff : 0x7a8498, 255);
+        }
         pad.update();
     }
 
@@ -212,7 +244,14 @@ class InputScene extends DemoScene
     }
     function onMouseWheel(shift, delta, x, y) { wheelAccum += delta / 120; drawMs(); }
 
-    function onDemoFrame(tick) { if (hasPad) drawPad(); }
+    function onDemoFrame(tick)
+    {
+        // 接続/切断へ追従しつつ、接続中は毎フレーム状態を反映する
+        var hp = false;
+        try { hp = System.hasJoypad(0); } catch (e) {}
+        if (hp != hasPad) { hasPad = hp; drawPad(); }
+        else if (hasPad) drawPad();
+    }
 
     function onDemoTest()
     {

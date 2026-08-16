@@ -73,8 +73,12 @@ void TVPGLReleaseNativeDisplay(void *nativeWindow, void *nativeDisplay)
 static bool oglInited = false;
 
 iTVPGLContext *
-iTVPGLContext::GetContext(void *nativeWindow)
+iTVPGLContext::GetContext(void *nativeWindow, bool separateShared)
 {
+	// separateShared は SDL 版でのみ意味を持つ (画面 GL デバイスとの FBO/ステート競合回避)。
+	// WINVER は画面デバイスが D3D11 で GL 画面と競合しないため、HWND 単位でキャッシュ+
+	// refcount された tTVPEGLContext をそのまま共有すればよく、このフラグは無視する。
+	(void)separateShared;
 	if (!oglInited) {
 		if (!TVPInitializeOpenGLPlatform()) {
 			TVPThrowExceptionMessage(TVPUnableToInitializeOpenGL );

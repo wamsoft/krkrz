@@ -81,6 +81,13 @@ public:
 
 bool TVPCheckStorageCache(const ttstr &name, bool update=false);
 iTJSBinaryStream *TVPGetStorageCache(const ttstr &name, bool entry=false);
+// キャッシュの共有バッファを直接取得する (ゼロコピー消費者向け。フォント等)。
+// キャッシュ対象外 (拡張子閾値超え・確保失敗等) の場合は nullptr を返すので
+// 呼び出し元でフォールバックする。entry=true でキャッシュ未登録なら登録を試みる。
+class tTJSBinaryStreamBuffer;
+std::shared_ptr<tTJSBinaryStreamBuffer> TVPGetStorageCacheBuffer(const ttstr &name, bool entry=false);
+// 共有バッファ上の読み取り専用ストリームビューを生成する (所有権は呼び出し元)。
+iTJSBinaryStream *TVPCreateSharedMemoryStream(std::shared_ptr<tTJSBinaryStreamBuffer> buffer);
 // 単一 path クリア。
 //   force=false (default): 他に shared_ptr 保持者がいる場合はスキップ
 //                         (= 「表 = 生存 buffer」の invariant 維持)

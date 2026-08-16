@@ -64,6 +64,11 @@ public:
 		Texture.UpdateTexture(x, y, w, h, updator);
 	}
 
+	//! @brief 連続メモリから中間バッファ無しで転送する。GLTexture::UpdateTextureDirect 参照。
+	void UpdateTextureDirect(int x, int y, int w, int h, const void *src, int src_pitch) {
+		Texture.UpdateTextureDirect(x, y, w, h, src, src_pitch);
+	}
+
 	static inline bool IsPowerOfTwo( tjs_uint x ) { return (x & (x - 1)) == 0; }
 	static inline tjs_uint ToPowerOfTwo( tjs_uint x ) {
 		// 組み込み関数等でMSBを取得してシフトしてもいいが、32からシフトしてループで得ることにする。

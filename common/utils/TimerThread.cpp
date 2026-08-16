@@ -141,10 +141,16 @@ void tTVPTimerThread::Execute()
 				// triggered; post notification message to the main thread
 				if(!PendingEventsAvailable)
 				{
-					PendingEventsAvailable = true;
 #ifdef __WINVER__
-					EventQueue.PostEvent( NativeEvent(TVP_EV_TIMER_THREAD) );
+					// ラッチは投函に成功したときだけ立てる。 PostMessage は
+					// メッセージキューが上限に達すると失敗するので、失敗しても
+					// 立ててしまうと「起こされないのに投函済み扱い」になり、
+					// 以後タイマーが永久に動かなくなる。
+					if( EventQueue.PostEvent( NativeEvent(TVP_EV_TIMER_THREAD) ) )
+						PendingEventsAvailable = true;
 #else
+					// SendAppEvent は失敗時にリトライキューへ積むので取りこぼさない
+					PendingEventsAvailable = true;
 					Application->SendAppEvent( TVP_EV_TIMER_THREAD, 0, 0 );
 #endif
 				}
@@ -170,17 +176,41 @@ void tTVPTimerThread::Execute()
 void tTVPTimerThread::HandleWake()
 {
 	// pending events occur
-	tTJSCriticalSectionHolder holder(TVPTimerCS); // protect the object
-
-	ProcWork.reserve( Pending.size() );
-	ProcWork = Pending;
-	Pending.clear();
-	for( auto i = ProcWork.begin(); i != ProcWork.end(); i++ ) {
-		if( std::find( List.begin(), List.end(), ( *i ) ) != List.end() )
-			(*i)->FirePendingEventsAndClear();	// この呼び出しによってList/Peinding内から削除されるケースがありうるので注意。
+	//
+	// Fire は必ず「ロックを手放し、かつ PendingEventsAvailable を下ろしてから」
+	// 呼ぶこと。 Fire の先ではタイマーハンドラ (tTVPTimer なら直接、TJS の
+	// Timer ならイベント配送経由) が走り、そこから Window.showModal のような
+	// ネストしたメッセージループへ入ると HandleWake が戻らなくなる。
+	//
+	// 以前は TVPTimerCS を Fire の間ずっと握り、PendingEventsAvailable を最後に
+	// false へ戻していたため、その状態になると
+	//   - タイマースレッドが CS 待ちで停止する
+	//   - PendingEventsAvailable が true のままなので wake も二度と投函されない
+	// となり、モーダルウィンドウ表示中は TJS の Timer も
+	// tTVPSystemControl の 50ms 監視タイマー (= イベント配送の駆動源) も
+	// 完全に止まっていた (実測: モーダル中に仕掛けた Timer が一度も発火しない)。
+	//
+	// ProcWork をメンバからローカルへ移したのは、ネストループ内で HandleWake が
+	// 再入しても壊れないようにするため。
+	std::vector<tTVPTimerBase *> work;
+	{
+		tTJSCriticalSectionHolder holder(TVPTimerCS); // protect the object
+		work.swap( Pending );
+		PendingEventsAvailable = false;
 	}
-	ProcWork.clear();
-	PendingEventsAvailable = false;
+
+	for( auto i = work.begin(); i != work.end(); i++ ) {
+		tTVPTimerBase *item = *i;
+		tjs_int count = 0;
+		{
+			// Fire の中で他のタイマーが破棄されることがあるので、毎回
+			// List に残っているか確認してからペンディング数を取り出す。
+			tTJSCriticalSectionHolder holder(TVPTimerCS);
+			if( std::find( List.begin(), List.end(), item ) == List.end() ) continue;
+			count = item->TakePendingCount();
+		}
+		item->FirePendingEvents( count );
+	}
 }
 //---------------------------------------------------------------------------
 #ifdef __WINVER__

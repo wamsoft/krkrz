@@ -11,6 +11,13 @@
 #include "ObjectList.h"
 #include "ViewportConfig.h"
 
+//! ShowWindowAsModal のループ終了要求値 (0 = 継続)
+enum tTVPModalResult {
+	TVP_MODAL_NONE   = 0,	//< 継続中
+	TVP_MODAL_OK     = 1,	//< 正常終了
+	TVP_MODAL_CANCEL = 2,	//< 閉じる要求 / キャンセル
+};
+
 typedef unsigned long TShiftState;
 extern tjs_uint32 TVP_TShiftState_To_uint32(TShiftState state);
 extern TShiftState TVP_TShiftState_From_uint32(tjs_uint32 state);
@@ -72,9 +79,19 @@ protected:
 	bool ProgramClosing;
 	bool CanCloseWork;
 
+	//-- モーダル表示状態
+	bool in_mode_;      //< ShowWindowAsModal のループ実行中
+	int  modal_result_; //< 0 = 継続 / 非 0 = ループ終了要求
+
+	bool left_double_click_; //< 直前の左ボタン押下がダブルクリック (click を出さない)
+
 	// 描画サイズ
 	int mSurfaceWidth;
 	int mSurfaceHeight;
+
+	//-- 表示ズーム (約分済み。既定 1/1)
+	tjs_int zoom_numer_;
+	tjs_int zoom_denom_;
 
 	// カーソル位置
 	tjs_int mCursorX;
@@ -145,6 +162,7 @@ public:
 	// マウス操作
 	void OnMouseDown( int button, int shift, int x, int y );
 	void OnMouseUp( int button, int shift, int x, int y );
+	void OnMouseDoubleClick( int button, int x, int y );
 	void OnMouseMove( int shift, int x, int y );
 	void OnMouseWheel( int delta, int shift, int x, int y );
 
@@ -180,7 +198,22 @@ public:
 	virtual void SetVisible(bool b) {};
 	virtual void SetVisibleFromScript(bool b) { SetVisible(b); }
 
-	void ShowWindowAsModal();
+	//-- モーダル表示 (Window.showModal) -----------------------------------
+	//   ネストしたイベントループを回せるプラットフォーム (SDL3) が
+	//   ShowWindowAsModal() を override して実装する。 既定は非対応例外。
+	//   状態 (in_mode_ / modal_result_) と close 経路の扱いは共通なのでここに置く。
+	virtual void ShowWindowAsModal();
+
+	bool IsModalMode() const { return in_mode_; }
+	int  GetModalResult() const { return modal_result_; }
+	void SetModalResult( int r ) { modal_result_ = r; }
+
+	//! 現在モーダル表示中の最前面フォーム (無ければ nullptr)。
+	//! 他ウィンドウへの入力配送を止めるために使う。
+	static TTVPWindowForm * GetModalWindowForm();
+	//! モーダルスタックへの出入り (ShowWindowAsModal の実装から呼ぶ)
+	static void PushModalWindowForm( TTVPWindowForm *form );
+	static void PopModalWindowForm( TTVPWindowForm *form );
 
 	// キャプション設定
 	virtual void SetCaption( const tjs_string& v ) {};
@@ -217,19 +250,20 @@ public:
 	virtual int GetInnerWidth() const;
 	virtual int GetInnerHeight() const;
 
-	// 境界サイズ、無効
-	void SetBorderStyle( enum tTVPBorderStyle st) {}
-	enum tTVPBorderStyle GetBorderStyle() const { return bsNone; }
+	// 境界サイズ。 ウィンドウ装飾を持つプラットフォーム (SDL3 デスクトップ) が
+	// override する。 既定は「枠なし固定」扱い。
+	virtual void SetBorderStyle( enum tTVPBorderStyle st) {}
+	virtual enum tTVPBorderStyle GetBorderStyle() const { return bsNone; }
 
-	// 常に最前面表示、無効
-	void SetStayOnTop( bool b ) {}
-	bool GetStayOnTop() const { return true; }
+	// 常に最前面表示
+	virtual void SetStayOnTop( bool b ) {}
+	virtual bool GetStayOnTop() const { return true; }
 	// 最前面へ移動
-	void BringToFront() {}
+	virtual void BringToFront() {}
 
-	// フルスクリーン、無効と言うか常に真
-	void SetFullScreenMode(bool b) {}
-	bool GetFullScreenMode() const { return true; }
+	// フルスクリーン。 既定は「常に全画面」(モバイル/コンソール想定)
+	virtual void SetFullScreenMode(bool b) {}
+	virtual bool GetFullScreenMode() const { return true; }
 
 	//マウスキー(キーボードでのマウスカーソル操作)は無効
 	void SetUseMouseKey(bool b) {}
@@ -248,12 +282,15 @@ public:
 	void SetFocusable(bool b) {}
 	bool GetFocusable() const { return true; }
 
-	// 表示ズーム関係(非サポート)
-	void SetZoom(tjs_int numer, tjs_int denom, bool set_logical = true) {}
-	void SetZoomNumer( tjs_int n ) {}
-	tjs_int GetZoomNumer() const { return 1; }
-	void SetZoomDenom(tjs_int d) {}
-	tjs_int GetZoomDenom() const { return 1; }
+	// 表示ズーム。 WINVER と同じく「レイヤサイズ×zoom を表示サイズにする」意味。
+	// generic ではウィンドウ (surface) をその大きさへリサイズし、実際の拡縮は
+	// viewport のフィット計算 (CalcDestRect) が行う。リサイズできない
+	// プラットフォームでは ResizeWindow が効かないので倍率だけが残る。
+	void SetZoom(tjs_int numer, tjs_int denom, bool set_logical = true);
+	void SetZoomNumer( tjs_int n ) { SetZoom( n, zoom_denom_ ); }
+	tjs_int GetZoomNumer() const { return zoom_numer_; }
+	void SetZoomDenom(tjs_int d) { SetZoom( zoom_numer_, d ); }
+	tjs_int GetZoomDenom() const { return zoom_denom_; }
 
 	// タッチ入力関係 ( TouchPointList によって管理されている )
 	void SetTouchScaleThreshold( double threshold ) { touch_points_.SetScaleThreshold( threshold ); }

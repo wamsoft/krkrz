@@ -79,7 +79,7 @@ class SysInfoScene extends DemoScene
             size : [300, 180], background : [30, 32, 42, 236], locale : "ja-JP",
             align : "top_right", margin : 56,
             content : %[ type : "margin", padding : 14, child : %[ type : "vtile", children : [
-                %[ type : "hspacer", width : 268 ],
+                %[ type : "vsize", height : 0, child : %[ type : "hspacer", width : 268 ] ],
                 %[ type : "align_center", child : %[ type : "label", text : "sysinfo パネル", size_scale : 1.3 ] ],
                 %[ type : "vspacer", height : 10 ],
                 %[ type : "button", id : "redraw", text : "情報を再取得" ],

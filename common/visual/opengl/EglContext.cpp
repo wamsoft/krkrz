@@ -388,9 +388,28 @@ bool tTVPEGLContext::Initialize()
 
 	TVPAddLog( ttstr( TJS_W( "(info) Run on OpenGL ES" ) ) + to_tjs_string( esClientVersion ) + ttstr( TJS_W( ".0 (ANGLE)" ) ) );
 
+	// D3D11 flip モデルで present 済みの HWND には bitblt present が画面反映されない
+	// (DWM の一方向制約) ため、ANGLE が対応していれば DirectComposition 経由の
+	// flip present (FLIP_SEQUENTIAL composition swapchain) で surface を作る
+	bool useDComp = false;
+	{
+		const char* ext = eglQueryString( mDisplay, EGL_EXTENSIONS );
+		if( ext && strstr( ext, "EGL_ANGLE_direct_composition" ) ) useDComp = true;
+	}
+	EGLint surfaceAttributesDComp[] = { EGL_DIRECT_COMPOSITION_ANGLE, EGL_TRUE, EGL_NONE };
 	EGLint surfaceAttributes[] = { EGL_NONE };
 
-	mSurface = eglCreateWindowSurface( mDisplay, mConfig, mNativeWindow, surfaceAttributes );
+	mSurface = eglCreateWindowSurface( mDisplay, mConfig, mNativeWindow, useDComp ? surfaceAttributesDComp : surfaceAttributes );
+	if( useDComp ) {
+		if( mSurface != EGL_NO_SURFACE ) {
+			TVPAddLog( TJS_W( "(info) EGL surface: DirectComposition (flip present)" ) );
+		} else {
+			// DComp が使えない環境では通常の HWND surface で再試行
+			CheckEGLErrorAndLog();
+			TVPAddLog( TJS_W( "(info) DirectComposition surface failed, fallback to HWND surface" ) );
+			mSurface = eglCreateWindowSurface( mDisplay, mConfig, mNativeWindow, surfaceAttributes );
+		}
+	}
 	if( mSurface == EGL_NO_SURFACE ) { TVPAddLog( TJS_W( "eglCreateWindowSurface returned EGL_NO_SURFACE." ) ); }
 	if( !CheckEGLErrorAndLog() ) {
 		TVPAddLog( TJS_W( "Failed to call eglCreateWindowSurface." ) );

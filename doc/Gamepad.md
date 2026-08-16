@@ -170,6 +170,13 @@ ID は `tTVPApplication::TVP_PAD_AXIS_LEFTX` 等の enum を使用。
 として受けます (発生源は常に論理 0 = 最後に操作したパッド)。
 `System.getKeyState(VK_PADn)` 相当も動きます (`PadManager::GetAsyncKeyState`)。
 
+**Elements ダイアログとの関係**: Elements ダイアログ (パネル) がフォーカスを
+持っていると VK_PAD* はダイアログのウィジェット操作 (十字=ナビ / A=決定 /
+B=cancel) に消費されます。「このパッドボタンだけは必ずゲーム側で受けたい」
+場合は `Dialog.registerHotKey(VK_PAD2)` 等でホストホットキー登録するとダイアログを
+バイパスして `onKeyDown` へ直行します (配送優先順位と詳細は
+[ElementsDialog.md](ElementsDialog.md) の「入力ルーティング」を参照)。
+
 ## 5. デバッグオーバレイ
 
 詳細は [PadOverlay.md](PadOverlay.md) を参照。`System.setPadOverlay(true)` /

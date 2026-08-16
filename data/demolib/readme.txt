@@ -39,6 +39,14 @@ SSOT はここ (src/core/data/demolib)。umbrella (krkrz_dev) の data/ 直下�
                 onPanelAction / onDemoFrame / onDemoTest)
     DemoPanel  (Elements Dialog が使える環境でのみ定義)
 
+■ ゲームパッド
+
+  エンジンはパッド入力を VK_PAD* キーイベントとしてのみ通知する
+  (VK_UP 等へは変換しない。doc/Gamepad.md)。DemoShell は padKeyToLogical()
+  で 十字/左スティック→矢印、A/START→Enter、B→ESC、LB/RB→PgUp/PgDn に
+  正規化してからシーンへ渡すので、メニューも各シーンもパッドで操作できる。
+  生の VK_PAD* を観測したいシーンは rawPadKeys = true にする (入力可視化が実例)。
+
   重要: デモの描画は必ず DemoWindow.stage (とその子レイヤ) に対して行う。
   primary レイヤへの直接 drawText と primary 直下の ltAlpha レイヤは、
   現行エンジンの既知の描画問題 (グリフ崩れ / 合成異常) を踏む

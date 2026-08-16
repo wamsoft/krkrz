@@ -20,7 +20,7 @@
         "child": {
             "type": "vtile",
             "children": [
-                { "type": "hspacer", "width": 436 },
+                { "type": "vsize", "height": 0, "child": { "type": "hspacer", "width": 436 } },
                 { "type": "align_center",
                   "child": { "type": "label", "text": "ダイアログ (Elements)", "size": 1.3 } },
                 { "type": "vspacer", "height": 16 },

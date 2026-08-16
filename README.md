@@ -1,49 +1,71 @@
-# 吉里吉里Z multi platform
+# 吉里吉里Z multi platform (krkrz)
 
-## 概要
+TJS2 スクリプトエンジン + ノベルゲームランタイム「吉里吉里Z」を、Windows 専用から
+マルチプラットフォームへ展開した派生版のエンジン本体です。
 
-マルチプラットフォーム展開を想定した吉里吉里Zです
+- システム基本制御に **SDL3** を使うビルドと、従来どおり **Win32 ネイティブ**の
+  ビルドを、同じソースから作り分けます
+- 描画は **OpenGL ES** ベースの機構 (Canvas / Texture / Shader / Offscreen) を持ち、
+  Windows ネイティブビルドは既定で **Direct3D 11** 経路です (D3D9 は撤去済み)
+- 外部ライブラリは極力そのまま参照する構成で、依存解決に **vcpkg** を使います
+  (SDL3 は最新版を追うため `FetchContent` で取得します)
 
-・システム基本制御は SDL3 を使います
-・OpenGLベース描画機構を持ちます Canvas/Screen/Texture/Shader
-・極力外部ライブラリを参照する形で構築されています。
+## リポジトリの位置づけ
 
-外部ライブラリの参照には vcpkg を利用しています。
-SDL3 は最新版を利用する関係で FettchContents で処理されます。
+このリポジトリは**エンジン本体のみ**です。プラグイン・TJS2 スクリプトライブラリ
+(KAG3 等)・統合ビルドは、アンブレラリポジトリ **`krkrz_dev`** が submodule として
+束ねています。プラグイン込みで一式ビルドしたい場合はそちらを使ってください。
+
+ブラウザ (Emscripten/wasm) と Android のビルドは、このリポジトリを engine ソースと
+して参照する「外枠」リポジトリ (`krkrz_web` / `krkrz_android`) 側にあります。
+
+## ビルドバリアント
+
+| `KRKRZ_VARIANT` | 内容 |
+|---|---|
+| `SDL` (既定) | SDL3 ベースの汎用ビルド。Windows / Linux / macOS / Android / wasm |
+| `WIN` | 従来の Windows ネイティブ (Win32 API + D3D11)。WINVER と呼びます |
+| `LIB` | 汎用ビルドの静的ライブラリ版 (`libkrkrz`) |
+
+`SDL` / `LIB` では Windows 固有機能を除いた **GENERIC バージョン**になり、
+`__GENERIC__` マクロが定義されます。
+
+> GENERIC 版向けのプラグインをビルドする場合は、`tp_stub.h` を読み込む前に
+> `__GENERIC__` を定義してください。`tp_stub/krkrz.cmake` を使う場合は
+> `KRKRZ_VARIANT` が定義されていれば自動で付きます。指定が無い場合の `tp_stub.h` は
+> `__WINVER__` を定義した旧 Win 版互換の動作になります。
+
+---
 
 ## 開発環境準備
 
 ### Windows
 
-Windows用に Visual Studio をインストールして
-C++ コンパイラ を使える状態にしておきます。
+Visual Studio (2022 以降) を入れて C++ コンパイラを使える状態にします。
+付属の CMake / Ninja を利用します。
 
-あわせて Visual Studio 付属の Cmake / Ninja を利用します。
-
-make を使いたい場合は、msys2 をインストールして基礎開発ツールを導入しておきます。
+`make` を使いたい場合は msys2 を入れて基礎開発ツールを導入します。
 
 ```bash
 pacman -S base-devel
 ```
 
-### Linux
+> ビルドは **Visual Studio の Developer Command Prompt から起動**してください。
+> 32bit ビルド (`x86-windows`) は x86 用の Developer Command Prompt が必要です
+> (アーキテクチャが食い違うと vcpkg が誤動作します)。
 
-整備中
+### Linux / macOS
 
-### OSX
+整備中。
 
-整備中
+### vcpkg
 
-### vcpkg 環境準備
+各環境に vcpkg を導入し、そのフォルダを環境変数 `VCPKG_ROOT` に設定します。
 
-各環境に vcpkg を導入します。
-
-※Visual Studio 2022 以降は vcpkg があわせて導入されます。
-自前環境を使う場合は競合してまうのでどちらかでいれるようにしてください。
+※ Visual Studio 2022 以降には vcpkg が同梱されています。自前で入れたものと競合
+するので、どちらか一方に統一してください。
 
 https://learn.microsoft.com/ja-jp/vcpkg/get_started/overview
-
-vcpkg のフォルダを環境変数 VCPKG_ROOT に設定しておきます。
 
 ```bash
 # dos
@@ -53,189 +75,182 @@ set VCPKG_ROOT="c:\work\vcpkg"
 export VCPKG_ROOT='c:\work\vcpkg'
 ```
 
+---
+
 ## ビルド
 
-### ソースのチェックアウト
+### ソースの取得
 
-git clone 後 submodule 更新しておいてください
+clone 後に submodule を更新してください。
 
-```
+```bash
 git submodule update --init
 ```
 
-### ビルド
+### プリセット
 
-CMakePresets.json 中のプリセット定義をつかってビルドします。
-必要なライブラリは vcpkg.json によってセットアップされます。
+`CMakePresets.json` のプリセットを使ってビルドします。必要なライブラリは
+`vcpkg.json` によって用意されます。ビルドフォルダは既定で `build/<プリセット名>`、
+ジェネレータは Ninja Multi-Config です。
 
-ビルドフォルダはデフォルトでは build/プリセット名 になっています。
-また Generator は Ninja Multi Config での生成になります。
+| プリセット | バリアント | 備考 |
+|---|---|---|
+| `x64-windows` / `x86-windows` / `arm64-windows` | SDL | **SDL3 ビルド** (名前に `-win` が付かない方) |
+| `x64-windows-win` / `x86-windows-win` / `arm64-windows-win` | WIN | **Windows ネイティブ (WINVER)** |
+| `x64-linux` / `arm64-linux` | SDL | Linux |
+| `x64-osx` / `arm64-osx` | SDL | macOS |
+| `x64-android` / `arm64-android` | SDL | Android |
 
-vpkg.json で外部ライブラリを扱うため、
-CMAKE_TOOLCHAIN_FILE は vcpkg のものが指定されています。
+> 名前が紛らわしいので注意: `x64-windows` は **SDL ビルド**、
+> WINVER が欲しいときは `x64-windows-win` です。
 
 ```bash
-cmake --preset x86-windows --config Release
-cmake --build build/x86-windows
+cmake --preset x64-windows
+cmake --build build/x64-windows --config Release
 ```
 
-ビルドに必要な定義が行われた Makefile が準備されていいます。
-make が使える環境ではこちらが利用可能です
+### Makefile 経由
 
+同等の処理をまとめた Makefile があります。
 
 ```bash
-# 構築対象 preset設定（未定義時はOSで自動判定）
-export PRESET=x86-windows
-# ビルドタイプ指定（未定義時は Release）
+# 対象プリセット (未指定時は OS から自動判定)
+export PRESET=x64-windows
+# ビルドタイプ (未指定時は Release)
 export BUILD_TYPE=Release
-#export BUILD_TYPE=Debug
 
-# cmake オプション指定
-# KRKRZ_USE_SJIS  デフォルトをSJIS(MBSC) にする
+# cmake オプション
 export CMAKEOPT="-DKRKRZ_USE_SJIS=ON"
 
-# cmake プロジェクト生成
-# この段階で vcpkg が処理されてライブラリが準備されます
-make prebuild
-
-# cmake でビルド
-make build 
-
-# サンプル実行
-make run
-
-# インストール処理
+make prebuild            # cmake configure (ここで vcpkg が走る)
+make build               # ビルド
+make run                 # data/ を引数にして実行
+make test                # パリティテスト (画像 SIMD / サウンド SIMD)
 INSTALL_PREFIX=install make install
-
-```	
-
-### ビルド設定
-
-処理内容詳細は Makefile と CMakeList.txt を参照して下さい。
-
-ビルド用の以下の特殊な CMake変数があります
-
-KRKRZ_VARIANT=WIN    旧来のWindows版準拠で構築します
-KRKRZ_VARIANT=SDL    SDLバージョンで作成します（デフォルト）
-KRKRZ_VARIANT=LIB    ライブラリ版KRKRZを作成します
-
-KRKRZ_VARIANT=SDL / LIB では、旧来の Windows版固有の機能が排除
-された GENERICバージョンの吉里吉里になります。
-
-GENERICバージョンあわせのプラグインをビルドする場合は、tp_stub.h を
-読み込む前に __GENERIC__ を定義しておく必要があるので注意してください。
-
-tp_stub/krkrz.cmake を使う場合は KRKRZ_VARIANT が定義されている場合は
-自動で __GENERIC__ が追加されます。
-
-※特に変数指定がない場合、tp_stub.h は __WINVER__ を定義して
-旧WIN版互換あわせでの動作になります。
-
-
-### そのほか特殊変数
-
-MASTER  
-    ビルド時に定義されているとログレベルが WARNING で固定になります（INFOログがコンソール表示されなくなります）
-
-    未定義時は、起動時ログレベルが Release 版は INFO、Debug版は DEBUG になります。
-    起動時オプション -loglevel=ERROR,WARNING,INFO,DEBUG,VERBOSE で変更可能になります
-
-KRKRZ_REPL  
-    対話型 TJS REPL 機能のビルドスイッチ。Win / Mac / Linux ではデフォルト ON、
-    それ以外 (Android, iOS) では OFF。詳細は [doc/REPL.md](doc/REPL.md) 参照。
-    機能ON の場合は起動時オプション -repl でコンソールで　REPL が起動します。
-
-ログ処理の仕組み、ファイル出力、TJS から見た API 等は
-[doc/Logging.md](doc/Logging.md) を参照してください。
-
-### テスト実行
-
-Makefile にそのままトップフォルダで実行可能なルールが定義されています。
-
-```bash
-# cmake 経由で実行
-make run
 ```
 
-WINVER で OpenGL 機能動作時は以下のファイル構成が必要になります
+### 主なビルドオプション
 
-    plugin/ プラグインフォルダ
-      libEGL.dll        OpenGL の egl用DLL
-      libGLESv2.dll     OpenGL の GLES2用DLL
-    plugin64/ プラグインフォルダ 64bit
-      libEGL.dll        OpenGL の egl用DLL
-      libGLESv2.dll     OpenGL の GLES2用DLL
+`-D<名前>=<値>` または `CMAKEOPT` で指定します。全ての定義は
+[PreprocessorDefinitions.md](PreprocessorDefinitions.md) を参照してください。
 
-SDL 版は OS側で OpenGLES 実装が存在する場合はそれが使われますが
-無い場合は同様の DLL が必要になります
+| オプション | 既定 | 内容 |
+|---|---|---|
+| `KRKRZ_VARIANT` | `SDL` | ビルドバリアント (上表) |
+| `KRKRZ_USE_SJIS` | OFF | 既定のテキスト読み込みを SJIS (MBCS) にする |
+| `KRKRZ_USE_OPENGL` | ON | OpenGL ES 描画機構 (Canvas/Texture/Shader 等) |
+| `KRKRZ_USE_ELEMENTS` | ON | Elements ダイアログ UI (SDL/WIN)。OFF で `Dialog` クラスごと消える |
+| `KRKRZ_USE_GLYPHWARE` | ON | 統一フォントエンジン glyphware |
+| `KRKRZ_USE_MOVIE` | ON | 動画再生 (external/movie-player) |
+| `KRKRZ_REPL` | デスクトップ ON | 対話型 TJS REPL (`-repl` / `-replfile`) |
+| `KRKRZ_REPL_WEB` | `KRKRZ_REPL` に追従 | ブラウザ REPL / WebServer クラス (`-replweb`) |
+| `KRKRZ_ENABLE_DAP` | ON | VSCode デバッグアダプタ (DAP) サーバ |
+| `KRKRZ_BUILD_TESTS` | ON | パリティテスト (画像 / サウンド SIMD) のビルド |
+| `KRKRZ_DRAW_STATS` | OFF | DrawThreadPool 利用率の計測 ([DrawStats.md](doc/DrawStats.md)) |
+| `KRKRZ_RESOURCE_DIR` | `resource/` | 埋め込みリソースフォルダ (案件用に差し替え可) |
+| `KRKRZ_VERSION_BUILD` | `0` | バージョン 4 桁目 ([Versioning.md](doc/Versioning.md)) |
+| `MASTER` | OFF | ログレベルを WARNING 固定にする (INFO を出さない) |
 
-### SIMDパリティテスト
+`MASTER` 未定義時の起動時ログレベルは Release=INFO / Debug=DEBUG で、起動オプション
+`-loglevel=ERROR,WARNING,INFO,DEBUG,VERBOSE` で変更できます。詳細は
+[Logging.md](doc/Logging.md)。
 
-`tests/simd_parity_test.cpp` に画像処理SIMD（SSE2 / AVX2 / NEON）と
-C リファレンス実装の出力を byte 単位で比較する CTest テスト
-（`krkrz_simd_parity_test` / テスト名 `simd_parity`）が用意されています。
+---
 
-このテストは `tvpgl.c` / `blend_function.cpp` / 各 `*_sse2.cpp` /
-`*_avx2.cpp` / `*_neon.cpp` / `detect_cpu.cpp` 等 SIMD コアのみを直接
-リンクするスタンドアロンターゲットで、SDL3 / OpenGL / vcpkg のランタイム
-依存はありません。`KRKRZ_BUILD_TESTS=ON`（デフォルト）かつターゲットアーキ
-テクチャが x86 系または ARM 系のときに有効化されます。
+## 実行
 
 ```bash
-# Makefile 経由 (prebuild 済みであること)
-make test
+make run                 # data/ を引数に起動
+DATAPATH=path/to/game make run
+```
 
-# cmake / ctest 直接実行
-cmake --build $(BUILD_PATH) --config Release --target krkrz_simd_parity_test
-ctest --test-dir $(BUILD_PATH) -C Release -R simd_parity --output-on-failure
+`data/` にはエンジン機能を確認するための**コアデモ**が入っています。
+`data/gallery` はメニュー + 21 デモを 1 プロセスで切り替えるギャラリーで、
+`data/` 直下を指定するとプラグイン横断デモも含むランチャが起動します。
+
+各デモは `-demotest` を付けるとヘッドレスで数十フレーム動かして
+`@demotest:` 行を出力し終了するので、CI 的な起動確認に使えます。
+
+```bash
+krkrz64.exe <repo>/data/gallery -demotest
+```
+
+WINVER で OpenGL 機能を使う場合、実行ファイルの隣に ANGLE の DLL が必要です。
+
+```
+plugin/     libEGL.dll / libGLESv2.dll        (32bit)
+plugin64/   libEGL.dll / libGLESv2.dll        (64bit)
+```
+
+SDL ビルドは OS 側に OpenGL ES 実装があればそれを使い、無い場合は同じ DLL を
+参照します (`make run` は Windows では自動でコピーします)。
+
+---
+
+## テスト
+
+`make test` で CTest のパリティテスト 2 種 (画像 SIMD / サウンド SIMD) が走ります。
+
+### 画像 SIMD パリティテスト
+
+`tests/simd_parity_test.cpp` は画像処理 SIMD (SSE2 / AVX2 / NEON) と C リファレンス
+実装の出力を byte 単位で比較する CTest テストです
+(`krkrz_simd_parity_test` / テスト名 `simd_parity`)。
+
+`tvpgl.c` / `blend_function.cpp` / 各 `*_sse2.cpp` / `*_avx2.cpp` / `*_neon.cpp` /
+`detect_cpu.cpp` 等の SIMD コアだけを直接リンクするスタンドアロンターゲットなので、
+SDL3 / OpenGL / vcpkg のランタイム依存はありません。`KRKRZ_BUILD_TESTS=ON` (既定) かつ
+ターゲットが x86 系または ARM 系のときに有効です。
+
+```bash
+make test          # 画像 + サウンドの両方 (-R parity)
+# または個別に
+ctest --test-dir build/<preset> -C Release -R simd_parity --output-on-failure
 ```
 
 期待される出力:
 
-- x86 (Windows / Linux / macOS): `[SSE2 vs C reference]` と
-  `[AVX2 vs C reference]` の 2 セクションが走り、それぞれ全項目 pass。
-- ARM / ARM64 (Linux / Android): `[NEON vs C reference]` セクションが走る。
+- x86: `[SSE2 vs C reference]` と `[AVX2 vs C reference]` の 2 セクションが全項目 pass
+- ARM / ARM64: `[NEON vs C reference]` セクション
 
-PsBlend ファミリは SSE2 側が 7bit 量子化のため harness 側で
-`tol_alpha=-1, tol_rgb=2`（ColorDodge5 のみ `tol_rgb=8`）の tolerance
-policy が適用されます。それ以外は byte-exact 比較です。
+PsBlend ファミリのみ SSE2 側が 7bit 量子化のため
+`tol_alpha=-1, tol_rgb=2` (ColorDodge5 のみ `tol_rgb=8`) の tolerance が適用されます。
+それ以外は byte-exact 比較です。**新しい不一致は新規バグか意図的な参照変更のどちらか**で、
+「既知のノイズ」ではありません。
+
+### サウンド SIMD パリティテスト
+
+`tests/sound_parity_test.cpp` は `common/sound/` の SSE 実装 (Ooura Real DFT /
+窓関数の deinterleave・interleave 等) を C リファレンスと比較します
+(`krkrz_sound_parity_test` / テスト名 `sound_parity`)。float 演算の丸め差が
+避けられないため、byte-exact ではなく相対誤差 + 絶対誤差の複合トレランスで
+判定します。こちらも SDL3 / 描画 / 音響デバイスに依存しません。
 
 ### DAP スモークテスト
 
-`tests/dap_smoke.py` は krkrz の DAP サーバ動作を最小確認する Python
-スクリプトです。`-dap=<port>` で krkrz を起動し、TCP 経由で initialize /
-attach / evaluate / scopes / variables / step 系 / disconnect の往復が
-正常応答することを VSCode 拡張なしで検証します。
-
 ```bash
-python tests/dap_smoke.py build/x64-windows-sdl/Release/krkrz64.exe data
+python tests/dap_smoke.py build/x64-windows/Release/krkrz64.exe data
 ```
 
-最終行に `[smoke] PASS: all phases verified` が出れば OK。
+`-dap=<port>` で起動し、initialize / attach / evaluate / scopes / variables /
+step 系 / disconnect の往復を VSCode 拡張なしで検証します。最終行に
+`[smoke] PASS: all phases verified` が出れば OK。
 
-## デバッグ実行
+---
 
-### VisualStudio でのデバッグ
+## デバッグ
 
-以下の手順でソースデバッグできます
+### Visual Studio (C++)
 
-- Visual Studio を起動して、プロジェクトなしの状態のウインドウに実行ファイルをドロップする
-- デバッグのプロパティの作業フォルダにプロジェクトフォルダを指定（プラグインフォルダの参照先になるため）
-- デバッグのプロパティの引数に data フォルダの場所をフルパスで指定（現行仕様がexe相対もしくは絶対パス）
+- プロジェクトなしの状態の VS ウィンドウに実行ファイルをドロップ
+- デバッグのプロパティで作業フォルダにプロジェクトフォルダを指定
+  (プラグインフォルダの参照先になるため)
+- 引数に data フォルダをフルパスで指定 (exe 相対か絶対パスのみ対応)
 
-### VSCode でのデバッグ (C++ ネイティブ)
-
-C++ レベルでデバッグする場合は次のような launch.json を準備します。
-program 部分に生成される実行ファイルのパス名を直接記載します。
-args で処理対象フォルダを指定できます（フルパスになるように記載して下さい）
-
-launch.json
+### VSCode (C++ ネイティブ)
 
 ```json
 {
-    // IntelliSense を使用して利用可能な属性を学べます。
-    // 既存の属性の説明をホバーして表示します。
-    // 詳細情報は次を確認してください: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
         {
@@ -245,7 +260,7 @@ launch.json
             "program": "build/x86-windows/Debug/krkrz.exe",
             "args": ["${workspaceFolder}/data"],
             "stopAtEntry": false,
-            "console":"externalTerminal",
+            "console": "externalTerminal",
             "cwd": "${workspaceFolder}",
             "environment": []
         }
@@ -253,62 +268,152 @@ launch.json
 }
 ```
 
-### VSCode + DAP による TJS スクリプトデバッグ
+### VSCode + DAP (TJS スクリプトデバッグ)
 
-吉里吉里Z は Debug Adapter Protocol (DAP) サーバを内蔵しており、
-専用の VSCode 拡張 [krkrz-vscode](https://github.com/wamsoft/krkrz-vscode)
-を使うと TJS2 スクリプトを通常のプログラミング言語と同じ感覚でデバッグ
-できます (BP / ステップ実行 / コールスタック / 変数 inspect / 条件付き BP /
-log point / Watch 式評価 など)。
-
-起動例:
+DAP サーバを内蔵しているので、拡張
+[krkrz-vscode](https://github.com/wamsoft/krkrz-vscode) から TJS2 を通常の言語と
+同じ感覚でデバッグできます (BP / ステップ / コールスタック / 変数 inspect /
+条件付き BP / log point / Watch)。
 
 ```bash
 krkrz64.exe -dap=6635 ${workspaceFolder}/data
 ```
 
-VSCode 側で `krkrz` 拡張をインストールし、`launch.json` に attach 設定を
-追加するだけで接続できます。
+`KRKRZ_ENABLE_DAP=OFF` にすると DAP 関連コードは全て `#ifdef` で除外されます。
+TJS2 / KAG (.ks) のシンタックスハイライトも同拡張に同梱されています
+(KAG 行への BP は仕様上不可。`[iscript]...[endscript]` 内の TJS なら設置可能)。
 
-ビルド時オプション `KRKRZ_ENABLE_DAP` (デフォルト ON) を OFF にすると
-DAP 関連コードは全て `#ifdef` で除外されます。
+### REPL / エージェント駆動
 
-詳細な使い方・既知制限・拡張のビルド方法は [krkrz-vscode の README](https://github.com/wamsoft/krkrz-vscode) を参照してください。
+対話型 TJS シェルを内蔵しています。詳細は [REPL.md](doc/REPL.md)。
 
-TJS2 / KAG (.ks) のシンタックスハイライトも同拡張に同梱されています。
-KAG (.ks) 行への BP は仕様上対応不可ですが、`[iscript]...[endscript]` 内の
-TJS なら BP 設置可能です。
+```bash
+krkrz64.exe data -repl              # コンソール REPL
+krkrz64.exe data -replfile=<dir>    # ファイルチャネル (外部ツール/エージェント向け)
+krkrz64.exe data -replweb=8899      # ブラウザ REPL (HTTP + SSE)
+```
 
-# その他情報
+`Agent` クラス (入力注入 / 画面キャプチャ / ダイアログ操作) と併せると、
+実画面を見ながらの自動検証ができます。
 
-自動生成ファイル
-吉里吉里Z本体にはいくつかの自動生成ファイルが存在します。
-自動生成ファイルは直接編集せず、生成元のファイルを編集します。
-生成には bat ファイルと、perl(構文解析器 bison 経路 / tvpgl 生成)および python(tp_stub 生成 / メッセージ生成)が使われます。**perl と python の両方が必要です**(tp_stub とメッセージ定義系は 2026-08 に Perl+Excel から Python 標準ライブラリのみへ移行済み。bison 経路と tvpgl は引き続き perl)。
-各生成ファイルを左に ':' 以降に生成元ファイルを列挙します。
+---
 
-tjs2/syntax/compile.bat で以下のファイルが生成されます。
+## バージョン番号
 
-tjs.tab.cpp/tjs.tab.hpp : tjs.y
-tjsdate.tab.cpp/tjsdate.tab.hpp : tjsdate.y
-tjspp.tab.cpp/tjspp.tab.hpp : tjspp.y
-tjsDateWordMap.cc : gen_wordtable.bat
+`CMakeLists.txt` の `PROJECT_VERSION` が単一の供給元で、そこから
+`krkrz_version.h` (C++ 側) と `krkrz_version.rc` (Windows の VERSIONINFO) が
+生成されます。番号を上げるときはこの 1 行だけを書き換えます。
 
-これらのファイルの生成には bison が必要です。
-bison には libiconv2.dll libintl3.dll regex2.dll が必要なので一緒にインストールする必要があります。
-http://gnuwin32.sourceforge.net/packages/bison.htm
-http://gnuwin32.sourceforge.net/packages/libintl.htm
-http://gnuwin32.sourceforge.net/packages/libiconv.htm
-http://gnuwin32.sourceforge.net/packages/regex.htm
+上げ方の基準・製品名の組み立て・確認方法は [Versioning.md](doc/Versioning.md)。
 
-visual/glgen/gengl.bat で以下のファイルが生成されます。
-tvpgl.c/tvpgl.h : maketab.c/tvpps.c
+---
 
-common/base/makestub.bat (中身は python gen_tpstub.py) で以下のファイルが生成されます。
-gen_tpstub.py は Python 標準ライブラリ(zlib/hashlib)のみで動作し、Perl (makestub.pl + Compress::Zlib + Digest::MD5) は不要になりました。出力は旧 Perl 版とバイト単位で一致します。
-FuncStubs.cpp/FuncStubs.h : gen_tpstub.py 内で指定されたヘッダーファイル内の TJS_EXP_FUNC_DEF/TVP_GL_FUNC_PTR_EXTERN_DECL マクロおよび TJS_*_METHOD_DEF* マクロで記述された関数
-tp_stub.cpp/tp_stub.h : 同上 (生成後は plugins 側 tp_stub サブモジュールへ従来どおりコピーする)
+## 自動生成ファイル
 
-common/msg/text/gen_messages.py で以下のメッセージ定義系ファイルが生成されます(Python 標準ライブラリのみ。Excel/Win32::OLE/Perl 不要)。源=CSV の common/msg/text/messages.csv を編集し `python gen_messages.py`。詳細は common/msg/text/README.md。
-tjsErrorInc.h / MsgIntfInc.h / MsgImpl.h / resource/messages{,-en,-chs}.json / win32/vcproj/string_table_*.rc + string_table_resource.h / generic・win32 の MsgLoad.cpp : messages.csv
+いくつかのファイルはコミット済みですが**自動生成物**です。直接編集せず、生成元を
+編集して再生成してください。生成には **python** と、一部で **perl** が必要です。
 
+### bison 経路 (perl + bison)
+
+`common/tjs2/syntax/compile.bat` で生成:
+
+| 生成物 | 生成元 |
+|---|---|
+| `tjs.tab.cpp` / `tjs.tab.hpp` | `tjs.y` |
+| `tjsdate.tab.cpp` / `tjsdate.tab.hpp` | `tjsdate.y` |
+| `tjspp.tab.cpp` / `tjspp.tab.hpp` | `tjspp.y` |
+| `tjsDateWordMap.cc` | `gen_wordtable.bat` |
+
+bison には `libiconv2.dll` / `libintl3.dll` / `regex2.dll` が必要です。
+
+- http://gnuwin32.sourceforge.net/packages/bison.htm
+- http://gnuwin32.sourceforge.net/packages/libintl.htm
+- http://gnuwin32.sourceforge.net/packages/libiconv.htm
+- http://gnuwin32.sourceforge.net/packages/regex.htm
+
+### tvpgl (perl)
+
+`common/visual/glgen/gengl.bat` で `tvpgl.c` / `tvpgl.h` を `maketab.c` / `tvpps.c`
+から生成します。
+
+### tp_stub (python のみ)
+
+`common/base/makestub.bat` (中身は `python gen_tpstub.py`) で生成します。
+Python 標準ライブラリ (zlib / hashlib) のみで動作し、旧 Perl 版 (`makestub.pl` +
+Compress::Zlib + Digest::MD5) は不要です。出力は旧版とバイト単位で一致します。
+
+| 生成物 | 生成元 |
+|---|---|
+| `FuncStubs.cpp` / `FuncStubs.h` | 各ヘッダの `TJS_EXP_FUNC_DEF` / `TVP_GL_FUNC_PTR_EXTERN_DECL` / `TJS_*_METHOD_DEF*` マクロ |
+| `tp_stub.cpp` / `tp_stub.h` | 同上 |
+
+生成後、`tp_stub.{h,cpp}` は従来どおり plugins 側の tp_stub サブモジュールへコピーします。
+
+### メッセージ定義 (python のみ)
+
+`common/msg/text/gen_messages.py` で生成します。源は CSV
+(`common/msg/text/messages.csv`) で、これを編集して `python gen_messages.py` を実行
+します。詳細は `common/msg/text/README.md`。
+
+生成物: `tjsErrorInc.h` / `MsgIntfInc.h` / `MsgImpl.h` /
+`resource/messages{,-en,-chs}.json` / `win32/vcproj/string_table_*.rc` +
+`string_table_resource.h` / generic・win32 の `MsgLoad.cpp`
+
+### バージョン (CMake)
+
+`cmake/krkrz_version.h.in` / `cmake/krkrz_version.rc.in` から
+`${CMAKE_BINARY_DIR}/krkrz_version.{h,rc}` が生成されます (上述)。
+
+---
+
+## ドキュメント索引 (`doc/`)
+
+### 描画
+
+| ドキュメント | 内容 |
+|---|---|
+| [ScreenTransfer.md](doc/ScreenTransfer.md) | 合成フレーム → GPU 転送のコスト。計測 (`System.renderStats`) と数値の読み方 |
+| [D3D11Migration.md](doc/D3D11Migration.md) | WINVER の D3D9 → D3D11 移行と、その後の追補 (vblank / 差分転送) |
+| [GLCompositor.md](doc/GLCompositor.md) | 裏 GLES 合成をレイヤへ書き戻す機構 |
+| [CanvasEffect.md](doc/CanvasEffect.md) / [CanvasTransition.md](doc/CanvasTransition.md) | Canvas のポストエフェクトとトランジション |
+| [Viewport.md](doc/Viewport.md) | ゲーム画面の表示画角制御 |
+| [DrawStats.md](doc/DrawStats.md) | DrawThreadPool 利用率の計測 |
+| [OpaqueExcludeNotPropagating.md](doc/OpaqueExcludeNotPropagating.md) | 不透明領域除外が伝播しない件 |
+
+### UI / 入力
+
+| ドキュメント | 内容 |
+|---|---|
+| [ElementsDialog.md](doc/ElementsDialog.md) | Elements ダイアログ機構 (JSON レイアウト / 入力ルーティング / overlay 描画) |
+| [ModalWindow.md](doc/ModalWindow.md) | `Window.showModal` と複数ウィンドウの落とし穴 |
+| [Gamepad.md](doc/Gamepad.md) | ゲームパッド入力 (論理インデックス / 軸 / 振動) |
+| [PadOverlay.md](doc/PadOverlay.md) | パッド状態オーバレイ |
+| [FontEngine.md](doc/FontEngine.md) | 統一フォントエンジン glyphware |
+
+### 音・動画
+
+| ドキュメント | 内容 |
+|---|---|
+| [MovieMFMigration.md](doc/MovieMFMigration.md) | 動画まわり (DirectShow 撤去 / Media Foundation / presenter) |
+| [Sound3D.md](doc/Sound3D.md) | 3D 音声まわり |
+
+### メモリ・診断
+
+| ドキュメント | 内容 |
+|---|---|
+| [MemoryDesign.md](doc/MemoryDesign.md) | アロケータ設計 (プール / タグ / サウンド用フック) |
+| [MemoryGuide.md](doc/MemoryGuide.md) | メモリ観測・調査の手引き |
+| [LeakAudit.md](doc/LeakAudit.md) | リーク監査 |
+| [TtstrDataRetention.md](doc/TtstrDataRetention.md) | `ttstr` のデータ保持に関する注意 |
+| [Logging.md](doc/Logging.md) | ログ出力の仕組みと API |
+
+### 実行・運用
+
+| ドキュメント | 内容 |
+|---|---|
+| [REPL.md](doc/REPL.md) | 対話型 TJS シェル / ファイルチャネル / ブラウザ REPL / Agent 駆動 |
+| [CommandLinePresets.md](doc/CommandLinePresets.md) | コマンドラインのプリセット |
+| [AppEvent.md](doc/AppEvent.md) | アプリイベントの送出 |
+| [LicenseSystem.md](doc/LicenseSystem.md) | ライセンス表記の収集機構 |
+| [Versioning.md](doc/Versioning.md) | バージョン番号の供給元と上げ方 |
+| [ModernizationRoadmap.md](doc/ModernizationRoadmap.md) | WINVER モダン化の計画と進捗 |

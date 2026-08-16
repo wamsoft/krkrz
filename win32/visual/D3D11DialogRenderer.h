@@ -29,6 +29,8 @@
 struct ID3D11Device;
 struct ID3D11DeviceContext;
 struct ID3D11RenderTargetView;
+struct ID3D11Texture2D;
+struct ID3D11ShaderResourceView;
 #endif
 
 //! @brief D3D11DialogRenderer がホスト DrawDevice から D3D11 リソース / DestRect を
@@ -72,23 +74,38 @@ public:
 	void GetDestRect(int & x, int & y, int & w, int & h) override;
 	std::uint32_t * AcquireBuffer(const void* layer, int w, int h) override;
 	void ReleaseBuffer(const void* layer) override;
+	void ReleaseBufferRect(const void* layer, int x, int y, int w, int h) override;
 	void PresentOverlay(const void* layer, int x, int y, int w, int h) override;
 	void ReleaseLayer(const void* layer) override;
 
 private:
 	iTVPD3D11DialogHost * _host;   //!< 借用 (所有しない)
 
-	//! @brief overlay インスタンス (layer) ごとの staging + BGRA ブリッタ。
+	//! @brief overlay インスタンス (layer) ごとの staging + GPU テクスチャ + ブリッタ。
+	//!
+	//! テクスチャは presenter 内蔵の DYNAMIC 版ではなく、ここで持つ DEFAULT 版を
+	//! 使う。DYNAMIC + Map(WRITE_DISCARD) はリソース全体を捨てる契約なので部分更新
+	//! ができず、変化が数十 px でも毎フレーム全面を転送することになるため。
+	//! DEFAULT + UpdateSubresource(box) なら矩形だけ差し替えられる。
 	struct Layer
 	{
 		std::vector<std::uint32_t> staging;
 		int w = 0;
 		int h = 0;
 		tTVPVideoPresenterD3D * presenter = nullptr;  //!< BGRA→RTV ブリッタ (所有)
+		ID3D11Texture2D * tex = nullptr;              //!< DEFAULT usage (所有)
+		ID3D11ShaderResourceView * srv = nullptr;     //!< tex の SRV (所有)
+		ID3D11Device * texDev = nullptr;              //!< tex を作ったデバイス (照合用・借用)
+		bool uploaded = false;                        //!< 一度でも全面を上げたか
 	};
 	std::map<const void*, Layer> _layers;
 
 	void DestroyLayer(Layer & layer);
+	void DestroyTexture(Layer & layer);
+	//! @brief L.tex を (dev, L.w, L.h) 用に用意する。デバイス/サイズ変化で作り直す。
+	bool EnsureTexture(Layer & L, ID3D11Device * dev);
+	//! @brief staging の矩形を tex へ転送する (w<=0 なら全面)。
+	void UploadRect(const void* layer, int x, int y, int w, int h);
 };
 
 #endif // D3D11_DIALOG_RENDERER_H

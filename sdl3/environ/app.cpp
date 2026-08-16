@@ -138,7 +138,10 @@ SDL3Application::ScreenWidth() const
 	SDL_DisplayID display = SDL_GetPrimaryDisplay();
 	if (display) {
 		SDL_Rect bounds;
-		if (SDL_GetDisplayBounds(display, &bounds) == 0) {
+		// SDL3 の SDL_GetDisplayBounds は成功で true を返す (SDL2 の
+		// 「成功で 0」から変わっている)。== 0 で見ると成功時に 0 を返して
+		// しまい、System.screenWidth / screenHeight が常に 0 になる。
+		if (SDL_GetDisplayBounds(display, &bounds)) {
 			return bounds.w;
 		}
 	}
@@ -151,7 +154,10 @@ SDL3Application::ScreenHeight() const
 	SDL_DisplayID display = SDL_GetPrimaryDisplay();
 	if (display) {
 		SDL_Rect bounds;
-		if (SDL_GetDisplayBounds(display, &bounds) == 0) {
+		// SDL3 の SDL_GetDisplayBounds は成功で true を返す (SDL2 の
+		// 「成功で 0」から変わっている)。== 0 で見ると成功時に 0 を返して
+		// しまい、System.screenWidth / screenHeight が常に 0 になる。
+		if (SDL_GetDisplayBounds(display, &bounds)) {
 			return bounds.h;
 		}
 	}
@@ -667,6 +673,34 @@ SDL3Application::GetSystemFontList(std::vector<tjs_string>& fontFiles)
 {
 }
 
+// モーダルウィンドウ表示中に、モーダル以外のウィンドウへ配ってはいけない
+// (= ユーザ操作由来の) イベントかどうか。 リサイズ/再描画/フォーカス等の
+// システム系はモーダル中も処理させる必要があるので通す。
+static bool IsUserInputEvent(const SDL_Event& event)
+{
+	switch (event.type) {
+	case SDL_EVENT_KEY_DOWN:
+	case SDL_EVENT_KEY_UP:
+	case SDL_EVENT_TEXT_INPUT:
+	case SDL_EVENT_TEXT_EDITING:
+	case SDL_EVENT_MOUSE_MOTION:
+	case SDL_EVENT_MOUSE_BUTTON_DOWN:
+	case SDL_EVENT_MOUSE_BUTTON_UP:
+	case SDL_EVENT_MOUSE_WHEEL:
+	case SDL_EVENT_FINGER_DOWN:
+	case SDL_EVENT_FINGER_UP:
+	case SDL_EVENT_FINGER_MOTION:
+	case SDL_EVENT_DROP_BEGIN:
+	case SDL_EVENT_DROP_FILE:
+	case SDL_EVENT_DROP_TEXT:
+	case SDL_EVENT_DROP_COMPLETE:
+	case SDL_EVENT_WINDOW_CLOSE_REQUESTED: // モーダル中は他ウィンドウを閉じさせない
+		return true;
+	default:
+		return false;
+	}
+}
+
 // SDL3のイベント処理関数
 // この関数はアプリケーションのPollEventSystem内で呼び出される
 SDL_AppResult
@@ -683,10 +717,17 @@ SDL3Application::AppEvent(const SDL_Event& event)
 
 	SDL_Window* window = SDL_GetWindowFromID(event.window.windowID);
 	if (!window) return SDL_APP_CONTINUE;
-	
+
 	SDL3WindowForm* form = (SDL3WindowForm*)SDL_GetPointerProperty(SDL_GetWindowProperties(window), "form", nullptr);
 	if (form) {
-		form->AppEvent(event); // イベントを無視			
+		// モーダルウィンドウ表示中は、そのウィンドウ以外へのユーザ入力を捨てる。
+		// SDL_SetWindowModal が効く環境では OS 側でも弾かれるが、未対応環境
+		// (と、既にキューに積まれていたイベント) のためにここでも排他する。
+		TTVPWindowForm* modal = TTVPWindowForm::GetModalWindowForm();
+		if (modal && modal != form && IsUserInputEvent(event)) {
+			return SDL_APP_CONTINUE;
+		}
+		form->AppEvent(event); // イベントを無視
 	}
 	return SDL_APP_CONTINUE;
 }

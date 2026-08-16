@@ -900,6 +900,18 @@ int tTVPWindow::ShowModal() {
 			modal_result_ = 0;
 			while( modal_result_ == 0 ) {
 				Application->HandleMessage();
+				// モーダルループ中は TJS イベント配送を明示的に回す。
+				//   通常のメインループでは、メッセージキューが空になったときの
+				//   HandleIdle → tTVPSystemControl::ApplicationIdle と、 50ms 周期の
+				//   SystemWatchTimer の二つが TVPDeliverAllEvents() を駆動している。
+				//   しかしモーダル中は後者が止まる: このループがタイマースレッドの
+				//   wake ハンドラ内から始まった場合 (KAG の onCloseQuery → askYesNo
+				//   → showModal 等)、 tTVPTimerThread::HandleWake が戻らないため
+				//   PendingEventsAvailable が下りず、以後タイマー由来のイベント配送が
+				//   一切行われない。 メッセージが途切れずアイドルにならない状況が
+				//   重なるとモーダルウィンドウが入力に反応しなくなるので、ここで
+				//   明示的に配送しておく。
+				if( TVPSystemControl ) TVPSystemControl->ApplicationIdle();
 				if( Application->IsTarminate() ) {
 					modal_result_ = mrCancel;
 				} else if( modal_result_ != 0 ) {

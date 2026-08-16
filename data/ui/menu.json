@@ -25,7 +25,7 @@
         "child": {
             "type": "vtile",
             "children": [
-                { "type": "hspacer", "width": 380 },
+                { "type": "vsize", "height": 0, "child": { "type": "hspacer", "width": 380 } },
 
                 { "type": "align_center",
                   "child": { "type": "label", "text": "メインメニュー", "size": 1.4 } },

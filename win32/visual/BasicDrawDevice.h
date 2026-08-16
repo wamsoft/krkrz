@@ -55,6 +55,11 @@ class tTVPBasicDrawDevice : public tTVPDrawDevice, public iTVPVideoPresenterHost
 	tjs_uint TextureWidth;	//!< テクスチャ(=元画像)の横幅
 	tjs_uint TextureHeight;	//!< テクスチャ(=元画像)の縦幅
 
+	//-- CPU シャドウ (TextureBuffer) のうち、GPU テクスチャへまだ反映していない領域。
+	//   NotifyBitmapCompleted で積み、DrawCompositedFrame で転送してクリアする。
+	std::vector<tTVPRect> DirtyRects;
+	bool TextureDirtyFull;	//!< テクスチャ再生成直後など、全面転送が要る状態
+
 	UINT	SwapWidth;		//!< 現 swapchain 幅 (=クライアント幅)
 	UINT	SwapHeight;		//!< 現 swapchain 高さ (=クライアント高さ)
 
@@ -92,6 +97,12 @@ private:
 
 	bool CreateTexture();
 	void DestroyTexture();
+
+	//-- CPU シャドウの未転送領域 (ダーティ矩形) の記録と転送。
+	//   これ以上溜まったら union へ畳む閾値。
+	static const size_t TVP_DRAWDEVICE_MAX_DIRTY_RECTS = 64;
+	void AddDirtyRect( const tTVPRect & rect );
+	void UploadDirtyRects();
 
 	//-- 合成済みレイヤフレーム (TextureBuffer) をバックバッファ RTV へ描画する。
 	//   EndBitmapCompletion (レイヤ更新時) と Show() (動画 present 時) の双方から呼ぶ。

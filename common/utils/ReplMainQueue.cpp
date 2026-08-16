@@ -3,7 +3,8 @@
 //---------------------------------------------------------------------------
 #include "tjsCommHead.h"
 #include "ReplMainQueue.h"
-#include "ScriptMgnIntf.h"   // TVPExecuteExpression
+#include "ScriptMgnIntf.h"   // TVPExecuteExpression / TVPGetScriptEngine
+#include "tjs.h"             // tTJS::CompileScript / iTJSBinaryStream
 
 #include <atomic>
 #include <condition_variable>
@@ -108,6 +109,33 @@ bool SubmitTask(const std::function<void()>& fn)
 
 namespace { // Drain 下請け
 
+// tTJS::CompileScript の出力を捨てるだけの null ストリーム (パース判定用)。
+class tNullBinaryStream : public iTJSBinaryStream {
+public:
+	tjs_uint64 TJS_INTF_METHOD Seek(tjs_int64 offset, tjs_int whence) override { return 0; }
+	tjs_uint TJS_INTF_METHOD Read(void* buffer, tjs_uint read_size) override { return 0; }
+	tjs_uint TJS_INTF_METHOD Write(const void* buffer, tjs_uint write_size) override { return write_size; }
+	void TJS_INTF_METHOD SetEndOfStorage() override {}
+	tjs_uint64 TJS_INTF_METHOD GetSize() override { return 0; }
+	void TJS_INTF_METHOD Destruct() override {}   // スタック上で使うため何もしない
+};
+
+// script が「式」としてパース可能かを、実行せずにコンパイルだけで判定する。
+bool ParsesAsExpression(const ttstr& script)
+{
+	tTJS* engine = TVPGetScriptEngine();
+	if (!engine) return true;   // 判定不能なら従来どおり式として扱う
+	tNullBinaryStream sink;
+	try {
+		engine->CompileScript(script.c_str(), &sink,
+		                      true /*isresultneeded*/, false /*outputdebug*/,
+		                      true /*isexpression*/);
+		return true;
+	} catch (...) {
+		return false;
+	}
+}
+
 // タスクを予算内で処理 (script slot の後に呼ばれる)。
 void DrainTasks()
 {
@@ -147,16 +175,30 @@ void Drain()
 	tTJSVariant result;
 	ttstr error;
 	bool ok = false;
-	try {
-		// まず式として評価 (結果を表示できる)。
-		TVPExecuteExpression(script, &result);
-		ok = true;
-	} catch (...) {
-		// 式として評価できない場合は文 (statement) として実行する。
-		// for / if / while / var / function 宣言や複数文をまとめて実行できる。
-		// (式評価が実行時例外だった場合は再実行になるが REPL 用途では許容)
+	// 「式としてパース可能か」を実行せずに事前判定してから、式 or 文の
+	// どちらか一方だけを実行する。以前は「式として評価 → 例外なら文として
+	// 再実行」というフォールバックだったため、
+	//   - 式の実行時例外 (メンバ無し/引数不正等) でも文として再パースされ、
+	//     末尾 ';' 無しの入力が文法エラー扱いになり実際の例外メッセージが
+	//     「文法エラーです(syntax error)」に化ける
+	//   - 副作用のある式が途中まで実行された後もう一度実行される
+	// という問題があった。
+	if (ParsesAsExpression(script)) {
 		try {
-			result.Clear();
+			// 式として評価 (結果を表示できる)。実行時例外はそのまま報告する。
+			TVPExecuteExpression(script, &result);
+			ok = true;
+		} catch (eTJSScriptError& e) {
+			error = ttstr(TJS_W("Error: ")) + e.GetMessage();
+		} catch (eTJS& e) {
+			error = ttstr(TJS_W("Error: ")) + e.GetMessage();
+		} catch (...) {
+			error = ttstr(TJS_W("Unknown error occurred"));
+		}
+	} else {
+		// 式でない入力は文 (statement) として実行する。
+		// for / if / while / var / function 宣言や複数文をまとめて実行できる。
+		try {
 			TVPExecuteScript(script, &result);
 			ok = true;
 		} catch (eTJSScriptError& e) {

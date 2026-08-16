@@ -38,6 +38,9 @@
 #include "FontSystem.h"
 #include "FreeType.h"
 #include "FreeTypeFontRasterizer.h"
+#ifdef KRKRZ_USE_GLYPHWARE
+#include "GlyphwareFontRasterizer.h"
+#endif
 #ifdef __WINVER__
 #include "TVPSysFont.h"
 #include "GDIFontRasterizer.h"
@@ -66,6 +69,9 @@ enum {
 #ifdef __WINVER__
 	FONT_RASTER_GDI,
 #endif
+#ifdef KRKRZ_USE_GLYPHWARE
+	FONT_RASTER_GLYPHWARE,
+#endif
 	FONT_RASTER_EOT
 };
 static FontRasterizer* TVPFontRasterizers[FONT_RASTER_EOT];
@@ -83,8 +89,16 @@ void TVPInializeFontRasterizers() {
 #ifdef __WINVER__
 		TVPFontRasterizers[FONT_RASTER_GDI] = new GDIFontRasterizer();
 #endif
+#ifdef KRKRZ_USE_GLYPHWARE
+		TVPFontRasterizers[FONT_RASTER_GLYPHWARE] = new GlyphwareFontRasterizer();
+#endif
 
 		TVPFontSystem = new FontSystem();
+		// FontSystem 生成前 (コンストラクタ内の既定フォント選択等) にロードされた
+		// システム/同梱フォントの face 名→storage を後追い記録する
+		// (glyphware 等の名前解決用。SDL/generic の同梱フォントが対象)
+		extern void TVPFlushSystemFontStorageRecords();
+		TVPFlushSystemFontStorageRecords();
 		TVPFontRasterizersInit = true;
 	}
 }

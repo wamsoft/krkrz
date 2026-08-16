@@ -1311,7 +1311,13 @@ struct sse2_screen_blend_o_functor {
 	const __m128i mask_;
 	const __m128i zero_;
 	const __m128i opa_;
-	inline sse2_screen_blend_o_functor( tjs_int opa ) : zero_(_mm_setzero_si128()), opa_(_mm_set1_epi16((short)opa)), mask_(_mm_set1_epi32(0xffffffff)) {}
+	const __m128i alphamask_;
+	const __m128i colormask_;
+	inline sse2_screen_blend_o_functor( tjs_int opa )
+		: zero_(_mm_setzero_si128()), opa_(_mm_set1_epi16((short)opa)),
+		  mask_(_mm_set1_epi32(0xffffffff)),
+		  alphamask_(_mm_set1_epi32(0xff000000)),
+		  colormask_(_mm_set1_epi32(0x00ffffff)) {}
 	inline tjs_uint32 operator()( tjs_uint32 d, tjs_uint32 s ) const {
 		__m128i md = _mm_cvtsi32_si128( d );
 		md = _mm_xor_si128( md, mask_ );		// not dest
@@ -1325,7 +1331,8 @@ struct sse2_screen_blend_o_functor {
 		md = _mm_srli_epi16( md, 8 );	// shift
 		md = _mm_packus_epi16( md, zero_ );// pack
 		md = _mm_xor_si128( md, mask_ );	// not result
-		return _mm_cvtsi128_si32( md );
+		// alpha は C リファレンス (~tmp、alpha レーン=0 の反転) と同じ 0xff 固定
+		return (_mm_cvtsi128_si32( md ) & 0x00ffffff) | 0xff000000;
 	}
 	inline __m128i operator()( __m128i md1, __m128i ms1 ) const {
 		md1 = _mm_xor_si128( md1, mask_ );	// not dest
@@ -1346,7 +1353,9 @@ struct sse2_screen_blend_o_functor {
 		md1 = _mm_srli_epi16( md1, 8 );		// shift
 		md2 = _mm_srli_epi16( md2, 8 );		// shift
 		md1 = _mm_packus_epi16( md1, md2 );	// pack
-		return _mm_xor_si128( md1, mask_ );	// not result
+		md1 = _mm_xor_si128( md1, mask_ );	// not result
+		// alpha は C リファレンスと同じ 0xff 固定 (plain 版と同様)
+		return _mm_or_si128( _mm_and_si128( md1, colormask_ ), alphamask_ );
 	}
 };
 struct sse2_screen_blend_hda_o_functor {

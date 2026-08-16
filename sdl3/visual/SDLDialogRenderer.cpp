@@ -114,6 +114,28 @@ void tTVPSDLDialogRenderer::ReleaseBuffer(const void* layer)
 	}
 }
 
+void tTVPSDLDialogRenderer::ReleaseBufferRect(const void* layer, int x, int y, int w, int h)
+{
+	auto it = _layers.find(layer);
+	if (it == _layers.end()) return;
+	Layer& L = it->second;
+	if (!L.texture || L.staging.empty()) return;
+	// staging 範囲へクランプ (呼出側の外側丸めで 1px はみ出ることがある)
+	if (x < 0) { w += x; x = 0; }
+	if (y < 0) { h += y; y = 0; }
+	if (x + w > L.w) w = L.w - x;
+	if (y + h > L.h) h = L.h - y;
+	if (w <= 0 || h <= 0) return;
+	// staging は全面を保持したままなので、 pitch = L.w*4 のまま先頭を
+	// (x, y) へずらして部分矩形だけを転送する
+	SDL_Rect rect{ x, y, w, h };
+	const uint32_t* src = L.staging.data() + static_cast<size_t>(y) * L.w + x;
+	if (!SDL_UpdateTexture(L.texture, &rect, src, L.w * 4)) {
+		TVPAddImportantLog(ttstr(TJS_W("ElementsDialog: SDL_UpdateTexture (rect) failed: "))
+			+ ttstr(SDL_GetError()));
+	}
+}
+
 void tTVPSDLDialogRenderer::PresentOverlay(const void* layer, int x, int y, int w, int h)
 {
 	if (!_device) return;

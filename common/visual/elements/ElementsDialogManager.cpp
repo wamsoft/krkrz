@@ -38,6 +38,8 @@
 #include <elements_modal/modal.h>
 #include <elements_modal/navigator.h>   // フロー駆動 (画面遷移スタック)
 #include <elements_modal/effects.h>     // 画面切替エフェクト (fade / universal ブレンド)
+
+#include <chrono>   // renderStats 区間計測 (steady_clock)
 #include <elements/base_view.hpp>        // cycfi 中立入力型 (mouse_button / key_code / mod_*)
 #include <elements/element/gamepad.hpp>  // cycfi 中立入力型 (pad_button)
 
@@ -47,7 +49,9 @@
 #include <SDL3/SDL.h>        // SDL host: SDL_StartTextInput / SDL_HasScreenKeyboardSupport 等
 #endif
 
+#include <algorithm>         // std::remove_if (ホストホットキー解除)
 #include <cstdlib>           // std::strtol
+#include <cstring>           // std::memcpy (部分更新時の last_frame 複製)
 #include <map>
 #include <memory>
 #include <string>
@@ -58,6 +62,14 @@
 // 内部: krkrz ttstr ⇔ utf-8、 value_t → tTJSVariant 変換 + handler ブリッジ
 //---------------------------------------------------------------------------
 namespace {
+
+// renderStats 用: t0 からの経過 microsecond
+tjs_uint64 ElapsedUs(std::chrono::steady_clock::time_point t0)
+{
+	return static_cast<tjs_uint64>(
+		std::chrono::duration_cast<std::chrono::microseconds>(
+			std::chrono::steady_clock::now() - t0).count());
+}
 
 ttstr Utf8ToTtstr(const std::string& utf8)
 {
@@ -152,6 +164,103 @@ inline void HostStopTextInput()  { if (auto* w = HostMainWindow()) SDL_StopTextI
 
 #endif
 
+//---------------------------------------------------------------------------
+// 物理 (ハードウェア) キーボードが接続されているか。
+//
+//  接続されていれば OS のソフトキーボードも内蔵仮想キーボードも不要で、
+//  そのままキー / 文字イベントが届く。 判定は SDL_HasKeyboard() で、 各
+//  プラットフォームの video ドライバが SDL_AddKeyboard/SDL_RemoveKeyboard を
+//  呼んでいることが前提 (NX / PS5 は対応済み)。
+//---------------------------------------------------------------------------
+#ifdef __WINVER__
+
+inline bool HostHasPhysicalKeyboard() { return true; }
+inline const char* HostGetEnv(const char* name) { return getenv(name); }
+
+#else
+
+inline bool HostHasPhysicalKeyboard() { return SDL_HasKeyboard(); }
+inline const char* HostGetEnv(const char* name) { return SDL_getenv(name); }
+
+#endif
+
+//! デスクトップでも内蔵仮想キーボードを出す (動作確認用)。
+//!   KRKRZ_FORCE_VIRTUAL_KEYBOARD=1
+inline bool ForceVirtualKeyboard()
+{
+	static const bool forced = [] {
+		const char* v = HostGetEnv("KRKRZ_FORCE_VIRTUAL_KEYBOARD");
+		return v && *v && *v != '0';
+	}();
+	return forced;
+}
+
+//---------------------------------------------------------------------------
+// 内蔵仮想キーボードのレイアウト JSON。
+//
+//  OS のソフトキーボード (NX の swkbd アプレット / PS5 の SceImeDialog) が
+//  無い・使いたくない場面で、 Elements 自身が英数キーボードを描く。
+//  キーは押すたびに入力先ダイアログのテキスト欄へ直接流し込むため、 この
+//  画面自体は入力内容を保持しない (下の入力欄がそのまま更新される)。
+//
+//  操作: マウス / タッチ / 矢印キー + Enter / パッド (D-Pad + A=決定,
+//  B=閉じる, X=BS, Y=SPACE)。 大文字英数字のみ (v1)。
+//---------------------------------------------------------------------------
+std::string BuildVirtualKeyboardJson()
+{
+	// 1 キー分: 固定幅セル + invert_button (focus で反転 = パッド操作可視)
+	auto appendKey = [](std::string& j, const char* label, const std::string& id,
+	                    int width, bool close_on_click = false,
+	                    bool initial_focus = false) {
+		j += "{\"type\":\"hsize\",\"width\":" + std::to_string(width) +
+		     ",\"child\":{\"type\":\"invert_button\",\"text\":\"" + label +
+		     "\",\"id\":\"" + id + "\",\"size\":20";
+		if (close_on_click) j += ",\"close_on_click\":true";
+		if (initial_focus)  j += ",\"initial_focus\":true";
+		j += "}}";
+	};
+
+	std::string j;
+	j.reserve(4096);
+	j += "{";
+	j += "\"size\":[560,340],";
+	j += "\"background\":[30,32,42,235],";
+	j += "\"input\":{\"arrow_focus_nav\":true,\"dpad_mode\":\"focus\","
+	     "\"left_stick_mode\":\"focus\",\"shortcuts\":["
+	     "{\"pad\":\"x\",\"target\":\"bs\"},"
+	     "{\"pad\":\"y\",\"target\":\"spc\"}]},";
+	j += "\"content\":{\"type\":\"margin\",\"padding\":16,"
+	     "\"child\":{\"type\":\"vtile\",\"children\":[";
+
+	static const char* const rows[] = { "1234567890", "QWERTYUIOP",
+	                                    "ASDFGHJKL", "ZXCVBNM" };
+	for (size_t i = 0; i < 4; ++i) {
+		if (i) j += ",{\"type\":\"vspacer\",\"height\":6},";
+		j += "{\"type\":\"align_center\",\"child\":{\"type\":\"htile\",\"children\":[";
+		for (const char* p = rows[i]; *p; ++p) {
+			if (p != rows[i]) j += ",";
+			const char label[2] = { *p, 0 };
+			appendKey(j, label, std::string("k_") + *p, 46,
+			          false, (i == 0) && (p == rows[i]));
+		}
+		j += "]}}";
+	}
+
+	// 下段: SPACE / BS / DONE。 打鍵ごとに入力先へ確定しているので取消は無い。
+	j += ",{\"type\":\"vspacer\",\"height\":12},";
+	j += "{\"type\":\"align_center\",\"child\":{\"type\":\"htile\",\"children\":[";
+	appendKey(j, "SPACE", "spc", 140);
+	j += ",{\"type\":\"hspacer\",\"width\":8},";
+	appendKey(j, "BS", "bs", 70);
+	j += ",{\"type\":\"hspacer\",\"width\":8},";
+	appendKey(j, "DONE", "done", 110, /*close_on_click=*/true);
+	j += "]}}";
+
+	j += "]}}";   // vtile / margin
+	j += "}";
+	return j;
+}
+
 } // anonymous
 
 //---------------------------------------------------------------------------
@@ -166,6 +275,24 @@ struct tTVPElementsDialogManager::Impl
 	//   >0 = authored 論理サイズ × この倍率で描き、 present 時に拡縮する
 	//        (1.0 = 原寸レンダ→縮小表示、 2.0 = 旧 supersampling 相当)。
 	float render_scale_mode = 0.0f;
+
+	// 再ラスタライズ抑止 (Dialog.renderCache)。 true (既定) なら変化の無い
+	// フレームは overlay_session の再ラスタライズ + アップロードを省略し、
+	// レンダラ保持の前回テクスチャをそのまま提示する。
+	bool render_cache = true;
+
+	// 部分再描画 (Dialog.partialRedraw)。 true (既定) なら、 ダーティが矩形で
+	// 特定できる変化 (キャレット点滅等) はその矩形だけを再ラスタ + 部分転送
+	// する。 renderCache 有効時のみ機能 (staging に前回フレームが残る前提)。
+	bool partial_redraw = true;
+
+	// 実際にラスタライズした累計回数 (Dialog.renderCount)。 アイドル時に
+	// 増えないことの確認・負荷比較用。
+	tjs_uint64 raster_count = 0;
+
+	// 区間計測 (Dialog.renderStats)。 累積値、 ResetRenderStats で 0 クリア。
+	// steady_clock 呼出はフレームあたり数回なのでオーバーヘッドは無視できる。
+	tTVPElementsRenderStats stats;
 
 	//! @brief 1 つの overlay UI インスタンス。 z-order = instances 内の並び順
 	//!        (先頭 = 最背面、 末尾 = 最前面)。
@@ -213,6 +340,17 @@ struct tTVPElementsDialogManager::Impl
 		bool has_rect = false;
 		bool cursor_inside = false;   // mouse enter/leave 追跡
 
+		// === 再ラスタライズ抑止 (renderCache) 用の前回描画条件 ===
+		// session が dirty でなく、 かつ描画条件 (デバイス / buffer ピクセル
+		// サイズ / 配置基準 surface) が前回と一致するフレームは、 レンダラが
+		// layer キーで保持しているテクスチャを同じ位置に提示するだけで済む。
+		bool cache_valid = false;                  // 提示可能な前回描画があるか
+		iTVPDrawDevice* cache_device = nullptr;    // 前回描画したデバイス
+		int cache_buf_w = 0, cache_buf_h = 0;      // 前回の buffer ピクセルサイズ
+		int cache_sw = 0, cache_sh = 0;            // 前回の render_sw/sh (配置基準)
+		int cache_px = 0, cache_py = 0;            // 前回 PresentOverlay の引数
+		int cache_pw = 0, cache_ph = 0;
+
 		// === navigator フロー (複数画面遷移) ===
 		std::unique_ptr<elements_modal::navigator> nav;
 		std::map<std::string, std::string> screen_jsons;
@@ -250,6 +388,11 @@ struct tTVPElementsDialogManager::Impl
 	};
 
 	std::vector<std::unique_ptr<Instance>> instances;  // z-order (末尾=最前面)
+
+	// i18n の表示言語 (SetLanguage で設定)。 空 = 画面 JSON の "lang" 任せ。
+	// BeginScreen で新しい session にも流し込むので、 これ以後に開く画面も
+	// 同じ言語で立ち上がる。
+	std::string language;
 
 	// DrawDevice ごとの描画アダプタ提供口 (host)。 renderer 自体は DrawDevice が所有し、
 	// ここは host ポインタを借用保持するだけ (非所有)。 host 経由で renderer を取得する。
@@ -304,6 +447,49 @@ struct tTVPElementsDialogManager::Impl
 		return false;
 	}
 
+	// === ホストホットキー (Elements バイパス) ===
+	// 登録キーは Forward* の先頭で判定し、 一致したら「非消費 (false)」で返す
+	// = TVP_DIALOG_INTERCEPT がそのまま通常配送 (TJS onKeyDown 等) を続行する。
+	// テーブルはプロセス共有 (Window 単位ではない)。 モーダル表示中は無効
+	// (モーダル確認の Esc=cancel 等を奪わないため)。
+	struct HostHotkey
+	{
+		tjs_uint   vk = 0;
+		tjs_uint32 mods = 0;               // TVP_SS_SHIFT|ALT|CTRL のみ
+		bool       during_text_input = false;
+	};
+	std::vector<HostHotkey> host_hotkeys;
+
+	// テキスト入力ウィジェットにキャレットが立っているインスタンスがあるか
+	// (TopmostKeyboardFocus のフォールバックと同じ判定)。
+	bool AnyTextInputFocused() const
+	{
+		for (auto const& inst : instances) {
+			if (inst->active && inst->session && inst->session->focus_consumes_text())
+				return true;
+		}
+		return false;
+	}
+
+	// vk (+ down は mods 完全一致 / up は vk のみ) がホットキーとしてバイパス
+	// されるべきか。 mods 比較は SHIFT|ALT|CTRL の 3bit だけ見る (マウスボタン
+	// 状態や REPEAT を無視)。
+	bool HostHotkeyBypass(tjs_uint vk, tjs_uint32 shiftFlags, bool isUp) const
+	{
+		if (host_hotkeys.empty()) return false;
+		if (AnyModalActive()) return false;   // モーダル優先
+		const tjs_uint32 mods =
+			shiftFlags & (TVP_SS_SHIFT | TVP_SS_ALT | TVP_SS_CTRL);
+		const bool text_focus = AnyTextInputFocused();
+		for (auto const& hk : host_hotkeys) {
+			if (hk.vk != vk) continue;
+			if (!isUp && hk.mods != mods) continue;
+			if (text_focus && !hk.during_text_input) continue;
+			return true;
+		}
+		return false;
+	}
+
 	Instance* TopmostActive() const
 	{
 		for (auto it = instances.rbegin(); it != instances.rend(); ++it) {
@@ -322,6 +508,17 @@ struct tTVPElementsDialogManager::Impl
 		for (auto it = instances.rbegin(); it != instances.rend(); ++it) {
 			Instance* inst = it->get();
 			if (inst->active && (inst->modal || inst->wants_focus)) return inst;
+		}
+		// フォールバック: 非モーダル・非 grabFocus のパネルでも、クリック等で
+		// テキスト入力ウィジェット (input_box 等) が実際に focus されている間は
+		// そのインスタンスへキー/テキストを届ける (クリックでキャレットが出る
+		// のに文字が届かないギャップの解消)。非モーダルの未処理キーは従来どおり
+		// ゲームへ素通し (handled pass-through) なので、テキスト欄から focus が
+		// 外れればゲームのホットキーも復帰する。
+		for (auto it = instances.rbegin(); it != instances.rend(); ++it) {
+			Instance* inst = it->get();
+			if (inst->active && inst->session && inst->session->focus_consumes_text())
+				return inst;
 		}
 		return nullptr;
 	}
@@ -407,20 +604,129 @@ struct tTVPElementsDialogManager::Impl
 	// デスクトップ (WINVER 含む) では no-op (開いた時点で開始済み・ポップアップも無い)。
 	void UpdateFocusDrivenTextInput()
 	{
-		if (!PlatformUsesScreenKeyboard()) return;
+		// デスクトップは元々 OS キーボードもポップアップも無いので通常は no-op。
+		// ただし "always" 指定時は動作確認のためデスクトップでも仮想キーボードを出す。
+		if (!PlatformUsesScreenKeyboard() && vk_mode != VKMode::Always) return;
+
+		// 仮想キーボード表示中は、 focus はキーボード自身が持っている
+		// (= 下の入力欄は focus_consumes_text() を返さない)。 通常判定に
+		// 戻すと即座に閉じてしまうので、 入力先の生存確認だけ行う。
+		if (vk_shown) {
+			if (!FindInstance(vk_target)) CloseVirtualKeyboard();
+			return;
+		}
 
 		Instance* owner = TopmostKeyboardFocus();
 		bool want = owner && owner->active && owner->session &&
 		            owner->session->focus_consumes_text();
 
 		if (want && !ime_focus_active) {
-			HostStartTextInput();         // テキスト欄に focus → IME 表示
-			ime_focus_active = true;
-		} else if (!want && ime_focus_active) {
-			HostStopTextInput();          // focus が外れた / ダイアログ閉じ → IME 非表示
-			ime_focus_active = false;
+			// 仮想キーボードを使うか (auto = 物理キーボードが無いときだけ)
+			const bool use_vk = (vk_mode == VKMode::Always) ||
+			                    (vk_mode == VKMode::Auto && !HostHasPhysicalKeyboard());
+			if (!use_vk) {
+				// 物理キーボードあり / "never": そのまま打てるので text 入力を
+				// 有効化するだけ (OS のソフトキーボードは SDL の auto 判定で出ない)。
+				HostStartTextInput();
+				ime_focus_active = true;
+			} else if (owner != vk_dismissed_for) {
+				// 物理キーボード無し: OS のキーボードではなく内蔵仮想キーボード。
+				// vk_dismissed_for は「閉じた直後に同じ欄で出し直さない」ラッチ。
+				ShowVirtualKeyboard(owner);
+			}
+		} else if (!want) {
+			if (ime_focus_active) {
+				HostStopTextInput();      // focus が外れた / ダイアログ閉じ
+				ime_focus_active = false;
+			}
+			vk_dismissed_for = nullptr;   // focus が外れたらラッチ解除
 		}
 	}
+
+	// === 内蔵仮想キーボード (物理キーボード非接続時の入力手段) ===
+
+	// instances に今も居るかで Instance* の生存を確認する (handler を持たない
+	// インスタンスもあるので FindByHandler ではなくポインタ照合)。
+	Instance* FindInstance(Instance* p) const
+	{
+		if (!p) return nullptr;
+		for (auto const& inst : instances) {
+			if (inst.get() == p) return inst->active ? p : nullptr;
+		}
+		return nullptr;
+	}
+
+	void ShowVirtualKeyboard(Instance* target)
+	{
+		if (vk_shown || !target) return;
+		vk_handler.impl = this;
+		Instance* inst = PushInstance(&vk_handler, target->host_device,
+		                              /*modal=*/true, /*grabFocus=*/true);
+		if (!BeginScreen(*inst, BuildVirtualKeyboardJson(), std::string())) {
+			TeardownInstance(inst);
+			return;
+		}
+		inst->active = true;
+		inst->ever_active = true;
+		vk_target = target;
+		vk_shown = true;
+		TVPAddLog(TJS_W("ElementsDialog: virtual keyboard shown"));
+	}
+
+	void CloseVirtualKeyboard()
+	{
+		Instance* inst = FindByHandler(&vk_handler);
+		if (inst && inst->active) RequestClose(*inst);
+		// 実際の状態リセットは teardown 後の OnClosed (VirtualKeyboardHandler)
+	}
+
+	// キーが押された: 押鍵をそのまま入力先のテキスト欄へ流し込む。
+	void OnVirtualKeyboardAction(const std::string& id)
+	{
+		Instance* t = FindInstance(vk_target);
+		if (!t || !t->session) { CloseVirtualKeyboard(); return; }
+		if (id.size() > 2 && id[0] == 'k' && id[1] == '_') {
+			t->session->on_text_input(id.substr(2).c_str());
+		} else if (id == "spc") {
+			t->session->on_text_input(" ");
+		} else if (id == "bs") {
+			// 文字削除はテキストでなくキーイベント (入力欄の編集操作)
+			t->session->on_key_down(cycfi::elements::key_code::backspace, 0);
+			t->session->on_key_up(cycfi::elements::key_code::backspace, 0);
+		}
+		// "done" は close_on_click → OnClosed で終了
+	}
+
+	void OnVirtualKeyboardClosed()
+	{
+		vk_shown = false;
+		// 閉じた直後は入力先へ focus が戻る。 そのまま出し直すと閉じられなく
+		// なるので、 focus が一度離れるまで再表示しない。
+		vk_dismissed_for = vk_target;
+		vk_target = nullptr;
+	}
+
+	struct VirtualKeyboardHandler : public iTVPDialogEventHandler
+	{
+		Impl* impl = nullptr;
+		void OnAction(const ttstr& id, const tTJSVariant&) override
+		{
+			if (impl) impl->OnVirtualKeyboardAction(TtstrToUtf8(id));
+		}
+		void OnClosed(const ttstr&) override
+		{
+			if (impl) impl->OnVirtualKeyboardClosed();
+		}
+	};
+	VirtualKeyboardHandler vk_handler;
+	Instance* vk_target = nullptr;          //!< 入力先 (生存確認は FindInstance)
+	Instance* vk_dismissed_for = nullptr;   //!< 閉じた直後の再表示抑止ラッチ
+	bool vk_shown = false;
+
+	//! 仮想キーボードの動作モード (TJS: ElementsDialog.virtualKeyboard)。
+	//! 初期値は環境変数 KRKRZ_FORCE_VIRTUAL_KEYBOARD で "always" になる。
+	enum class VKMode { Auto, Always, Never };
+	VKMode vk_mode = ForceVirtualKeyboard() ? VKMode::Always : VKMode::Auto;
 
 	// === インスタンス生成 / teardown ===
 
@@ -609,6 +915,10 @@ bool tTVPElementsDialogManager::Impl::BeginScreen(
 	                 std::move(bridge), resource_base_utf8)) {
 		return false;
 	}
+
+	// i18n: ホストが SetLanguage 済みなら、 新しく開く画面もその言語で始める
+	// (画面 JSON の "lang" 既定より優先)。 "strings" を持たない画面では no-op。
+	if (!language.empty()) sess->set_language(language);
 
 	// run_modal と同じく content の自然サイズへフィット (上側空欄対策)。
 	// ただし top-level "size" が明示された画面は作者が寸法を指定しているので
@@ -941,26 +1251,122 @@ void tTVPElementsDialogManager::Impl::RenderInstance(
 	const int h_pixels = std::max(1, static_cast<int>(h_logical * density + 0.5f));
 
 	const void* layer = inst.LayerKey();
+
+	// 状態更新 (変数/hover poll・演出 tick・view 遅延タスク・ダーティ蓄積)。
+	// 描画をスキップするフレームでも毎フレーム必要 (キャレット点滅・遅延
+	// focus 適用・退場演出の完了検出が止まるため)。 戻り値 = 再描画が必要か。
+	const auto t_update = std::chrono::steady_clock::now();
+	const bool dirty = inst.session->update();
+	stats.updates++;
+	stats.updateUs += ElapsedUs(t_update);
+
+	// update 中に退場演出が完了 (finished) すると以後は描画できない。 今
+	// フレームは直前の描画結果をそのまま提示し、 次フレームの PaintOverlay
+	// 冒頭の finished 処理 (AdvanceFlow / FinishSingle) に任せる (従来は
+	// 最終フレームまで描いてから finished 検出だったため、 空白フレームを
+	// 作らないよう提示だけは継続する)。
+	if (inst.session->finished()) {
+		if (inst.cache_valid && inst.cache_device == device) {
+			const auto t_present = std::chrono::steady_clock::now();
+			renderer->PresentOverlay(layer, inst.cache_px, inst.cache_py,
+			                         inst.cache_pw, inst.cache_ph);
+			stats.presents++;
+			stats.cachedPresents++;
+			stats.presentUs += ElapsedUs(t_present);
+		}
+		return;
+	}
+
+	// 再ラスタライズ抑止 (Dialog.renderCache): session が dirty でなく、 描画
+	// 条件 (デバイス / buffer ピクセルサイズ / 配置基準 surface) も前回と同じ
+	// なら、 レンダラが layer キーで保持しているテクスチャを同じ位置に提示する
+	// だけで済む (ThorVG ラスタ + 全クリア + アップロードを省略)。 画面遷移
+	// エフェクトの混色中は毎フレーム絵が変わるので除外。 ウィンドウリサイズ /
+	// NX docked⇔携帯 / renderScale 変更はサイズ不一致となり必ず再描画される。
+	if (render_cache && !dirty && inst.trans_effect.empty()
+	    && inst.cache_valid
+	    && inst.cache_device == device
+	    && inst.cache_buf_w == w_pixels && inst.cache_buf_h == h_pixels
+	    && inst.cache_sw == render_sw && inst.cache_sh == render_sh) {
+		const auto t_present = std::chrono::steady_clock::now();
+		renderer->PresentOverlay(layer, inst.cache_px, inst.cache_py,
+		                         inst.cache_pw, inst.cache_ph);
+		stats.presents++;
+		stats.cachedPresents++;
+		stats.presentUs += ElapsedUs(t_present);
+		return;
+	}
+
+	const auto t_acquire = std::chrono::steady_clock::now();
 	uint32_t* buf = renderer->AcquireBuffer(layer, w_pixels, h_pixels);
+	stats.acquireUs += ElapsedUs(t_acquire);
 	if (!buf) return;
 
+	// 部分再描画 (Dialog.partialRedraw): renderCache 有効時のみ (staging に
+	// 前回フレームが残っている前提)。 描画条件 (デバイス / buffer サイズ /
+	// 配置基準 surface) が前回と一致し、 遷移混色中でない場合に限る。
+	const bool allow_partial = render_cache && partial_redraw
+	    && inst.trans_effect.empty()
+	    && inst.cache_valid && inst.cache_device == device
+	    && inst.cache_buf_w == w_pixels && inst.cache_buf_h == h_pixels
+	    && inst.cache_sw == render_sw && inst.cache_sh == render_sh;
+
+	const auto t_raster = std::chrono::steady_clock::now();
 	elements_modal::overlay_session::render_rect rect{};
-	bool ok = inst.session->render_to_buffer(buf, w_pixels, h_pixels,
-	                                         render_sw, render_sh, rect);
+	elements_modal::overlay_session::render_rect updated{};
+	bool ok;
+	if (allow_partial) {
+		ok = inst.session->render_to_buffer_partial(buf, w_pixels, h_pixels,
+		                                            render_sw, render_sh,
+		                                            rect, updated);
+	} else {
+		ok = inst.session->render_to_buffer(buf, w_pixels, h_pixels,
+		                                    render_sw, render_sh, rect);
+		updated = { 0, 0, w_pixels, h_pixels };
+	}
+	stats.rasterUs += ElapsedUs(t_raster);
+	// 実際に矩形限定で描かれたか (セッション側は条件不成立なら全面へ
+	// フォールバックして buffer 全体を返してくる)
+	const bool partial = ok && allow_partial
+	    && !(updated.x == 0 && updated.y == 0
+	         && updated.w == w_pixels && updated.h == h_pixels);
 	if (ok) {
+		raster_count++;
+		stats.rasters++;
+		if (partial) stats.partials++;
 		// 画面切替遷移中なら旧画面スナップと混色 (in-place、 upload 前に行う)。
+		// (遷移中は allow_partial=false なので必ず全面描画になっている)
 		ApplyScreenTransition(inst, buf, w_pixels, h_pixels);
 
 		// フローインスタンスは提示フレームの複製を保持する (次の画面切替の
 		// from 側スナップ用)。 finish 後の session は再描画できないため、
 		// ここで持っておくしかない。 遷移中は混色後 = 実際に見えている絵。
+		// 部分更新時は書き換わった矩形だけ複製する (全面 memcpy 回避)。
 		if (inst.nav) {
-			inst.last_frame.assign(buf, buf + (size_t)w_pixels * h_pixels);
-			inst.last_frame_w = w_pixels;
-			inst.last_frame_h = h_pixels;
+			if (partial && inst.last_frame_w == w_pixels
+			    && inst.last_frame_h == h_pixels
+			    && inst.last_frame.size()
+			       == (size_t)w_pixels * h_pixels) {
+				for (int yy = updated.y; yy < updated.y + updated.h; ++yy) {
+					std::memcpy(&inst.last_frame[(size_t)yy * w_pixels + updated.x],
+					            buf + (size_t)yy * w_pixels + updated.x,
+					            (size_t)updated.w * 4);
+				}
+			} else {
+				inst.last_frame.assign(buf, buf + (size_t)w_pixels * h_pixels);
+				inst.last_frame_w = w_pixels;
+				inst.last_frame_h = h_pixels;
+			}
 		}
 	}
-	renderer->ReleaseBuffer(layer);
+	const auto t_release = std::chrono::steady_clock::now();
+	if (ok && partial) {
+		renderer->ReleaseBufferRect(layer, updated.x, updated.y,
+		                            updated.w, updated.h);
+	} else {
+		renderer->ReleaseBuffer(layer);
+	}
+	stats.uploadUs += ElapsedUs(t_release);
 	if (!ok) return;
 
 	inst.last_rect = rect;
@@ -973,11 +1379,21 @@ void tTVPElementsDialogManager::Impl::RenderInstance(
 	if (oversized) {
 		// present 座標は surface logical (PresentOverlay が内部で dest へマップ)。
 		// 非 oversized 経路が rect.x/y をそのまま渡すのと同じ空間なので、 ここで
-		// dest offset (dx,dy) を足してはいけない。 surface 内で中央寄せするだけ。
+		// dest offset (dx,dy) を足してはいけない。 surface 内で寄せるだけ。
 		pw = static_cast<int>(w_logical * fit + 0.5f);
 		ph = static_cast<int>(h_logical * fit + 0.5f);
-		px = (sw - pw) / 2;
-		py = (sh - ph) / 2;
+		// 配置は画面 JSON の top-level "align" / "margin" に従う (既定は中央)。
+		// 収まる画面では overlay_session が同じ計算をしているので、 縮小提示でも
+		// 揃うようにここで同じ式を使う (字幕窓のように下端へ寄せたいケース)。
+		float ax = 0.5f, ay = 0.5f;
+		int amargin = 0;
+		inst.session->placement(ax, ay, amargin);
+		const int free_x = sw - pw;
+		const int free_y = sh - ph;
+		px = amargin + static_cast<int>((free_x - 2 * amargin) * ax);
+		py = amargin + static_cast<int>((free_y - 2 * amargin) * ay);
+		if (px < 0) px = 0;
+		if (py < 0) py = 0;
 		inst.present_scale = fit;
 		inst.present_off_x = static_cast<float>(px);
 		inst.present_off_y = static_cast<float>(py);
@@ -986,7 +1402,23 @@ void tTVPElementsDialogManager::Impl::RenderInstance(
 		inst.present_off_x = 0.0f;
 		inst.present_off_y = 0.0f;
 	}
+
+	// 次フレーム以降の cached present 用に描画条件と提示引数を記録する。
+	inst.cache_valid = true;
+	inst.cache_device = device;
+	inst.cache_buf_w = w_pixels;
+	inst.cache_buf_h = h_pixels;
+	inst.cache_sw = render_sw;
+	inst.cache_sh = render_sh;
+	inst.cache_px = px;
+	inst.cache_py = py;
+	inst.cache_pw = pw;
+	inst.cache_ph = ph;
+
+	const auto t_present = std::chrono::steady_clock::now();
 	renderer->PresentOverlay(layer, px, py, pw, ph);
+	stats.presents++;
+	stats.presentUs += ElapsedUs(t_present);
 }
 
 //---------------------------------------------------------------------------
@@ -1015,6 +1447,34 @@ bool tTVPElementsDialogManager::HasModalInstance() const
 	return _impl->AnyModalActive();
 }
 
+void tTVPElementsDialogManager::RegisterHostHotkey(
+	tjs_uint vk, tjs_uint32 mods, bool duringTextInput)
+{
+	const tjs_uint32 m = mods & (TVP_SS_SHIFT | TVP_SS_ALT | TVP_SS_CTRL);
+	// 同一 (vk, mods) は上書き (duringTextInput の変更を許す)
+	for (auto& hk : _impl->host_hotkeys) {
+		if (hk.vk == vk && hk.mods == m) {
+			hk.during_text_input = duringTextInput;
+			return;
+		}
+	}
+	_impl->host_hotkeys.push_back({ vk, m, duringTextInput });
+}
+
+void tTVPElementsDialogManager::UnregisterHostHotkey(tjs_uint vk, tjs_uint32 mods)
+{
+	const tjs_uint32 m = mods & (TVP_SS_SHIFT | TVP_SS_ALT | TVP_SS_CTRL);
+	auto& v = _impl->host_hotkeys;
+	v.erase(std::remove_if(v.begin(), v.end(),
+		[&](const Impl::HostHotkey& hk) { return hk.vk == vk && hk.mods == m; }),
+		v.end());
+}
+
+void tTVPElementsDialogManager::ClearHostHotkeys()
+{
+	_impl->host_hotkeys.clear();
+}
+
 bool tTVPElementsDialogManager::IsHandlerActive(iTVPDialogEventHandler* handler) const
 {
 	Impl::Instance* inst = _impl->FindByHandler(handler);
@@ -1031,12 +1491,57 @@ float tTVPElementsDialogManager::GetRenderScale() const
 	return _impl->render_scale_mode;
 }
 
+void tTVPElementsDialogManager::SetRenderCache(bool enable)
+{
+	_impl->render_cache = enable;
+}
+
+bool tTVPElementsDialogManager::GetRenderCache() const
+{
+	return _impl->render_cache;
+}
+
+void tTVPElementsDialogManager::SetPartialRedraw(bool enable)
+{
+	_impl->partial_redraw = enable;
+}
+
+bool tTVPElementsDialogManager::GetPartialRedraw() const
+{
+	return _impl->partial_redraw;
+}
+
+tjs_uint64 tTVPElementsDialogManager::GetRenderCount() const
+{
+	return _impl->raster_count;
+}
+
+void tTVPElementsDialogManager::GetRenderStats(tTVPElementsRenderStats& out) const
+{
+	out = _impl->stats;
+}
+
+void tTVPElementsDialogManager::ResetRenderStats()
+{
+	_impl->stats = tTVPElementsRenderStats{};
+}
+
+void tTVPElementsDialogManager::InvalidateOverlays()
+{
+	for (auto& up : _impl->instances) {
+		if (up->session) up->session->invalidate();
+	}
+}
+
 void tTVPElementsDialogManager::EnsureRuntimeInitialized()
 {
 	// ELEMENTS_FILE_IO_SUPPORT=OFF でビルドしているため elements 側 default の
 	// null_resource_loader が選ばれている。 最初に Storages-backed loader を
 	// install する (idempotent)。 順序は install → ThorVG init → font register。
 	TVPInstallElementsResourceLoader();
+	// 矩形テキスト (text_area) の折返し/禁則/count を本体と同じ
+	// glyphware::layoutBlock に寄せる。
+	TVPInstallElementsBlockTextBackend();
 
 	elements_modal::init("", /*load_default_fonts=*/false);
 
@@ -1074,8 +1579,14 @@ iTVPDrawDevice* tTVPElementsDialogManager::ResolveHostDeviceForFlow(
 		// 提示中のデバイス (直近 PaintOverlay 呼出元) を優先する。 これにより
 		// GL デモ等で drawDevice が OGLDrawDevice に切り替わっていても、その上に
 		// パネルが出る。 未確定 / レンダラ無しのときのみ map 先頭へフォールバック。
+		iTVPDrawDevice* main_device =
+			TVPMainWindow ? TVPMainWindow->GetDrawDevice() : nullptr;
 		if (_impl->active_device && _impl->FindRenderer(_impl->active_device)) {
 			host = _impl->active_device;
+		} else if (main_device && _impl->FindRenderer(main_device)) {
+			// 複数ウィンドウ時に map 先頭 (= サブウィンドウの device かもしれない)
+			// を拾わないよう、メインウィンドウの device を優先する。
+			host = main_device;
 		} else {
 			host = _impl->hosts.begin()->first;
 		}
@@ -1348,6 +1859,48 @@ bool tTVPElementsDialogManager::SetVar(iTVPDialogEventHandler* handler,
 	return true;
 }
 
+void tTVPElementsDialogManager::SetVirtualKeyboardMode(const ttstr& mode)
+{
+	const std::string m = TtstrToUtf8(mode);
+	if (m == "always")     _impl->vk_mode = Impl::VKMode::Always;
+	else if (m == "never") _impl->vk_mode = Impl::VKMode::Never;
+	else                   _impl->vk_mode = Impl::VKMode::Auto;
+	// "never" にしたら表示中のものは畳む
+	if (_impl->vk_mode == Impl::VKMode::Never) _impl->CloseVirtualKeyboard();
+}
+
+ttstr tTVPElementsDialogManager::GetVirtualKeyboardMode() const
+{
+	switch (_impl->vk_mode) {
+	case Impl::VKMode::Always: return ttstr(TJS_W("always"));
+	case Impl::VKMode::Never:  return ttstr(TJS_W("never"));
+	default:                   return ttstr(TJS_W("auto"));
+	}
+}
+
+bool tTVPElementsDialogManager::HasPhysicalKeyboard() const
+{
+	return HostHasPhysicalKeyboard();
+}
+
+void tTVPElementsDialogManager::SetLanguage(const ttstr& lang)
+{
+	_impl->language = TtstrToUtf8(lang);
+	// 表示中の全インスタンスへ即時適用。 flow (navigator) 側にも覚えさせて、
+	// 画面遷移で作り直された先でも言語が引き継がれるようにする。
+	for (auto& up : _impl->instances) {
+		if (!up->session) continue;
+		up->session->set_language(_impl->language);
+		up->flow_lang = _impl->language;
+		if (up->nav) up->nav->set_language(_impl->language);
+	}
+}
+
+ttstr tTVPElementsDialogManager::GetLanguage() const
+{
+	return Utf8ToTtstr(_impl->language);
+}
+
 bool tTVPElementsDialogManager::FocusWidgetById(int index, const ttstr& id)
 {
 	if (index < 0 || index >= (int)_impl->instances.size()) return false;
@@ -1467,6 +2020,16 @@ void TVPUnregisterDialogHost(iTVPDrawDevice* device)
 //---------------------------------------------------------------------------
 void tTVPElementsDialogManager::PaintOverlay(iTVPDrawDevice* device)
 {
+	// renderStats: PaintOverlay 全体の所要時間 (early return 含む) と提示
+	// フレーム数。 複数 DrawDevice 登録時はデバイス毎に 1 カウントされる。
+	_impl->stats.frames++;
+	struct TotalGuard {
+		tjs_uint64& acc;
+		std::chrono::steady_clock::time_point t0 =
+			std::chrono::steady_clock::now();
+		~TotalGuard() { acc += ElapsedUs(t0); }
+	} total_guard{ _impl->stats.totalUs };
+
 	// 提示デバイスが切り替わったら (GL デモの drawDevice 差し替え等)、既存の
 	// パネルを現在提示中のデバイスへ移設する。 パネルは create() 内で GL 有効化
 	// 直後に表示されることがあり、その時点では旧デバイス (menu を描いた SDL 等)
@@ -1474,13 +2037,26 @@ void tTVPElementsDialogManager::PaintOverlay(iTVPDrawDevice* device)
 	// 切り替わったこのタイミングで host を追従させ、旧レンダラのレイヤは解放する。
 	// element ツリーは ThorVG の CPU ラスタ出力を各レンダラへアップロードする
 	// 方式でデバイス非依存なので、host 付け替え + 旧レイヤ解放だけで移設できる。
-	if (_impl->active_device != device) {
+	//
+	// ★ただし移設していいのは「同じ (メイン) ウィンドウ上でデバイスが差し替わ
+	//   った」ときだけ。 Window を 2 枚以上開くと各ウィンドウが毎フレーム別々の
+	//   DrawDevice で PaintOverlay を呼ぶため、無条件に追従すると overlay が
+	//   ウィンドウ間を往復し、サブウィンドウを閉じた瞬間に (その device の
+	//   UnregisterDialogHost で) パネルごと teardown されてしまう。
+	//   overlay ダイアログはメインウィンドウに出す前提なので、メインウィンドウ
+	//   以外の device が提示していても host は動かさない。
+	iTVPDrawDevice* main_device = TVPMainWindow ? TVPMainWindow->GetDrawDevice() : nullptr;
+	const bool device_is_main = (main_device == nullptr || device == main_device);
+	if (_impl->active_device != device && device_is_main) {
 		for (auto& up : _impl->instances) {
 			Impl::Instance* inst = up.get();
 			if (inst->host_device == device) continue;
 			if (auto* oldR = _impl->FindRenderer(inst->host_device))
 				oldR->ReleaseLayer(inst->LayerKey());
 			inst->host_device = device;
+			// 旧レンダラのテクスチャは解放済み。 新デバイスでは必ず
+			// 再ラスタライズさせる (cached present の対象から外す)。
+			inst->cache_valid = false;
 		}
 		_impl->active_device = device;
 	}
@@ -1591,6 +2167,19 @@ int FlagsToElementsMods(tjs_uint32 flags)
 	return mods;
 }
 
+// マウスボタン → VK コード (ホストホットキーのテーブル照合用。 キー / パッド /
+// マウスを同じ VK 空間で扱う)。
+tjs_uint MouseButtonToVk(tTVPMouseButton mb)
+{
+	switch (mb) {
+		case mbRight:  return VK_RBUTTON;
+		case mbMiddle: return VK_MBUTTON;
+		case mbX1:     return VK_XBUTTON1;
+		case mbX2:     return VK_XBUTTON2;
+		default:       return VK_LBUTTON;   // mbLeft ほか
+	}
+}
+
 //---------------------------------------------------------------------------
 // Windows VK code → cycfi 中立入力型 (key_code | pad_button) 振り分け。
 //---------------------------------------------------------------------------
@@ -1671,6 +2260,9 @@ vk_routing RouteVk(tjs_uint vk)
 bool tTVPElementsDialogManager::ForwardMouseDown(
 	tjs_int x, tjs_int y, tTVPMouseButton mb, tjs_uint32 flags)
 {
+	// ホストホットキー: 登録ボタンはダイアログへ渡さず通常経路へ (非消費)
+	if (_impl->HostHotkeyBypass(MouseButtonToVk(mb), flags, /*isUp=*/false))
+		return false;
 	for (auto it = _impl->instances.rbegin(); it != _impl->instances.rend(); ++it) {
 		Impl::Instance* inst = it->get();
 		if (!inst->active || !inst->session) continue;
@@ -1688,6 +2280,9 @@ bool tTVPElementsDialogManager::ForwardMouseDown(
 bool tTVPElementsDialogManager::ForwardMouseUp(
 	tjs_int x, tjs_int y, tTVPMouseButton mb, tjs_uint32 flags)
 {
+	// ホストホットキー: up は vk のみ一致でバイパス (down と対で漏らさない)
+	if (_impl->HostHotkeyBypass(MouseButtonToVk(mb), flags, /*isUp=*/true))
+		return false;
 	// mouse up はドラッグ継続中のインスタンスにも届けたいので、 down と同様に
 	// 最前面ヒット (または modal) へ送る。 釦が押されたインスタンスを覚えるより
 	// 単純なヒットテストで十分 (overlay_session 内部で capture 管理される)。
@@ -1801,6 +2396,10 @@ bool tTVPElementsDialogManager::ForwardMouseOutOfWindow()
 // キー等) はゲームへ通す (handled pass-through)。
 bool tTVPElementsDialogManager::ForwardKeyDown(tjs_uint key, tjs_uint32 shift)
 {
+	// ホストホットキー: 登録キー (VK_PAD* 含む) はダイアログへ渡さず通常経路へ。
+	// モーダル表示中とテキスト入力 focus 中 (duringTextInput=false のもの) は
+	// バイパスしない — 判定は HostHotkeyBypass 側。
+	if (_impl->HostHotkeyBypass(key, shift, /*isUp=*/false)) return false;
 	Impl::Instance* f = _impl->TopmostKeyboardFocus();
 	if (!f || !f->session) return false;
 	auto r = RouteVk(key);
@@ -1824,6 +2423,8 @@ bool tTVPElementsDialogManager::ForwardKeyDown(tjs_uint key, tjs_uint32 shift)
 
 bool tTVPElementsDialogManager::ForwardKeyUp(tjs_uint key, tjs_uint32 shift)
 {
+	// ホストホットキー: up は vk のみ一致でバイパス (修飾キー変化で漏らさない)
+	if (_impl->HostHotkeyBypass(key, shift, /*isUp=*/true)) return false;
 	Impl::Instance* f = _impl->TopmostKeyboardFocus();
 	if (!f || !f->session) return false;
 	auto r = RouteVk(key);

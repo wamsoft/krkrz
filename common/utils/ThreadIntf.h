@@ -244,6 +244,29 @@ struct TVPRenderStatsSnapshot {
 	tjs_uint64 snapshot_tick_ms;
 };
 void TVPGetRenderStats(TVPRenderStatsSnapshot &out);
+
+//---------------------------------------------------------------------------
+// テクスチャ転送の常時計測 (KRKRZ_DRAW_STATS に依存しない)
+//
+// 上の TVPRenderStatsSnapshot は詳細計測でビルドオプション必須だが、こちらは
+// 「画面バッファ → GPU テクスチャ」の転送だけに絞った常時有効のカウンタ。
+// 1 フレームに数回しか呼ばれないので atomic 加算のコストは無視できる。
+// TJS からは System.renderStats / System.renderStatsReset() で読める。
+//
+// 転送はドライバ都合でブロックすることがある (ANGLE の PBO 経路など) ので、
+// ここが伸びていないか = 実機での転送コストの一次指標として使う。
+//---------------------------------------------------------------------------
+struct TVPTexUploadStats {
+	tjs_uint64 upload_ns;      //!< 転送呼び出しの累計時間
+	tjs_uint64 upload_count;   //!< 転送回数 (dirty 矩形単位)
+	tjs_uint64 upload_bytes;   //!< 転送した累計バイト数
+	tjs_uint64 frame_count;    //!< 転送フェーズ (RenderToTexture) の実行回数 ≒ フレーム数
+};
+void TVPRenderStatsAddTexUpload(tjs_uint64 ns, tjs_uint64 bytes);
+void TVPRenderStatsBumpUploadFrame();
+void TVPGetTexUploadStats(TVPTexUploadStats &out);
+void TVPResetTexUploadStats();
+
 // instrumentation 側からのカウンタ操作 API (KRKRZ_DRAW_STATS=OFF では no-op)。
 void TVPRenderStatsAddTexUpdate(tjs_uint64 ns, tjs_uint64 bytes);
 void TVPRenderStatsAddTexRender(tjs_uint64 ns);

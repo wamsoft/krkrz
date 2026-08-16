@@ -64,9 +64,12 @@ private:
     bool HasUnion() const { return mUx1 > mUx0 && mUy1 > mUy0; }
 
     // staging の (sx,sy,sw,sh) を PBO 経由で 1 回アップロード。
+    // (中間バッファを介さない UpdateTextureDirect も試したが、 本画面のように
+    //  大きな矩形を 1 回で上げる使い方では実測差が無かったので従来どおり)
     void UploadFromStaging(tTJSNI_Texture *texture, int sx, int sy, int sw, int sh) {
         const int dst_pitch = mWidth * 4;
         const tjs_uint8 *base = mStaging.data();
+        const auto _up_t0 = std::chrono::steady_clock::now();
         texture->UpdateTexture(sx, sy, sw, sh,
             [base, dst_pitch, sx, sy, sw, sh](char *dest, int pitch) {
                 const tjs_uint8 *s = base + (size_t)sy * dst_pitch + (size_t)sx * 4;
@@ -78,6 +81,11 @@ private:
                     s += dst_pitch;
                 }
             });
+        // 転送コストは常時計測する (System.renderStats)。
+        TVPRenderStatsAddTexUpload(
+            (tjs_uint64)std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - _up_t0).count(),
+            (tjs_uint64)sw * (tjs_uint64)sh * 4);
     }
 
 public:
@@ -158,6 +166,7 @@ public:
 #ifdef KRKRZ_DRAW_STATS
         const auto _stats_t0 = std::chrono::steady_clock::now();
 #endif
+        TVPRenderStatsBumpUploadFrame();
         if (texture && HasUnion()) {
             const int ux = mUx0, uy = mUy0;
             const int uw = mUx1 - mUx0, uh = mUy1 - mUy0;

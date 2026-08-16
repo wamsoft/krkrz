@@ -278,8 +278,8 @@ bool tTVPReplThread::ProcessLine(const std::string& input_in,
 			emit(LL_HELP, "  .mem             - Show one-line memory summary");
 			emit(LL_HELP, "  .memdump         - Dump full memory stats to log (TVPHeapDump)");
 			emit(LL_HELP, "  .sysalloc        - Show system allocator info (free/allocatable)");
-			emit(LL_HELP, "  .memoverlay [on|off] - Toggle on-screen memory graph (SDL3 build only)");
-			emit(LL_HELP, "  .padoverlay [on|off] - Toggle on-screen gamepad button matrix (SDL3 build only)");
+			emit(LL_HELP, "  .memoverlay [on|off] - Toggle on-screen memory graph (drawn by OGL/SDL draw devices)");
+			emit(LL_HELP, "  .padoverlay [on|off] - Toggle on-screen gamepad button matrix (drawn by OGL/SDL draw devices)");
 			emit(LL_HELP, "  .mempeakclear    - Reset peak_used on File/Bitmap/Sound allocators");
 			emit(LL_HELP, "  .filecache       - Dump StorageCache (file cache) entries to log");
 			emit(LL_HELP, "  .imagecache      - Dump TVPGraphicCache (decoded image cache) entries to log");

@@ -8,6 +8,10 @@
 #include "DebugIntf.h"
 #include <cstring>
 
+// overlay テクスチャの転送経路も本画面と同じ基準で選ぶ (GLTexture::UsePBOForUpload)。
+// overlay の部分再描画は矩形が小さいので、 ほぼ常に直接転送側になる。
+#define TVPDialogTexUsePBO(bytes) GLTexture::UsePBOForUpload(bytes)
+
 //---------------------------------------------------------------------------
 tTVPOGLDialogRenderer::tTVPOGLDialogRenderer(iTVPGLDialogHost * host)
 	: _host(host)
@@ -112,21 +116,71 @@ void tTVPOGLDialogRenderer::ReleaseBuffer(const void* layer)
 		return;
 	}
 
-	// staging → GLTexture へ PBO 経由でアップロード。pitch は常に w*4 で連続。
+	// staging → GLTexture へアップロード。pitch は常に w*4 で連続。
 	const std::uint32_t * src = L.staging.data();
 	const int w = L.w;
 	const int h = L.h;
-	L.texture->UpdateTexture(0, 0, w, h, [src, w, h](char * dest, int pitch) {
-		const int row_bytes = w * 4;
-		if (pitch == row_bytes) {
-			std::memcpy(dest, src, static_cast<std::size_t>(row_bytes) * h);
-		} else {
-			const char * sp = reinterpret_cast<const char *>(src);
-			for (int y = 0; y < h; ++y) {
-				std::memcpy(dest + y * pitch, sp + y * row_bytes, row_bytes);
+	if (TVPDialogTexUsePBO((std::size_t)w * h * 4)) {
+		L.texture->UpdateTexture(0, 0, w, h, [src, w, h](char * dest, int pitch) {
+			const int row_bytes = w * 4;
+			if (pitch == row_bytes) {
+				std::memcpy(dest, src, static_cast<std::size_t>(row_bytes) * h);
+			} else {
+				const char * sp = reinterpret_cast<const char *>(src);
+				for (int y = 0; y < h; ++y) {
+					std::memcpy(dest + y * pitch, sp + y * row_bytes, row_bytes);
+				}
 			}
-		}
-	});
+		});
+	} else {
+		L.texture->UpdateTextureDirect(0, 0, w, h, src, w * 4);
+	}
+	L.dirty = false;
+}
+
+//---------------------------------------------------------------------------
+void tTVPOGLDialogRenderer::ReleaseBufferRect(const void* layer, int x, int y, int w, int h)
+{
+	auto it = _layers.find(layer);
+	if (!_host || it == _layers.end() || it->second.staging.empty()) return;
+	Layer& L = it->second;
+	// staging 範囲へクランプ (呼出側の外側丸めで 1px はみ出ることがある)
+	if (x < 0) { w += x; x = 0; }
+	if (y < 0) { h += y; y = 0; }
+	if (x + w > L.w) w = L.w - x;
+	if (y + h > L.h) h = L.h - y;
+	if (w <= 0 || h <= 0) return;
+	iTVPGLContext * ctx = _host->DialogHost_GetGLContext();
+	if (!ctx) {
+		L.dirty = true;   // context 未確立: 次の全面アップロード機会に任せる
+		return;
+	}
+	if (!L.texture) {
+		// テクスチャ未生成 (初回) は全面アップロードで作る
+		ReleaseBuffer(layer);
+		return;
+	}
+	ctx->MakeCurrent();
+
+	// staging の部分矩形 → GLTexture へ (どちらの経路も部分矩形対応)
+	const std::uint32_t * src = L.staging.data();
+	const int lw = L.w;
+	if (TVPDialogTexUsePBO((std::size_t)w * h * 4)) {
+		L.texture->UpdateTexture(x, y, w, h, [src, lw, x, y, w, h](char * dest, int pitch) {
+			const int row_bytes = w * 4;
+			const char * sp = reinterpret_cast<const char *>(
+				src + static_cast<std::size_t>(y) * lw + x);
+			for (int row = 0; row < h; ++row) {
+				std::memcpy(dest + static_cast<std::size_t>(row) * pitch,
+				            sp + static_cast<std::size_t>(row) * lw * 4, row_bytes);
+			}
+		});
+	} else {
+		// staging は全面を保持したままなので、 先頭を (x, y) へずらして
+		// pitch = L.w*4 のまま渡す (GL_UNPACK_ROW_LENGTH で読み飛ばす)
+		L.texture->UpdateTextureDirect(x, y, w, h,
+			src + static_cast<std::size_t>(y) * lw + x, lw * 4);
+	}
 	L.dirty = false;
 }
 

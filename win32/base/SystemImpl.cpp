@@ -297,6 +297,20 @@ bool TVPShellExecute(const ttstr &target, const ttstr &param)
 	}
 }
 //---------------------------------------------------------------------------
+// TVPExecuteProgram — 実行ファイルを引数付きで起動する (プログラム実行専用)。
+// exe は App Paths / PATH で解決される (例 "msedge.exe" → Edge 本体)。
+// verb "open" で ShellExecute するので、URL を開く TVPShellExecute とは用途が異なる。
+//---------------------------------------------------------------------------
+bool TVPExecuteProgram(const ttstr &exe, const ttstr &args)
+{
+	if(exe.IsEmpty()) return false;
+	return ::ShellExecute(NULL, L"open",
+		(const wchar_t*)exe.c_str(),
+		args.IsEmpty() ? NULL : (const wchar_t*)args.c_str(),
+		NULL,
+		SW_SHOWNORMAL) > (void *)32;
+}
+//---------------------------------------------------------------------------
 
 
 
@@ -1113,8 +1127,10 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/endAllocTag)
 TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
 	/*func. name*/endAllocTag)
 //----------------------------------------------------------------------
-// SDL3 build 限定: 画面右上にメモリ状態のリアルタイム折れ線グラフを
-// オーバレイ表示する。WINVER build では flag だけ立つが描画は行われない。
+// 画面右上にメモリ状態のリアルタイム折れ線グラフをオーバレイ表示する。
+// flag は全ビルド共通。描画するのは OGL 系 DrawDevice と SDLDrawDevice で、
+// WINVER 既定の BasicDrawDevice (D3D11) には描画フックが無い
+// (WINVER でも drawDevice を OGL 系へ切り替えれば表示される)。
 TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/setMemoryOverlay)
 {
 	bool enable;
@@ -1130,8 +1146,8 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/setMemoryOverlay)
 TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
 	/*func. name*/setMemoryOverlay)
 //----------------------------------------------------------------------
-// SDL3 build 限定: 画面左上にゲームパッド 16 ボタンのマトリクスを
-// オーバレイ表示する。WINVER build では flag だけ立つが描画は行われない。
+// 画面左上にゲームパッド 16 ボタンのマトリクスをオーバレイ表示する。
+// flag は全ビルド共通。描画条件は setMemoryOverlay と同じ。
 TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/setPadOverlay)
 {
 	bool enable;

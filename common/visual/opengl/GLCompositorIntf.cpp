@@ -33,6 +33,7 @@ tTJSNI_GLCompositor::tTJSNI_GLCompositor()
 	  TargetInstance(nullptr), TargetWidth(0), TargetHeight(0),
 	  BitmapInstance(nullptr),
 	  Width(32), Height(32),
+	  Unpremultiply(false),
 	  Owner(nullptr)
 {
 }
@@ -64,7 +65,10 @@ tjs_error TJS_INTF_METHOD tTJSNI_GLCompositor::Construct(tjs_int numparams, tTJS
 #endif
 
 	// 描画デバイスに依存せず、ウィンドウ用の GL コンテキストを取得してカレントにする。
-	Context = iTVPGLContext::GetContext(NativeWindow);
+	// separateShared=true: 画面が GL デバイス (SDLOGLDrawDevice 等) の場合に、その主
+	// コンテキストと FBO/GL ステートを共有して画面が黒くなるのを避けるため、専用の
+	// (リソースは共有する) コンテキストを取得する。WINVER (画面 D3D11) では無視される。
+	Context = iTVPGLContext::GetContext(NativeWindow, /*separateShared=*/true);
 	if( !Context ) {
 		TVPThrowExceptionMessage(TVPGLCompositorFailedToGetGLContext);
 	}
@@ -297,6 +301,32 @@ void tTJSNI_GLCompositor::Capture(tTJSNI_BaseLayer* layer, const tTJSVariant& ca
 
 	CanvasInstance->EndDrawing();
 
+	// premultiplied-alpha を straight-alpha へ戻す (旧 GLESAdaptor.unpremultiply 相当)。
+	// Capture が書き込んだレイヤメインイメージ (32bit ARGB) を in-place で変換する。
+	if( Unpremultiply ) {
+		for( int yy = 0; yy < h; yy++ ) {
+			tjs_uint32* line = (tjs_uint32*)bmp->GetScanLineForWrite( yy );
+			for( int xx = 0; xx < w; xx++ ) {
+				tjs_uint32 p = line[xx];
+				tjs_uint32 a = (p >> 24) & 0xff;
+				if( a == 0 ) {
+					line[xx] = 0;
+				} else if( a < 255 ) {
+					// RGB = RGB * 255 / A (四捨五入)、255 でクランプ
+					tjs_uint32 r = ((p >> 16) & 0xff) * 255u + a / 2;
+					tjs_uint32 g = ((p >>  8) & 0xff) * 255u + a / 2;
+					tjs_uint32 b = ((p      ) & 0xff) * 255u + a / 2;
+					r /= a; g /= a; b /= a;
+					if( r > 255u ) r = 255u;
+					if( g > 255u ) g = 255u;
+					if( b > 255u ) b = 255u;
+					line[xx] = (a << 24) | (r << 16) | (g << 8) | b;
+				}
+				// a == 255 は変換不要 (そのまま)
+			}
+		}
+	}
+
 	layer->SetImageModified( true );
 	layer->Update( false );
 }
@@ -416,6 +446,25 @@ TJS_BEGIN_NATIVE_PROP_DECL(blendMode)
 	TJS_END_NATIVE_PROP_SETTER
 }
 TJS_END_NATIVE_PROP_DECL(blendMode)
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_PROP_DECL(unpremultiply)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_GLCompositor);
+		*result = (tjs_int)(_this->GetUnpremultiply() ? 1 : 0);
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+	TJS_BEGIN_NATIVE_PROP_SETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_GLCompositor);
+		_this->SetUnpremultiply( ( (tjs_int)*param ) != 0 );
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_PROP_DECL(unpremultiply)
 //----------------------------------------------------------------------
 TJS_BEGIN_NATIVE_PROP_DECL(screenWidth)
 {

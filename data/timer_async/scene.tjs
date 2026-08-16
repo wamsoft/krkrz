@@ -111,7 +111,7 @@ class TimerAsyncScene extends DemoScene
             size : [300, 210], background : [26, 30, 40, 236], locale : "ja-JP",
             align : "top_right", margin : 16,
             content : %[ type : "margin", padding : 14, child : %[ type : "vtile", children : [
-                %[ type : "hspacer", width : 268 ],
+                %[ type : "vsize", height : 0, child : %[ type : "hspacer", width : 268 ] ],
                 %[ type : "align_center", child : %[ type : "label", text : "AsyncTrigger", size_scale : 1.2 ] ],
                 %[ type : "vspacer", height : 10 ],
                 %[ type : "button", id : "one",   text : "trigger() 1回" ],

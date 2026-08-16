@@ -1,0 +1,425 @@
+// -*- mode:tjs2 -*-
+// ======================================================================
+//  perf_stats シーン (PerfStatsScene)
+//    画面転送コスト (System.renderStats) とメモリ / アロケータの状態を
+//    実負荷をかけながら観測する。 「fps だけ見ても詰まりは分からない」ので、
+//    転送回数・転送バイト数・転送に使った時間の割合を数値で見るためのデモ。
+//
+//    負荷パターンを切り替えると、同じ fps でも転送コストがまるで違うことが
+//    分かる (小矩形を多数 vs 全面 1 枚)。 texUploadUsePBO の A/B もここで
+//    試せる。
+// ======================================================================
+
+class PerfStatsScene extends DemoScene
+{
+    // --- レイアウト ---
+    var STX = 24,  STY = 128, STW = 430, STH = 266;    // 転送統計カード
+    var MEX = 24,  MEY = 402, MEW = 430, MEH = 258;    // メモリカード
+    var LDX = 470, LDY = 128, LDW = 440, LDH = 532;    // 負荷エリア
+
+    // --- 負荷 ---
+    var loadMode = 1;        // 0=なし 1=小矩形多数 2=全面塗り 3=中矩形アニメ
+    var loadNames = ["なし (静止)", "小矩形 x N", "全面塗り", "中矩形アニメ"];
+    var rectCount = 60;      // 小矩形の個数
+    var phase = 0;           // アニメ位相
+    var seed = 12345;        // 乱数 (再現性のため自前 LCG)
+    var prevBx, prevBy;      // 中矩形アニメ: 直前の位置 (消す矩形)
+
+    // --- 計測 ---
+    var prev;                // 前回の renderStats スナップ (void = 未計測)
+    var prevTick = 0;
+    var lastLine = [];       // 表示用に組み立てた行
+    var hint = "";           // 数値の読み方ヒント (1 行)
+    var memLine = [];
+    var refreshTick = 0;
+    var REFRESH = 500;       // 統計の更新間隔 (ms)
+
+    var pboMode = 0;         // 0=既定 1=常に PBO 2=常に直接
+    var pboNames = ["既定 (サイズで自動)", "常に PBO", "常に直接転送"];
+    var pboAvailable = false;
+    var memOverlay = false;
+
+    function PerfStatsScene() { super.DemoScene("転送コストとメモリ計測"); }
+
+    function create()
+    {
+        pboAvailable = (typeof System.texUploadUsePBO != "undefined");
+        prev = void;
+        phase = 0;
+        seed = 12345;
+        prevBx = void; prevBy = void;
+        stage.fillRect(0, 0, 1280, 720, 0xff141821);
+        drawStatic();
+        drawLoadFrame();
+        System.renderStatsReset();
+        prevTick = System.getTickCount();
+        refreshTick = prevTick;
+        redrawStats();
+        redrawMemory();
+        setInfo("負荷パターンを切り替えて、fps ではなく転送コストの違いを見る");
+        enableFps();
+        showPanelDict(panelDict());
+    }
+
+    function onExit()
+    {
+        // オーバレイを出しっぱなしにしない
+        if (memOverlay && typeof System.setMemoryOverlay != "undefined") {
+            System.setMemoryOverlay(false);
+            memOverlay = false;
+        }
+        // PBO 強制指定は他シーンへ持ち越さない
+        if (pboAvailable && pboMode != 0) {
+            System.texUploadUsePBO = void;
+            pboMode = 0;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    function drawStatic()
+    {
+        stage.font.height = 19;
+        stage.drawText(24, 44, "画面転送コストとメモリの計測", 0xffd76a, 255);
+        stage.font.height = 15;
+        stage.drawText(24, 76, "合成済み画面を GPU テクスチャへ送るコストは、更新の「面積」ではなく「回数と分布」で大きく変わる。", 0xc8d2e4, 255);
+        stage.drawText(24, 98, "同じ fps でも転送で詰まっていることがあるので、System.renderStats の差分で常時観測する。", 0xc8d2e4, 255);
+        stage.update();
+    }
+
+    function drawLoadFrame()
+    {
+        stage.fillRect(LDX, LDY, LDW, LDH, 0xff1b2130);
+        stage.font.height = 16;
+        stage.drawText(LDX + 12, LDY + 10, "負荷エリア", 0xffd76a, 255);
+        stage.update(LDX, LDY, LDW, LDH);
+    }
+
+    // --- カード描画ヘルパ ------------------------------------------------
+    function card(x, y, w, h, title)
+    {
+        stage.fillRect(x, y, w, h, 0xff1b2130);
+        stage.font.height = 17;
+        stage.drawText(x + 12, y + 10, title, 0xffd76a, 255);
+        stage.font.height = 15;
+    }
+
+    function row(x, y, label, value, col)
+    {
+        if (col === void) col = 0xdfe6f2;
+        stage.drawText(x + 12, y, label, 0x9fb0c8, 255);
+        stage.drawText(x + 190, y, value, col, 255);
+        return y + 22;
+    }
+
+    function mb(bytes) { return "%.1f".sprintf(bytes / 1048576.0) + " MB"; }
+
+    // ------------------------------------------------------------------
+    //  転送統計 (System.renderStats の差分)
+    // ------------------------------------------------------------------
+    function redrawStats()
+    {
+        card(STX, STY, STW, STH, "画面転送 (System.renderStats)");
+        var y = STY + 40;
+        if (lastLine.count == 0) {
+            y = row(STX, y, "計測中...", "");
+        } else {
+            for (var i = 0; i < lastLine.count; i++) {
+                var e = lastLine[i];
+                y = row(STX, y, e[0], e[1], e[2]);
+            }
+        }
+        y += 6;
+        stage.font.height = 13;
+        stage.drawText(STX + 12, y, "転送率 = 転送に使った時間 / 経過実時間", 0x8899b0, 255);
+        y += 17;
+        stage.drawText(STX + 12, y, "累積値を " + REFRESH + " ms ごとに差分化して表示", 0x8899b0, 255);
+        y += 17;
+        if (hint != "") stage.drawText(STX + 12, y, hint, 0x8899b0, 255);
+        stage.font.height = 15;
+        stage.update(STX, STY, STW, STH);
+    }
+
+    function sampleStats(tick)
+    {
+        var s = System.renderStats;
+        if (s === void) { lastLine = [ [ "renderStats", "(このビルドでは未提供)", 0xff9a9a ] ]; return; }
+        if (prev === void) { prev = s; prevTick = tick; return; }
+
+        var dt = tick - prevTick;
+        if (dt <= 0) return;
+        var frames  = s.frames        - prev.frames;
+        var uploads = s.texUploads    - prev.texUploads;
+        var bytes   = s.texUploadBytes - prev.texUploadBytes;
+        var us      = s.texUploadUs   - prev.texUploadUs;
+        prev = s;
+        prevTick = tick;
+
+        var fps      = frames * 1000.0 / dt;
+        var upPerSec = uploads * 1000.0 / dt;
+        var mbPerSec = bytes / 1048576.0 * 1000.0 / dt;
+        var msPerSec = us / 1000.0 * 1000.0 / dt;      // 1 秒あたり何 ms 転送に使ったか
+        var ratio    = us / 10.0 / dt;                  // 転送時間 / 経過時間 (%)
+        var perUp    = uploads > 0 ? bytes / uploads : 0;
+        var usPerUp  = uploads > 0 ? us / uploads : 0;
+
+        // 転送率が高いほど警告色にする (目視で詰まりが分かるように)。
+        // ただし fps が出ているなら、待ちの多くは vsync 同期の肩代わり
+        // (転送呼び出しの中で次フレームを待っている) なので警告色にしない。
+        var col = 0x9fd6a0;
+        var stalled = (fps < 50);
+        if (ratio >= 30) col = stalled ? 0xff9a9a : 0xffd76a;
+        else if (ratio >= 10) col = 0xffd76a;
+
+        var msPerFrame = frames > 0 ? us / 1000.0 / frames : 0;
+
+        lastLine = [
+            [ "提示フレーム",   "%.1f".sprintf(fps) + " / 秒" ],
+            [ "転送回数",       "%.1f".sprintf(upPerSec) + " / 秒" ],
+            [ "転送量",         "%.2f".sprintf(mbPerSec) + " MB/秒" ],
+            [ "転送 1 回あたり", "%.1f".sprintf(perUp / 1024.0) + " KB / " + "%.0f".sprintf(usPerUp) + " us" ],
+            [ "フレーム当たり", "%.1f".sprintf(msPerFrame) + " ms" ],
+            [ "転送時間",       "%.1f".sprintf(msPerSec) + " ms/秒" ],
+            [ "転送率",         "%.1f".sprintf(ratio) + " %", col ]
+        ];
+        hint = stalled ? "fps が落ちている = 転送が本当に足を引っ張っている"
+                       : "fps が出ているので、待ちの多くは vsync 同期ぶん";
+    }
+
+    // ------------------------------------------------------------------
+    //  メモリ / アロケータ
+    // ------------------------------------------------------------------
+    function redrawMemory()
+    {
+        card(MEX, MEY, MEW, MEH, "メモリ (getSystemAllocatorInfo)");
+        var y = MEY + 40;
+        if (memLine.count == 0) {
+            y = row(MEX, y, "(このビルドでは未提供)", "", 0x9fb0c8);
+        } else {
+            for (var i = 0; i < memLine.count; i++) {
+                var e = memLine[i];
+                y = row(MEX, y, e[0], e[1]);
+            }
+        }
+        y += 6;
+        stage.font.height = 13;
+        stage.drawText(MEX + 12, y, "取得できない項目はキー自体が無い (環境依存)", 0x8899b0, 255);
+        y += 18;
+        stage.drawText(MEX + 12, y, "doCompact / clearGraphicCache で解放の効果を見る", 0x8899b0, 255);
+        stage.font.height = 15;
+        stage.update(MEX, MEY, MEW, MEH);
+    }
+
+    function sampleMemory()
+    {
+        if (typeof System.getSystemAllocatorInfo == "undefined") { memLine = []; return; }
+        var m = System.getSystemAllocatorInfo();
+        if (m === void) { memLine = []; return; }
+        var out = [];
+        // 値が取れなかった項目はキー自体が無いので存在を見てから読む
+        if ("usedSize"            in m) out.add([ "使用量",           mb(m.usedSize) ]);
+        if ("peakUsedSize"        in m) out.add([ "ピーク",           mb(m.peakUsedSize) ]);
+        if ("totalFreeSize"       in m) out.add([ "空き",             mb(m.totalFreeSize) ]);
+        if ("allocatableSize"     in m) out.add([ "最大連続確保可",   mb(m.allocatableSize) ]);
+        if ("totalSize"           in m) out.add([ "ヒープ総量",       mb(m.totalSize) ]);
+        if ("processRss"          in m) out.add([ "プロセス RSS",     mb(m.processRss) ]);
+        if ("processPeakRss"      in m) out.add([ "RSS ピーク",       mb(m.processPeakRss) ]);
+        if ("systemAvailPhysical" in m) out.add([ "システム空き",     mb(m.systemAvailPhysical) ]);
+        memLine = out;
+    }
+
+    // ------------------------------------------------------------------
+    //  負荷生成
+    // ------------------------------------------------------------------
+    function rnd(n)
+    {
+        // 線形合同法。 実行ごとに同じ絵になるようにして A/B 比較を安定させる
+        seed = (seed * 1103515245 + 12345) & 0x3fffffff;
+        return (seed >> 8) % n;
+    }
+
+    function runLoad()
+    {
+        switch (loadMode) {
+        case 0:
+            break;
+
+        case 1:
+            // 小さいダーティ矩形を多数。 面積は小さいのに転送回数が増える。
+            for (var i = 0; i < rectCount; i++) {
+                var w = 18, h = 18;
+                var x = LDX + 8 + rnd(LDW - 16 - w);
+                var y = LDY + 34 + rnd(LDH - 42 - h);
+                stage.fillRect(x, y, w, h, 0xff000000 + (rnd(0x00ffffff)));
+                stage.update(x, y, w, h);   // 1 矩形 = 1 ダーティ矩形
+            }
+            break;
+
+        case 2:
+            // 毎フレーム全面塗り。 転送回数は 1 回だが 1 回が大きい。
+            var c = 0xff102030 + (phase % 128) * 0x00010101;
+            stage.fillRect(LDX, LDY + 30, LDW, LDH - 30, c);
+            stage.font.height = 16;
+            stage.drawText(LDX + 12, LDY + 40, "全面塗り: 大きい転送 1 回 / フレーム", 0xdfe6f2, 255);
+            stage.update(LDX, LDY + 30, LDW, LDH - 30);
+            break;
+
+        case 3:
+            // 中サイズの矩形が動く。 実ゲームのキャラ更新に近い形。
+            // ★消す矩形と描く矩形だけを update する。 エリア全面を update する
+            //   のに比べて転送量が桁で変わる (「動いた所だけ」の効き目)。
+            var bw = 120, bh = 90;
+            var span = LDW - 16 - bw;
+            var t = phase % (span * 2);
+            var bx = LDX + 8 + (t < span ? t : span * 2 - t);
+            var by = LDY + 40 + ((phase * 2) % (LDH - 50 - bh));
+            if (prevBx !== void) {
+                stage.fillRect(prevBx, prevBy, bw, bh, 0xff1b2130);
+                stage.update(prevBx, prevBy, bw, bh);
+            }
+            stage.fillRect(bx, by, bw, bh, 0xff4a90d9);
+            stage.update(bx, by, bw, bh);
+            prevBx = bx; prevBy = by;
+            break;
+        }
+        phase++;
+    }
+
+    // ------------------------------------------------------------------
+    function onDemoFrame(tick)
+    {
+        runLoad();
+        if (tick - refreshTick >= REFRESH) {
+            refreshTick = tick;
+            sampleStats(tick);
+            sampleMemory();
+            redrawStats();
+            redrawMemory();
+        }
+    }
+
+    function applyPbo()
+    {
+        if (!pboAvailable) return;
+        if (pboMode == 0)      System.texUploadUsePBO = void;
+        else if (pboMode == 1) System.texUploadUsePBO = true;
+        else                   System.texUploadUsePBO = false;
+        resetStats();
+    }
+
+    function resetStats()
+    {
+        System.renderStatsReset();
+        prev = void;
+        lastLine = [];
+        prevTick = System.getTickCount();
+    }
+
+    function onPanelAction(id, payload)
+    {
+        switch (id) {
+        case "load":
+            loadMode = Math.floor(payload + 0.5);
+            prevBx = void; prevBy = void;
+            drawLoadFrame();
+            resetStats();
+            setInfo("負荷: " + loadNames[loadMode]);
+            break;
+
+        case "count":
+            rectCount = Math.floor(payload + 0.5);
+            resetStats();
+            break;
+
+        case "pbo":
+            pboMode = Math.floor(payload + 0.5);
+            applyPbo();
+            setInfo(pboAvailable ? ("転送経路: " + pboNames[pboMode])
+                                 : "texUploadUsePBO はこのビルドには無い (OpenGL 無効)");
+            break;
+
+        case "reset":
+            resetStats();
+            setInfo("計測をリセットした");
+            break;
+
+        case "compact":
+            System.doCompact(clAll);
+            sampleMemory();
+            redrawMemory();
+            setInfo("doCompact(clAll): キャッシュを解放して GC を実行した");
+            break;
+
+        case "gcache":
+            System.clearGraphicCache();
+            sampleMemory();
+            redrawMemory();
+            setInfo("clearGraphicCache(): 画像キャッシュを破棄した");
+            break;
+
+        case "peak":
+            if (typeof System.resetMemoryPeak != "undefined") {
+                System.resetMemoryPeak();
+                sampleMemory();
+                redrawMemory();
+                setInfo("メモリピークを現在値までリセットした");
+            } else {
+                setInfo("resetMemoryPeak はこのビルドには無い");
+            }
+            break;
+
+        case "overlay":
+            // System.setMemoryOverlay は SDL3 ビルド限定 (他では何もしない)
+            memOverlay = (payload == true);
+            if (typeof System.setMemoryOverlay != "undefined") {
+                System.setMemoryOverlay(memOverlay);
+                setInfo("メモリオーバレイ: " + (memOverlay ? "表示" : "非表示")
+                        + " (SDL3 ビルド限定)");
+            } else {
+                setInfo("setMemoryOverlay はこのビルドには無い");
+            }
+            break;
+        }
+    }
+
+    function onDemoTest()
+    {
+        var s = System.renderStats;
+        var has = (s !== void) ? 1 : 0;
+        var mem = (typeof System.getSystemAllocatorInfo != "undefined") ? 1 : 0;
+        dm(@"@demotest:perf_stats renderStats=${has} frames=${has ? s.frames : 0} allocinfo=${mem} pbo=${pboAvailable ? 1 : 0}");
+    }
+
+    // ------------------------------------------------------------------
+    function panelDict()
+    {
+        return %[
+            size : [320, 470], background : [26, 30, 40, 236], locale : "ja-JP",
+            align : "bottom_right", margin : 16,
+            content : %[ type : "margin", padding : 14, child : %[ type : "vtile", children : [
+                %[ type : "vsize", height : 0, child : %[ type : "hspacer", width : 288 ] ],
+                %[ type : "align_center", child : %[ type : "label", text : "計測と負荷", size_scale : 1.2 ] ],
+                %[ type : "vspacer", height : 8 ],
+                %[ type : "label", text : "負荷 (0:なし 1:小矩形 2:全面 3:アニメ)" ],
+                %[ type : "slider_with_range", id : "load", min : 0, max : 3, initial : loadMode ],
+                %[ type : "vspacer", height : 6 ],
+                %[ type : "label", text : "小矩形の個数" ],
+                %[ type : "slider_with_range", id : "count", min : 1, max : 200, initial : rectCount ],
+                %[ type : "vspacer", height : 6 ],
+                %[ type : "label", text : "転送経路 (0:既定 1:PBO 2:直接)" ],
+                %[ type : "slider_with_range", id : "pbo", min : 0, max : 2, initial : pboMode ],
+                %[ type : "vspacer", height : 10 ],
+                %[ type : "button", id : "reset", text : "計測リセット" ],
+                %[ type : "vspacer", height : 6 ],
+                %[ type : "htile", children : [
+                    %[ type : "button", id : "compact", text : "doCompact" ],
+                    %[ type : "hspacer", width : 8 ],
+                    %[ type : "button", id : "gcache", text : "画像キャッシュ破棄" ]
+                ] ],
+                %[ type : "vspacer", height : 6 ],
+                %[ type : "button", id : "peak", text : "メモリピークをリセット" ],
+                %[ type : "vspacer", height : 8 ],
+                %[ type : "check_box", id : "overlay", text : "メモリオーバレイ (SDL3)", value : false ]
+            ] ] ]
+        ];
+    }
+}

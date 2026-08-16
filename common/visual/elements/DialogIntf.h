@@ -43,13 +43,16 @@ public:
 	void OnClosed(const ttstr& action) override;
 
 	// TJS から呼ばれる
-	bool ShowFile(const ttstr& path, bool grabFocus = true);
-	bool ShowJson(const ttstr& json_utf16, bool grabFocus = true);
+	// modal: -1 = 省略 (後方互換で grabFocus に追従) / 0 = 非モーダル / 1 = モーダル。
+	// grabFocus=true + modal=0 が「非モーダル+フォーカスあり」の中間状態で、
+	// キー/パッドはダイアログへ届き、未処理分はホスト (Window) へ素通しする。
+	bool ShowFile(const ttstr& path, bool grabFocus = true, int modal = -1);
+	bool ShowJson(const ttstr& json_utf16, bool grabFocus = true, int modal = -1);
 	// ShowJson の Dictionary 版: TJS の Dictionary / Array で書いたレイアウトを
 	// JSON 文字列へ変換して同じ経路に流す (elements_modal 側は JSON のまま)。
 	// grabFocus=false のときはキーボードフォーカスを取らず、未処理キーは
 	// ホスト (Window) へ通る (常駐 HUD / 独自ホットキー併用向け)。
-	bool ShowDict(iTJSDispatch2* dict, bool grabFocus = true);
+	bool ShowDict(iTJSDispatch2* dict, bool grabFocus = true, int modal = -1);
 	void Close();
 	// 変数 store へ書込 ("text_var" label の動的更新)。 非アクティブなら false。
 	bool SetVar(const ttstr& name, const ttstr& value);

@@ -76,6 +76,14 @@ void TVPSetElementsDefaultFontFamily(const ttstr& families);
 //!        TJS `Dialog.defaultFontFamily` プロパティ getter。
 ttstr TVPGetElementsDefaultFontFamily();
 
+//! @brief Elements の block text バックエンド (矩形テキストの折返し/禁則/
+//!        count 制限) を glyphware 実装に差し替える。 これで Elements の
+//!        text_area ウィジェットと本体 Layer.drawShapedTextArea が同じ
+//!        折返しロジック (glyphware::layoutBlock) を通る。 未呼出なら
+//!        Elements 内蔵の素朴な幅貪欲 wrap にフォールバックする。
+//!        EnsureRuntimeInitialized から呼ばれる (多重呼出は無害)。
+void TVPInstallElementsBlockTextBackend();
+
 //! @brief 実行時画像ストアへ storage path のファイルを name で登録する。
 //!        jsonc からは "mem://<name>" で参照 (image ウィジェット等)。
 //!        セーブサムネイル等、 実行時に変わる画像を Elements へ渡す仕組み。

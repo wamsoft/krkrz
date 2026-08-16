@@ -10,6 +10,7 @@
 
 #include "tjsCommHead.h"
 #include "LogIntf.h"   // TVPLogLevel
+#include <string>
 
 namespace TVPReplWeb {
 
@@ -17,7 +18,19 @@ namespace TVPReplWeb {
 bool Wanted();
 
 /// サーバを起動 (accept スレッド開始 + ログ sink 設定)。多重起動は無視。
+/// -replweb=<port> を解釈して起動し、GUI(コンソール無し)起動時は自動でブラウザを開く。
 void Start();
+
+/// host:port を明示してサーバを起動する (TJS: WebServer.start / startAt から)。
+/// -replweb オプション無しでもスクリプト側から UI サーバを立ち上げられる。
+/// ブラウザ自動オープンはしない (アプリが WebServer.openBrowser で明示的に開く)。
+/// host が空なら 127.0.0.1。多重起動は無視。
+void StartOn(const std::string& host, int port);
+
+/// URL をブラウザで開く。appMode=true なら Edge/Chrome を --app モードで試し、
+/// 不可なら既定ブラウザ(通常ウィンドウ)へフォールバックする。url 省略(空)時は
+/// 稼働中サーバの URL を使う。開けたら true。
+bool OpenBrowser(const ttstr& url, bool appMode = true);
 
 /// サーバを停止 (接続を閉じスレッドを終了)。
 void Stop();

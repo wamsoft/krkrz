@@ -1,0 +1,232 @@
+// -*- mode:tjs2 -*-
+// ======================================================================
+//  ライセンス一覧ビューア (Elements Dialog)
+//
+//  System.getLicenseList() / getLicenseText() の内容を、左ペイン =
+//  ジャンル (group) 別の項目リスト / 右ペイン = ライセンス本文の
+//  2 ペイン構成・画面全体サイズで参照できるダイアログ。
+//  1 画面構成で、項目選択は onAction → setVar で右ペインの text_box
+//  (複数行折返しテキスト) を差し替えるだけなので開閉・切替とも軽い。
+//
+//  使い方:
+//    Scripts.execStorage("ui/license_dialog.tjs");
+//    showLicenseDialog(win);            // モーダル。閉じるまでブロック
+//    showLicenseDialog(win, false);     // 非モーダル (戻り値 = Dialog or void)
+//
+//  Elements Dialog が無いビルド (KRKRZ_USE_ELEMENTS=OFF) では何もせず
+//  void を返す。
+// ======================================================================
+
+// group 表示名 (未知の group は "plugin:名前" 展開 or そのまま表示)
+function _licGroupCaption(group)
+{
+    switch (group) {
+    case "engine":      return "エンジン基盤";
+    case "font-engine": return "フォントエンジン";
+    case "font":        return "同梱フォント";
+    case "audio":       return "オーディオ";
+    case "video":       return "ビデオ";
+    case "ui":          return "UI";
+    case "platform":    return "プラットフォーム";
+    case "data":        return "プロジェクトデータ";
+    }
+    if (group.length > 7 && group.substring(0, 7) == "plugin:")
+        return "プラグイン: " + group.substring(7);
+    return group;
+}
+
+// 一覧をジャンル別に並べ替える (既知ジャンル → プラグイン → その他)
+function _licSortedGroups(list)
+{
+    var order = ["engine", "font-engine", "font", "audio", "video",
+                 "ui", "platform"];
+    var buckets = %[];       // group => [entry, ...]
+    var extras = [];         // order 外の group (出現順)
+    for (var i = 0; i < list.count; i++) {
+        var g = list[i].group;
+        if (buckets[g] === void) {
+            buckets[g] = [];
+            var known = false;
+            for (var j = 0; j < order.count; j++)
+                if (order[j] == g) { known = true; break; }
+            if (!known) extras.add(g);
+        }
+        buckets[g].add(list[i]);
+    }
+    var groups = [];
+    for (var j = 0; j < order.count; j++)
+        if (buckets[order[j]] !== void)
+            groups.add(%[ name: order[j], entries: buckets[order[j]] ]);
+    // plugin:* を先に、その他 (data 等) を後に
+    for (var j = 0; j < extras.count; j++)
+        if (extras[j].length > 7 && extras[j].substring(0, 7) == "plugin:")
+            groups.add(%[ name: extras[j], entries: buckets[extras[j]] ]);
+    for (var j = 0; j < extras.count; j++)
+        if (!(extras[j].length > 7 && extras[j].substring(0, 7) == "plugin:"))
+            groups.add(%[ name: extras[j], entries: buckets[extras[j]] ]);
+    return groups;
+}
+
+// ----------------------------------------------------------------------
+// ダイアログ本体: 項目クリック → setVar で右ペイン (text_box) を差し替え
+// ----------------------------------------------------------------------
+if (typeof global.Dialog != "undefined"
+    && typeof global.LicenseViewerDialog == "undefined") {
+    Scripts.eval(
+        "class LicenseViewerDialog extends Dialog"
+        + "{"
+        + "    var entries;"          // ジャンル順に並べたエントリ配列
+        + "    var current = -1;"     // 選択中 index
+        + "    function LicenseViewerDialog(entries)"
+        + "    { super.Dialog(); this.entries = entries; }"
+        + "    function onAction(id, payload)"
+        + "    {"
+        + "        if (id.length > 1 && id.substring(0, 1) == 'L')"
+        + "            selectEntry(+id.substring(1));"
+        + "    }"
+        + "    function selectEntry(idx)"
+        + "    {"
+        + "        if (idx == current || idx < 0 || idx >= entries.count) return;"
+        + "        if (current >= 0) setVar('m' + current, ' ');"
+        + "        current = idx;"
+        + "        setVar('m' + idx, '▶');"
+        + "        var e = entries[idx];"
+        + "        setVar('lic_name', e.name);"
+        + "        setVar('lic_meta', _licGroupCaption(e.group) + ' / ' + e.source);"
+        + "        var t = System.getLicenseText(e.name);"
+        + "        setVar('lic_text', t === void ? '(テキストを取得できません)' : t);"
+        + "    }"
+        + "}",
+        "ui/license_dialog.tjs(LicenseViewerDialog)");
+}
+
+// 画面辞書 (w, h = ダイアログサイズ。全パーツ幅を明示するので fit で縮まない)
+function _licScreenDict(w, h, groups, flat)
+{
+    var pad = 14;
+    var listW = 336;                       // 左ペイン幅 (スクロールバー込)
+    var dividerGap = 12;
+    var bodyH = h - pad * 2 - 40 - 8;      // ヘッダ行とマージンを引いた高さ
+    var rightW = w - pad * 2 - listW - dividerGap * 2 - 1;
+    var vars = %[ lic_name: "", lic_meta: "",
+                  lic_text: "左の一覧から項目を選択してください。\n\n"
+                            + "このソフトウェアが利用しているコンポーネントの"
+                            + "ライセンス文を参照できます。" ];
+
+    // 左ペイン: ジャンル見出し + 項目ボタン
+    var rows = [];
+    var idx = 0;
+    for (var g = 0; g < groups.count; g++) {
+        if (g > 0) rows.add(%[ type: "vspacer", height: 10 ]);
+        rows.add(%[ type: "align_left", child:
+                    %[ type: "label", text: _licGroupCaption(groups[g].name),
+                       size_scale: 1.1, color: [150, 190, 235, 255] ] ]);
+        rows.add(%[ type: "vspacer", height: 3 ]);
+        var entries = groups[g].entries;
+        for (var i = 0; i < entries.count; i++) {
+            vars["m" + idx] = " ";
+            rows.add(%[ type: "htile", children: [
+                %[ type: "hsize", width: 16, child:
+                   %[ type: "align_middle", child:
+                      %[ type: "label", text_var: "m" + idx, size: 12,
+                         color: [120, 200, 255, 255] ] ] ],
+                %[ type: "hsize", width: listW - 34, child:
+                   %[ type: "button", id: "L" + idx, text: entries[i].name ] ]
+            ] ]);
+            rows.add(%[ type: "vspacer", height: 2 ]);
+            idx++;
+        }
+    }
+
+    return %[
+        size: [w, h], background: [24, 26, 34, 248],
+        input: %[ arrow_focus_nav: 1 ],
+        vars: vars,
+        content: %[ type: "margin", padding: pad, child:
+                    %[ type: "vtile", children: [
+            // ヘッダ: タイトル + 選択中項目 + 閉じる
+            %[ type: "vsize", height: 40, child: %[ type: "htile", children: [
+                %[ type: "align_middle", child:
+                   %[ type: "label", text: "ライセンス情報", size_scale: 1.4 ] ],
+                %[ type: "hspacer", width: 24 ],
+                %[ type: "hsize", width: 320, child:
+                   %[ type: "align_left", child: %[ type: "align_middle", child:
+                      %[ type: "label", text_var: "lic_name", size_scale: 1.15,
+                         color: [170, 210, 255, 255] ] ] ] ],
+                %[ type: "hspacer", width: 12 ],
+                %[ type: "hsize", width: 280, child:
+                   %[ type: "align_left", child: %[ type: "align_middle", child:
+                      %[ type: "label", text_var: "lic_meta", size: 12,
+                         color: [140, 150, 170, 255] ] ] ] ],
+                %[ type: "filler" ],
+                %[ type: "hsize", width: 120, child:
+                   %[ type: "button", id: "close", text: "閉じる",
+                      close_on_click: 1, initial_focus: 1 ] ]
+            ] ] ],
+            %[ type: "vspacer", height: 8 ],
+            // 2 ペイン
+            %[ type: "htile", children: [
+                %[ type: "hsize", width: listW, child:
+                   %[ type: "vsize", height: bodyH, child:
+                      %[ type: "scroller", child:
+                         %[ type: "margin", padding: 4, child:
+                            %[ type: "vtile", children: rows ] ] ] ] ],
+                %[ type: "hspacer", width: dividerGap ],
+                %[ type: "hsize", width: 1, child:
+                   %[ type: "vsize", height: bodyH, child:
+                      %[ type: "box", color: [70, 76, 92, 255] ] ] ],
+                %[ type: "hspacer", width: dividerGap ],
+                %[ type: "hsize", width: rightW, child:
+                   %[ type: "vsize", height: bodyH, child:
+                      %[ type: "scroller", child:
+                         %[ type: "margin", padding: 6, child:
+                            %[ type: "hsize", width: rightW - 26, child:
+                               %[ type: "text_box", text_var: "lic_text",
+                                  size: 13,
+                                  color: [214, 218, 228, 255] ] ] ] ] ] ]
+            ] ]
+        ] ] ]
+    ];
+}
+
+// ----------------------------------------------------------------------
+// showLicenseDialog(win, modal = true)
+//   modal=true  : 閉じるまでブロックし、result 辞書 (%[action, values]) を返す
+//   modal=false : 非ブロッキング表示し、Dialog インスタンスを返す
+//                 (呼び側で invalidate すること。表示失敗時は void)
+// ----------------------------------------------------------------------
+function showLicenseDialog(win, modal = true)
+{
+    if (typeof global.Dialog == "undefined") return void;
+
+    var list = System.getLicenseList();
+    if (list === void || list.count == 0) return void;
+
+    var groups = _licSortedGroups(list);
+    var flat = [];
+    for (var g = 0; g < groups.count; g++)
+        for (var i = 0; i < groups[g].entries.count; i++)
+            flat.add(groups[g].entries[i]);
+
+    var dict = _licScreenDict(win.innerWidth, win.innerHeight, groups, flat);
+
+    var dlg = new LicenseViewerDialog(flat);
+    if (modal) {
+        var result;
+        try {
+            result = dlg.showModalDict(dict);
+        } catch (e) {
+            invalidate dlg;
+            throw e;
+        }
+        invalidate dlg;
+        return result;
+    }
+    // 非モーダル: 起動直後は DrawDevice 未登録で失敗することがある
+    // (呼び側でリトライ可)
+    if (!dlg.showDict(dict)) {
+        invalidate dlg;
+        return void;
+    }
+    return dlg;
+}

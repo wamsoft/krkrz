@@ -11,8 +11,11 @@
 #include "WindowFormEvent.h"   // AM_KEY_DOWN / AM_MOUSE_DOWN 等
 
 namespace {
+// 注入先のフォーム。モーダルウィンドウ表示中はそちらを対象にする
+// (実入力と同様、モーダル中はモーダルウィンドウしか操作できないため)。
 TTVPWindowForm* AgentMainForm()
 {
+	if (TTVPWindowForm* modal = TTVPWindowForm::GetModalWindowForm()) return modal;
 	if (!Application) return nullptr;
 	return Application->MainWindowForm();
 }

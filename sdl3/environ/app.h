@@ -19,6 +19,8 @@ protected:
 	SDL_Window *mWindow;
 	bool mVisible;
 	bool mEnableTouch;
+	enum tTVPBorderStyle mBorderStyle;	//< SDL には枠スタイルの概念が無いので値を保持する
+	int mMinWidth, mMinHeight, mMaxWidth, mMaxHeight;
 
 	bool checkTouchDevice();
 
@@ -39,6 +41,38 @@ public:
 	// 表示制御
 	virtual bool GetVisible() const;
 	virtual void SetVisible(bool b);
+
+	// モーダル表示 (Window.showModal)。ネストしたイベントループを回す。
+	virtual void ShowWindowAsModal() override;
+
+	// --- ウィンドウの位置 / サイズ / 装飾 -------------------------------
+	// generic の既定は「位置もサイズも取れない空実装」なので、ウィンドウ装飾を
+	// 持つデスクトップ SDL3 では実際の SDL_Window を操作する。
+	virtual void SetLeft(int l);
+	virtual int  GetLeft() const;
+	virtual void SetTop(int t);
+	virtual int  GetTop() const;
+	virtual void SetPosition(int l, int t);
+	virtual void SetWidth(int w);
+	virtual int  GetWidth() const;
+	virtual void SetHeight(int h);
+	virtual int  GetHeight() const;
+	virtual void SetSize(int w, int h);
+
+	virtual void SetMinWidth(int v);
+	virtual void SetMinHeight(int v);
+	virtual void SetMinSize(int w, int h);
+	virtual void SetMaxWidth(int v);
+	virtual void SetMaxHeight(int v);
+	virtual void SetMaxSize(int w, int h);
+
+	virtual void SetBorderStyle(enum tTVPBorderStyle st);
+	virtual enum tTVPBorderStyle GetBorderStyle() const;
+	virtual void SetStayOnTop(bool b);
+	virtual bool GetStayOnTop() const;
+	virtual void BringToFront();
+	virtual void SetFullScreenMode(bool b);
+	virtual bool GetFullScreenMode() const;
 
 	virtual void GetCursorPos(tjs_int &x, tjs_int &y);
 	virtual void SetCursorPos(tjs_int x, tjs_int y);

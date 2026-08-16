@@ -74,6 +74,9 @@ public:
 
 	void SetUpdateDestRect() { UpdateDestRect = true; }
 
+	//! プライマリレイヤ (DrawDevice の src) のサイズ。 zoom 計算に使う。
+	void GetLayerSize( tjs_int &w, tjs_int &h ) const { w = LayerWidth; h = LayerHeight; }
+
 public:
 	bool CanDeliverEvents() const; // tTJSNI_BaseWindow::CanDeliverEvents override
 

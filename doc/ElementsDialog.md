@@ -180,8 +180,26 @@ var r = dlg.showModalFile("ui/launcher.jsonc",
 - ⚠ **Elements の画像デコーダ (ThorVG/stb) は krkrz の BMP を読めない**
   (stb が "bad offset" で拒否)。 セーブサムネイルは BMP 保存 (saveThumbnail)
   なので、 **krkrz Layer に loadImages → saveLayerImage で PNG 化 → その PNG を
-  registerImage** する (ゲーム側 data/main/sg8bit_ui.tjs の sg8RegisterSlotThumb
-  が実例)。 PNG/JPEG/WEBP は ThorVG が直接デコードする。
+  registerImage** する。 PNG/JPEG/WEBP は ThorVG が直接デコードする。
+
+### フォーカスリング (static、 `Dialog.focusRing`)
+
+フォーカス中の要素に elements が描く汎用の枠 (青い角丸)。 既定 `true`。
+
+```tjs
+Dialog.focusRing = false;    // アプリ全体で消す
+```
+
+**画面単位ではなくアプリ全体設定** (グローバルテーマの
+`focus_ring_enabled` = `elements_modal::set_focus_ring_enabled`)。
+button / slider / dial / thumbwheel の枠がまとめて消える。 状態別の絵
+(通常 / オーバー / 押し下げ / 無効) を素材として持つ画像 UI では、 枠が絵に
+重なって邪魔になるので切る。 **フォーカス自体は生きている**ので、
+キー/パッドのナビゲーションと `hilite` frame への切替は従来どおり動く。
+
+> クラス内から触るときは `global.Dialog.focusRing`。 `Dialog` を継承した
+> クラスのメソッド内で素の `Dialog` と書くと親クラス参照になり、 static
+> プロパティへの代入が「メンバが見つかりません」になる。
 
 ### 描画密度 (static、 `Dialog.renderScale`)
 
@@ -199,7 +217,7 @@ overlay の ThorVG ラスタライズ密度を切り替える。 表示中の画
 センタリングの逆変換をかけて dialog 論理座標へ戻すため、 どのモードでも
 マウス操作は authored 座標系の hit-test に正しく届く。
 
-ゲーム側セットアップ例 (pcx_5pb_sg8bit の data/main/sg8bit_ui.tjs):
+ゲーム側セットアップ例:
 
 ```tjs
 ElementsDialog.registerFontDir("ui/resources/fonts");
@@ -208,6 +226,369 @@ ElementsDialog.setPadTheme("xbox");
 ElementsDialog.defaultFontFamily =
     "Open Sans, Roboto, Noto Sans JP, Noto Sans TC, Noto Sans SC, Noto Emoji";
 ```
+
+### 再ラスタライズ抑止 (static、 `Dialog.renderCache` / `Dialog.renderCount`)
+
+overlay は従来、 アクティブな全パネルを**毎フレーム** ThorVG (CPU) で再ラスタ
+ライズしてテクスチャへ再アップロードしていた (720p で約 92 万 px/パネル)。
+`renderCache = true` (既定) では「update (状態更新) と rasterize (描画) の分離」
+により、 変化の無いフレームはラスタライズ + 全クリア + アップロードを丸ごと
+省略し、 レンダラ (SDL / OGL / D3D11) が layer 単位で保持している前回テクスチャ
+を同じ位置に提示するだけになる。 アイドル中の CPU 負荷が大幅に下がる
+(Switch 等の非力な CPU 向け)。
+
+- ダーティ (再描画) になる契機: 入力イベントの転送 (マウス移動含む) /
+  focus・hover の変化 / パーツ演出 (`animate`) の再生中 / `setVar` ・言語切替の
+  実変化 (同値書込は無視) / view 内部の refresh 要求 (テキスト欄キャレットの
+  点滅等) / registerImage による mem:// 画像差替 / 画面遷移エフェクト混色中 /
+  ウィンドウリサイズ・デバイス切替・`renderScale` 変更 (描画条件の不一致)。
+- 状態更新 (変数 poll / パーツ演出 tick / 退場演出の完了検出 / 遅延 focus 適用 /
+  キャレット点滅タイマ) は描画をスキップするフレームでも毎フレーム実行される
+  (`overlay_session::update()`)。 挙動は従来と変わらず、 描画だけが省略される。
+- `Dialog.renderCache = false` で従来どおり毎フレーム再描画 (負荷 A/B 比較・
+  問題切り分け用のランタイム逃げ道)。
+- `Dialog.renderCount` (読取専用) は実際にラスタライズした累計回数。 アイドル時
+  に増えていなければキャッシュが効いている (検証・負荷比較用カウンタ)。
+
+### 部分再描画 (static、 `Dialog.partialRedraw`)
+
+`renderCache` はパネル単位の「全か無か」で、 変化のあるフレームは常に全面を
+再ラスタライズしていた。 `partialRedraw = true` (既定) では、 **ダーティが矩形
+で特定できる変化はその矩形だけを描き直す**。
+
+- 矩形化される契機:
+  - **テキスト欄キャレットの点滅** (view の `refresh(rect)` 経由)
+  - **`setVar` / `vars_on_focus` による要素更新** — 変数の subscriber に
+    「見た目が変わる要素」を持たせ、 その要素の矩形をダーティにする。
+    複数要素が変わる購読 (slider+gauge) や位置が変わるもの (`at_var`) は
+    特定できないので全面へフォールバック
+  - **focus / hover の変化** — 変化した新旧の id を `id_map` から引いて
+    両方の矩形をダーティにする (片方だけだと枠や hilite が消え残る)
+  - **パーツ演出 (`animate`) の tick** — 変換 proxy (`xform_base`) が描画の
+    たびに subject の未変換矩形を `xform_state` へ控えるので、 ホストは
+    それと変換量から実描画矩形を**算術だけで**求められる
+    (`transformed_bounds()`)。 tick の前後で求めて両方を積む (動いた元の
+    場所も塗り直す必要があるため)。 **要素ツリーを走査しないのが要点** —
+    走査方式も試したが +1.9ms/frame でラスタの節約を食い潰した
+- 全面のままの契機: 入力転送 (マウス移動含む)、 言語切替、
+  `invalidate()`、 画面遷移エフェクト混色中。
+  範囲を特定できない契機は**呼び出し側で明示的に全面ダーティにする**設計
+  (「不明なら全面」を既定にして正しさを担保)。
+- ⚠ 要素は自分の bounds を**はみ出して描く**ことがある (レイアウトを再計算
+  しないまま label の text が伸びた場合など)。 そのためダーティ矩形は
+  bounds ではなく「bounds ∪ 自然サイズ (`limits().min`)」で求め、 さらに
+  変数変化では**変更前と変更後の 2 回**矩形を積む (縮んだときに伸びていた
+  頃の描画が消え残らないように)。
+- 処理の流れ: elements 側が矩形を device px で蓄積 →
+  `overlay_session::render_to_buffer_partial()` が矩形を外側 1px 膨らませて
+  **その矩形だけクリア** → **`view::draw_bounds` で矩形外の要素をカリング**
+  (composite / layer の子カリングが `view_bounds` を見る = shape 生成ごと省く)
+  → **ThorVG `Canvas::viewport` でラスタ範囲も矩形に限定** → core 側が
+  `iTVPDialogRenderer::ReleaseBufferRect` で**その矩形だけテクスチャへ転送**。
+- `ReleaseBufferRect` は SDL (`SDL_UpdateTexture` の rect 版) と OGL
+  (`GLTexture::UpdateTexture` の部分矩形) で実装済み。 未実装レンダラ
+  (D3D11 = WINVER) は基底の既定実装が全面 `ReleaseBuffer` へフォールバック
+  するので正しさは保たれる。
+- 前提として **`renderCache` 有効時のみ機能する** (staging に前回フレームが
+  残っていることが条件)。 buffer サイズ変化 / 遷移エフェクト混色中 /
+  ダーティ矩形が面積の 3/4 以上を占める場合は全面描画へ自動フォールバック。
+- `Dialog.partialRedraw = false` で常に全面再描画 (A/B 比較・切り分け用)。
+  実際に部分描画できた回数は `renderStats.partials`。
+
+実測 (Windows SDL、 ラスタ 1 回あたりの時間):
+
+| シナリオ | 全面 | 部分 | |
+|---|---|---|---|
+| キャレット点滅 | 3505us | 1700us | -52% |
+| HUD カウンタ (毎フレーム setVar) | 1580us | 998us | -37% |
+| アニメ小 (無限 yoyo) | 2320us | 1489us | -36% |
+| アニメ広域 (大パネル) | 3089us | 2188us | -29% |
+| 複合 3 パネル | 1544us | 1041us | -33% |
+
+効いているのは主に **`view::draw_bounds` による子要素カリング** (矩形外の
+要素は shape 生成ごと省かれる) で、 ThorVG viewport によるラスタ範囲限定
+だけでは -21% に留まった (コストの大半は shape 生成側にある)。 全面再描画
+した絵とのピクセル差は無し (文字列の伸縮・hover 状態とも完全一致。
+キャレットのみ AA 境界の数 px・輝度差 2)。
+
+実測 (NX 実機 EDEV / Release、 `-benchauto`。 ラスタ 1 回あたり / CPU 占有):
+
+| シナリオ | 導入前 | 導入後 | |
+|---|---|---|---|
+| HUD カウンタ (毎フレーム setVar) | 8747us / 54.5% | **5949us / 37.3%** | -32% |
+| アニメ小 (無限 yoyo) | 12688us / 78.2% | **9108us / 56.4%** | -28% |
+| アニメ広域 (大パネル) | 16317us / 93.9% / **54.5fps** | **11904us / 74.5% / 60.0fps** | -27% (**フレーム落ち解消**) |
+| 複合 3 パネル | 8748us / 54.9% | **5935us / 37.9%** | -32% |
+| 静的パネル | ラスタ 0 回 / 0.6% | 変化なし | (既にゼロコスト) |
+
+演出の矩形化は「毎フレーム要素ツリーを走査して bounds を得る」方式を一度
+試して取り下げている (+1.9ms/frame でラスタの節約を上回った上、 変換後の
+実描画範囲を再現しきれず残像が出た)。 現行は **proxy が描画時に既に
+持っている `ctx.bounds` を控える**方式で、 走査ゼロ・変換の適用順も
+proxy と同一なので原理的に残像が出ない。 有限アニメ (移動+拡縮+回転) を
+完走させた後の画素比較で、 全面再描画と**完全一致**を確認済み。
+
+NX 実機 (EDEV / Release) では、 矩形を特定できないシナリオ
+(counter / anim / multi) の数値が導入前と一致 = **回帰なし**を確認済み
+(部分再描画が発動しないので当然だが、 カリング追加による副作用がない
+ことの確認になる)。 NX でのキャレット部分再描画の効果測定は下記の理由で
+自動化できないため、 実画面 (テキスト入力を持つゲーム画面) での確認となる。
+
+⚠ **テキスト欄に focus が入るとソフトウェアキーボードが開く** (Switch /
+Android 等。 ホストが focus に追従して出す)。 **表示しただけで focus が
+入る `initial_focus` 指定は、 そうしたプラットフォームでは避けること**。
+`elements_bench` の caret パネルも initial_focus を持たず、 クリックして
+初めて点滅する。 自動計測の caret A/B は `-benchcaret` を明示指定した
+ときだけ実行される (既定の `-benchauto` はテキスト欄に focus しない)。
+
+### overlay 描画コストの内訳 (2026-08-13 実測、 Windows SDL)
+
+部分再描画で「描く範囲」は絞り切ったので、 残りは範囲内を描くコストになる。
+その内訳を測ると **ほぼ全てテキスト**だった:
+
+| 内容 | ラスタ 1 回 |
+|---|---|
+| ラベル 20 個 | 12.3ms |
+| box 20 個 (同数・同面積) | 0.23ms |
+
+グリフ数に比例する (4 文字×20=8.7ms / 16 文字×20=15.4ms / 48 文字×20=33.7ms)
+ので、 内訳は概ね **28us/グリフ + 320us/テキスト 1 本**。 これは ThorVG SW の
+**グリフ輪郭ラスタライズを毎フレーム行っている**ぶんで、 整形結果 (shaping)
+を使い回しても消えない。 実際に以下を試して効果が無いことを確認済み:
+
+- 整形済み `tvg::Text` を (文字列/フォント/サイズ/spacing/locale) でキャッシュ
+  して `Paint::ref()` で保持 → 変化なし
+- 色/変換を「前回と同じなら設定しない」ようにして再テッセレーションを抑止
+  → 変化なし
+
+効いたのは**テキスト描画のバッチ化**のみ (テキスト 1 本ごとに ThorVG の
+add/update/draw/sync/remove を回していたのをやめ、 1 フレーム 1 サイクルに
+まとめた: ラベル 20 個で 15.2ms → 12.3ms)。
+
+### テキスト run のビットマップキャッシュ (2026-08-13 導入)
+
+上記を受けて、 **同じ内容のテキストは 1 度だけラスタライズして、 以後は
+その ARGB ビットマップを貼り直す**ようにした (elements 側 `text_backend_tvg`)。
+即時モードの canvas のままテキストだけ実質保持モードになる。
+
+- キャッシュ鍵 = 文字列 / フォント / locale / サイズ / 字間 / 色 / 拡大率。
+  上限 4M px (≒16MB) を超えたら古いものから捨てる
+- **初めて見る文字列はキャッシュに載せず従来の輪郭描画で描く**。 毎フレーム
+  変わるテキスト (HUD カウンタ等) はどうせ必ずミスするので、 載せると
+  オフスクリーン描画のぶん却って遅くなるため。 2 回目に現れて初めて載せる
+- 回転/スキュー中・グラデーション塗りは対象外 (従来経路のまま)
+- 環境変数 `ELEMENTS_TEXTCACHE_OFF=1` で従来経路に固定できる (A/B 用)
+
+効果 (ラスタ 1 回あたり、 Windows SDL):
+
+| シナリオ | 導入前 | 導入後 |
+|---|---|---|
+| ラベル 20 個 (毎フレーム全面) | 12.3ms | **9.5ms** |
+| 全面再描画 (partialRedraw=OFF) の各シナリオ | — | **-25〜35%** |
+| 部分再描画併用時 (既定) | — | -0〜20% (元々描く量が少ない) |
+
+バッチ化と合わせると 15.2ms → 9.5ms で **-38%**。
+
+**NX 実機 (EDEV / Release / -benchauto、 ラスタ 1 回あたり)**:
+
+| シナリオ | 導入前 | 導入後 |
+|---|---|---|
+| idle を毎フレーム全面ラスタ (renderCache OFF) | 29.6ms (32fps) | **19.3ms (48fps)** |
+| anim 広域 | 11.9ms | **9.7ms** |
+| anim 小 | 9.1ms | **8.1ms** |
+| counter / 複合 | 5.9ms | 5.9〜6.0ms (横ばい) |
+
+counter / 複合が横ばいなのは**設計どおり**で、 毎フレーム内容が変わる
+テキストは (2 回目に現れないので) キャッシュに載らない。 効くのは
+「同じ文言を描き続ける」 通常の UI で、 そこが最大 -35% になる。
+
+輪郭描画との画素差は 「別バッファに描いてから合成する」 ことによる丸め差で、
+拡大比較しても品質は同等 (完全一致ではない)。
+
+⚠ 実装上の落とし穴 (elements 側を触るとき):
+- `tvg::Text` の原点は**行の上端**でありベースラインではない
+- canvas に add した paint は remove で所有権ごと手放されるので、 同じ
+  Picture を毎フレーム貼り回せない。 キャッシュはテンプレートとして持ち、
+  描画には `duplicate()` を渡す (pixmap 描画と同じ作り)
+- 貼付位置は整数画素へ吸着させる (端数のままだと ThorVG が再サンプルする)
+
+さらに削るなら **シーンの保持 (retained 化)** — 毎フレーム全 Shape を作り直す
+即時モードをやめ、 変化した paint だけ更新する。 ThorVG の damage 機構
+(`TVG_PARTIAL`) もこれとセットで初めて使える。
+
+### 描画パイプラインの区間計測 (static、 `Dialog.renderStats` / `renderStatsReset()`)
+
+overlay 描画の負荷内訳を実測するための累積カウンタ (`ElementsDialogManager` の
+PaintOverlay / RenderInstance に計測点を常設。 steady_clock 数回/フレームで
+オーバーヘッドは無視できる)。 `Dialog.renderStats` (読取専用) が辞書を返す:
+
+| キー | 意味 |
+|---|---|
+| `frames` | PaintOverlay 呼出回数 (= 提示フレーム数。 複数 DrawDevice 時はデバイス毎に 1) |
+| `updates` | `overlay_session::update()` 実行回数 (インスタンス毎・毎フレーム) |
+| `rasters` | `render_to_buffer` 実行回数 (renderCount と同じ契機) |
+| `partials` | うち部分再描画 (ダーティ矩形限定) だった回数 |
+| `cachedPresents` | renderCache による提示のみ (ラスタ省略) の回数 |
+| `presents` | PresentOverlay 呼出回数 |
+| `totalUs` | PaintOverlay 全体の所要時間 (microsecond、 以下同) |
+| `updateUs` | update (変数 poll / 演出 tick / dirty 判定) |
+| `rasterUs` | render_to_buffer (ThorVG CPU ラスタ + 全クリア) |
+| `acquireUs` | AcquireBuffer (staging 確保 / テクスチャ lock 待ち) |
+| `uploadUs` | ReleaseBuffer (テクスチャ転送) |
+| `presentUs` | PresentOverlay (提示) |
+
+すべて累積値なので、 **2 回読んで差分を取り、 経過実時間との比**で
+「Elements が 1 フレーム/1 秒あたりに消費した時間・割合」を出す。
+`Dialog.renderStatsReset()` で 0 クリア (計測区間の開始)。
+
+計測用ベンチ画面 = **`data/elements_bench/`** (コアデモ)。 更新パターン別の
+シナリオ (静的 / キャレット点滅 / 毎フレーム setVar / アニメ小 / アニメ広域 /
+複合) を数字キーで切り替え、 renderCache の A/B (R キー) と負荷内訳を
+500ms ごとに表示する。 renderCache 効果の実測、 部分再描画 (ダーティ矩形化)
+導入時の before/after 確認に使う。
+
+実測知見 (NX 実機 EDEV / Release, 2026-08-13, -benchauto スイープ):
+- **renderCache の効果は決定的**: idle パネル 1 枚でも cache OFF だと全面
+  再ラスタ 29.6ms/回で fps 32 まで低下 (share 96.5%)。ON なら share 0.6% /
+  60fps (アイドルはゼロコスト化)。旧挙動 (毎フレーム再ラスタ) の重さの
+  定量確認でもある。
+- **NX の支配項は raster (ThorVG CPU)**: upload は 0.1〜0.8ms/frame と軽い
+  (Windows のスパイクとは逆傾向)。raster は counter 小パネル 8.9ms /
+  anim 小 12.8ms / anim 広域 16.4ms (fps 54 に低下) / 複合 cache OFF 17fps。
+- 毎フレーム更新系 (HUD カウンタ・アニメ) は renderCache が効かず 55〜94%
+  を消費 → **部分再描画 (ダーティ矩形) はラスタ矩形限定を本命に据える**
+  (発動条件成立)。
+
+実測知見 (Windows SDL, 2026-08-12, -benchauto スイープ):
+- raster (ThorVG) は 1 回 1.6〜5.2ms でパネル内容/サイズに応じて安定
+  (毎フレーム再ラスタのシナリオでは定常の支配項)。
+- upload が 1 回 ~15ms に張り付く現象があった → **原因判明・解消済み**
+  (次節)。当時 「SDL レンダラのテクスチャ同期起因」 と推定していたが誤りで、
+  実際は既定 DrawDevice (`sdlogl`) の PBO 経路だった。
+
+### テクスチャ転送経路 (2026-08-13 に見直し・解消)
+
+overlay のアップロードが 1 回 13〜14ms かかり、CPU も 1 コア分を食っていた。
+DrawDevice ごとに経路が違うので、まず**どの経路が動いているか**を確認する
+(SDL ビルドの既定は `-drawdevice=sdlogl` = OpenGL 直接)。
+
+| DrawDevice | レンダラ | 転送 |
+|---|---|---|
+| `sdlogl` / `ogl` (SDL 既定) | `OGLDialogRenderer` | `glTexSubImage2D` |
+| `sdl` | `SDLDialogRenderer` | `SDL_UpdateTexture` |
+| WINVER (`BasicDrawDevice`) | `D3D11DialogRenderer` | `UpdateSubresource` |
+
+**① OpenGL 経路の PBO をやめた**。 `GLTexture::UpdateTexture` は PBO を
+map して書き、`glTexSubImage2D` で吸い上げる形だが、**ANGLE (GLES→D3D11) では
+PBO からの転送で内部的にバッファを読み戻すため、毎フレーム書き換える overlay
+では同期待ちになる** (しかもビジーウェイト)。 overlay の元データは既に CPU 側の
+staging にあり PBO に書き写す意味も無いので、`GLTexture::UpdateTextureDirect`
+(部分矩形は `GL_UNPACK_ROW_LENGTH` で読み飛ばす = コピー 0 回) を新設して
+直接転送に切り替えた。 環境変数 `KRKRZ_DLGTEX=pbo` で旧経路に戻せる。
+
+| 計測 (5 秒、counter / anim 広域) | PBO (旧) | 直接 (新) |
+|---|---|---|
+| upload 1 回 | 13.7〜14.5ms | **9〜56us** |
+| プロセス CPU 時間 | 5.7〜6.3 秒 | **1.1〜1.8 秒** |
+
+CPU **-70〜83%**。 fps は元々フレーム上限に張り付いていて変わらないが、
+1 コア分を無駄に焼いていたのが無くなる。
+
+**② WINVER (D3D11) をアップロードと present に分けた**。 旧実装は
+`ReleaseBuffer` が no-op で、`PresentOverlay` が毎回 DYNAMIC テクスチャへ
+`Map(WRITE_DISCARD)` + 全面 memcpy していた。 **renderCache でラスタを省略
+した「変化なし」フレームでも全面転送が走っていた**ことになる。
+`D3D11_USAGE_DEFAULT` + `UpdateSubresource(box)` に変え、`ReleaseBuffer` /
+`ReleaseBufferRect` で転送、present は `RenderSRV` で描くだけにした。
+
+| 計測 (静止パネル / renderCache ヒット中) | 旧 | 新 |
+|---|---|---|
+| 420x360: present / 1 フレーム総計 | 75us / 113us | **5us / 39us** |
+| 1240x680: present / 1 フレーム総計 | 323us / 365us | **5us / 39us** |
+
+静止 UI の常時コストが **-65〜89%**、かつ**パネルサイズ非依存**になった。
+`Map(WRITE_DISCARD)` はリソース全体を捨てる契約なので部分更新ができない
+(だから DEFAULT + `UpdateSubresource` にした) 一方、全面転送だけは
+`WRITE_DISCARD` の方が速いため、**大パネルを毎フレーム全面ラスタする**
+ケースのみ 267us → 401us と僅かに不利になる。 部分再描画が効く通常の
+使い方では圧倒的に新実装が有利。
+
+`-drawdevice=sdl` の `SDL_UpdateTexture` 経路は元から 65〜214us で問題なし。
+
+**③ ゲーム本画面は転送サイズで経路を選ぶようにした** (2026-08-13)。
+
+一度 「本画面は PBO と直接転送で実測差が無い」 と結論したが **それは誤り**で、
+**フレーム上限を外した状態 (137fps) で測っていたため待ちがフレーム全体に
+分散して経路差が消えていた**。 通常どおりフレーム上限のある状態で測り直すと
+はっきり差が出る。
+
+NX 実機実測 (`data/upload_bench`、 60fps 上限下、 転送が実時間に占める割合):
+
+| 更新の形 | PBO | 直接転送 | **既定 (自動判定)** |
+|---|---|---|---|
+| dense (全画面 1 矩形 = 3.5MB) | 11.9% | 16.9% | **9.2%** |
+| sparse (小矩形 40 個 = 各 9KB) | **29.7%** | 5.9% | **5.8%** |
+
+**形によって速い経路が逆転する**。 固定コストを逆算すると
+**PBO = 121us/回 + 2.5GB/s、 直接転送 = 16us/回 + 1.25GB/s** で、
+交差点は約 **256KB**。 そこで `GLTexture::UsePBOForUpload(bytes)` が
+**転送バイト数で選ぶ**ようにした (256KB 未満は直接、 以上は PBO)。
+
+sparse = **立ち絵 + UI が散在して個別更新される実案件の形**。 ここが
+旧既定 (常に PBO) では 29.7% を食っていたのが 5.8% になる (**-80%**)。
+dense も 11.9% → 9.2% で悪化しない。
+
+**ただし ANGLE (Windows の GLES→D3D11) はサイズに関係なく PBO が致命的に
+遅い**ため (全画面 1 枚で 10〜13ms、 実時間の 60〜80%)、 `glGetString(GL_RENDERER)`
+に "ANGLE" を含む場合は常に直接転送にしている。
+
+overlay 側も同じ判定に統一した (部分再描画の矩形は小さいのでほぼ直接転送)。
+NX の `elements_bench` で回帰が無いことを確認済み (全シナリオ 60fps 維持)。
+
+参考: 同じ 3.5MB の全面転送で **OpenGL (ANGLE) 1.1ms 対 D3D11
+`UpdateSubresource` 0.29ms 対 `SDL_UpdateTexture` 0.32ms**。 ANGLE の GLES
+テクスチャ転送はネイティブ D3D11 の 3〜4 倍遅い。
+
+⚠ **Windows の計測値は試行ごとに数倍振れる** (デスクトップコンポジタ等との
+競合と思われる)。 経路の判断は **NX 実機の値で行うこと** (NX は誤差 1% 以内で
+再現する)。
+
+### 転送コストの計測画面 (`data/upload_bench`)
+
+上記を測るための計測画面。 更新の形 (dense / sparse) × 転送経路
+(PBO / 直接) を切り替えて `System.renderStats` の値を表示する。
+
+- 操作: `1` = dense / `2` = sparse / `P` = 経路切替 / `C` = 計測リセット
+- 自動: `krkrz64.exe <data> -uploadauto` で全組合せを無操作計測し
+  `@upload ...` 行をログへ出して終了 (NX は `nxctl upload-inst`)
+- 経路の実行時切替は **`System.texUploadUsePBO`** (void = 既定 = サイズによる
+  自動判定 / true = PBO 強制 / false = 直接転送 強制)。 環境変数を渡せない
+  実機用。 環境変数 `KRKRZ_GLTEXUP=pbo|direct` も同じ意味
+- 自動計測は 3 経路 (既定 / PBO / 直接) × 2 形 = 6 組を回すので、
+  **自動判定が形ごとに速い方を選べているか**がそのまま確認できる
+
+⚠ **フレーム上限のある状態で測ること**。 無制限 fps で測ると待ちが分散して
+経路差が消える (実際にそれで一度誤った結論を出した)。
+
+### 画面転送コストの計測口 (`System.renderStats` / `System.renderStatsReset()`)
+
+上の調査で使った計測を常設したもの。 **ビルドオプション不要で常に有効**
+(1 フレームに数回のカウンタ加算のみ)。 描画デバイスに依らず、
+OpenGL / SDLDrawDevice / WINVER の 3 経路すべてで同じキーが埋まる。
+
+| キー | 意味 |
+|---|---|
+| `texUploadUs` | 転送呼び出しの累計時間 (us) |
+| `texUploads` | 転送回数 (ダーティ矩形単位) |
+| `texUploadBytes` | 転送した累計バイト数 |
+| `frames` | 転送フェーズの実行回数 (≒ 画面更新フレーム数) |
+
+累積値なので 2 回読んで差分を取る。 overlay 側の内訳は `Dialog.renderStats`。
+
+⚠ **fps だけ見ても転送の詰まりは分からない**。 フレーム上限に張り付いていると
+転送が 14ms かかっていても fps は変わらない (今回の PBO 問題がまさにそれで、
+1 コアを無駄に焼いていた)。 `renderStats` の差分と**プロセスの CPU 時間**
+(`Get-Process ... TotalProcessorTime`) を併せて見ること。
 
 ### SDL 拡張プラグイン向け C ABI サービス (`tp_dialog_service.h`)
 
@@ -266,6 +647,16 @@ DrawDevice / Window の入力ハンドラは `TVP_DIALOG_INTERCEPT` マクロで
 「消費したか (bool)」を返し、 消費した場合だけマクロが `return` してゲーム入力処理を止める。**
 これにより非モーダル UI で、 ダイアログに当たらない入力をゲームへ素通しできる。
 
+配送の優先順位は一列に整理されている:
+
+```
+1. モーダルインスタンス     … 全消費 (最優先。 下にもゲームにも通さない)
+2. ホストホットキー         … registerHotKey 登録キーはダイアログへ渡さず
+                              通常経路 (Window.onKeyDown / onMouseDown) へ直行
+3. フォーカスパネル         … キー/パッドを送り、 未処理分のみ素通し
+4. ゲーム / レイヤ          … 未消費の落ち先
+```
+
 複数インスタンス時の配送ルール (最前面 = z-order 末尾から走査):
 
 | 入力 | ルール |
@@ -292,6 +683,20 @@ DrawDevice / Window の入力ハンドラは `TVP_DIALOG_INTERCEPT` マクロで
 - **`grabFocus` 引数** (`ShowFromJson*` / `StartFlow*` / TJS `startFlow`/`startFlowScreens`、
   既定 `true`): `false` で「フォーカスを取らない常駐 HUD」になり、 キーを一切奪わない
   (操作はマウス、 またはフォーカスを持つ別ダイアログ経由)。 `modal=true` は常に強制取得。
+- **`modal` 引数** (TJS `showJson`/`showFile`/`showDict` の第 3 引数、 省略時は
+  後方互換で `grabFocus` に追従): `showJson(json, true, false)` =
+  **「非モーダル + フォーカスあり」の中間状態**。 キー/パッドはダイアログへ届き
+  (パッドで slider / picker を操作できる)、 未処理分はホストへ素通しする。
+  シェル操作に必須のキーはホストホットキー (下記) と組み合わせて確保する。
+  用途 3 態: モーダルダイアログ (`showJson(json)`) / 操作パネル
+  (`showJson(json, true, false)`) / 表示専用 HUD (`showJson(json, false)`)。
+- **テキスト入力フォールバック** (2026-08-10): `grabFocus=false` のパネルでも、
+  クリック等で **input_box 等のテキスト入力ウィジェットが focus されている間**
+  (`focus_consumes_text()`) は、 そのインスタンスへキー/テキスト (`Agent.text` /
+  IME 含む) が届く。 未処理キーは従来どおりゲームへ素通しなので、 テキスト欄から
+  focus が外れれば (別ウィジェットのクリック等) ゲームのホットキーも復帰する。
+  「クリックでキャレットが出るのに文字が届かない」ギャップの解消 = 見えている
+  キャレットと入力の行き先が常に一致する。
 
 例: 左上メニュー (`grabFocus=true`) + 右下 HUD パネル (`grabFocus=false`) を同時表示。
 メニューにフォーカスがあるが、 メニューが使わない `P` キーは passthrough でゲームに届き、
@@ -300,6 +705,39 @@ DrawDevice / Window の入力ハンドラは `TVP_DIALOG_INTERCEPT` マクロで
 `modal=true` なインスタンスが最前面なら、 矩形外のクリックも含めて全入力を独占するので、
 従来のモーダルダイアログと同じ「下を触れない」挙動になる。 非モーダルの常駐メニュー +
 背景のゲーム動作を併存させたいときは `startFlow` (= `modal=false`) を使う。
+
+### ホストホットキー (Dialog.registerHotKey)
+
+「ダイアログにフォーカスを渡しつつ、 特定のキーだけは必ずホストが取る」ための
+バイパス機構。 登録したキーは `Forward*` の先頭で判定され、 **ダイアログへ渡らず
+非消費 (false) で返る** = そのまま通常のゲーム入力経路 (`Window.onKeyDown` /
+`onMouseDown` 等) へ流れる。 専用イベントは無い (バイパス方式)。
+
+```tjs
+Dialog.registerHotKey(key, shift = 0, duringTextInput = false);
+Dialog.unregisterHotKey(key, shift = 0);
+Dialog.clearHotKeys();
+```
+
+- `key` は VK コード。 **キー / パッドボタン (VK_PAD*) / マウスボタン
+  (VK_LBUTTON / VK_RBUTTON / VK_MBUTTON / VK_XBUTTON1 / VK_XBUTTON2) を同じ
+  空間で受ける**。 右クリック=戻る等のマウスホットキーもここで確保できる
+  (全画面透過の非モーダル overlay が右クリックを常に拾ってしまう問題の解)。
+- `shift` は `ssShift | ssAlt | ssCtrl` の組合せ。 down は完全一致、 **up は
+  key のみ一致**で対でバイパスする (押下中の修飾キー変化で up がパネルへ
+  漏れない)。
+- `duringTextInput=false` (既定) は **テキスト入力ウィジェット focus 中
+  (`focus_consumes_text()`) は抑止** = ESC/BS 等を入力欄から奪わない。
+  「入力中も必ず効かせたい」キーだけ `true` で登録する。
+- **モーダル表示中は無効** (モーダル確認ダイアログの Esc=cancel 等を奪わない)。
+- テーブルはプロセス共有 (Window 単位ではない)。 印字キーの登録は非推奨
+  (`onKeyPress` の文字イベントまでは抑止しない)。
+
+実例が demolib (`data/demolib/demo_common.tjs` の DemoShell): パネルを
+`showJson(json, true, false)` (フォーカスあり非モーダル) で出し、 シェル操作に
+必須の ESC / PgUp / PgDn / パッド B / LB / RB をホットキー登録する。 パッドの
+十字 / A はホットキーにしない = フォーカスパネルのウィジェット操作に流れ、
+パネルが無いシーンでは素通しでシェルに届く。
 
 `tTVPElementsDialogManager::ForwardKeyDown` / `ForwardKeyUp` は VK code を 2 種に振り分ける (`RouteVk`):
 
@@ -322,6 +760,37 @@ high/low サロゲート 2 回に分けて配信するので、 `ForwardKeyPress
 合成し 1 コードポイント (最大 4 byte UTF-8) にする。
 
 Elements 側はこれを受けて [keyboard / arrow / gamepad ナビゲーション](https://github.com/wamsoft/elements/blob/develop/docs/keyboard-navigation.md) で動く。 pad→key 合成のデフォルトは A=Enter / B=Esc / X=Shift+Tab / Y=Tab / D-Pad=矢印だが、 overlay ではその手前で **named-action バインド** (A→accept / B→cancel / LB,RB→page 等、 後述「named-action バインド」) が優先して発火する。
+
+## テキスト入力とソフトキーボード (物理キーボードが無い環境)
+
+テキスト欄 (`input_box`) に focus が入っている間だけ text 入力を有効にするのは
+`ElementsDialogManager::Impl::UpdateFocusDrivenTextInput()` (PaintOverlay 末尾から
+毎フレーム)。 分岐は 3 通り:
+
+| 環境 | 挙動 |
+| --- | --- |
+| デスクトップ (WINVER / Windows SDL) | 何もしない。 text 入力は常時有効 (form 生成時に `SDL_StartTextInput`) |
+| 物理キーボードあり (`SDL_HasKeyboard()`) | `SDL_StartTextInput` のみ。 OS のソフトキーボードは SDL の auto 判定で出ない |
+| 物理キーボード無し | **内蔵仮想キーボード**を overlay で表示 (OS のキーボードは出さない) |
+
+**内蔵仮想キーボード**は英数 4 段 + SPACE / BS / DONE の Elements ダイアログで、
+`BuildVirtualKeyboardJson()` がレイアウトを組む。 押鍵は貯めずに**その場で入力先の
+`overlay_session::on_text_input()` へ流し込む** (BS だけ `on_key_down(backspace)`)
+ので、 下の入力欄がリアルタイムに更新される。 DONE / B で閉じ、 閉じた直後は
+同じ欄で出し直さない (`vk_dismissed_for` ラッチ。 focus が一度外れると解除)。
+
+- **前提**: `SDL_HasKeyboard()` が実態を返すこと。 各 video ドライバが
+  `SDL_AddKeyboard` / `SDL_RemoveKeyboard` を呼んでいる必要がある (NX / PS5 は対応済み)。
+- **PS5 の IME**: `SceImeDialog` は `ShowScreenKeyboard` ではなく `StartTextInput`
+  フック内にあるため SDL 標準の `AutoShowingScreenKeyboard()` ポリシーが効かない。
+  SDL3-playstation 側で物理キーボード接続時は開かないようガードしてある。
+- **切替**: TJS の `Dialog.virtualKeyboard` プロパティで実行時に変更できる。
+  `"auto"` (既定 = 物理キーボードが無いときだけ) / `"always"` (常に出す。 テスト用。
+  デスクトップでも出る) / `"never"` (出さず OS 側に任せる。 表示中なら閉じる)。
+  初期値は環境変数 `KRKRZ_FORCE_VIRTUAL_KEYBOARD=1` なら `"always"`。
+- **既知の制限**: 大文字英数字のみ (v1)。 画面中央に出るため入力欄を覆うことがある。
+  `focus_by_id` (Agent.dialogFocus) だけでは input_box が編集状態にならず
+  `focus_consumes_text()` が false のままなので、 検証時は実クリックで focus させる。
 
 ## elements_modal ライブラリ
 
@@ -360,6 +829,7 @@ JSON / JSONC (コメント + 末尾カンマ) 対応。 要素タイプ・属性
 - **`"size": [w, h]`** (top-level) — ダイアログの希望論理サイズ (上限)。 実際は content の自然サイズにフィット縮小される (上側余白対策、 [project_elements_dialog_size] 系)。
 - **`"align"`** + **`"margin"`** (top-level) — overlay 上での配置。 `align` は `"center"` (既定) / `"top"` / `"bottom"` / `"left"` / `"right"` と、 それらの組合せ `"top_left"` / `"top_right"` / `"bottom_left"` / `"bottom_right"` (文字列に `top`/`bottom`/`left`/`right` が含まれるかで縦横独立に判定)。 `margin` は非中央側のサーフェス端からの余白 px (既定 0)。 入力座標の補正 (overlay_session の last_rect) も同じ配置で行われるのでクリック判定はズレない。 全 overlay 経路 (showJson / showFlow / startFlow) で有効。 例: ゲーム画面左上にメニューを出す → `"align": "top_left", "margin": 24`。
 - **`"initial_focus": true`** (focusable widget) — 起動時にフォーカスを当てる候補。 複数あった場合 build 順で先勝ち。
+- **`text_area` ウィジェット** — 矩形に流し込む静的テキスト。 **本体 `Layer.drawShapedTextArea` と改行位置が一致する** (どちらも `glyphware::layoutBlock` を通るため。 行頭行末禁則つき) のが `text_box` との違いで、 加えて `"align"` / `"line_spacing"` / `"count_var"` (文字送り) を持つ。 字幕 / セリフ窓向け。 詳細は下の「矩形テキスト (`text_area`)」節。
 - **`"close_on_click": true`** (button) — click で modal を閉じ、 `result.action = id` で確定する。 **デフォルト false** で、 click は `Dialog.onAction` を発火させるだけで終了させない。 OK / Cancel など「閉じるボタン」だけに付ける運用。 navigator フローでは、 画面遷移する button (transitions と組) と、 その場で動作させる button (close_on_click 無し → onAction のみ) を使い分ける。 なお TJS Dictionary 経由 (`showDict` 等) では true が int 1 で届くが、 bool 属性は number 0/非0 も真偽として受容する (elements_modal 2026-07-20 対応済。 古い pin では効かないので注意)。
 - **`"gap"` (vtile/htile) / top-level `"style"` ブロック** — 既定で「詰まった」見た目になるのを避ける密度指定。 `{"type":"vtile","gap":8,...}` で子間に spacer 自動挿入相当、 top-level `"style": { "font_scale", "row_height", "tile_gap", "padding" }` で未指定値の既定をまとめて与える (詳細は elements_modal README「style ブロック」)。 いずれも省略で従来と完全一致。
 - **`"input"`** (top-level) — ナビゲーション設定:
@@ -399,6 +869,40 @@ JSON / JSONC (コメント + 末尾カンマ) 対応。 要素タイプ・属性
 
 `force: true` の shortcut は input_box 編集中でも反応する (リスト内編集中の save 押下を許容するケース等)。
 
+### 矩形テキスト (`text_area`) — 本体と同じ折返し
+
+Elements 側のテキスト折返しは元々 cycfi の素朴な幅貪欲 wrap で、**禁則も文字送りも
+無く、本体 `Layer.drawShapedTextArea` と改行位置が揃わなかった**。 折返し本体を
+glyphware (`glyphware::layoutBlock`) へ下ろしたのに合わせ、Elements にも
+**新ウィジェット `text_area`** を足して同じロジックを消費させている。
+
+- 経路: elements の注入 I/F `cycfi::elements::block_text_backend`
+  (`external/elements/lib/include/elements/support/block_text.hpp`) を本体の
+  `common/visual/elements/BlockTextBackend.cpp` が glyphware で実装し、
+  `EnsureRuntimeInitialized` で `TVPInstallElementsBlockTextBackend()` が登録する。
+  **バックエンドが決めるのは「どこで改行するか」「どこまで見せるか」だけ**で、
+  グリフ描画は従来どおり ThorVG (`tvg::Text`) が行う。
+- フォント連鎖は widget のフォント鍵 (`font::file()` = 登録時の storage キー) を
+  先頭に、theme families (Latin → CJK → Emoji の並び) を鍵へ引き直して繋ぐ。
+  ThorVG の per-codepoint フォールバックと同じ優先順になるので、計測と描画で
+  使うフェイスがずれない。
+- **既存 `label` / `text_box` は一切変えていない** (差し替えると既存画面の改行
+  位置が動くため)。 使い分けは「従来互換 = `text_box` / 本体と揃える + 文字送り
+  = `text_area`」。
+- 文字送りは `"count_var"`。 ホストが `setVar("sub_count", "12")` するだけで進み、
+  **折返しは全文で確定してから count を適用する**のでリフローしない。 数える単位は
+  クラスタ (合字 / 結合列 / 絵文字 ZWJ シーケンスで 1) で、`Layer.shapedTextCount`
+  と同じ。
+- 落とし穴: `floating` / fit-to-content の親に置くと、パネルサイズが content の
+  最小サイズから決まる。 絶対座標で置くなら top-level `"size": [w, h]` を明示する
+  (指定しないとパネルが内容サイズまで縮み、`floating` の絶対座標が外へ出て何も
+  見えなくなる)。
+
+- `text_list` / `text_list_id` + `index_var` (指定番号表示 + i18n 言語切替追従) も
+  label と同じ規約で使える。
+
+フィールド一覧は elements_modal README の `text_area` 項を参照。
+
 ### named-action バインド (`"bindings"` / `input_defaults.jsonc`)
 
 「閉じる / 決定 / ページ送り」等は**名前付きアクションへの 3 層バインド** (後勝ち)
@@ -424,7 +928,9 @@ JSON / JSONC (コメント + 末尾カンマ) 対応。 要素タイプ・属性
   `elements_modal: input defaults "...": loaded/not used` で確認できる。
 - **⚠全画面透過の非モーダル overlay** (常駐 HUD 等) は描画矩形が全面のため
   右クリックが常にヒットし、 既定 cancel で意図せず閉じる。 その画面の
-  `"input"."bindings"` に `{ "mouse": "right", "action": "none" }` を入れること。
+  `"input"."bindings"` に `{ "mouse": "right", "action": "none" }` を入れるか、
+  ホスト側で右クリックを使うなら `Dialog.registerHotKey(VK_RBUTTON)` で
+  ダイアログへ渡さずホストへバイパスする (「ホストホットキー」参照)。
 
 ### cursor-warp ナビ (`"cursor_warp"`)
 

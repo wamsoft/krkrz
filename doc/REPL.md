@@ -27,6 +27,13 @@ WIN (windowed subsystem) 版では REPL 起動時に `AttachConsole` で親プ�
 されます (`;` 無しの式も可)。括弧・クォートが閉じていない間は継続入力に
 なります。履歴はカレントディレクトリの `.krkrz_history` に保存。
 
+評価は「式としてパース可能なら式として実行 (結果を表示)、そうでなければ
+文として実行」の二択で、パース可否は実行前にコンパイルのみで判定します。
+式の実行時例外 (メンバ無し・引数不正など) はその例外メッセージがそのまま
+報告されます (以前は文としての再実行にフォールバックしていたため、実行時
+例外が「文法エラー」と誤報告され、副作用のある式が二重実行されることが
+ありました)。
+
 REPL 特殊コマンド:
 
 | コマンド | 説明 |
@@ -120,6 +127,39 @@ krkrz64 data/ -replfile=/tmp/krkrzchan
 `Agent.click(255,80)` で遷移 → `Agent.captureScreen("cap.png")` → PNG を読んで
 目視確認。
 
+#### ⚠ ブロッキング呼出はチャネルごと止まる
+
+チャネルは lockstep なので、**投げたコマンドが返るまで次のコマンドを読まない**。
+`Window.showModal()` のように「閉じるまで戻らない」呼出を投げると、
+そのコマンドの実行が終わらない = チャネルが応答待ちのまま停止し、
+「閉じるためのコマンド」も送れなくなる (`modal`/`modalresp` の応答口を持つ
+`System.confirm` 等とは別)。
+
+自動テストから閉じたい場合は、**1 コマンドの中で閉じ手を仕込んでから呼ぶ**:
+
+```tjs
+(function() {
+    global.__s = demoShell.scene;
+    global.__t = new Timer(function() {
+        if (isvalid global.__s.modalWin) global.__s.modalWin.close();
+    }, "");
+    global.__t.interval = 700;
+    global.__t.enabled  = true;
+    global.__s.openModal();          // ここでブロックする
+    global.__t.enabled  = false;
+    return global.__s.lastModalNote; // 閉じた後に返る
+})()
+```
+
+モーダル中もタイマー・連続ハンドラ・描画は動いているのでこれで抜けられる
+(コアデモ `window_multi` で実測: 閉じるまで約 1.9 秒ブロック後に復帰)。
+
+#### 文字入力イベントは注入できない
+
+`Agent.keyPress(VK_A)` が注入するのは**キーイベントだけ**で、
+`Window.onKeyPress` (文字イベント) は発生しない (文字は OS のテキスト入力経路を
+通るため)。 文字入力を伴う検証は Elements の入力欄 + `Agent.text` で行う。
+
 ## ブラウザ REPL / Web サーバ (`-replweb`)
 
 `-replweb[=<port>|<host>:<port>]` で 127.0.0.1:8899 (既定) に軽量 HTTP+SSE
@@ -127,6 +167,13 @@ krkrz64 data/ -replfile=/tmp/krkrzchan
 端末非依存で選択/コピー/検索がブラウザネイティブに効く。 待受 URL は
 `System.replWebURL` で取得できる。 `0.0.0.0:<port>` バインドで LAN 越しの
 開発 PC からも接続可 (信頼できるネットワーク限定。 起動ログに警告が出る)。
+
+サーバは起動オプション `-replweb` を付けなくても、 スクリプトから
+`WebServer.start([port])` で立ち上げられる (下記 `WebServer` クラス参照)。
+自前アプリの UI を載せる場合はこれを使うと、 利用者が `-replweb` を毎回指定
+しなくて済む (`-replweb` を付けた場合は本体が起動済みなので二重起動しない)。
+GUI (コンソール無し) 起動で `-replweb` 指定時のみ、 loopback バインドなら
+起動後に自動でブラウザを開く (アプリモード優先 → 不可なら既定ブラウザ)。
 
 ### 組み込みルート
 
@@ -151,6 +198,10 @@ krkrz64 data/ -replfile=/tmp/krkrzchan
 | `WebServer.serveStatic(prefix, storageDir)` | prefix 以下の GET を `storageDir + 相対パス` のストレージから配信 (`..` は 403)。 例: `("/ui/", "ui/")` |
 | `WebServer.unserveStatic(prefix)` | 静的マウント解除 |
 | `WebServer.broadcast(channel, text)` | `/sub/<channel>` の購読者へ text を配信 (改行可、 SSE 複数 data 行に整形) |
+| `WebServer.start([port])` | **サーバをスクリプトから起動** (127.0.0.1、 既定 8899)。 `-replweb` を付けなくても UI サーバを立てられる。 既に稼働中なら無視。 戻り値 = 稼働中か |
+| `WebServer.startAt(host, port)` | バインド先を明示して起動 (`"0.0.0.0"` で全 IF)。 戻り値 = 稼働中か |
+| `WebServer.stop()` | サーバを停止 (接続を閉じ accept スレッド終了) |
+| `WebServer.openBrowser([url [, appMode=true]])` | url をブラウザで開く。 appMode 時は Edge → Chrome を `--app=<url>` (アプリモード) で試し、 不可なら既定ブラウザ (通常ウィンドウ) へフォールバック。 url 省略で稼働中サーバの URL。 戻り値 = 開けたか |
 | `WebServer.active` | サーバ稼働中か |
 | `WebServer.url` | 待受 URL (未稼働なら空文字列) |
 
@@ -186,6 +237,13 @@ if (typeof global.WebServer != "undefined") {
 メインスレッド専用 map に隔離され、 HTTP スレッドは prefix 文字列しか触らない。
 利用例: krkr_threepp プラグインのブラウザ編集 UI (`/ui/` + `/app/` +
 `/api/three/`)。
+
+`WebServer.openBrowser` のブラウザ起動は、 「URL を開く」処理 (`TVPShellExecute`
+= 既定ハンドラで URL/ファイルを開く。 SDL 版は `SDL_OpenURL`) と、 「プログラムを
+引数付きで実行する」処理 (`TVPExecuteProgram` = デスクトップ Windows では App Paths
+解決込みの Win32 `ShellExecute`。 SDL 版でも機種依存で動く) を分けて実装している。
+アプリモードは `TVPExecuteProgram("msedge.exe", "--app=<url>")` (→ Chrome) で試し、
+どちらも起動できなければ `TVPShellExecute(url)` で既定ブラウザにフォールバックする。
 
 ## 毎フレーム系イベントの連続例外ガード
 

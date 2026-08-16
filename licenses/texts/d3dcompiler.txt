@@ -1,0 +1,7 @@
+d3dcompiler_47.dll (Direct3D HLSL Compiler)
+
+(c) Microsoft Corporation.
+Redistributable component of the Microsoft Windows SDK. Distributed with
+this application under the terms of the Microsoft Software License Terms
+for the Windows SDK (redistributable code).
+https://learn.microsoft.com/windows/win32/direct3dhlsl/dx-graphics-hlsl-part

@@ -34,6 +34,7 @@
 #include "Exception.h"
 #include "TickCount.h"
 #include "CharacterSet.h"
+#include "REPL.h"                 // TVPDestroyREPL (REPL/Web ハンドラ closure を解放)
 
 
 //---------------------------------------------------------------------------
@@ -522,6 +523,15 @@ void TVPTerminateAsync(int code)
 void TVPTerminateSync(int code)
 {
 	// do synchronous temination of application (never return)
+#ifdef KRKRZ_USE_REPL
+	// ★REPL/Web ハンドラ等が保持する TJS クロージャを、スクリプトエンジン破棄
+	//   (TVPSystemUninit) より前に解放する。通常終了 (SDL_AppQuit) はこの順序で
+	//   TVPDestroyREPL→TVPSystemUninit を行うが、System.exit→本関数 経路では
+	//   従来 TVPDestroyREPL が抜けており、破棄済みエンジンを参照する静的変数
+	//   (TVPReplWeb g_handler_closures 等 = std::map<..,tTJSVariant>) の
+	//   デストラクタが exit() 時に走って AV していた。両経路で順序を揃える。
+	TVPDestroyREPL();
+#endif
 	TVPSystemUninit();
 	Application->Exit(code);
 }

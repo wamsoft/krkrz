@@ -14,6 +14,10 @@ class ImageOpsScene extends DemoScene
 
     function create()
     {
+        // シーンインスタンスは shell に再利用され create() は再入場のたびに
+        // 走る。前回のレイヤ参照 (旧 stage と共に破棄済み) が残っていると
+        // applyAll が古いレイヤへ描いてしまうので必ずリセットする。
+        cells = [];
         ops = [
             %[ name:"元画像 (copyRect)",     op:function(l) { } ],
             %[ name:"doGrayScale",           op:function(l) { l.doGrayScale(); } ],

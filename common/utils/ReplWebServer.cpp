@@ -26,6 +26,8 @@
 // URL を OS 既定ブラウザで開く (Windows=ShellExecute / SDL=SDL_OpenURL)。
 // 宣言はプラットフォーム別 SystemImpl.h にあるが、ここでは前方宣言で参照する。
 extern bool TVPShellExecute(const ttstr &target, const ttstr &param);
+// 実行ファイルを引数付きで起動する (プログラム実行専用。Edge/Chrome --app 用)。
+extern bool TVPExecuteProgram(const ttstr &exe, const ttstr &args);
 
 #include <string>
 #include <deque>
@@ -797,11 +799,12 @@ ttstr GetURL()
 	       ttstr(TJS_W(":")) + ttstr((tjs_int)g_port) + ttstr(TJS_W("/"));
 }
 
-void Start()
+void StartOn(const std::string& host_in, int port)
 {
 	if (g_running.load(std::memory_order_acquire)) return;
-	std::string host;
-	if (!ParseCmd(host, g_port) || g_port <= 0) return;
+	if (port <= 0 || port >= 65536) return;
+	std::string host = host_in.empty() ? std::string("127.0.0.1") : host_in;
+	g_port = port;
 	g_host = host;
 	ttstr hostw; // ログ用 (host は ASCII 想定だが安全のため utf8→utf16 変換)
 	{ tjs_string tw; TVPUtf8ToUtf16(tw, host); hostw = ttstr(tw.c_str()); }
@@ -885,18 +888,44 @@ void Start()
 	// コンソール既定出力は従来どおり継続する (コンソール ⇄ ブラウザの両方に出る)。
 	TVPLogSetConsoleSink(WebLogSink);
 
-	// コンソールが無い (GUI/ダブルクリック起動で URL を出す場所が無い) 場合は、
-	// localhost バインド時に限り OS 既定ブラウザで自動的に開く。
-	// シェル起動 (コンソールあり) や 0.0.0.0 バインド時はログ表示のみに留める。
+}
+
+//---------------------------------------------------------------------------
+// -replweb=<port> を解釈して起動する (従来の起動口)。
+// GUI(コンソール無し)起動時は loopback バインドに限り自動でブラウザを開く
+// (アプリモード優先 → 不可なら既定ブラウザ)。シェル起動 (コンソールあり) や
+// 0.0.0.0 バインド時はログ表示のみに留める。
+void Start()
+{
+	std::string host; int port = 0;
+	if (!ParseCmd(host, port) || port <= 0) return;
+	StartOn(host, port);
+	if (!IsActive()) return;
+
+	bool loopback = (host == "127.0.0.1" || host == "localhost" || host == "::1");
 #ifdef _WIN32
 	bool has_console = (::GetConsoleWindow() != NULL);
 #else
 	bool has_console = true; // 非 Windows は自動起動しない (ログのみ)
 #endif
-	if (loopback_only && !has_console) {
-		ttstr url = ttstr(TJS_W("http://127.0.0.1:")) + ttstr((tjs_int)g_port) + ttstr(TJS_W("/"));
-		TVPShellExecute(url, ttstr());
+	if (loopback && !has_console) OpenBrowser(ttstr(), /*appMode*/true);
+}
+
+//---------------------------------------------------------------------------
+// URL をブラウザで開く。appMode=true なら Edge→Chrome を --app モードで試し、
+// いずれも起動できなければ既定ブラウザ (通常ウィンドウ) へフォールバックする。
+// url 空なら稼働中サーバの URL を使う。開けたら true。
+bool OpenBrowser(const ttstr& url, bool appMode)
+{
+	ttstr u = url.IsEmpty() ? GetURL() : url;
+	if (u.IsEmpty()) return false;
+	if (appMode) {
+		ttstr appArg = ttstr(TJS_W("--app=")) + u;
+		if (TVPExecuteProgram(ttstr(TJS_W("msedge.exe")), appArg)) return true;
+		if (TVPExecuteProgram(ttstr(TJS_W("chrome.exe")), appArg)) return true;
+		// アプリモード不可 → 既定ブラウザ (通常ウィンドウ) へフォールバック
 	}
+	return TVPShellExecute(u, ttstr());
 }
 
 void Stop()

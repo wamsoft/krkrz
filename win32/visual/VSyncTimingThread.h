@@ -20,6 +20,10 @@ class tTVPVSyncTimingThread : public tTVPThread
 
 	bool Enabled;
 
+	//!< 直近の vblank 待ちの結果 (ワーカースレッドで取得し、メインスレッドの Proc が読む)
+	tjs_int LastInVBlank;
+	tjs_int LastDelayed;
+
 	NativeEventQueue<tTVPVSyncTimingThread> EventQueue;
 
 	class tTJSNI_Window* OwnerWindow;

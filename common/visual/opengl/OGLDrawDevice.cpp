@@ -540,6 +540,17 @@ void TJS_INTF_METHOD tTVPOGLDrawDevice::SetDestRectangle(const tTVPRect & rect)
 	SurfaceHeight = 0;
 }
 
+bool TJS_INTF_METHOD tTVPOGLDrawDevice::SwitchToFullScreen( HWND window, tjs_uint w, tjs_uint h, tjs_uint bpp, tjs_uint color, bool changeresolution )
+{
+	// BasicDrawDevice と同じくボーダレスウィンドウ全画面のみ (排他モード変更なし)。
+	// EGL surface はクライアントサイズ追従 (swap 時に ANGLE がリサイズする)。
+	return true;
+}
+
+void TJS_INTF_METHOD tTVPOGLDrawDevice::RevertFromFullScreen( HWND window, tjs_uint w, tjs_uint h, tjs_uint bpp, tjs_uint color )
+{
+}
+
 //---------------------------------------------------------------------------
 void TJS_INTF_METHOD tTVPOGLDrawDevice::NotifyLayerResize(iTVPLayerManager * manager)
 {

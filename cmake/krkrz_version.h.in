@@ -1,0 +1,28 @@
+//---------------------------------------------------------------------------
+// krkrz_version.h — バージョン番号の単一供給元 (生成物。直接編集しない)
+//
+//   元は CMakeLists.txt の PROJECT_VERSION と KRKRZ_VERSION_BUILD。
+//   cmake/krkrz_version.h.in から configure_file で生成される。
+//
+//   ここを参照する側:
+//     - generic/base/PluginImpl.cpp  … TVPGetFileVersionOf (SDL/LIB の版情報)
+//     - 生成 krkrz_version.rc        … Windows の VERSIONINFO (WINVER / SDL 双方)
+//
+//   WINVER は実行ファイルの VERSIONINFO を読んで版情報を作るため、結果として
+//   どちらのバリアントでも同じ番号が出る。
+//---------------------------------------------------------------------------
+#ifndef KRKRZ_VERSION_H
+#define KRKRZ_VERSION_H
+
+#define TVP_VERSION_MAJOR    @PROJECT_VERSION_MAJOR@
+#define TVP_VERSION_MINOR    @PROJECT_VERSION_MINOR@
+#define TVP_VERSION_RELEASE  @PROJECT_VERSION_PATCH@
+#define TVP_VERSION_BUILD    @KRKRZ_VERSION_BUILD@
+
+//! "M.m.r.b" 形式 (System.versionString と同じ並び)
+#define TVP_VERSION_STRING   "@PROJECT_VERSION_MAJOR@.@PROJECT_VERSION_MINOR@.@PROJECT_VERSION_PATCH@.@KRKRZ_VERSION_BUILD@"
+
+//! 製品名 / 説明。末尾のプラットフォーム名だけバリアントで変わる
+#define TVP_PRODUCT_NAME     "@KRKRZ_PRODUCT_NAME@"
+
+#endif // KRKRZ_VERSION_H

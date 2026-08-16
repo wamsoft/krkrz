@@ -67,6 +67,44 @@ function tryPlugin(dll)
 function hasElements() { return typeof global.Dialog != "undefined"; }
 
 //----------------------------------------------------------------------
+// 子レイヤを含めてまるごと invalidate する。エンジンの Layer.invalidate は
+// 子レイヤを「切り離すだけで無効化しない」(子は親無しの有効レイヤとして
+// 生き残る) ため、シーン切替で stage だけ invalidate すると旧シーンの
+// 子レイヤが蓄積リークし、シーンインスタンス再入場時に古いレイヤ参照へ
+// 描画してしまう事故 (新しい画面に何も出ない) も起こす。
+//----------------------------------------------------------------------
+function invalidateLayerTree(lay)
+{
+    if (!(isvalid lay)) return;
+    var cs = [];
+    cs.assign(lay.children);
+    for (var i = 0; i < cs.count; i++) invalidateLayerTree(cs[i]);
+    invalidate lay;
+}
+
+//----------------------------------------------------------------------
+// パッドキー正規化: エンジンはパッド入力を VK_PAD* のキーイベントとして
+// のみ通知し、VK_UP / VK_RETURN 等の通常キーへは変換しない (doc/Gamepad.md)。
+// デモをパッドで操作できるよう、DemoShell が受けた VK_PAD* をこの表で
+// 論理キーへ読み替えてからシーンに渡す。生の VK_PAD* を観測したいシーン
+// (入力可視化など) は rawPadKeys = true にすると読み替え前のキーが届く。
+//----------------------------------------------------------------------
+function padKeyToLogical(key)
+{
+    switch (key) {
+    case VK_PADUP:    case VK_PAD_L_UP:    return VK_UP;
+    case VK_PADDOWN:  case VK_PAD_L_DOWN:  return VK_DOWN;
+    case VK_PADLEFT:  case VK_PAD_L_LEFT:  return VK_LEFT;
+    case VK_PADRIGHT: case VK_PAD_L_RIGHT: return VK_RIGHT;
+    case VK_PAD1:     case VK_PAD10:       return VK_RETURN;  // A / START = 決定
+    case VK_PAD2:                          return VK_ESCAPE;  // B = 戻る
+    case VK_PAD5:                          return VK_PRIOR;   // LB = PgUp (非hubのシーン巡回)
+    case VK_PAD6:                          return VK_NEXT;    // RB = PgDn (同上)
+    }
+    return void;
+}
+
+//----------------------------------------------------------------------
 // DemoPanel: onAction を owner (DemoWindow) の onPanelAction へ中継する
 // だけの Dialog。Dialog クラスが無い環境で demolib 自体の読み込みが失敗
 // しないよう、Scripts.eval で条件付き定義する。
@@ -265,7 +303,12 @@ class DemoWindow extends Window
 //    DemoScene            … 1 デモ = 1 シーン。shell から stage (シーン専用の
 //                           全画面 opaque レイヤ) を与えられ、そこへ描画する。
 //                           切替時に shell が stage subtree を invalidate する
-//                           のでレイヤの後始末は不要 (タイマ等は onExit で停止)。
+//                           (invalidateLayerTree で子レイヤ込み) のでレイヤの
+//                           後始末は不要 (タイマ等は onExit で停止)。
+//                           ★シーンインスタンスは再利用され、再入場のたびに
+//                           create() が再実行される。メンバ配列にレイヤ参照を
+//                           溜める場合は create() 冒頭で必ずリセットすること
+//                           (旧レイヤは破棄済み。image_ops の cells が実例)。
 //
 //  シーンが使えるメンバ (DemoWindow とほぼ同じ):
 //    window   … DemoShell (Layer 生成は new Layer(window, stage) と書く)
@@ -277,6 +320,8 @@ class DemoWindow extends Window
 //    onExit()               … シーン終了時 (タイマ停止・drawDevice 復帰など)
 //    onDemoFrame(tick) / onPanelAction(id,payload) / onDemoTest()
 //    onKeyDown/onKeyUp/onMouseDown/onMouseUp/onMouseMove/onMouseWheel
+//      パッド入力 (VK_PAD*) は shell が padKeyToLogical で矢印/Enter/ESC 等へ
+//      正規化してから届く。生のまま受けたいシーンは rawPadKeys = true にする。
 //
 //  起動:
 //    runDemoShell(scenes [, title])   scenes = DemoScene インスタンスの配列
@@ -288,6 +333,7 @@ class DemoScene
     var window;      // DemoShell (Layer owner)
     var stage;       // 描画先 (shell が用意する全画面 opaque レイヤ)
     var sceneTitle = "scene";
+    var rawPadKeys = false;  // true: VK_PAD* を論理キーへ読み替えず生のまま受ける
     var _fps = false;
 
     function DemoScene(title) { if (title !== void) sceneTitle = title; }
@@ -303,6 +349,7 @@ class DemoScene
     function onDemoTest() {}
     function onKeyDown(key, shift) {}
     function onKeyUp(key, shift) {}
+    function onKeyPress(key) {}          // 文字入力 (VK ではなく文字そのもの)
     function onMouseDown(x, y, button, shift) {}
     function onMouseUp(x, y, button, shift) {}
     function onMouseMove(x, y, shift) {}
@@ -343,7 +390,7 @@ class MenuScene extends DemoScene
 
     function create()
     {
-        setInfo("↑↓: 選択   Enter / クリック: 起動   ホイール: スクロール   ESC: 終了");
+        setInfo("↑↓: 選択   Enter / クリック: 起動   ホイール: スクロール   ESC: 終了   パッド: 十字+Ⓐ / Ⓑ戻る");
         ensureVisible();
         draw();
     }
@@ -470,8 +517,6 @@ class DemoShell extends Window
     var NAV_MENU;              // 「← メニュー」ボタンのクリック領域 (x範囲)
     var _glMode = false;       // GL シーン中 (ツリーを透過にして GL を見せる)
     var hub = false;           // hub モード (scenes[0]=メニュー、ESC でそこへ戻る)
-    var _escDown = false;      // ESC のエッジ検出用 (Elements がイベントを奪うため
-                               // getKeyState でポーリングして hub 復帰を検出する)
 
     function DemoShell(sceneList, title, hubMode)
     {
@@ -486,6 +531,20 @@ class DemoShell extends Window
         lastTick = System.getTickCount();
         _fpsTick = lastTick;
         if (System.getArgument("-demotest") !== void) { _autoTest = 40; _autoTested = %[]; }
+
+        // ホストホットキー: シェル操作に必須のキーを Elements パネルより優先で
+        // onKeyDown へ届くよう登録する (モーダルダイアログ表示中は無効=そちら優先、
+        // テキスト入力ウィジェット focus 中も既定で抑止)。パッドの A/START/十字は
+        // 登録しない = フォーカスパネルのウィジェット操作に流す (パネル不在時は
+        // 素通しで従来どおりシェル/シーンへ届く)。
+        if (hasElements() && typeof Dialog.registerHotKey != "undefined") {
+            Dialog.registerHotKey(VK_ESCAPE);
+            Dialog.registerHotKey(VK_PRIOR);
+            Dialog.registerHotKey(VK_NEXT);
+            Dialog.registerHotKey(VK_PAD2);   // B  = 戻る (ESC 相当)
+            Dialog.registerHotKey(VK_PAD5);   // LB = PgUp 相当
+            Dialog.registerHotKey(VK_PAD6);   // RB = PgDn 相当
+        }
 
         System.addContinuousHandler(onShellCont);
         switchTo(0);
@@ -507,7 +566,7 @@ class DemoShell extends Window
     {
         if (bar !== void) { invalidate bar; bar = void; }
         if (fpsLayer !== void) { invalidate fpsLayer; fpsLayer = void; }
-        if (stage !== void) { invalidate stage; stage = void; }
+        if (stage !== void) { invalidateLayerTree(stage); stage = void; }
         if (base !== void) { invalidate base; base = void; }
         if (primary !== void) { invalidate primary; primary = void; }
 
@@ -555,7 +614,9 @@ class DemoShell extends Window
         if (scene !== void) {
             scene.onExit();
             shellClosePanel();
-            if (stage !== void) { invalidate stage; stage = void; }
+            // 子レイヤ (シーンが作ったセル等) 込みで破棄する。stage だけの
+            // invalidate だと子が有効なまま残る (invalidateLayerTree 参照)。
+            if (stage !== void) { invalidateLayerTree(stage); stage = void; }
         }
         // GL モードだった場合: 既定 DrawDevice を新規生成して戻し、ツリーの
         // 透過を opaque へ復帰する (差し替えた GL デバイスは再利用できないため
@@ -672,10 +733,12 @@ class DemoShell extends Window
         // 続けられないとパネルが二度と出ない)。pending は成功するまで保持する。
         if (panel !== void) { invalidate panel; panel = void; }
         panel = new global.DemoPanel(this);   // onAction → this.onPanelAction → シーンへ委譲
-        // grabFocus=false: パネルはキーボードフォーカスを取らず、未処理キー
-        // (ESC / PgUp/PgDn 等) はホスト Window (シェル) へ通す。これがないと
-        // slider 等を含むパネルがキーを奪い、シーン切替/メニュー復帰ができない。
-        var ok = panel.showJson(json, false);
+        // フォーカスあり非モーダル (grabFocus=true, modal=false): キー/パッドが
+        // パネルへ届き (パッド十字/A で slider・picker を操作可能)、未処理分は
+        // ホスト Window (シェル) へ素通しする。シェル操作に必須のキー (ESC /
+        // PgUp/PgDn / パッド B/LB/RB) は registerHotKey 済みなのでパネルより
+        // 優先で onKeyDown へ届く (キーを奪われてシーン切替不能にはならない)。
+        var ok = panel.showJson(json, true, false);
         if (!ok) { invalidate panel; panel = void; }
         return ok;
     }
@@ -694,16 +757,6 @@ class DemoShell extends Window
     function onShellCont()
     {
         var tick = System.getTickCount();
-
-        // ESC ポーリング (Elements パネルがキーイベントを奪うため、イベント経路に
-        // 依存せず getKeyState で検出する)。hub でデモ表示中なら押下エッジで
-        // メニューへ戻る。メニュー上/非 hub では従来どおり onKeyDown 側で終了。
-        if (hub) {
-            var esc = false;
-            try { esc = System.getKeyState(VK_ESCAPE); } catch (e) {}
-            if (esc && !_escDown && index != 0) { _escDown = true; switchTo(0); return; }
-            _escDown = esc;
-        }
 
         if (_pendingPanelJson !== void && hasElements()) {
             if (_tryPanel(_pendingPanelJson)) _pendingPanelJson = void;
@@ -734,16 +787,22 @@ class DemoShell extends Window
     }
 
     // --- 入力: ナビはシェル、その他は現在シーンへ ------------------------
+    // パッドキー (VK_PAD*) は padKeyToLogical で論理キーへ正規化してから
+    // シェル操作 (ESC 相当 / PgUp/PgDn) とシーン配送に使う。
     function onKeyDown(key, shift)
     {
+        var lk = padKeyToLogical(key);
+        if (lk !== void) {
+            if (scene !== void && scene.rawPadKeys) { scene.onKeyDown(key, shift); return; }
+            key = lk;
+        }
         if (key == VK_ESCAPE) {
-            // hub では ESC は「デモ→メニュー」のみ。System.exit しない
-            // (getKeyState ポーリングと onKeyDown が実キーボードで二重発火し、
-            //  poll が switchTo(0) した直後に onKeyDown が index==0 を見て
-            //  System.exit してしまう = web で固まる問題を回避)。両経路で
-            //  _escDown エッジを共有して二重 switchTo も防ぐ。
+            // hub では ESC は「デモ→メニュー」のみ。System.exit しない (web で
+            // メニューに戻った直後の ESC 連打で終了しないように)。ESC は
+            // registerHotKey 済みなのでパネル表示中でも必ずここへ届く
+            // (旧 getKeyState ポーリングは撤去)。
             if (hub) {
-                if (index != 0 && !_escDown) { _escDown = true; switchTo(0); }
+                if (index != 0) switchTo(0);
                 return;
             }
             System.exit(0); return;                            // 非hub→終了
@@ -753,7 +812,18 @@ class DemoShell extends Window
         if (!hub && scenes.count > 1 && (key == VK_NEXT))  { next(); return; }
         if (scene !== void) scene.onKeyDown(key, shift);
     }
-    function onKeyUp(key, shift)   { if (scene !== void) scene.onKeyUp(key, shift); }
+    function onKeyUp(key, shift)
+    {
+        if (scene === void) return;
+        var lk = padKeyToLogical(key);
+        if (lk !== void && !scene.rawPadKeys) key = lk;
+        scene.onKeyUp(key, shift);
+    }
+    // 文字入力 (IME 確定文字を含む)。 VK ではなく文字そのものが届く
+    function onKeyPress(key)
+    {
+        if (scene !== void) scene.onKeyPress(key);
+    }
     function onMouseDown(x, y, button, shift)
     {
         // 下部バーのナビ/メニューをクリック判定
@@ -774,6 +844,7 @@ function runDemoShell(scenes, title)
 {
     var shell = new DemoShell(scenes, title);
     shell.visible = true;
+    global.demoShell = shell;   // REPL / -replfile から触れるようにしておく
     return shell;
 }
 
@@ -785,5 +856,6 @@ function runDemoHub(scenes, title)
     for (var i = 0; i < scenes.count; i++) all.add(scenes[i]);
     var shell = new DemoShell(all, title, true);   // hub モード
     shell.visible = true;
+    global.demoShell = shell;   // REPL / -replfile から触れるようにしておく
     return shell;
 }

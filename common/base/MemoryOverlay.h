@@ -1,7 +1,8 @@
 #pragma once
 
 // メモリ状態リアルタイム監視オーバレイ用の状態保持 + サンプラ。
-// SDL3 ビルド限定で画面右上に折れ線グラフを表示する機能の OS 共通部分。
+// 画面右上に折れ線グラフを表示する機能の OS 共通部分 (flag / 集計は全ビルド共通。
+// 描画は OGL 系 DrawDevice と SDLDrawDevice が行う)。
 // 描画は sdl3/visual/MemoryOverlayRender.cpp が本ヘッダの GetSnapshot()
 // を呼んで画面に描画する。
 //

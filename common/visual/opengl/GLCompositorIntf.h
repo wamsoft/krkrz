@@ -51,6 +51,12 @@ class tTJSNI_GLCompositor : public tTJSNativeInstance
 	int Width;
 	int Height;
 
+	// capture の読み戻しで premultiplied-alpha を straight-alpha に戻すか。
+	// MSAA 等で縁が premultiplied になる GL 描画 (3D/VRM 立ち絵等) を、吉里吉里の
+	// straight-alpha レイヤへ ltAlpha 合成する際の縁の白フリンジを防ぐ。既定 false。
+	// 旧 GLESAdaptor.unpremultiply 相当。
+	bool Unpremultiply;
+
 	// 自分自身の TJS オブジェクト (Construct の tjs_obj)。callback 呼び出し時に
 	// objthis として渡し、コールバックを「incontextof このオブジェクト」で実行させる。
 	// ネイティブインスタンスは この TJS オブジェクトに内包されるため、参照循環を避けて
@@ -74,6 +80,10 @@ public:
 	void SetScreenSize(int width, int height);
 	int GetScreenWidth() const { return Width; }
 	int GetScreenHeight() const { return Height; }
+
+	// capture 読み戻し時の un-premultiply の有無 (旧 GLESAdaptor.unpremultiply 相当)
+	bool GetUnpremultiply() const { return Unpremultiply; }
+	void SetUnpremultiply(bool b) { Unpremultiply = b; }
 
 	// 内部 Canvas を公開 (drawTexture / beginEffect / clip 等はこの canvas 経由で利用可)
 	const tTJSVariant& GetCanvasObject() const { return CanvasObject; }

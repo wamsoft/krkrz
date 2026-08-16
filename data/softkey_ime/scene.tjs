@@ -1,0 +1,371 @@
+// -*- mode:tjs2 -*-
+// ======================================================================
+//  softkey_ime シーン (SoftkeyImeScene)
+//    文字入力まわりを 1 画面で試す:
+//      - Window.onKeyPress          … 文字そのもの (IME 確定文字を含む) を受ける
+//      - Layer.imeMode / attention  … 入力欄に応じた IME の開閉と変換候補位置
+//      - Dialog.virtualKeyboard     … 内蔵仮想キーボード (auto/always/never)
+//      - Dialog.hasPhysicalKeyboard … 物理キーボードの有無
+//      - System.inputString         … モーダルなテキスト入力
+//      - Clipboard.asText / hasFormat … クリップボードの読み書き
+//
+//    キーボードが無い環境 (コンソール/モバイル) では内蔵仮想キーボードが
+//    入力欄の focus に応じて出る。 デスクトップでも "always" で強制表示できる。
+// ======================================================================
+
+class SoftkeyImeScene extends DemoScene
+{
+    // --- レイアウト ---
+    var FX = 24,  FY = 128, FW = 560, FH = 210;    // 入力欄
+    var KX = 24,  KY = 352, KW = 560, KH = 308;    // 受信キーのログ
+    var IX = 600, IY = 128, IW = 330, IH = 532;    // 状態 / クリップボード
+
+    var text = "";              // 自前入力欄の内容
+    var caretOn = true;
+    var caretTick = 0;
+
+    var keyLog = [];            // 受信した文字のログ
+    var KEY_MAX = 11;
+
+    var imeModeIndex = 1;       // imDisable / imOpen / imClose ...
+    var imeNames = ["imDisable", "imClose", "imOpen", "imDontCare"];
+    var imeValues = [];
+
+    var vkIndex = 0;            // 0=auto 1=always 2=never
+    var vkNames = ["auto", "always", "never"];
+    var vkAvailable = false;
+
+    var elementsText = "";      // Elements 入力欄 (仮想キーボードの受け皿)
+    var clipNote = "(未操作)";
+    var lastInput = "(未実行)";
+    var dirty = false;
+
+    var field;                  // 入力欄レイヤ (focusable。IME モードの受け皿)
+
+    function SoftkeyImeScene() { super.DemoScene("文字入力 / 仮想キーボード / IME"); }
+
+    function create()
+    {
+        text = "";
+        keyLog = [];
+        clipNote = "(未操作)";
+        lastInput = "(未実行)";
+        elementsText = "";
+        caretTick = System.getTickCount();
+
+        // imDisable 等はグローバル定数。 ビルドによって無い場合に備えて拾う
+        imeValues = [];
+        imeValues.add(typeof global.imDisable  != "undefined" ? imDisable  : 0);
+        imeValues.add(typeof global.imClose    != "undefined" ? imClose    : 0);
+        imeValues.add(typeof global.imOpen     != "undefined" ? imOpen     : 0);
+        imeValues.add(typeof global.imDontCare != "undefined" ? imDontCare : 0);
+
+        // 仮想キーボードの制御は Dialog クラスの static 相当プロパティ
+        vkAvailable = hasElements() && (typeof Dialog.virtualKeyboard != "undefined");
+        if (vkAvailable) {
+            var cur = Dialog.virtualKeyboard;
+            for (var i = 0; i < vkNames.count; i++) if (vkNames[i] == cur) vkIndex = i;
+        }
+
+        stage.fillRect(0, 0, 1280, 720, 0xff141821);
+        drawStatic();
+
+        // 入力欄レイヤ: focusable にして IME の対象にする。 描画は自前。
+        field = new Layer(window, stage);
+        field.setSize(FW - 32, 48);
+        field.setPos(FX + 16, FY + 74);
+        field.type = ltOpaque;
+        field.focusable = true;
+        field.visible = true;
+        window.add(field);
+        applyIme();
+        field.focus();
+
+        redrawField();
+        redrawKeys();
+        redrawInfo();
+        setInfo("キーを打つと onKeyPress で文字が届く。パネルで IME / 仮想キーボードを切り替え");
+        showPanelDict(panelDict());
+    }
+
+    function onExit()
+    {
+        // 仮想キーボードの強制表示を残さない
+        if (vkAvailable && vkIndex != 0) { Dialog.virtualKeyboard = "auto"; vkIndex = 0; }
+        field = void;   // レイヤは shell が stage ごと破棄する
+    }
+
+    // ------------------------------------------------------------------
+    function drawStatic()
+    {
+        stage.font.height = 19;
+        stage.drawText(24, 44, "文字入力 / 仮想キーボード / IME", 0xffd76a, 255);
+        stage.font.height = 15;
+        stage.drawText(24, 76, "文字入力は onKeyDown (仮想キーコード) ではなく onKeyPress (文字そのもの) で受ける。IME の確定文字もここへ届く。", 0xc8d2e4, 255);
+        stage.drawText(24, 98, "キーボードが無い環境では、入力欄の focus に応じて内蔵仮想キーボードが出る (パネルで強制表示できる)。", 0xc8d2e4, 255);
+        stage.update();
+    }
+
+    function card(x, y, w, h, title)
+    {
+        stage.fillRect(x, y, w, h, 0xff1b2130);
+        stage.font.height = 17;
+        stage.drawText(x + 12, y + 10, title, 0xffd76a, 255);
+        stage.font.height = 15;
+    }
+
+    function row(x, y, label, value, col)
+    {
+        if (col === void) col = 0xdfe6f2;
+        stage.drawText(x + 12, y, label, 0x9fb0c8, 255);
+        stage.drawText(x + 150, y, value, col, 255);
+        return y + 24;
+    }
+
+    // --- 入力欄 --------------------------------------------------------
+    function redrawField()
+    {
+        card(FX, FY, FW, FH, "入力欄 (自前描画 + onKeyPress)");
+        stage.font.height = 14;
+        stage.drawText(FX + 16, FY + 44, "BackSpace = 1 文字消す / Enter = 確定してログへ", 0x8899b0, 255);
+        stage.font.height = 15;
+        stage.update(FX, FY, FW, FH);
+        drawFieldText();
+    }
+
+    function drawFieldText()
+    {
+        if (!(isvalid field)) return;
+        field.fillRect(0, 0, field.width, field.height, 0xff101520);
+        field.font.height = 24;
+        var shown = text + (caretOn ? "|" : "");
+        field.drawText(10, 10, shown, 0xdfe6f2, 255);
+        field.update();
+    }
+
+    // --- キーログ ------------------------------------------------------
+    function redrawKeys()
+    {
+        card(KX, KY, KW, KH, "受信した文字 (onKeyPress)");
+        var y = KY + 40;
+        stage.font.height = 14;
+        if (keyLog.count == 0) {
+            stage.drawText(KX + 12, y, "(まだ入力がありません。ウィンドウをクリックしてから打鍵)", 0x9fb0c8, 255);
+        } else {
+            for (var i = 0; i < keyLog.count; i++) {
+                stage.drawText(KX + 12, y, keyLog[i], 0xdfe6f2, 255);
+                y += 22;
+            }
+        }
+        stage.font.height = 15;
+        stage.update(KX, KY, KW, KH);
+    }
+
+    function addKeyLog(line)
+    {
+        keyLog.add(line);
+        while (keyLog.count > KEY_MAX) keyLog.erase(0);
+        dirty = true;
+    }
+
+    // --- 状態 ----------------------------------------------------------
+    function redrawInfo()
+    {
+        card(IX, IY, IW, IH, "状態");
+        var y = IY + 40;
+        y = row(IX, y, "IME モード", imeNames[imeModeIndex]);
+        y = row(IX, y, "仮想キーボード", vkAvailable ? vkNames[vkIndex] : "(未提供)",
+                vkAvailable ? 0xdfe6f2 : 0x9fb0c8);
+        y = row(IX, y, "物理キーボード",
+                vkAvailable ? (Dialog.hasPhysicalKeyboard ? "あり" : "なし") : "(不明)");
+        y = row(IX, y, "focus", (isvalid field && window.focusedLayer == field) ? "入力欄" : "(別のレイヤ)");
+        y = row(IX, y, "Elements 欄", elementsText != "" ? elementsText : "(空)");
+        y += 10;
+        stage.font.height = 14;
+        stage.drawText(IX + 12, y, "-- クリップボード --", 0xffd76a, 255); y += 22;
+        var has = false;
+        if (typeof global.Clipboard != "undefined") {
+            try { has = Clipboard.hasFormat(cbfText); } catch (e) { }
+        }
+        stage.drawText(IX + 12, y, "テキストあり: " + (has ? "はい" : "いいえ"), 0xdfe6f2, 255); y += 22;
+        var cn = clipNote;
+        for (var i = 0; i < 3 && cn != ""; i++) {
+            stage.drawText(IX + 12, y, cn.substring(0, 22), 0x9fd6a0, 255);
+            cn = cn.substring(22);
+            y += 20;
+        }
+        y += 10;
+        stage.drawText(IX + 12, y, "-- System.inputString --", 0xffd76a, 255); y += 22;
+        var li = lastInput;
+        for (var i = 0; i < 3 && li != ""; i++) {
+            stage.drawText(IX + 12, y, li.substring(0, 22), 0xdfe6f2, 255);
+            li = li.substring(22);
+            y += 20;
+        }
+        y += 12;
+        stage.drawText(IX + 12, y, "IME は WINVER の実装。SDL 版は", 0x8899b0, 255); y += 18;
+        stage.drawText(IX + 12, y, "OS 側の入力に任せる (値は保持のみ)", 0x8899b0, 255); y += 18;
+        stage.font.height = 15;
+        stage.update(IX, IY, IW, IH);
+    }
+
+    // ------------------------------------------------------------------
+    function applyIme()
+    {
+        if (!(isvalid field)) return;
+        // Layer.imeMode: そのレイヤに focus がある間の IME 状態。
+        // 変換候補ウィンドウの位置は setAttentionPoint で指示する (WINVER)。
+        field.imeMode = imeValues[imeModeIndex];
+        if (typeof field.setAttentionPoint != "undefined") {
+            field.setAttentionPoint(10, field.height - 4, field.font);
+        }
+    }
+
+    // --- 入力イベント ---------------------------------------------------
+    function onKeyPress(key)
+    {
+        // key は文字そのもの (IME 確定文字を含む)。制御文字はここでは扱わない
+        var code = 0;
+        if (key.length > 0) code = key.charCodeAt(0);
+        if (code == 8) {                       // BackSpace
+            if (text.length > 0) text = text.substring(0, text.length - 1);
+            addKeyLog("BS (0x08)");
+        } else if (code == 13) {               // Enter
+            addKeyLog("Enter → \"" + text + "\"");
+            text = "";
+        } else if (code >= 32) {
+            text += key;
+            addKeyLog("'" + key + "'  U+" + "%04X".sprintf(code));
+        } else {
+            addKeyLog("制御コード 0x" + "%02X".sprintf(code));
+        }
+        dirty = true;
+    }
+
+    function onMouseDown(x, y, button, shift)
+    {
+        // 入力欄をクリックしたら focus を戻す (仮想キーボードは focus 駆動)
+        if (isvalid field) { field.focus(); dirty = true; }
+    }
+
+    // ------------------------------------------------------------------
+    function onDemoFrame(tick)
+    {
+        if (tick - caretTick >= 500) {
+            caretTick = tick;
+            caretOn = !caretOn;
+            drawFieldText();
+        }
+        if (dirty) {
+            dirty = false;
+            drawFieldText();
+            redrawKeys();
+            redrawInfo();
+        }
+    }
+
+    function onPanelAction(id, payload)
+    {
+        switch (id) {
+        case "ime":
+            imeModeIndex = Math.floor(payload + 0.5);
+            applyIme();
+            setInfo("IME モード: " + imeNames[imeModeIndex] + " (効くのは WINVER)");
+            dirty = true;
+            break;
+
+        case "vk":
+            vkIndex = Math.floor(payload + 0.5);
+            if (vkAvailable) {
+                Dialog.virtualKeyboard = vkNames[vkIndex];
+                setInfo("仮想キーボード: " + vkNames[vkIndex]
+                        + (vkNames[vkIndex] == "always" ? " (入力欄に focus すると出ます)" : ""));
+            } else {
+                setInfo("Dialog.virtualKeyboard がこのビルドには無い");
+            }
+            dirty = true;
+            break;
+
+        case "copy":
+            if (typeof global.Clipboard == "undefined") { clipNote = "Clipboard 未提供"; }
+            else {
+                Clipboard.asText = text;
+                clipNote = "コピー: \"" + text + "\"";
+            }
+            dirty = true;
+            break;
+
+        case "paste":
+            if (typeof global.Clipboard == "undefined") { clipNote = "Clipboard 未提供"; }
+            else {
+                var v = Clipboard.asText;
+                // テキストが無いと void が返る
+                if (v === void) { clipNote = "クリップボードにテキストなし"; }
+                else { text += v; clipNote = "貼り付け: \"" + v + "\""; }
+            }
+            dirty = true;
+            break;
+
+        case "input":
+            // モーダルなテキスト入力 (Elements 実装)。閉じるまで戻らない
+            var r = System.inputString("入力", "文字を入力してください", text);
+            lastInput = (r === void) ? "(キャンセル)" : ("\"" + r + "\"");
+            if (r !== void) text = r;
+            dirty = true;
+            break;
+
+        case "ebox":
+            // Elements の input_box。 ここに focus が入っている間だけ
+            // 仮想キーボード / テキスト入力がこのウィジェットへ向く
+            elementsText = payload;
+            dirty = true;
+            break;
+
+        case "clear":
+            text = "";
+            keyLog = [];
+            elementsText = "";
+            dirty = true;
+            break;
+        }
+    }
+
+    function onDemoTest()
+    {
+        var hasClip = (typeof global.Clipboard != "undefined") ? 1 : 0;
+        var focused = (isvalid field && window.focusedLayer == field) ? 1 : 0;
+        dm(@"@demotest:softkey_ime vk=${vkAvailable ? vkNames[vkIndex] : "none"} ime=${imeNames[imeModeIndex]} clipboard=${hasClip} focused=${focused}");
+    }
+
+    // ------------------------------------------------------------------
+    function panelDict()
+    {
+        return %[
+            size : [320, 486], background : [26, 30, 40, 236], locale : "ja-JP",
+            align : "bottom_right", margin : 16,
+            content : %[ type : "margin", padding : 14, child : %[ type : "vtile", children : [
+                %[ type : "vsize", height : 0, child : %[ type : "hspacer", width : 288 ] ],
+                %[ type : "align_center", child : %[ type : "label", text : "入力の設定", size_scale : 1.2 ] ],
+                %[ type : "vspacer", height : 8 ],
+                %[ type : "label", text : "IME (0:Disable 1:Close 2:Open 3:DontCare)" ],
+                %[ type : "slider_with_range", id : "ime", min : 0, max : 3, initial : imeModeIndex ],
+                %[ type : "vspacer", height : 6 ],
+                %[ type : "label", text : "仮想キーボード (0:auto 1:always 2:never)" ],
+                %[ type : "slider_with_range", id : "vk", min : 0, max : 2, initial : vkIndex ],
+                %[ type : "vspacer", height : 8 ],
+                %[ type : "label", text : "Elements 入力欄 (クリックで focus)" ],
+                %[ type : "input_box", id : "ebox", placeholder : "ここに focus すると仮想キーボード" ],
+                %[ type : "vspacer", height : 12 ],
+                %[ type : "htile", children : [
+                    %[ type : "button", id : "copy",  text : "コピー" ],
+                    %[ type : "hspacer", width : 8 ],
+                    %[ type : "button", id : "paste", text : "貼り付け" ]
+                ] ],
+                %[ type : "vspacer", height : 8 ],
+                %[ type : "button", id : "input", text : "System.inputString で入力" ],
+                %[ type : "vspacer", height : 8 ],
+                %[ type : "button", id : "clear", text : "入力欄とログを消去" ]
+            ] ] ]
+        ];
+    }
+}

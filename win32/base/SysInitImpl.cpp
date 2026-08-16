@@ -39,6 +39,7 @@
 
 #include "BinaryStream.h"
 #include "Application.h"
+#include "REPL.h"                 // TVPDestroyREPL (REPL/Web ハンドラ closure を解放)
 #include "Exception.h"
 #include "ApplicationSpecialPath.h"
 #include "resource.h"
@@ -1523,6 +1524,14 @@ void TVPTerminateAsync(int code)
 void TVPTerminateSync(int code)
 {
 	// do synchronous temination of application (never return)
+#ifdef KRKRZ_USE_REPL
+	// ★REPL/Web ハンドラ等が保持する TJS クロージャを、スクリプトエンジン破棄
+	//   (TVPSystemUninit) より前に解放する。通常終了は TVPDestroyREPL→TVPSystemUninit
+	//   の順で行うが、System.exit→本関数 経路では従来 TVPDestroyREPL が抜けており、
+	//   破棄済みエンジンを参照する静的変数 (TVPReplWeb g_handler_closures 等) の
+	//   デストラクタが exit() 時に走って AV していた。両経路で順序を揃える。
+	TVPDestroyREPL();
+#endif
 	TVPSystemUninit();
 	exit(code);
 }

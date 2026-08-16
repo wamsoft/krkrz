@@ -150,6 +150,48 @@ namespace {
 }
 #endif
 
+//---------------------------------------------------------------------------
+// テクスチャ転送の常時計測 (ビルドオプションに依存しない)。
+// 1 フレームに数回なので atomic 加算のコストは無視できる。
+//---------------------------------------------------------------------------
+namespace {
+	struct TexUploadStats {
+		std::atomic<tjs_uint64> upload_ns{0};
+		std::atomic<tjs_uint64> upload_count{0};
+		std::atomic<tjs_uint64> upload_bytes{0};
+		std::atomic<tjs_uint64> frame_count{0};
+	};
+	static TexUploadStats g_tex_upload;
+}
+
+void TVPRenderStatsAddTexUpload(tjs_uint64 ns, tjs_uint64 bytes)
+{
+	g_tex_upload.upload_ns.fetch_add(ns, std::memory_order_relaxed);
+	g_tex_upload.upload_bytes.fetch_add(bytes, std::memory_order_relaxed);
+	g_tex_upload.upload_count.fetch_add(1, std::memory_order_relaxed);
+}
+
+void TVPRenderStatsBumpUploadFrame()
+{
+	g_tex_upload.frame_count.fetch_add(1, std::memory_order_relaxed);
+}
+
+void TVPGetTexUploadStats(TVPTexUploadStats &out)
+{
+	out.upload_ns    = g_tex_upload.upload_ns.load(std::memory_order_relaxed);
+	out.upload_count = g_tex_upload.upload_count.load(std::memory_order_relaxed);
+	out.upload_bytes = g_tex_upload.upload_bytes.load(std::memory_order_relaxed);
+	out.frame_count  = g_tex_upload.frame_count.load(std::memory_order_relaxed);
+}
+
+void TVPResetTexUploadStats()
+{
+	g_tex_upload.upload_ns.store(0, std::memory_order_relaxed);
+	g_tex_upload.upload_count.store(0, std::memory_order_relaxed);
+	g_tex_upload.upload_bytes.store(0, std::memory_order_relaxed);
+	g_tex_upload.frame_count.store(0, std::memory_order_relaxed);
+}
+
 void TVPRenderStatsAddTexUpdate(tjs_uint64 ns, tjs_uint64 bytes)
 {
 #ifdef KRKRZ_DRAW_STATS

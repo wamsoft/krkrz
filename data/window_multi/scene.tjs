@@ -1,0 +1,304 @@
+// -*- mode:tjs2 -*-
+// ======================================================================
+//  window_multi シーン (WindowMultiScene)
+//    複数ウィンドウ / モーダル表示 (showModal) / 枠スタイル / 最前面 /
+//    ズーム / フルスクリーン / 画面情報 (DPI・解像度) / 実画面キャプチャ。
+// ======================================================================
+
+// ----------------------------------------------------------------------
+// サブウィンドウ。 描画は primaryLayer 直下の不透明 stage に対して行う
+// (primary への直接描画は現行エンジンの既知の描画問題を踏むため)。
+// ----------------------------------------------------------------------
+class SubWindow extends Window
+{
+    var scene;
+    var stage;
+    var modalMode = false;
+    var CW = 440, CH = 280;
+
+    function SubWindow(sc, title)
+    {
+        super.Window();
+        scene = sc;
+        caption = title;
+        borderStyle = bsSizeable;
+        setInnerSize(CW, CH);
+
+        add(new Layer(this, null));
+        primaryLayer.setSize(CW, CH);
+
+        stage = new Layer(this, primaryLayer);
+        stage.setSize(CW, CH);
+        stage.type = ltOpaque;
+        stage.visible = true;
+        add(stage);
+        redraw();
+    }
+
+    function redraw()
+    {
+        stage.fillRect(0, 0, CW, CH, 0xff1d2740);
+        stage.fillRect(0, 0, CW, 40, 0xff2c3d63);
+        stage.font.height = 20;
+        stage.drawText(14, 10, modalMode ? "モーダルウィンドウ" : "サブウィンドウ", 0xffe27a, 255);
+        stage.font.height = 16;
+        var y = 62;
+        stage.drawText(14, y, "・このウィンドウは独立した Window オブジェクト", 0xdfe6f2, 255); y += 26;
+        stage.drawText(14, y, "・自分の primaryLayer とレイヤツリーを持つ", 0xdfe6f2, 255); y += 26;
+        if (modalMode) {
+            stage.drawText(14, y, "・モーダル中は親ウィンドウを操作できない", 0xffd76a, 255); y += 26;
+            stage.drawText(14, y, "・showModal() はここが閉じるまで戻らない", 0xffd76a, 255); y += 32;
+        } else {
+            stage.drawText(14, y, "・親と同時に操作できる (非モーダル)", 0x9fd6a0, 255); y += 58;
+        }
+        stage.drawText(14, y, "クリック / ESC / × で閉じる", 0x9fb0c8, 255);
+        stage.update();
+    }
+
+    function setModalMode(b) { modalMode = b; redraw(); }
+
+    // 閉じる要求を許可する (既定ハンドラへ true を渡す)
+    function onCloseQuery(b) { super.onCloseQuery(true); }
+    function onKeyDown(key, shift) { super.onKeyDown(...); if (key == VK_ESCAPE) close(); }
+    function onMouseDown(x, y, button, shift) { super.onMouseDown(...); close(); }
+}
+
+class WindowMultiScene extends DemoScene
+{
+    var sub;                    // サブウィンドウ (非モーダル)
+    var modalWin;               // モーダル表示中のウィンドウ (showModal 実行中のみ)
+    var subOpen = false;
+    var borderIndex = 2;        // bsSizeable
+    var borderNames = ["bsNone", "bsSingle", "bsSizeable", "bsDialog", "bsToolWindow", "bsSizeToolWin"];
+    var stayTop = false;
+    var zoomPercent = 100;
+    var lastModalNote = "(未実行)";
+    var lastCapture = "(未実行)";
+    var pendingInfo = true;
+
+    var INFO_X = 470, INFO_W = 440;
+
+    function WindowMultiScene() { super.DemoScene("複数ウィンドウ / モーダル / 画面情報"); }
+
+    function create()
+    {
+        stage.fillRect(0, 0, 1280, 720, 0xff141821);
+        drawStatic();
+        redrawInfo();
+        setInfo("パネルからサブウィンドウを開閉。モーダルは閉じるまでこの画面が止まる");
+        showPanelDict(panelDict());
+    }
+
+    function onExit() { closeSub(); }
+
+    function drawStatic()
+    {
+        stage.font.height = 19;
+        stage.drawText(24, 44, "複数ウィンドウとモーダル表示", 0xffd76a, 255);
+        stage.font.height = 16;
+        var y = 82;
+        var lines = [
+            "Window は複数生成でき、それぞれが",
+            "自分の primaryLayer を持つ。",
+            "",
+            "showModal() は「そのウィンドウが閉じる",
+            "まで戻らない」ブロッキング呼出。内部では",
+            "ネストしたイベントループが回るので、",
+            "モーダル中も描画・タイマー・REPL は動く",
+            "(親ウィンドウへの入力だけが止まる)。",
+            "",
+            "呼び出す時点でウィンドウは非表示で",
+            "なければならず、ウィンドウが 1 つしか",
+            "無い状態では例外になる。複数ウィンドウを",
+            "作れない環境 (モバイル/コンソール) では",
+            "2 枚目の生成自体が失敗するので、そもそも",
+            "使わない作りにする。",
+            "",
+            "枠スタイル (borderStyle) / 最前面",
+            "(stayOnTop) / 表示倍率 (setZoom) /",
+            "フルスクリーンは、開いているサブ",
+            "ウィンドウへパネルから適用する。"
+        ];
+        for (var i = 0; i < lines.count; i++) { stage.drawText(24, y, lines[i], 0xc8d2e4, 255); y += 24; }
+        stage.update();
+    }
+
+    function redrawInfo()
+    {
+        stage.fillRect(INFO_X, 40, INFO_W, 620, 0xff1b2130);
+        stage.font.height = 18;
+        stage.drawText(INFO_X + 14, 52, "画面 / ウィンドウ情報", 0xffd76a, 255);
+        stage.font.height = 16;
+        var y = 86;
+        y = line(y, "-- 画面 --", 0xffd76a);
+        y = line(y, "screen: " + System.screenWidth + " x " + System.screenHeight);
+        // System.desktop* は WINVER (Windows ネイティブ) ビルド限定。
+        // SDL / generic ビルドには無いので存在を見てから読む。
+        if (typeof System.desktopWidth != "undefined") {
+            y = line(y, "desktop: " + System.desktopWidth + " x " + System.desktopHeight
+                        + "  (" + System.desktopLeft + "," + System.desktopTop + ")");
+        } else {
+            y = line(y, "desktop: (このビルドでは未提供 = WINVER 限定)", 0x9fb0c8);
+        }
+        y = line(y, "displayDensity: " + nf(window.displayDensity));
+        y += 12;
+        y = line(y, "-- このウィンドウ --", 0xffd76a);
+        y = line(y, "inner: " + window.innerWidth + " x " + window.innerHeight);
+        y = line(y, "zoom: " + window.zoomNumer + " / " + window.zoomDenom);
+        y += 12;
+        y = line(y, "-- サブウィンドウ --", 0xffd76a);
+        if (subOpen && isvalid sub) {
+            y = line(y, "pos: (" + sub.left + ", " + sub.top + ")");
+            y = line(y, "size: " + sub.width + " x " + sub.height
+                        + "  inner: " + sub.innerWidth + " x " + sub.innerHeight);
+            y = line(y, "borderStyle: " + borderNames[borderIndex]);
+            y = line(y, "stayOnTop: " + (stayTop ? "true" : "false"));
+            y = line(y, "zoom: " + sub.zoomNumer + " / " + sub.zoomDenom
+                        + "  (" + zoomPercent + "%)");
+            y = line(y, "fullScreen: " + (sub.fullScreen ? "true" : "false"));
+        } else {
+            y = line(y, "(開いていません)", 0x9fb0c8);
+        }
+        y += 12;
+        y = line(y, "-- 実行結果 --", 0xffd76a);
+        y = line(y, "showModal: " + lastModalNote);
+        y = line(y, "captureScreen: " + lastCapture);
+        stage.update();
+    }
+
+    function line(y, text, col)
+    {
+        if (col === void) col = 0xdfe6f2;
+        stage.drawText(INFO_X + 14, y, text, col, 255);
+        return y + 24;
+    }
+
+    // ------------------------------------------------------------------
+    function openSub()
+    {
+        if (subOpen) return;
+        sub = new SubWindow(this, "サブウィンドウ (非モーダル)");
+        sub.setPos(window.left + 120, window.top + 160);
+        applySubStyle();
+        sub.visible = true;
+        subOpen = true;
+        pendingInfo = true;
+    }
+
+    function closeSub()
+    {
+        if (!subOpen) return;
+        subOpen = false;
+        if (isvalid sub) { sub.visible = false; invalidate sub; }
+        sub = void;
+        pendingInfo = true;
+    }
+
+    // モーダル表示。 showModal() はサブウィンドウが閉じるまで戻らない。
+    function openModal()
+    {
+        closeSub();
+        var m = new SubWindow(this, "モーダルウィンドウ");
+        m.setModalMode(true);
+        m.setPos(window.left + 200, window.top + 200);
+        modalWin = m;
+        var t0 = System.getTickCount();
+        try {
+            m.showModal();      // ここでブロックする
+            lastModalNote = "閉じるまで " + (System.getTickCount() - t0) + " ms ブロックした";
+        } catch (e) {
+            lastModalNote = "例外: " + e.message;
+        }
+        modalWin = void;
+        if (isvalid m) invalidate m;
+        redrawInfo();
+    }
+
+    function applySubStyle()
+    {
+        if (!(subOpen || isvalid sub)) return;
+        if (!(isvalid sub)) return;
+        sub.borderStyle = borderIndex;
+        sub.stayOnTop = stayTop;
+        sub.setZoom(zoomPercent, 100);
+        pendingInfo = true;
+    }
+
+    function toggleSubFullScreen()
+    {
+        if (!subOpen || !(isvalid sub)) return;
+        sub.fullScreen = !sub.fullScreen;
+        pendingInfo = true;
+    }
+
+    // 実画面 (オーバーレイ込み) を PNG 保存する。 保存先はセーブデータ領域。
+    function doCapture()
+    {
+        // 保存先は -datapath (既定はセーブデータ領域)。System.appDataPath は
+        // WINVER 限定なので使わない。
+        var path = System.dataPath + "window_multi_capture.png";
+        try {
+            System.captureScreen(path);
+            lastCapture = Storages.getLocalName(path);
+        } catch (e) {
+            lastCapture = "失敗: " + e.message;
+        }
+        pendingInfo = true;
+    }
+
+    // ------------------------------------------------------------------
+    function onPanelAction(id, payload)
+    {
+        switch (id) {
+        case "open":   openSub(); break;
+        case "close":  closeSub(); break;
+        case "modal":  openModal(); break;
+        case "border": borderIndex = Math.floor(payload + 0.5); applySubStyle(); break;
+        case "top":    stayTop = (payload == true); applySubStyle(); break;
+        case "zoom":   zoomPercent = Math.floor(payload + 0.5); applySubStyle(); break;
+        case "fs":     toggleSubFullScreen(); break;
+        case "cap":    doCapture(); break;
+        }
+    }
+
+    function onDemoFrame(tick) { if (pendingInfo) { pendingInfo = false; redrawInfo(); } }
+
+    function onDemoTest()
+    {
+        dm(@"@demotest:window_multi density=${nf(window.displayDensity)} screen=${System.screenWidth}x${System.screenHeight}");
+    }
+
+    function panelDict()
+    {
+        return %[
+            size : [320, 460], background : [26, 30, 40, 236], locale : "ja-JP",
+            align : "bottom_right", margin : 16,
+            content : %[ type : "margin", padding : 14, child : %[ type : "vtile", children : [
+                %[ type : "vsize", height : 0, child : %[ type : "hspacer", width : 288 ] ],
+                %[ type : "align_center", child : %[ type : "label", text : "ウィンドウ操作", size_scale : 1.2 ] ],
+                %[ type : "vspacer", height : 10 ],
+                %[ type : "htile", children : [
+                    %[ type : "button", id : "open",  text : "サブを開く" ],
+                    %[ type : "hspacer", width : 8 ],
+                    %[ type : "button", id : "close", text : "閉じる" ]
+                ] ],
+                %[ type : "vspacer", height : 6 ],
+                %[ type : "button", id : "modal", text : "モーダルで開く (showModal)" ],
+                %[ type : "vspacer", height : 12 ],
+                %[ type : "label", text : "borderStyle (0:None 1:Single 2:Sizeable 3:Dialog)" ],
+                %[ type : "slider_with_range", id : "border", min : 0, max : 5, initial : borderIndex ],
+                %[ type : "vspacer", height : 6 ],
+                %[ type : "check_box", id : "top", text : "stayOnTop (最前面)", value : false ],
+                %[ type : "vspacer", height : 8 ],
+                %[ type : "label", text : "サブの表示倍率 (%)" ],
+                %[ type : "slider_with_range", id : "zoom", min : 50, max : 200, initial : zoomPercent ],
+                %[ type : "vspacer", height : 8 ],
+                %[ type : "htile", children : [
+                    %[ type : "button", id : "fs",  text : "全画面切替" ],
+                    %[ type : "hspacer", width : 8 ],
+                    %[ type : "button", id : "cap", text : "画面を PNG 保存" ]
+                ] ]
+            ] ] ]
+        ];
+    }
+}

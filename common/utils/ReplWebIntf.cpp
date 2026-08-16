@@ -10,6 +10,8 @@
 
 #include "ReplWebIntf.h"
 #include "ReplWebServer.h"
+#include "CharacterSet.h"   // TVPUtf16ToUtf8 (startAt の host 変換)
+#include <string>
 
 //---------------------------------------------------------------------------
 // WebServer クラス (インスタンス不要、 System と同様にクラスオブジェクトのメソッド)
@@ -87,6 +89,53 @@ tTJSNC_WebServer::tTJSNC_WebServer() : inherited(TJS_W("WebServer"))
 		return TJS_S_OK;
 	}
 	TJS_END_NATIVE_METHOD_DECL(/*func. name*/broadcast)
+	//---------------------------------------------------------------------------
+	// start([port])  — サーバをスクリプトから起動 (127.0.0.1、既定 port=8899)。
+	//   -replweb オプション無しでも UI サーバを立ち上げられる。戻り値 = 稼働中か。
+	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/start)
+	{
+		tjs_int port = (numparams >= 1 && param[0]->Type() != tvtVoid) ? (tjs_int)*param[0] : 8899;
+		TVPReplWeb::StartOn("127.0.0.1", (int)port);
+		if (result) *result = (tjs_int)(TVPReplWeb::IsActive() ? 1 : 0);
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_METHOD_DECL(/*func. name*/start)
+	//---------------------------------------------------------------------------
+	// startAt(host, port)  — バインド先を明示して起動 ("0.0.0.0" で全 IF)。
+	//   戻り値 = 稼働中か。外部 PC のブラウザから繋ぐ用途。
+	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/startAt)
+	{
+		if (numparams < 2) return TJS_E_BADPARAMCOUNT;
+		ttstr host(*param[0]);
+		tjs_int port = (tjs_int)*param[1];
+		std::string h; { tjs_string t(host.c_str()); TVPUtf16ToUtf8(h, t); }
+		TVPReplWeb::StartOn(h, (int)port);
+		if (result) *result = (tjs_int)(TVPReplWeb::IsActive() ? 1 : 0);
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_METHOD_DECL(/*func. name*/startAt)
+	//---------------------------------------------------------------------------
+	// stop()  — サーバを停止する (接続を閉じ accept スレッド終了)。
+	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/stop)
+	{
+		TVPReplWeb::Stop();
+		if (result) *result = (tjs_int)1;
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_METHOD_DECL(/*func. name*/stop)
+	//---------------------------------------------------------------------------
+	// openBrowser([url [, appMode=true]])  — url をブラウザで開く。appMode 時は
+	//   Edge→Chrome を --app モードで試し、不可なら既定ブラウザへフォールバック。
+	//   url 省略 (void) で稼働中サーバ URL を使う。戻り値 = 開けたか。
+	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/openBrowser)
+	{
+		ttstr url = (numparams >= 1 && param[0]->Type() != tvtVoid) ? ttstr(*param[0]) : ttstr();
+		bool appMode = (numparams >= 2) ? ((tjs_int)*param[1] != 0) : true;
+		bool ok = TVPReplWeb::OpenBrowser(url, appMode);
+		if (result) *result = (tjs_int)(ok ? 1 : 0);
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_METHOD_DECL(/*func. name*/openBrowser)
 
 	//---------------------------------------------------------------------------
 	// active  — サーバ稼働中か (-replweb 指定なしなら false。登録自体は可能)。

@@ -70,12 +70,17 @@ void FontSystem::LoadFontMetadata() {
 		if( !file.is<std::string>() || !fam.is<std::string>() ) continue;
 		// family 名は当面 ASCII 前提 (非 ASCII は将来 UTF-8 変換を要検討)
 		tjs_string storage = ttstr( file.get<std::string>().c_str() ).AsStdString();
-		LazyFontFiles[ ttstr( fam.get<std::string>().c_str() ).AsStdString() ] = storage;
+		tjs_string famName = ttstr( fam.get<std::string>().c_str() ).AsStdString();
+		LazyFontFiles[ famName ] = storage;
+		LazyFontStorageAll[ famName ] = storage;   // 永続 (erase されない)
 		const picojson::value& al = fv.get("aliases");
 		if( al.is<picojson::array>() ) {
 			for( const auto& a : al.get<picojson::array>() )
-				if( a.is<std::string>() )
-					LazyFontFiles[ ttstr( a.get<std::string>().c_str() ).AsStdString() ] = storage;
+				if( a.is<std::string>() ) {
+					tjs_string aliasName = ttstr( a.get<std::string>().c_str() ).AsStdString();
+					LazyFontFiles[ aliasName ] = storage;
+					LazyFontStorageAll[ aliasName ] = storage;
+				}
 		}
 	}
 }
@@ -90,6 +95,26 @@ bool FontSystem::EnsureLazyFontLoaded( const tjs_string &name ) {
 		AddExtraFont( storage, nullptr );  // 実 family 名で TVPFontNames へ登録される
 	} catch( ... ) { return false; }
 	return FontExists( name );
+}
+//---------------------------------------------------------------------------
+bool FontSystem::GetLazyFontStorage( const tjs_string& name, tjs_string& storage ) const {
+	// 永続マップ (LazyFontStorageAll) を参照する。EnsureLazyFontLoaded が
+	// LazyFontFiles から erase 済みでも name->storage は引ける (FreeType が先に
+	// 遅延ロードしたフォントを glyphware も同じストレージで開けるようにするため)。
+	auto it = LazyFontStorageAll.find( name );
+	if( it == LazyFontStorageAll.end() ) return false;
+	storage = it->second;
+	return true;
+}
+//---------------------------------------------------------------------------
+void FontSystem::RegisterLazyFont( const tjs_string& name, const tjs_string& storage ) {
+	LazyFontFiles[ name ] = storage;
+	LazyFontStorageAll[ name ] = storage;
+}
+//---------------------------------------------------------------------------
+void FontSystem::EnumerateLazyFontStorages( std::vector<std::pair<tjs_string, tjs_string>>& out ) const {
+	out.reserve( out.size() + LazyFontStorageAll.size() );
+	for( const auto& kv : LazyFontStorageAll ) out.emplace_back( kv.first, kv.second );
 }
 //---------------------------------------------------------------------------
 void FontSystem::AddFont( const tjs_string& name ) {
@@ -169,6 +194,9 @@ void FontSystem::AddExtraFont( const tjs_string& storage, std::vector<ttstr>* fa
 	if( GetCurrentRasterizer()->AddFont( storage, &loadface ) ) {
 		for( auto i = loadface.begin(); i != loadface.end(); ++i ) {
 			AddFont( *i );
+			// 実行時登録 (Font.addFont) / bundled 登録したフォントの name->storage を
+			// 永続マップへ記録し、glyphware など別経路が名前で解決できるようにする。
+			LazyFontStorageAll[ *i ] = storage;
 		}
 	}
 	if( faces ) {

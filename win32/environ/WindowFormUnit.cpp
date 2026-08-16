@@ -88,6 +88,15 @@ static void TVPRemoveModalWindow(TTVPWindowForm *window)
 		TVPModalWindowList.erase(i);
 }
 //---------------------------------------------------------------------------
+// 現在モーダル表示中の最前面フォーム (無ければ nullptr)。
+// Agent の入力注入先をモーダルウィンドウへ切り替えるために使う
+// (実入力と同じく、モーダル中はモーダルウィンドウしか操作できないのが正)。
+TTVPWindowForm * TVPGetModalWindowForm()
+{
+	if(TVPModalWindowList.empty()) return nullptr;
+	return TVPModalWindowList.back();
+}
+//---------------------------------------------------------------------------
 #include "DebugIntf.h"
 void TVPShowModalAtAppActivate()
 {
@@ -736,7 +745,14 @@ void TTVPWindowForm::SetFullScreenMode( bool b ) {
 			try {
 				if(TJSNativeInstance) TVPSwitchToFullScreen( GetHandle(), desired_fs_w, desired_fs_h, TJSNativeInstance->GetDrawDevice() );
 			} catch(...) {
-				SetFullScreenMode(false);
+				// この時点では TVPFullScreenedWindow 未設定のため SetFullScreenMode(false)
+				// は early return してしまう。変更済みなのはウィンドウスタイルだけなので
+				// ここで直接復元する
+				::SetWindowLong( GetHandle(), GWL_STYLE, OrgStyle );
+				::SetWindowLong( GetHandle(), GWL_EXSTYLE, OrgExStyle );
+				::SetWindowPos( GetHandle(), NULL, 0, 0, 0, 0,
+					SWP_NOACTIVATE|SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_FRAMECHANGED|SWP_SHOWWINDOW );
+				CallFullScreenChanged();	// 冒頭の CallFullScreenChanging() と対にする
 				return;
 			}
 			::SetWindowLong( GetHandle(), GWL_STYLE, WS_POPUP | WS_VISIBLE | WS_CLIPCHILDREN);

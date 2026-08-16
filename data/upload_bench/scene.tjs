@@ -1,0 +1,244 @@
+// -*- mode:tjs2 -*-
+// ======================================================================
+//  upload_bench — 画面バッファ → GPU テクスチャ 転送コストの計測シーン
+// ----------------------------------------------------------------------
+//  System.renderStats (texUploadUs / texUploads / texUploadBytes / frames)
+//  を使い、更新の「形」ごとに転送コストを測る。
+//
+//  形 (shape):
+//    dense  … 全画面 1 枚を毎フレーム塗り替え → ダーティ矩形 1 個・大面積
+//    sparse … 小さいレイヤ多数を毎フレーム塗り替え → 小矩形が多数
+//             (立ち絵 + UI パーツが散在して個別更新される実案件の形)
+//
+//  OpenGL 描画デバイスは更新をステージングへ集約し、フレーム末に
+//  「密なら union を 1 回 / 疎なら個別矩形を N 回」転送する。sparse は
+//  後者に落ちるので、転送呼び出しが 1 フレームに多数走る。
+//
+//  経路 (mode): System.texUploadUsePBO で PBO 経由 / 直接転送を切り替える
+//  (この口が無い環境では単一経路のみ計測)。
+//
+//  操作: 1 = dense / 2 = sparse / P = 経路切替 / C = 計測リセット
+//  自動計測: -uploadauto を付けて起動すると入力なしで全組合せを回し、
+//            "@upload ..." 行をログへ出して終了する。
+// ======================================================================
+
+class UploadBenchScene extends DemoScene
+{
+    var parts;            // sparse 用の小レイヤ配列
+    var big;              // dense 用の全画面レイヤ
+    var shape = 1;        // 1 = dense, 2 = sparse
+    var tick = 0;
+    var info;             // 結果表示レイヤ
+    var statT0, statTick0;
+
+    // 自動計測
+    var autoMode = false, autoList, autoIdx = 0, autoPhase = 0, autoT0 = 0;
+    var AUTO_SETTLE = 1200, AUTO_MEASURE = 3000;
+
+    var SPARSE_N = 40, SPARSE_SIZE = 48;
+
+    function UploadBenchScene() { super.DemoScene("転送コスト計測"); }
+
+    function create()
+    {
+        parts = [];
+        var W = stage.width, H = stage.height;
+
+        big = new Layer(window, stage);
+        big.setSize(W, H);
+        big.setPos(0, 0);
+        big.fillRect(0, 0, W, H, 0xff102030);
+        big.visible = true;
+
+        // 画面全体に散らす。union はほぼ全面になるが実更新面積は小さいので、
+        // 描画デバイス側の「疎」判定に落ちて個別矩形転送になる。
+        var cols = 8;
+        var gx = (W - 40) \ cols, gy = (H - 120) \ 5;
+        for (var i = 0; i < SPARSE_N; i++) {
+            var lay = new Layer(window, stage);
+            lay.setSize(SPARSE_SIZE, SPARSE_SIZE);
+            lay.setPos(20 + (i % cols) * gx, 20 + ((i / cols) \ 1) * gy);
+            lay.fillRect(0, 0, SPARSE_SIZE, SPARSE_SIZE, 0xff4080c0);
+            lay.visible = false;
+            parts.add(lay);
+        }
+
+        info = new Layer(window, stage);
+        info.setSize(560, 200);
+        info.setPos(20, H - 220);
+        info.visible = true;
+
+        var a = typeof global.System.getArgument != "undefined"
+                ? System.getArgument("-uploadauto") : void;
+        autoMode = (a !== void && a != "no" && a != "false" && a != "0");
+        if (autoMode) {
+            // [mode, shape] の組。mode: -1 = 既定 (サイズによる自動判定) /
+            // 1 = PBO 強制 / 0 = 直接転送 強制。既定も測っておくと「自動判定が
+            // 形ごとに速い方を選べているか」がそのまま確認できる。
+            autoList = [];
+            var modes = (typeof global.System.texUploadUsePBO != "undefined")
+                        ? [-1, 1, 0] : [-1];
+            var shapes = [1, 2];
+            for (var mi = 0; mi < modes.count; mi++)
+                for (var si = 0; si < shapes.count; si++)
+                    autoList.add([modes[mi], shapes[si]]);
+            autoIdx = 0; autoPhase = 0; autoT0 = 0;
+            dm("@upload auto start (" + autoList.count + " combos, settle="
+               + AUTO_SETTLE + "ms measure=" + AUTO_MEASURE + "ms)");
+        }
+
+        switchShape(1);
+        setInfo(autoMode
+            ? "自動計測モード (-uploadauto): 結果は @upload 行でログに出ます"
+            : "1: dense (全画面)  2: sparse (小矩形多数)  P: 経路切替  C: リセット");
+    }
+
+    function onExit()
+    {
+        if (typeof global.System.texUploadUsePBO != "undefined")
+            System.texUploadUsePBO = void;   // 既定へ戻す
+    }
+
+    // --- 形の切替 --------------------------------------------------------
+
+    function switchShape(n)
+    {
+        shape = n;
+        big.visible     = (n == 1);
+        for (var i = 0; i < parts.count; i++) parts[i].visible = (n == 2);
+        resetStats();
+    }
+
+    function resetStats()
+    {
+        System.renderStatsReset();
+        statT0 = System.getTickCount();
+    }
+
+    function modeName()
+    {
+        if (typeof global.System.texUploadUsePBO == "undefined") return "n/a";
+        var v = System.texUploadUsePBO;
+        return v === void ? "default" : (v ? "pbo" : "direct");
+    }
+
+    function shapeName() { return shape == 1 ? "dense" : "sparse"; }
+
+    // --- 毎フレーム ------------------------------------------------------
+
+    function onDemoFrame(t)
+    {
+        tick = (tick + 1) & 255;
+        var c = 0xff000000 + (tick << 16) + (tick << 8) + tick;
+        if (shape == 1) {
+            big.fillRect(0, 0, big.width, big.height, c);
+            big.update();
+        } else {
+            for (var i = 0; i < parts.count; i++) {
+                parts[i].fillRect(0, 0, SPARSE_SIZE, SPARSE_SIZE, c);
+                parts[i].update();
+            }
+        }
+
+        if (autoMode) { autoStep(); return; }
+
+        // 500ms ごとに表示更新
+        var now = System.getTickCount();
+        if (now - statT0 >= 500) { drawInfo(now - statT0); resetStats(); }
+    }
+
+    // 経過 ms を渡して 1 区間ぶんの計測値を組み立てる
+    function statLine(elapsed)
+    {
+        var s = System.renderStats;
+        var f = s.frames > 0 ? s.frames : 1;
+        var u = s.texUploads > 0 ? s.texUploads : 1;
+        var e = elapsed > 0 ? elapsed : 1;
+        return %[
+            "mode"      => modeName(),
+            "shape"     => shapeName(),
+            "frames"    => s.frames,
+            "fps"       => (int)(s.frames * 1000 / e),
+            "uploads_f" => (int)(s.texUploads * 100 / f) / 100.0,
+            "us_upload" => (int)(s.texUploadUs / u),
+            "us_frame"  => (int)(s.texUploadUs / f),
+            // 転送に使った時間が実時間に占める割合 (%、小数第 2 位まで)
+            "share"     => (int)(s.texUploadUs * 10 / e) / 100.0,
+            "MB_s"      => (int)(s.texUploadBytes * 1000 / e / 1048576)
+        ];
+    }
+
+    function drawInfo(elapsed)
+    {
+        var d = statLine(elapsed);
+        info.fillRect(0, 0, info.width, info.height, 0xc0101820);
+        var y = 8;
+        var lines = [
+            "形: " + d.shape + "   経路: " + d.mode,
+            "fps: " + d.fps + "   転送/フレーム: " + d.uploads_f + " 回",
+            "転送 1 回: " + d.us_upload + " us",
+            "転送/フレーム合計: " + d.us_frame + " us",
+            "転送が実時間に占める割合: " + d.share + " %   (" + d.MB_s + " MB/s)"
+        ];
+        for (var i = 0; i < lines.count; i++) {
+            info.drawText(10, y, lines[i], 0xc8e0ff, 255, false, 0, 0, 0, 0, 0);
+            y += 26;
+        }
+    }
+
+    // --- 自動計測 --------------------------------------------------------
+
+    function autoStep()
+    {
+        var now = System.getTickCount();
+        if (autoIdx >= autoList.count) return;
+
+        if (autoPhase == 0) {
+            var combo = autoList[autoIdx];
+            if (typeof global.System.texUploadUsePBO != "undefined")
+                System.texUploadUsePBO = (combo[0] < 0) ? void : combo[0];
+            switchShape(combo[1]);
+            autoT0 = now;
+            autoPhase = 1;
+            return;
+        }
+        if (autoPhase == 1) {              // 安定待ち
+            if (now - autoT0 < AUTO_SETTLE) return;
+            resetStats();
+            autoT0 = now;
+            autoPhase = 2;
+            return;
+        }
+        // 計測中
+        if (now - autoT0 < AUTO_MEASURE) return;
+        var d = statLine(now - autoT0);
+        dm("@upload mode=" + d.mode + " shape=" + d.shape
+           + " fps=" + d.fps + " uploads/f=" + d.uploads_f
+           + " us/upload=" + d.us_upload + " us/frame=" + d.us_frame
+           + " share=" + d.share + "% " + d.MB_s + "MB/s");
+        autoIdx++;
+        autoPhase = 0;
+        if (autoIdx >= autoList.count) {
+            dm("@upload done");
+            if (typeof global.System.texUploadUsePBO != "undefined")
+                System.texUploadUsePBO = void;
+            System.exit(0);
+        }
+    }
+
+    // --- 入力 ------------------------------------------------------------
+
+    function onKeyDown(key, shift)
+    {
+        if (autoMode) return;
+        if (key == 0x31) switchShape(1);            // 1
+        else if (key == 0x32) switchShape(2);       // 2
+        else if (key == 0x43) resetStats();         // C
+        else if (key == 0x50) {                     // P: 経路切替
+            if (typeof global.System.texUploadUsePBO == "undefined") return;
+            var v = System.texUploadUsePBO;
+            System.texUploadUsePBO = (v === void) ? 1 : (v ? 0 : void);
+            resetStats();
+        }
+    }
+}

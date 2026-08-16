@@ -156,3 +156,111 @@ D3D11/DXGI ベースへ全面置換する作業計画。SDL / generic 変種は�
   (MediaEngine のデコードスレッドが engine の D3D11 デバイスを共有するため)。overlay は
   presenter (`iTVPVideoPresenter`/`iTVPVideoPresenterHost`) で D3D11 バックバッファへ合成。
   詳細は `CLAUDE.md` の Rendering 節と `doc/MovieMFMigration.md` を参照。
+
+## 後日談: flip モデルと OGLDrawDevice 切替の HWND 汚染対処 (2026-08-10)
+
+本移行で `BasicDrawDevice` が flip モデル swapchain (`DXGI_SWAP_EFFECT_FLIP_DISCARD`)
+になったことで、**実行中の drawDevice 切替 (D3D11 → OGLDrawDevice) で GL が画面に
+出ない**問題が顕在化した (レンダリングは正常・present のみ不可視。画面には最後の
+flip フレームが凍結表示)。
+
+- **原因**: Windows/DWM の既知制約。**一度 flip モデルで present した HWND は、以後
+  bitblt 系 present (GDI / ANGLE windowed の `DXGI_SWAP_EFFECT_SEQUENTIAL|DISCARD`)
+  が画面に反映されない**。swapchain を破棄しても戻らない (汚染は flip→bitblt の
+  一方向のみ。bitblt→flip は常に可)。
+- **対処** (`common/visual/opengl/EGLContext.cpp`): ANGLE の `EGL_ANGLE_direct_composition`
+  拡張が使える場合 (dcomp.dll ロード可 = Win10/11 常時)、`eglCreateWindowSurface` に
+  `{EGL_DIRECT_COMPOSITION_ANGLE, EGL_TRUE}` を渡して surface を生成する。ANGLE は
+  `CreateTargetForHwnd` + `CreateSwapChainForComposition` (**FLIP_SEQUENTIAL**) で
+  present するため flip 汚染の影響を受けない (DComp visual は窓コンテンツの上に合成
+  される)。失敗時と拡張無し環境 (Win7 等) は従来の HWND surface へフォールバック。
+  ログ `(info) EGL surface: DirectComposition (flip present)` で経路確認可。
+- **付随修正**: `tTVPOGLDrawDevice::SwitchToFullScreen/RevertFromFullScreen` を追加
+  (BasicDrawDevice 同様ボーダレス全画面のみ・true を返すだけ)。未実装のままだと
+  基底スタブが false を返しフルスクリーン移行が例外→巻き戻しになっていた。
+- **検証** (x64 WINVER 実機・実画面キャプチャ): 実行中 D3D11→OGL 切替表示 / OGL→D3D11
+  復帰 / 2 回目の OGL 切替 / リサイズ追従 / フルスクリーン往復 / gl_canvas デモ。
+
+---
+
+## 追補: vblank 待ちはメインスレッドで行ってはならない (2026-08-15 修正)
+
+**症状**: WINVER で `Window.showModal()` により表示したモーダルウィンドウが、
+表示はされているのにマウス操作を一切受け付けない (KAG の「終了しますか？」
+YesNoDialog で発現)。旧 krkrZ.exe (D3D9) では正常。
+
+**原因**: vblank 待ちが**メインスレッドをフレーム丸ごとブロック**していたこと。
+
+- `tTVPVSyncTimingThread` は**ウィンドウごとに 1 本**あり、毎フレーム メインスレッドへ
+  メッセージを投函する。その処理 (`Proc`) の中で `WaitForVBlank` を呼んでいた。
+- D3D9 版の `WaitForVBlank` は `GetRasterStatus` のポーリングに**1ms のタイムアウト**が
+  あり (超過時は `delayed=true` にして即座に抜ける)、メインスレッドはほぼ止まらなかった。
+  D3D11 化でこれが `IDXGIOutput::WaitForVBlank()` (タイムアウト無し・次の垂直帰線まで
+  ブロック) に置き換わり、**メッセージ 1 件の処理に 1 フレーム (~16ms)** かかるように
+  なった。
+- Windows のメッセージ取り出し優先順位は **ポストされたメッセージ > キュー入力
+  (QS_INPUT: マウス/キー)**。ウィンドウが 2 枚 (本体 + モーダルダイアログ) になると
+  VSyncTimingThread も 2 本になり、メインスレッドの処理能力 (60 件/秒) をポスト
+  メッセージが常に上回るため、**マウス入力の順番が永久に回ってこない**。
+  ヒットテスト (`WM_NCHITTEST`) は `SendMessage` で最優先のため届くのに、
+  `WM_MOUSEMOVE` / `WM_LBUTTONDOWN` だけが届かない、という切り分けで確定した。
+
+**対処**: vblank 待ちを `tTVPVSyncTimingThread::Execute()` (ワーカースレッド) へ移動。
+メインスレッドの `Proc()` は待ち結果 (`LastInVBlank` / `LastDelayed`) を読んで
+`DeliverDrawDeviceShow()` するだけにした。ブロックしてよいのはワーカーだけ、という
+原則に戻したもので、タイミング制御 (`SleepTime` 自己調整) の意味論は変わらない。
+実測でモーダルループの回転数が 60 → 約 245 iter/s に改善し、実機でモーダルダイアログの
+マウス操作が復旧した。
+
+- `tTVPBasicDrawDevice::WaitForVBlank` は**ワーカースレッドから呼ばれる**前提になった。
+  DXGI 側はスレッドセーフだが、他の `iTVPDrawDevice` 実装を追加する際は注意 (基底
+  `tTVPDrawDevice::WaitForVBlank` は `false` を返すだけなので OGL 等は無影響)。
+- 併せて `tTVPWindow::ShowModal` のループで `tTVPSystemControl::ApplicationIdle()` を
+  明示的に呼ぶようにした。モーダルがタイマースレッドの wake ハンドラ内から始まると
+  (`onCloseQuery` → `askYesNo` → `showModal` の経路)、`tTVPTimerThread::HandleWake` が
+  戻らないため `PendingEventsAvailable` が下りず、**モーダル中は 50ms 監視タイマー由来の
+  イベント配送が完全に止まる** (TJS Timer も発火しない)。アイドル駆動だけに依存しない
+  ための保険。
+
+## 追補: 本画面転送をダーティ矩形単位へ (2026-08-16)
+
+> 画面転送コストの一般的な考え方・計測・数値の読み方は
+> [ScreenTransfer.md](ScreenTransfer.md) に集約してある。ここは WINVER 固有の経緯。
+
+移行時は `DrawCompositedFrame()` が **CPU シャドウ全体を毎フレーム
+`UpdateSubresource`** していた (コード内 NOTE のとおり「まずは全面転送で
+正確性優先」)。1280x720 なら 3.5MB を無条件に毎フレーム送るので、静止画面でも
+転送量が張り付く (実測 421.9 MB/秒)。
+
+**対処**: `NotifyBitmapCompleted` が CPU シャドウへ書いた矩形を `DirtyRects` に
+積み、`DrawCompositedFrame` が `D3D11_BOX` 指定の `UpdateSubresource` で
+**その矩形だけ**転送するようにした。
+
+- テクスチャは `D3D11_USAGE_DEFAULT` なので、転送しなかった領域の内容は保持される
+  (`DYNAMIC` + `Map(WRITE_DISCARD)` では全破棄になり差分更新に使えない。
+   この選択自体は移行時から変わらない)。
+- 部分転送でも `SrcRowPitch` は元バッファのピッチのままで、先頭ポインタだけ
+  矩形の左上へずらす。
+- **テクスチャ生成直後は GPU 側の内容が不定**なので `TextureDirtyFull` を立てて
+  1 回だけ全面転送する (`CreateTexture` / リサイズ / デバイスロスト復帰)。
+- 矩形が `TVP_DRAWDEVICE_MAX_DIRTY_RECTS` (64) を超えたら union へ畳み、
+  union が画面の 3/4 以上を覆うなら全面転送へ落とす (`UpdateSubresource` の
+  呼び出しごとの固定コスト対策)。
+- 変化が無いフレーム (動画 presenter / Elements overlay 稼働時に
+  `Show()` から呼ばれる場合) は**転送を行わない**。テクスチャは保持されるので
+  クアッドを描き直すだけでよい。
+- `System.renderStats` の粒度は GL 側 (`TextureUpdateRect::RenderToTexture`) に
+  合わせた。`frames` = 合成フレームを描いた回数 (転送の有無に依らず)、
+  `texUploads` = `UpdateSubresource` の呼び出し回数 (= ダーティ矩形の数)。
+
+**効果** (`data/perf_stats` デモ / 1280x720 / 120Hz):
+
+| 負荷 | 変更前 | 変更後 |
+|---|---|---|
+| なし (静止) | 421.9 MB/秒・転送率 5.0% | 1.8 MB/秒・0.0% |
+| 小矩形 x60 /フレーム | 421.9 MB/秒・5.0% | 44.3 MB/秒・2.1% |
+| 全面塗り (440x502) | 421.9 MB/秒・5.0% | 45.8 MB/秒・1.2% |
+| 中矩形アニメ (動いた所だけ) | 421.9 MB/秒・5.0% | 9.5 MB/秒・0.4% |
+
+実機確認: gallery のシーン往復 (GL デモ往復含む) / ウィンドウリサイズ /
+フルスクリーン往復 / トランジション実行中の合成、いずれも残像・欠けなし。

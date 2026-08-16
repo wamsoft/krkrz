@@ -10,6 +10,7 @@
 #include "DebugIntf.h"
 #include "ThreadIntf.h"
 #include "ComplexRect.h"
+#include <chrono>
 #include "EventIntf.h"
 #include "WindowImpl.h"
 #include "BitmapInfomation.h"
@@ -98,6 +99,7 @@ tTVPBasicDrawDevice::tTVPBasicDrawDevice()
 	TextureBuffer = NULL;
 	TexturePitch = 0;
 	TextureWidth = TextureHeight = 0;
+	TextureDirtyFull = false;
 
 	SwapWidth = SwapHeight = 0;
 	ShouldShow = false;
@@ -158,6 +160,8 @@ void tTVPBasicDrawDevice::DestroyTexture()
 	if(TextureBuffer) { free(TextureBuffer); TextureBuffer = NULL; }
 	TexturePitch = 0;
 	TextureWidth = TextureHeight = 0;
+	DirtyRects.clear();
+	TextureDirtyFull = false;
 }
 //---------------------------------------------------------------------------
 void tTVPBasicDrawDevice::InvalidateAll()
@@ -425,6 +429,9 @@ bool tTVPBasicDrawDevice::CreateTexture()
 	TextureBuffer = malloc((size_t)TexturePitch * h);
 	if( !TextureBuffer ) { TextureWidth = TextureHeight = 0; TexturePitch = 0; return false; }
 	memset(TextureBuffer, 0, (size_t)TexturePitch * h);
+	// 生成直後の GPU テクスチャ内容は不定なので、最初の 1 回は全面転送する
+	DirtyRects.clear();
+	TextureDirtyFull = true;
 
 	// DEFAULT テクスチャ (UpdateSubresource で dirty 矩形のみ部分更新 → 内容保持)
 	D3D11_TEXTURE2D_DESC td; ZeroMemory(&td, sizeof(td));
@@ -683,6 +690,14 @@ void tTVPBasicDrawDevice::FulfillScreenCaptureFromBackBuffer()
 //---------------------------------------------------------------------------
 bool TJS_INTF_METHOD tTVPBasicDrawDevice::WaitForVBlank( tjs_int* in_vblank, tjs_int* delayed )
 {
+	// 注意: この関数は tTVPVSyncTimingThread のワーカースレッドから呼ばれる
+	// (メインスレッドではない)。 IDXGIOutput::WaitForVBlank() は次の VBlank まで
+	// ブロックする同期待ちなので、 メインスレッドで呼ぶとメッセージポンプが
+	// 1 フレーム分止まり、 ポストメッセージに対してキュー入力 (マウス/キー) が
+	// 飢餓状態になる。 詳細は VSyncTimingThread.cpp の Execute() のコメント参照。
+	*in_vblank = 0;
+	*delayed = 0;
+
 	if( !SwapChain ) return false;
 	if( !DXGIOutput ) {
 		// swapchain から取り直しを試みる
@@ -690,17 +705,14 @@ bool TJS_INTF_METHOD tTVPBasicDrawDevice::WaitForVBlank( tjs_int* in_vblank, tjs
 		if( !DXGIOutput ) return false;
 	}
 
-	// DXGI の WaitForVBlank は次の VBlank までブロックする。
-	// 戻った直後は VBlank に入った状態なので in_vblank=1。
 	HRESULT hr = DXGIOutput->WaitForVBlank();
 	if( FAILED(hr) ) {
 		TVPSafeRelease(DXGIOutput);
-		*in_vblank = 0;
-		*delayed = 0;
 		return false;
 	}
+
+	// 戻った直後は VBlank に入った状態なので in_vblank=1。
 	*in_vblank = 1;
-	*delayed = 0;
 	return true;
 }
 //---------------------------------------------------------------------------
@@ -764,6 +776,10 @@ void TJS_INTF_METHOD tTVPBasicDrawDevice::NotifyBitmapCompleted(iTVPLayerManager
 			void *destp = (tjs_uint8*)TextureBuffer + TexturePitch * dest_y + dest_x * 4;
 			memcpy(destp, srcp, width_bytes);
 		}
+
+		// 書き換えた領域を記録しておき、DrawCompositedFrame で「そこだけ」
+		// GPU テクスチャへ転送する (毎フレーム全面転送を避ける)。
+		AddDirtyRect( tTVPRect( x, y, x + cliprect.get_width(), y + cliprect.get_height() ) );
 	}
 }
 //---------------------------------------------------------------------------
@@ -774,6 +790,89 @@ void TJS_INTF_METHOD tTVPBasicDrawDevice::EndBitmapCompletion(iTVPLayerManager *
 	DrawCompositedFrame();
 }
 //---------------------------------------------------------------------------
+//! @brief	CPU シャドウの未転送領域を記録する
+//! @note	矩形数が増えすぎたら 1 つの union にまとめる。 UpdateSubresource は
+//!			呼び出しごとに固定コストがあるため、細かい矩形が大量に来る画面では
+//!			union 1 回の方が安い。 全面に近くなったら全面転送へ落とす。
+//---------------------------------------------------------------------------
+void tTVPBasicDrawDevice::AddDirtyRect( const tTVPRect & rect )
+{
+	if( TextureDirtyFull ) return;
+	if( rect.right <= rect.left || rect.bottom <= rect.top ) return;
+
+	DirtyRects.push_back( rect );
+
+	if( DirtyRects.size() > TVP_DRAWDEVICE_MAX_DIRTY_RECTS ) {
+		// union へ畳む (以降もこの 1 つへ merge されていく)
+		tTVPRect u = DirtyRects[0];
+		for( size_t i = 1; i < DirtyRects.size(); i++ ) {
+			const tTVPRect & r = DirtyRects[i];
+			if( r.left   < u.left   ) u.left   = r.left;
+			if( r.top    < u.top    ) u.top    = r.top;
+			if( r.right  > u.right  ) u.right  = r.right;
+			if( r.bottom > u.bottom ) u.bottom = r.bottom;
+		}
+		DirtyRects.clear();
+		// union が画面の大半を覆うなら、以降の記録をやめて全面転送にする
+		tjs_int64 uarea = (tjs_int64)u.get_width() * (tjs_int64)u.get_height();
+		tjs_int64 full  = (tjs_int64)TextureWidth * (tjs_int64)TextureHeight;
+		if( full > 0 && uarea * 4 >= full * 3 ) {
+			TextureDirtyFull = true;
+		} else {
+			DirtyRects.push_back( u );
+		}
+	}
+}
+//---------------------------------------------------------------------------
+//! @brief	記録済みの領域を GPU テクスチャへ転送する (計測込み)
+//---------------------------------------------------------------------------
+void tTVPBasicDrawDevice::UploadDirtyRects()
+{
+	if( !Texture || !TextureBuffer ) return;
+	if( !TextureDirtyFull && DirtyRects.empty() ) return;   // 変化なし = 転送不要
+
+	// 計測は GL 側 (TextureUpdateRect::RenderToTexture) と同じ粒度で、
+	// 転送 1 回 = UpdateSubresource 1 回として積む。
+	if( TextureDirtyFull ) {
+		const auto _up_t0 = std::chrono::steady_clock::now();
+		D3DContext->UpdateSubresource( Texture, 0, NULL, TextureBuffer, (UINT)TexturePitch, 0 );
+		TVPRenderStatsAddTexUpload(
+			(tjs_uint64)std::chrono::duration_cast<std::chrono::nanoseconds>(
+				std::chrono::steady_clock::now() - _up_t0).count(),
+			(tjs_uint64)TexturePitch * (tjs_uint64)TextureHeight );
+	} else {
+		for( size_t i = 0; i < DirtyRects.size(); i++ ) {
+			tTVPRect r = DirtyRects[i];
+			// テクスチャ範囲へクランプ (念のため)
+			if( r.left   < 0 ) r.left   = 0;
+			if( r.top    < 0 ) r.top    = 0;
+			if( r.right  > (tjs_int)TextureWidth  ) r.right  = (tjs_int)TextureWidth;
+			if( r.bottom > (tjs_int)TextureHeight ) r.bottom = (tjs_int)TextureHeight;
+			if( r.right <= r.left || r.bottom <= r.top ) continue;
+
+			D3D11_BOX box;
+			box.left   = (UINT)r.left;
+			box.top    = (UINT)r.top;
+			box.front  = 0;
+			box.right  = (UINT)r.right;
+			box.bottom = (UINT)r.bottom;
+			box.back   = 1;
+			// 部分転送でも pitch は元バッファのままで、先頭だけ矩形の左上へずらす
+			const tjs_uint8 * src = (const tjs_uint8 *)TextureBuffer
+				+ (size_t)r.top * (size_t)TexturePitch + (size_t)r.left * 4;
+			const auto _up_t0 = std::chrono::steady_clock::now();
+			D3DContext->UpdateSubresource( Texture, 0, &box, src, (UINT)TexturePitch, 0 );
+			TVPRenderStatsAddTexUpload(
+				(tjs_uint64)std::chrono::duration_cast<std::chrono::nanoseconds>(
+					std::chrono::steady_clock::now() - _up_t0).count(),
+				(tjs_uint64)r.get_width() * 4 * (tjs_uint64)r.get_height() );
+		}
+	}
+
+	DirtyRects.clear();
+	TextureDirtyFull = false;
+}
+//---------------------------------------------------------------------------
 void tTVPBasicDrawDevice::DrawCompositedFrame()
 {
 	if(!TargetWindow) return;
@@ -782,9 +881,15 @@ void tTVPBasicDrawDevice::DrawCompositedFrame()
 	if(!SwapChain || !BackBufferRTV) return;
 	if(!TextureBuffer) return;
 
-	// シャドウバッファ全体を GPU テクスチャへ反映 (DEFAULT テクスチャなので内容は保持)
-	// NOTE: 差分矩形の union だけを転送する最適化余地あり。まずは全面転送で正確性優先。
-	D3DContext->UpdateSubresource(Texture, 0, NULL, TextureBuffer, (UINT)TexturePitch, 0);
+	// シャドウバッファのうち「変化した矩形だけ」を GPU テクスチャへ反映する。
+	// DEFAULT テクスチャなので転送しなかった領域の内容は保持される。
+	// (D3D11 DYNAMIC の Map(WRITE_DISCARD) は全破棄で差分更新に使えないので、
+	//  永続 CPU シャドウ + DEFAULT テクスチャの UpdateSubresource 方式)
+	// 転送コスト・回数は System.renderStats (texUploadUs / texUploads) で見られる。
+	// frames は「転送フェーズの実行回数」なので、実際に転送したかに依らず
+	// 合成フレームを描くたびに数える (GL 側の RenderToTexture と同じ意味)。
+	TVPRenderStatsBumpUploadFrame();
+	UploadDirtyRects();
 
 	// 転送先をクリッピング矩形に基づきクリッピング (クライアント=swapchain 座標)
 	float dl = (float)( DestRect.left   < ClipRect.left   ? ClipRect.left   : DestRect.left );

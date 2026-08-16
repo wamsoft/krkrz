@@ -15,6 +15,11 @@ class LayerBasicScene extends DemoScene
 
     function create()
     {
+        // stage は ltAlpha (シェル既定)。operateRect の合成は Layer.holdAlpha
+        // (既定 false) をそのまま hda フラグに渡すため、乗算/覆い焼き/比較暗/
+        // 比較明は dest アルファを 0 に破壊し、合成結果が透明化して真っ黒に
+        // 見える。holdAlpha でアルファを保護する。
+        stage.holdAlpha = true;
         samples = [
             %[ mode:omOpaque,         name:"omOpaque (不透明)" ],
             %[ mode:omAlpha,          name:"omAlpha (アルファ)" ],
@@ -64,15 +69,21 @@ class LayerBasicScene extends DemoScene
         stage.update();
     }
 
+    // 干渉チェック用ベース: 中央はカラーグラデ、左端は黒→白のグレースケール
+    // ランプ、上端は純黒帯 / 下端は純白帯。各モードの特性 (黒に効く加算/
+    // スクリーン、白に効く乗算/比較暗、灰での中間挙動) が一目で判別できる。
     function drawCellBg(ox, oy, w, h)
     {
+        var RAMP_W = 36, BAR_H = 18;
         for (var yy = 0; yy < h; yy += 2) {
             var t = yy / h;
             var r = (40 + 120 * t) \ 1, g = (90 + 60 * (1 - t)) \ 1, b = (140 + 80 * t) \ 1;
-            stage.fillRect(ox, oy + yy, w, 2, 0xff000000 | (r << 16) | (g << 8) | b);
+            stage.fillRect(ox + RAMP_W, oy + yy, w - RAMP_W, 2, 0xff000000 | (r << 16) | (g << 8) | b);
+            var v = (255 * t) \ 1;
+            stage.fillRect(ox, oy + yy, RAMP_W, 2, 0xff000000 | (v << 16) | (v << 8) | v);
         }
-        stage.fillRect(ox, oy, w, 26, 0xff101018);
-        stage.fillRect(ox, oy + h - 26, w, 26, 0xffe8e8f0);
+        stage.fillRect(ox, oy, w, BAR_H, 0xff000000);             // 純黒
+        stage.fillRect(ox, oy + h - BAR_H, w, BAR_H, 0xffffffff); // 純白
     }
 
     function panelDict()
@@ -81,7 +92,7 @@ class LayerBasicScene extends DemoScene
             size : [280, 180], background : [26, 30, 40, 236], locale : "ja-JP",
             align : "top_right", margin : 16,
             content : %[ type : "margin", padding : 14, child : %[ type : "vtile", children : [
-                %[ type : "hspacer", width : 248 ],
+                %[ type : "vsize", height : 0, child : %[ type : "hspacer", width : 248 ] ],
                 %[ type : "align_center", child : %[ type : "label", text : "合成サンプル設定", size_scale : 1.2 ] ],
                 %[ type : "vspacer", height : 12 ],
                 %[ type : "label", text : "不透明度 (opacity 0〜255)" ],

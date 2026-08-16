@@ -1,7 +1,8 @@
 #pragma once
 
 // ゲームパッド状態リアルタイム監視オーバレイ用の ON/OFF 保持。
-// SDL3 ビルド限定で画面左上に 16 ボタンのマトリクスを表示する。
+// 画面左上に 16 ボタンのマトリクスを表示する (flag は全ビルド共通。
+// 描画は OGL 系 DrawDevice と SDLDrawDevice が行う)。
 // 描画は sdl3/visual/PadOverlayRender.cpp (SDL_Renderer 経路) と
 // common/visual/opengl/PadOverlayGL.cpp (OpenGL ES 直接経路) が
 // それぞれ DrawDevice の Show 末尾から呼び出す。

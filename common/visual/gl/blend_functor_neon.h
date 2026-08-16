@@ -829,7 +829,10 @@ struct neon_screen_blend_hda_functor : public neon_screen_blend_functor
 {
     inline tjs_uint32 operator()(tjs_uint32 d, tjs_uint32 s) const
     {
-        return (d & 0xff000000) | neon_screen_blend_functor::operator()(d, s);
+        // 基底は alpha を 0xff 固定で返すため、そのまま OR すると dest alpha が
+        // 常に 0xff 化してしまう。色 24bit だけ取り出して dest alpha を保持する。
+        return (d & 0xff000000)
+             | (neon_screen_blend_functor::operator()(d, s) & 0x00ffffff);
     }
     inline uint8x8x4_t operator()(uint8x8x4_t md, uint8x8x4_t ms) const
     {

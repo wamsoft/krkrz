@@ -5,3 +5,6 @@
 	path = external/elements
 	url = https://github.com/wamsoft/elements.git
 	branch = develop
+[submodule "external/glyphware"]
+	path = external/glyphware
+	url = https://github.com/wamsoft/glyphware.git

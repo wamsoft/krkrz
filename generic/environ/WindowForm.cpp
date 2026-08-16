@@ -2,6 +2,8 @@
 #include "tjsCommHead.h"
 
 #include <cstring>
+#include <vector>
+#include <iterator>
 #include "WindowForm.h"
 #include "Application.h"
 #include "TickCount.h"
@@ -34,6 +36,8 @@ TTVPWindowForm::TTVPWindowForm( class tTJSNI_Window* ni )
  , mcs_(mcsVisible)
  , mSurfaceWidth(0)
  , mSurfaceHeight(0)
+ , zoom_numer_(1)
+ , zoom_denom_(1)
  , mCursorX(0)
  , mCursorY(0)
  , mViewportBgColor(0xff000000)
@@ -48,6 +52,35 @@ TTVPWindowForm::TTVPWindowForm( class tTJSNI_Window* ni )
 	Closing = false;
 	ProgramClosing = false;
 	CanCloseWork = false;
+	in_mode_ = false;
+	modal_result_ = 0;
+	left_double_click_ = false;
+}
+
+//---------------------------------------------------------------------------
+// モーダルウィンドウのスタック
+//   ShowWindowAsModal の実装 (プラットフォーム側) が push/pop する。
+//   モーダル表示中は、最前面のモーダルウィンドウ以外へユーザ入力を配送しない。
+//---------------------------------------------------------------------------
+static std::vector<TTVPWindowForm*> TVPModalWindowFormStack;
+
+TTVPWindowForm * TTVPWindowForm::GetModalWindowForm()
+{
+	if( TVPModalWindowFormStack.empty() ) return nullptr;
+	return TVPModalWindowFormStack.back();
+}
+void TTVPWindowForm::PushModalWindowForm( TTVPWindowForm *form )
+{
+	if( form ) TVPModalWindowFormStack.push_back( form );
+}
+void TTVPWindowForm::PopModalWindowForm( TTVPWindowForm *form )
+{
+	for( auto i = TVPModalWindowFormStack.rbegin(); i != TVPModalWindowFormStack.rend(); ++i ) {
+		if( *i == form ) {
+			TVPModalWindowFormStack.erase( std::next(i).base() );
+			break;
+		}
+	}
 }
 
 TTVPWindowForm::~TTVPWindowForm() {
@@ -203,6 +236,12 @@ void TTVPWindowForm::OnCloseQueryCalled( bool b )
 	if( !ProgramClosing ) {
 		// closing action by the user
 		if( b ) {
+			if( in_mode_ ) {
+				// モーダル表示中はループを抜けるだけ (破棄しない)
+				modal_result_ = TVP_MODAL_CANCEL;
+				Closing = false;
+				return;
+			}
 			SetVisible( false );  // just hide
 
 			Closing = false;
@@ -225,8 +264,16 @@ void TTVPWindowForm::OnCloseQueryCalled( bool b )
 	}
 }
 
-void TTVPWindowForm::Close() 
+void TTVPWindowForm::Close()
 {
+	// モーダル表示中はウィンドウを閉じずにモーダルループを抜けるだけ。
+	// (実際の非表示/破棄は ShowWindowAsModal の後始末と、その後の
+	//  invalidate に任せる。 WINVER の tTVPWindow::Close と同じ意味論)
+	if( in_mode_ ) {
+		modal_result_ = TVP_MODAL_CANCEL;
+		return;
+	}
+
 	// closing action by "close" method
 	if( Closing ) return; // already waiting closing...
 
@@ -383,6 +430,7 @@ void TTVPWindowForm::OnMouseDown( int button, int shift, int x, int y ) {
 
 	LastMouseDownX = x;
 	LastMouseDownY = y;
+	if( button == mbLeft ) left_double_click_ = false;
 
 	if(TJSNativeInstance) {
 		tjs_uint32 s = TVP_TShiftState_To_uint32(shift);
@@ -391,10 +439,31 @@ void TTVPWindowForm::OnMouseDown( int button, int shift, int x, int y ) {
 	}
 }
 
+void TTVPWindowForm::OnMouseDoubleClick( int button, int x, int y ) {
+	TranslateWindowToDrawArea( x, y );
+	if( button == mbLeft ) left_double_click_ = true;
+	if( TJSNativeInstance ) {
+		TVPPostInputEvent( new tTVPOnDoubleClickInputEvent(TJSNativeInstance, LastMouseDownX, LastMouseDownY));
+	}
+}
+
 void TTVPWindowForm::OnMouseUp( int button, int shift, int x, int y ) {
 	TranslateWindowToDrawArea(x, y);
 	//ReleaseMouseCapture();
 	MouseVelocityTracker.addMovement( TVPGetRoughTickCount32(), (float)x, (float)y );
+
+	// クリックイベント (Window.onClick / Layer.onClick) を発生させる。
+	// win32 版 (tTVPWindow::Proc の WM_LBUTTONUP) と同じ意味論で、左ボタンの
+	// 離し時に「押した位置」で発火し、ダブルクリック時は発火しない。
+	// これが無いと Layer.onClick が一切呼ばれず、KAG の ButtonLayer 等が
+	// 反応しなくなる。
+	if( button == mbLeft ) {
+		if( !left_double_click_ && TJSNativeInstance ) {
+			TVPPostInputEvent( new tTVPOnClickInputEvent(TJSNativeInstance, LastMouseDownX, LastMouseDownY));
+		}
+		left_double_click_ = false;
+	}
+
 	if(TJSNativeInstance) {
 		tjs_uint32 s = TVP_TShiftState_To_uint32(shift);
 		s |= GetMouseButtonState();
@@ -502,9 +571,53 @@ void TTVPWindowForm::SetInnerHeight(int h)
 	SetInnerSize(GetInnerWidth(), h);
 }
 
-void TTVPWindowForm::SetInnerSize(int w, int h) 
+void TTVPWindowForm::SetInnerSize(int w, int h)
 {
-	ResizeWindow(w, h); 
+	ResizeWindow(w, h);
+}
+
+//---------------------------------------------------------------------------
+// 表示ズーム
+//   WINVER と同じ「レイヤサイズ × zoom を表示サイズにする」意味。 generic では
+//   ウィンドウ (surface) をその大きさへリサイズするだけで、実際の拡縮は
+//   viewport のフィット計算 (CalcDestRect) が行う。 全画面時は倍率をシステムが
+//   決める (WINVER と同様) ので論理値の保持のみ。
+//---------------------------------------------------------------------------
+static void TVPAdjustNumerAndDenom( tjs_int &n, tjs_int &d )
+{
+	// ユークリッドの互除法で約分する
+	tjs_int a = n;
+	tjs_int b = d;
+	while( b ) {
+		tjs_int t = b;
+		b = a % b;
+		a = t;
+	}
+	if( a == 0 ) return;
+	n = n / a;
+	d = d / a;
+}
+
+void TTVPWindowForm::SetZoom( tjs_int numer, tjs_int denom, bool set_logical )
+{
+	if( numer <= 0 || denom <= 0 ) return;
+	TVPAdjustNumerAndDenom( numer, denom );
+	if( set_logical ) {
+		zoom_numer_ = numer;
+		zoom_denom_ = denom;
+	}
+	if( GetFullScreenMode() ) return;
+
+	tjs_int lw = 0, lh = 0;
+	if( TJSNativeInstance ) TJSNativeInstance->GetLayerSize( lw, lh );
+	if( lw <= 0 || lh <= 0 ) return;   // まだプライマリレイヤが無い
+
+	tjs_int w = (tjs_int)( (tjs_int64)lw * numer / denom );
+	tjs_int h = (tjs_int)( (tjs_int64)lh * numer / denom );
+	if( w < 1 ) w = 1;
+	if( h < 1 ) h = 1;
+	SetInnerSize( w, h );
+	NotifyViewportDestRectChanged();
 }
 
 int TTVPWindowForm::GetInnerWidth() const 
@@ -652,6 +765,7 @@ void TTVPWindowForm::SendMouseMessage( tjs_int type, int button, int shift, int 
 	case AM_MOUSE_UP:    OnMouseUp( button, shift, x, y ); break;
 	case AM_MOUSE_MOVE:  OnMouseMove( shift, x, y ); break;
 	case AM_MOUSE_WHEEL: OnMouseWheel( button, shift, x, y ); break;
+	case AM_MOUSE_DBLCLK: OnMouseDoubleClick( button, x, y ); break;
 	default: break;
 	}
 }

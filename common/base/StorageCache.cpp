@@ -268,6 +268,39 @@ iTJSBinaryStream *TVPGetStorageCache(const ttstr &_name, bool entry)
 	return NULL;
 }
 
+// キャッシュの共有バッファを直接取得 (ゼロコピー消費者向け)。
+// キャッシュ対象外 (閾値超え・確保失敗等) は nullptr (呼び出し元フォールバック)。
+std::shared_ptr<tTJSBinaryStreamBuffer> TVPGetStorageCacheBuffer(const ttstr &_name, bool entry)
+{
+	ttstr name = TVPGetPlacedPath(_name);
+	if(name.IsEmpty()) TVPThrowExceptionMessage(TVPCannotOpenStorage, _name);
+
+	tTJSCriticalSectionHolder Lock(StorageCacheCS);
+	auto i = StorageCacheTable.find(name.AsStdString());
+	if (i == StorageCacheTable.end() && entry) {
+		iTJSBinaryStream *direct = EntryStorageCache(name);
+		if (direct) {
+			// キャッシュ非対象。open 済みストリームは破棄し nullptr フォールバック
+			delete direct;
+			return nullptr;
+		}
+		i = StorageCacheTable.find(name.AsStdString());
+	}
+	if (i != StorageCacheTable.end()) {
+		i->second.lastaccess = time(NULL);
+		i->second.usecount--;
+		TVPLOG_DEBUG("StorageCache:getbuf:{}", name);
+		return i->second.buffer;
+	}
+	return nullptr;
+}
+
+iTJSBinaryStream *TVPCreateSharedMemoryStream(std::shared_ptr<tTJSBinaryStreamBuffer> buffer)
+{
+	if (!buffer) return nullptr;
+	return new tTVPSharedMemoryStream(std::move(buffer));
+}
+
 // キャッシュエントリの buffer に他の保持者 (= cache 表以外の shared_ptr) が
 // いるかどうか。font 系 _fontlist や archive handle pool 等が stream を介して
 // shared_ptr を持ち続けている間は use_count() > 1 になる。

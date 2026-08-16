@@ -38,6 +38,10 @@
 #include "FontRasterizer.h"
 #include "RectItf.h"
 #include "FontSystem.h"
+#include "FontServiceIntf.h"
+#ifdef KRKRZ_USE_GLYPHWARE
+#include "GlyphwareText.h"
+#endif
 #include "tjsDictionary.h"
 
 #ifndef _WIN32
@@ -6788,6 +6792,39 @@ tjs_uint64 tTJSNI_BaseLayer::GetTransTick()
 
 
 //---------------------------------------------------------------------------
+#ifdef KRKRZ_USE_GLYPHWARE
+// shaped-text (glyphware) 系メソッドの font 引数解決:
+//   void = 自レイヤの font / 文字列 = 自レイヤの font の face のみ差替 /
+//   オブジェクト = Font インスタンス
+static void TVPShapedTextStyleFromParam(tTJSNI_BaseLayer* lay,
+	tTJSVariant* fontParam, tTVPShapedTextStyle& style)
+{
+	if(!fontParam || fontParam->Type() == tvtVoid)
+	{
+		TVPShapedTextStyleFromFont(style, lay->GetFont());
+	}
+	else if(fontParam->Type() == tvtString)
+	{
+		TVPShapedTextStyleFromFont(style, lay->GetFont());
+		style.fontKey = ttstr(*fontParam);
+	}
+	else
+	{
+		tTJSNI_Font* font = NULL;
+		tTJSVariantClosure clo = fontParam->AsObjectClosureNoAddRef();
+		if(clo.Object)
+		{
+			if(TJS_FAILED(clo.Object->NativeInstanceSupport(TJS_NIS_GETINSTANCE,
+				tTJSNC_Font::ClassID, (iTJSNativeInstance**)&font)))
+				font = NULL;
+		}
+		if(!font)
+			TVPThrowExceptionMessage(TJS_W("Invalid font parameter: specify a Font object, a font name string, or void"));
+		TVPShapedTextStyleFromFont(style, font->GetFont());
+	}
+}
+#endif
+//---------------------------------------------------------------------------
 // tTJSNC_Layer : TJS Layer class
 //---------------------------------------------------------------------------
 tjs_uint32 tTJSNC_Layer::ClassID = -1;
@@ -7152,6 +7189,130 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/drawText)
 	return TJS_S_OK;
 }
 TJS_END_NATIVE_METHOD_DECL(/*func. name*/drawText)
+//----------------------------------------------------------------------
+#ifdef KRKRZ_USE_GLYPHWARE
+// drawShapedText(x, y, text, color [, font, base, count])
+// 統一フォントエンジン glyphware 経由でメインイメージへ描画する (BiDi/多言語/
+// フォールバック対応)。font は Font オブジェクト / フォント名文字列 (自レイヤ
+// font の face のみ差替) / void (自レイヤの font)。base 0=auto/1=LTR/2=RTL。
+// count >= 0 で先頭 count クラスタ (shapedTextCount と同じ描画単位) のみ描画。
+// 既存 drawText とは別経路 (並存・段階移行用)。戻り値は描画分の前進幅。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/drawShapedText)
+{
+	TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_BaseLayer);
+	if(numparams < 4) return TJS_E_BADPARAMCOUNT;
+	tjs_int x = (tjs_int)*param[0];
+	tjs_int y = (tjs_int)*param[1];
+	ttstr text = *param[2];
+	tjs_uint32 color = static_cast<tjs_uint32>((tjs_int64)*param[3]);
+	tTVPShapedTextStyle style;
+	TVPShapedTextStyleFromParam(_this, numparams >= 5 ? param[4] : NULL, style);
+	tjs_int base  = (numparams >= 6 && param[5]->Type() != tvtVoid) ? (tjs_int)*param[5] : 0;
+	tjs_int count = (numparams >= 7 && param[6]->Type() != tvtVoid) ? (tjs_int)*param[6] : -1;
+	int w = TVPGlyphwareDrawText(_this->GetMainImage(), x, y, text, color, style, base, count);
+	_this->SetImageModified(true);
+	_this->UpdateByScript();
+	if(result) *result = (tjs_int)w;
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_METHOD_DECL(/*func. name*/drawShapedText)
+//----------------------------------------------------------------------
+// drawShapedTextArea(x, y, width, height, text, color [, font, base, count, lineSpacing, align])
+// glyphware 経由で矩形 (x, y, width, height) 内へ簡易折り返し付きで描画する。
+// \n は明示改行。空白区切りの言語はワード単位、CJK は文字単位 (簡易禁則付き)
+// で折り返す。count >= 0 は全体を通した描画クラスタ数制限 (折り返しは全文で
+// 確定するため typewriter 表示でリフローしない)。lineSpacing は行間追加 px、
+// align は 0=左/1=中央/2=右。矩形下端を超える行は描画しない。font の angle は
+// 無視。戻り値は %[height, lines, count]、失敗時は void。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/drawShapedTextArea)
+{
+	TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_BaseLayer);
+	if(numparams < 6) return TJS_E_BADPARAMCOUNT;
+	tjs_int x = (tjs_int)*param[0];
+	tjs_int y = (tjs_int)*param[1];
+	tjs_int width  = (tjs_int)*param[2];
+	tjs_int height = (tjs_int)*param[3];
+	ttstr text = *param[4];
+	tjs_uint32 color = static_cast<tjs_uint32>((tjs_int64)*param[5]);
+	tTVPShapedTextStyle style;
+	TVPShapedTextStyleFromParam(_this, numparams >= 7 ? param[6] : NULL, style);
+	tjs_int base        = (numparams >=  8 && param[7]->Type() != tvtVoid) ? (tjs_int)*param[7] : 0;
+	tjs_int count       = (numparams >=  9 && param[8]->Type() != tvtVoid) ? (tjs_int)*param[8] : -1;
+	tjs_int lineSpacing = (numparams >= 10 && param[9]->Type() != tvtVoid) ? (tjs_int)*param[9] : 0;
+	tjs_int align       = (numparams >= 11 && param[10]->Type() != tvtVoid) ? (tjs_int)*param[10] : 0;
+	tTVPShapedTextAreaResult r;
+	if(!TVPGlyphwareDrawTextArea(_this->GetMainImage(), x, y, width, height,
+			text, color, style, base, count, lineSpacing, align, r)) {
+		if(result) result->Clear();
+		return TJS_S_OK;
+	}
+	_this->SetImageModified(true);
+	_this->UpdateByScript();
+	if(result) {
+		iTJSDispatch2 *dic = TJSCreateDictionaryObject();
+		tTJSVariant tv;
+		tv = (tjs_int)r.height; dic->PropSet(TJS_MEMBERENSURE, TJS_W("height"), nullptr, &tv, dic);
+		tv = (tjs_int)r.lines;  dic->PropSet(TJS_MEMBERENSURE, TJS_W("lines"),  nullptr, &tv, dic);
+		tv = (tjs_int)r.count;  dic->PropSet(TJS_MEMBERENSURE, TJS_W("count"),  nullptr, &tv, dic);
+		*result = tTJSVariant(dic, dic);
+		dic->Release();
+	}
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_METHOD_DECL(/*func. name*/drawShapedTextArea)
+//----------------------------------------------------------------------
+// measureShapedText(text [, font, base])
+// glyphware でテキストを計測し、%[ width, left, top, right, bottom, ascent,
+// descent, count ] の辞書を返す (baseline 原点・pixel。left/top/right/bottom は
+// インク境界、top は負=baseline より上。count は描画クラスタ数)。失敗時は void。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/measureShapedText)
+{
+	TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_BaseLayer);
+	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
+	ttstr text = *param[0];
+	tTVPShapedTextStyle style;
+	TVPShapedTextStyleFromParam(_this, numparams >= 2 ? param[1] : NULL, style);
+	tjs_int base = (numparams >= 3 && param[2]->Type() != tvtVoid) ? (tjs_int)*param[2] : 0;
+	tTVPGlyphwareMetrics m;
+	if(!TVPGlyphwareMeasureText(m, text, style, base)) {
+		if(result) result->Clear();
+		return TJS_S_OK;
+	}
+	if(result) {
+		iTJSDispatch2 *dic = TJSCreateDictionaryObject();
+		tTJSVariant tv;
+		tv = (tjs_int)m.advance; dic->PropSet(TJS_MEMBERENSURE, TJS_W("width"),   nullptr, &tv, dic);
+		tv = (tjs_int)m.left;    dic->PropSet(TJS_MEMBERENSURE, TJS_W("left"),    nullptr, &tv, dic);
+		tv = (tjs_int)m.top;     dic->PropSet(TJS_MEMBERENSURE, TJS_W("top"),     nullptr, &tv, dic);
+		tv = (tjs_int)m.right;   dic->PropSet(TJS_MEMBERENSURE, TJS_W("right"),   nullptr, &tv, dic);
+		tv = (tjs_int)m.bottom;  dic->PropSet(TJS_MEMBERENSURE, TJS_W("bottom"),  nullptr, &tv, dic);
+		tv = (tjs_int)m.ascent;  dic->PropSet(TJS_MEMBERENSURE, TJS_W("ascent"),  nullptr, &tv, dic);
+		tv = (tjs_int)m.descent; dic->PropSet(TJS_MEMBERENSURE, TJS_W("descent"), nullptr, &tv, dic);
+		tv = (tjs_int)m.count;   dic->PropSet(TJS_MEMBERENSURE, TJS_W("count"),   nullptr, &tv, dic);
+		*result = tTJSVariant(dic, dic);
+		dic->Release();
+	}
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_METHOD_DECL(/*func. name*/measureShapedText)
+//----------------------------------------------------------------------
+// shapedTextCount(text [, font, base])
+// 描画クラスタ数 (drawShapedText / drawShapedTextArea の count が制限する
+// 単位: 合字・結合列・絵文字 ZWJ シーケンスで 1) を返す。改行は行を分割し、
+// それ自身は数えない。失敗時は -1。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/shapedTextCount)
+{
+	TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_BaseLayer);
+	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
+	ttstr text = *param[0];
+	tTVPShapedTextStyle style;
+	TVPShapedTextStyleFromParam(_this, numparams >= 2 ? param[1] : NULL, style);
+	tjs_int base = (numparams >= 3 && param[2]->Type() != tvtVoid) ? (tjs_int)*param[2] : 0;
+	if(result) *result = (tjs_int)TVPGlyphwareTextCount(text, style, base);
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_METHOD_DECL(/*func. name*/shapedTextCount)
+#endif
 //----------------------------------------------------------------------
 TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/drawGlyph)
 {
@@ -9985,6 +10146,42 @@ const tTVPFont& tTJSNI_Font::GetFont() const
 
 
 //---------------------------------------------------------------------------
+// Font.queryFonts / Font.getFontInfo 用ヘルパ (フォントサービス → TJS 辞書)
+//---------------------------------------------------------------------------
+static iTJSDispatch2 * TVPFontFaceInfoToDictionary(const tTVPFontFaceInfo &info)
+{
+	iTJSDispatch2 *dic = TJSCreateDictionaryObject();
+	tTJSVariant tv;
+	tv = info.Key;                    dic->PropSet(TJS_MEMBERENSURE, TJS_W("key"),            nullptr, &tv, dic);
+	tv = (tjs_int)info.FaceIndex;     dic->PropSet(TJS_MEMBERENSURE, TJS_W("faceIndex"),      nullptr, &tv, dic);
+	tv = info.Family;                 dic->PropSet(TJS_MEMBERENSURE, TJS_W("family"),         nullptr, &tv, dic);
+	tv = info.Subfamily;              dic->PropSet(TJS_MEMBERENSURE, TJS_W("subfamily"),      nullptr, &tv, dic);
+	tv = info.FullName;               dic->PropSet(TJS_MEMBERENSURE, TJS_W("fullName"),       nullptr, &tv, dic);
+	tv = info.PostScriptName;         dic->PropSet(TJS_MEMBERENSURE, TJS_W("postScriptName"), nullptr, &tv, dic);
+	tv = (tjs_int)info.Weight;        dic->PropSet(TJS_MEMBERENSURE, TJS_W("weight"),         nullptr, &tv, dic);
+	tv = (tjs_int)info.Slant;         dic->PropSet(TJS_MEMBERENSURE, TJS_W("slant"),          nullptr, &tv, dic);
+	tv = (tjs_int)(info.Bold ? 1:0);  dic->PropSet(TJS_MEMBERENSURE, TJS_W("bold"),           nullptr, &tv, dic);
+	tv = (tjs_int)(info.Color ? 1:0); dic->PropSet(TJS_MEMBERENSURE, TJS_W("color"),          nullptr, &tv, dic);
+	tv = (tjs_int)(info.Monospace ? 1:0); dic->PropSet(TJS_MEMBERENSURE, TJS_W("monospace"),  nullptr, &tv, dic);
+	tv = (tjs_int)(info.Scalable ? 1:0);  dic->PropSet(TJS_MEMBERENSURE, TJS_W("scalable"),   nullptr, &tv, dic);
+	return dic;
+}
+namespace {
+class tTVPFontQueryCollector : public iTVPFontQuerySink
+{
+public:
+	std::vector<tTVPFontFaceInfo> Items;
+	void TJS_INTF_METHOD Found(const tTVPFontFaceInfo & info) override { Items.push_back(info); }
+};
+// 辞書メンバ取得 (存在して void でなければ true)
+bool TVPFontQueryDictMember(tTJSVariantClosure &clo, const tjs_char *name, tTJSVariant &val)
+{
+	if(TJS_FAILED(clo.PropGet(0, name, nullptr, &val, nullptr))) return false;
+	return val.Type() != tvtVoid;
+}
+} // namespace
+
+//---------------------------------------------------------------------------
 // tTJSNC_Font : TJS Font class
 //---------------------------------------------------------------------------
 tjs_uint32 tTJSNC_Font::ClassID = -1;
@@ -10169,6 +10366,108 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/addFont)
 	return TJS_S_OK;
 }
 TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/addFont)
+//----------------------------------------------------------------------
+// registerFontFile(storage [, family]) : フォントを登録する。
+// family 省略時は addFont 同様に即ロードし実 face 名の配列を返す。
+// family 指定時は fonts.json 宣言相当の遅延登録のみ行う (ファイルを開かない。
+// 初回使用時にロードされる)。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/registerFontFile)
+{
+	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
+
+	ttstr storage = *param[0];
+	if(numparams >= 2 && param[1]->Type() != tvtVoid)
+	{
+		ttstr family = *param[1];
+		TVPFontSystem->RegisterLazyFont( family.AsStdString(), storage.AsStdString() );
+		if(result) result->Clear();
+	}
+	else
+	{
+		std::vector<ttstr> faces;
+		TVPFontSystem->AddExtraFont( storage.AsStdString(), result ? &faces : nullptr );
+		if(result)
+		{
+			iTJSDispatch2 *dsp = TJSCreateArrayObject();
+			tTJSVariant tmp(dsp, dsp);
+			*result = tmp;
+			dsp->Release();
+			for(tjs_uint i = 0; i < faces.size(); i++)
+			{
+				tmp = ttstr(faces[i]);
+				dsp->PropSetByNum(TJS_MEMBERENSURE, i, &tmp, dsp);
+			}
+		}
+	}
+
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/registerFontFile)
+//----------------------------------------------------------------------
+// queryFonts([%[name, weight, slant, italic, script, containsText, monospace,
+// color]]) : 登録済みフォント (fonts.json 宣言 + 実行時登録) をリッチ検索し、
+// ランク順の辞書配列を返す。引数省略時は全登録フォント。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/queryFonts)
+{
+	tTVPFontQueryParams q;
+	if(numparams >= 1 && param[0]->Type() == tvtObject)
+	{
+		tTJSVariantClosure clo = param[0]->AsObjectClosureNoAddRef();
+		tTJSVariant val;
+		if(TVPFontQueryDictMember(clo, TJS_W("name"), val))         q.Name = val;
+		if(TVPFontQueryDictMember(clo, TJS_W("weight"), val))       q.Weight = (tjs_int)val;
+		if(TVPFontQueryDictMember(clo, TJS_W("slant"), val))        q.Slant = (tjs_int)val;
+		if(TVPFontQueryDictMember(clo, TJS_W("italic"), val))       q.Slant = val.operator bool() ? 1 : 0;
+		if(TVPFontQueryDictMember(clo, TJS_W("script"), val))       q.Script = val;
+		if(TVPFontQueryDictMember(clo, TJS_W("containsText"), val)) q.ContainsText = val;
+		if(TVPFontQueryDictMember(clo, TJS_W("monospace"), val))    q.Monospace = val.operator bool() ? 1 : 0;
+		if(TVPFontQueryDictMember(clo, TJS_W("color"), val))        q.Color = val.operator bool() ? 1 : 0;
+	}
+
+	tTVPFontQueryCollector collector;
+	TVPFontQueryFaces(q, &collector);
+
+	if(result)
+	{
+		iTJSDispatch2 *dsp = TJSCreateArrayObject();
+		tTJSVariant tmp(dsp, dsp);
+		*result = tmp;
+		dsp->Release();
+		for(tjs_uint i = 0; i < collector.Items.size(); i++)
+		{
+			iTJSDispatch2 *dic = TVPFontFaceInfoToDictionary(collector.Items[i]);
+			tmp = tTJSVariant(dic, dic);
+			dic->Release();
+			dsp->PropSetByNum(TJS_MEMBERENSURE, i, &tmp, dsp);
+		}
+	}
+
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/queryFonts)
+//----------------------------------------------------------------------
+// getFontInfo(nameOrPath) : フォントを解決して SFNT メタデータの辞書を返す。
+// 解決できない場合は void。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/getFontInfo)
+{
+	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
+
+	tTVPFontFaceInfo info;
+	if(!TVPFontGetFaceInfo(*param[0], &info))
+	{
+		if(result) result->Clear();
+		return TJS_S_OK;
+	}
+	if(result)
+	{
+		iTJSDispatch2 *dic = TVPFontFaceInfoToDictionary(info);
+		*result = tTJSVariant(dic, dic);
+		dic->Release();
+	}
+
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/getFontInfo)
 //----------------------------------------------------------------------
 
 //-- properties

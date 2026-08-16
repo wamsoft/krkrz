@@ -143,6 +143,7 @@ struct Snapshot {
 	Fn_dst_src_len DarkenBlend;
 	Fn_dst_src_len LightenBlend;
 	Fn_dst_src_len ScreenBlend;
+	Fn_dst_src_len ScreenBlend_HDA;
 
 	/* (dest, src, len, opa) */
 	Fn_dst_src_len_opa AlphaBlend_o;
@@ -153,6 +154,8 @@ struct Snapshot {
 	Fn_dst_src_len_opa ConstAlphaBlend_a;
 	Fn_dst_src_len_opa AddBlend_o;
 	Fn_dst_src_len_opa MulBlend_o;
+	Fn_dst_src_len_opa ScreenBlend_o;
+	Fn_dst_src_len_opa ScreenBlend_HDA_o;
 
 	/* PsBlend ファミリ (16 種 × 4 バリアント = 64 関数)
 	   non-_o は (dest, src, len)、_o / _HDA_o は (dest, src, len, opa)。 */
@@ -267,6 +270,7 @@ static void snapshot(Snapshot& s) {
 	TAKE(DarkenBlend,            TVPDarkenBlend);
 	TAKE(LightenBlend,           TVPLightenBlend);
 	TAKE(ScreenBlend,            TVPScreenBlend);
+	TAKE(ScreenBlend_HDA,        TVPScreenBlend_HDA);
 
 	TAKE(AlphaBlend_o,           TVPAlphaBlend_o);
 	TAKE(AdditiveAlphaBlend_o,   TVPAdditiveAlphaBlend_o);
@@ -276,6 +280,8 @@ static void snapshot(Snapshot& s) {
 	TAKE(ConstAlphaBlend_a,      TVPConstAlphaBlend_a);
 	TAKE(AddBlend_o,             TVPAddBlend_o);
 	TAKE(MulBlend_o,             TVPMulBlend_o);
+	TAKE(ScreenBlend_o,          TVPScreenBlend_o);
+	TAKE(ScreenBlend_HDA_o,      TVPScreenBlend_HDA_o);
 
 	TAKE(DoGrayScale,            TVPDoGrayScale);
 
@@ -857,6 +863,7 @@ void run_suite(Runner& r, const Snapshot& ref, const Snapshot& t) {
 	r.test2("TVPDarkenBlend",            ref.DarkenBlend,            t.DarkenBlend);
 	r.test2("TVPLightenBlend",           ref.LightenBlend,           t.LightenBlend);
 	r.test2("TVPScreenBlend",            ref.ScreenBlend,            t.ScreenBlend);
+	r.test2("TVPScreenBlend_HDA",        ref.ScreenBlend_HDA,        t.ScreenBlend_HDA);
 
 	for (tjs_int opa : {0, 77, 128, 200, 255}) {
 		r.test3("TVPAlphaBlend_o",           ref.AlphaBlend_o,         t.AlphaBlend_o,         opa);
@@ -867,6 +874,8 @@ void run_suite(Runner& r, const Snapshot& ref, const Snapshot& t) {
 		r.test3("TVPConstAlphaBlend_a",      ref.ConstAlphaBlend_a,    t.ConstAlphaBlend_a,    opa);
 		r.test3("TVPAddBlend_o",             ref.AddBlend_o,           t.AddBlend_o,           opa);
 		r.test3("TVPMulBlend_o",             ref.MulBlend_o,           t.MulBlend_o,           opa);
+		r.test3("TVPScreenBlend_o",          ref.ScreenBlend_o,        t.ScreenBlend_o,        opa);
+		r.test3("TVPScreenBlend_HDA_o",      ref.ScreenBlend_HDA_o,    t.ScreenBlend_HDA_o,    opa);
 	}
 
 	r.test_dl("TVPDoGrayScale", ref.DoGrayScale, t.DoGrayScale);
