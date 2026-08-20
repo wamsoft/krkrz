@@ -244,10 +244,12 @@ ttstr TVPGetTemporaryName()
 	{
 		tTJSCriticalSectionHolder holder(TVPTempUniqueNumCS);
 
-		if(!TVPTempPathInit)
-		{
-			TVPTempPath = ttstr( Application->TempPath().c_str() );
-			if(TVPTempPath.GetLastChar() != TJS_W('\\')) TVPTempPath += TJS_W("\\");
+	if(!TVPTempPathInit)
+			{
+				TVPTempPath = ttstr( Application->TempPath().c_str() );
+				if(TVPTempPath.IsEmpty() || TVPTempPath.GetLastChar() != TJS_W('/')) {
+					TVPTempPath += TJS_W("/");
+				}
 			TVPProcessID = static_cast<tjs_int>( getpid() );
 			TVPTempUniqueNum = static_cast<tjs_int>( TVPGetRoughTickCount32() );
 			TVPTempPathInit = true;
@@ -419,7 +421,17 @@ static bool _TVPCreateFolders(const ttstr &folder)
 
 	if(!_TVPCreateFolders(parent)) return false;
 
-	return 0 == LocalFileSystem->MakeDirectory(folder.c_str());
+	// Normalize backslashes to forward slashes for Linux compatibility
+	tjs_int len = folder.GetLen();
+	tjs_string normfolder;
+	for (tjs_int j = 0; j < len; j++) {
+		if (folder.c_str()[j] == TJS_W('\\')) {
+			normfolder += TJS_W('/');
+		} else {
+			normfolder += folder.c_str()[j];
+		}
+	}
+	return 0 == LocalFileSystem->MakeDirectory(normfolder.c_str());
 }
 
 bool TVPCreateFolders(const ttstr &folder)

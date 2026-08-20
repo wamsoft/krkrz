@@ -348,7 +348,7 @@ void tTVPLogStreamHolder::Open(const tjs_char *mode)
 		else
 		{
 			TJS_strcpy(filename, TVPNativeLogLocation);
-			TJS_strcat(filename, TJS_W("\\krkr.console.log"));
+			TJS_strcat(filename, TJS_W("/krkr.console.log"));
 			TVPEnsureDataPathDirectory();
 			Stream.Open(filename, mode);
 			if(!Stream.IsOpen()) OpenFailed = true;
@@ -663,8 +663,8 @@ void TVPSetLogLocation(const ttstr &loc)
 		else
 		{
 			TJS_strcpy(TVPNativeLogLocation, native.AsStdString().c_str());
-			if(TVPNativeLogLocation[TJS_strlen(TVPNativeLogLocation)-1] != TJS_W('\\'))
-				TJS_strcat(TVPNativeLogLocation, TJS_W("\\"));
+			if(TVPNativeLogLocation[TJS_strlen(TVPNativeLogLocation)-1] != TJS_W('/'))
+				TJS_strcat(TVPNativeLogLocation, TJS_W("/"));
 		}
 	}
 

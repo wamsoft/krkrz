@@ -763,7 +763,7 @@ static tjs_string GetDataPathDirectory( tjs_string datapath, const tjs_string& e
 #else
 
 static tjs_string GetDataPathDirectory( tjs_string datapath, const tjs_string& exename ) {
-	if(datapath == TJS_W("") ) datapath = tjs_string(TJS_W("$(exepath)\\savedata"));
+if(datapath == TJS_W("")) datapath = tjs_string(TJS_W("$(exepath)/savedata"));
 	ttstr basepath = TVPExtractStoragePath(Application->ExePath());
 	tjs_string_view exepath  = tjs_string_view(basepath.c_str()); 
 	tjs_string_view userpath = tjs_string_view(TJS_W("user://./")); // SDLデフォルト
