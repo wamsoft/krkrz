@@ -125,7 +125,11 @@ void PumpModalLoop(SDL3Application* app, tTVPElementsDialogManager& mgr,
 		SDL_PumpEvents();
 		SDL_Event ev;
 		while (SDL_PollEvent(&ev)) {
-			if (ev.type == SDL_EVENT_QUIT) {
+			// システム / OS からの終了要求。 ここで握り潰すと、 モーダルを
+			// 出している間 (起動直後のランチャー等) は終了できず、 CS 機では
+			// 「終了中」の表示のままアプリが応答しなくなる。 モーダルを畳んで
+			// イベントを積み直し、 通常のループ (SDL_AppEvent) に処理させる。
+			if (ev.type == SDL_EVENT_QUIT || ev.type == SDL_EVENT_TERMINATING) {
 				mgr.Close(handler);
 				SDL_PushEvent(&ev);
 				break;
@@ -134,6 +138,12 @@ void PumpModalLoop(SDL3Application* app, tTVPElementsDialogManager& mgr,
 			if (!mgr.IsHandlerActive(handler)) break;
 		}
 		if (!mgr.IsHandlerActive(handler)) break;
+		// 終了が決まったら (onCloseQuery 経由の Terminate 等) モーダルを畳む。
+		// 判定が無いと、 通常ループの IsTerminated へ戻れず回り続ける。
+		if (app->IsTerminated()) {
+			mgr.Close(handler);
+			break;
+		}
 
 		app->AppIterate();
 		app->SendPadEvent();

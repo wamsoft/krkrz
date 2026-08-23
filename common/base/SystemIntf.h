@@ -34,6 +34,13 @@ extern tTJSNativeClass * TVPCreateNativeClass_System();
 TJS_EXP_FUNC_DEF(ttstr, TVPGetPlatformName, ());
 		// retrieve platform name (eg. "Win32")
 		// implement in each platform.
+TJS_EXP_FUNC_DEF(ttstr, TVPGetPlatformTag, ());
+TJS_EXP_FUNC_DEF(ttstr, TVPGetSystemLanguage, ());
+		// 正規化したプラットフォームタグ ("windows"/"switch"/"switch2"/"ps5"/
+		// "android" ...)。 小文字・空白無しなので、 リソース内の
+		// config_<tag>.cf の選択やスクリプト側の機種分岐に使える。
+		// 複数該当する場合 (Switch2 = switch + switch2) は最も具体的なものを返す。
+		// implement in each platform.
 TJS_EXP_FUNC_DEF(ttstr, TVPGetOSName, ());
 		// retrieve OS name
 		// implement in each platform.

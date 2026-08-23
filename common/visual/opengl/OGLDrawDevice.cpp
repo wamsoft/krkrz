@@ -10,6 +10,7 @@
 #include "LogIntf.h"
 #include "ThreadIntf.h"
 #include "ComplexRect.h"
+#include "OGLSurfaceRect.h"
 #include "EventIntf.h"
 #include "DebugIntf.h"   // TVPAddImportantLog
 #include "ScriptMgnIntf.h"   // TVPScriptExceptionShownCount
@@ -204,7 +205,6 @@ void TJS_INTF_METHOD tTVPOGLDrawDevice::Show()
 
 	if (!CanvasInstance) {
 
-#ifdef __GENERIC__
         // ビューポート余白の背景色でクリア。
         tjs_uint32 bg = GetViewportBgColor();
         glClearColor(((bg >> 16) & 0xff) / 255.0f, ((bg >> 8) & 0xff) / 255.0f,
@@ -213,10 +213,6 @@ void TJS_INTF_METHOD tTVPOGLDrawDevice::Show()
         // 壁紙があれば余白として描画 (ゲーム描画より前)。
         TVPDrawGLViewportWallpaper(TextureDrawer, mWallpaperCache, *this,
             SurfaceWidth, SurfaceHeight);
-#else
-        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-#endif
 
 		if (TextureInstance) {
 			TextureDrawer.DrawTexture(TextureInstance->GetTexture(), SurfaceWidth, SurfaceHeight, _position,
@@ -347,6 +343,18 @@ tTVPOGLDrawDevice::UpdateTexture(int x, int y, int w, int h, std::function<void(
 }
 
 //---------------------------------------------------------------------------
+//---------------------------------------------------------------------------
+// DestRect はウィンドウの inner サイズ (論理サーフェス) 座標で来るが、 GL 側は
+// 実フレームバッファ基準で描く。 食い違う環境 (PS5 等) では実サイズへ換算する。
+//---------------------------------------------------------------------------
+tTVPRect tTVPOGLDrawDevice::ToPhysicalRect(const tTVPRect &r, int physW, int physH) const
+{
+	if (!NIWindow) return r;
+	return TVPScaleRectToSurface(r, NIWindow->GetInnerWidth(),
+	                             NIWindow->GetInnerHeight(), physW, physH);
+}
+
+//---------------------------------------------------------------------------
 void tTVPOGLDrawDevice::InitPosition() 
 {
 	int w, h;
@@ -354,13 +362,14 @@ void tTVPOGLDrawDevice::InitPosition()
 
 	if (SurfaceWidth != w || SurfaceHeight != h) {
 
-		// 描画位置指定 destRect の領域
+		// 描画位置指定 destRect の領域 (実フレームバッファ座標へ換算して NDC 化)
+		tTVPRect dr = ToPhysicalRect(DestRect, w, h);
 		int w2 = w/2;
 		int h2 = h/2;
-		float left    = (float)(DestRect.left   - w2) / w2;
-		float bottom  = (float)(DestRect.bottom - h2) / h2;
-		float right   = (float)(DestRect.right  - w2) / w2;
-		float top     = (float)(DestRect.top    - h2) / h2;
+		float left    = (float)(dr.left   - w2) / w2;
+		float bottom  = (float)(dr.bottom - h2) / h2;
+		float right   = (float)(dr.right  - w2) / w2;
+		float top     = (float)(dr.top    - h2) / h2;
 
 		TVPLOG_VERBOSE("drawdevice destrect: {},{},{},{}", DestRect.left, DestRect.top, DestRect.right, DestRect.bottom);
 		TVPLOG_VERBOSE("drawdevice dest: {},{},{},{}", left, top, right, bottom);
@@ -384,10 +393,12 @@ void tTVPOGLDrawDevice::InitPosition()
 void tTVPOGLDrawDevice::InitMatrix()
 {
 	if (MatrixInstance && TextureInstance) {
-		tjs_real sx = (tjs_real)DestRect.get_width() / TextureInstance->GetWidth();
-		tjs_real sy = (tjs_real)DestRect.get_height() / TextureInstance->GetHeight();
+		// Canvas の座標系も実フレームバッファ基準なので換算して使う
+		tTVPRect dr = ToPhysicalRect(DestRect, SurfaceWidth, SurfaceHeight);
+		tjs_real sx = (tjs_real)dr.get_width() / TextureInstance->GetWidth();
+		tjs_real sy = (tjs_real)dr.get_height() / TextureInstance->GetHeight();
 		MatrixInstance->SetIdentity();
-		MatrixInstance->SetTranslate(DestRect.left, DestRect.top);
+		MatrixInstance->SetTranslate(dr.left, dr.top);
 		MatrixInstance->SetScale(sx, sy);
 	}
 }
@@ -452,9 +463,9 @@ void tTVPOGLDrawDevice::DoneContext()
 	// 動画用 GLTexture / バッファは presenter 側 (VideoOverlay 所有) が持つので device 破棄時の
 	// 解放は不要 (通常は動画 Close で presenter が解放される)。ここでは pull を止めるだけ。
 	VideoPresenter = nullptr;
+#endif
 	// ビューポート壁紙テクスチャも context 解放前に破棄。
 	mWallpaperCache.Release();
-#endif
 
 	if (GLContext) {
 		GLContext->Release();
@@ -488,7 +499,6 @@ void TJS_INTF_METHOD tTVPOGLDrawDevice::SetWindowInterface(iTVPWindow * window)
 
 	// GLES 初期化用処理
 	// OGLApplication とは限らないので初回接続時に初期化
-	tTJSNI_Window *NIWindow;
 	if (TJS_FAILED(Owner->NativeInstanceSupport(TJS_NIS_GETINSTANCE,
 			tTJSNC_Window::ClassID, (iTJSNativeInstance**)&NIWindow))) {
 		TVPThrowExceptionMessage(TVPSpecifyWindow);
@@ -668,7 +678,7 @@ tTVPOGLDrawDevice::ShowVideo()
 	ctx.TextureDrawer = &TextureDrawer;
 	ctx.TargetWidth   = SurfaceWidth;
 	ctx.TargetHeight  = SurfaceHeight;
-	ctx.DestRect      = DestRect;
+	ctx.DestRect      = ToPhysicalRect(DestRect, SurfaceWidth, SurfaceHeight);
 	{	tjs_int sw = 0, sh = 0; GetSrcSize( sw, sh ); ctx.SrcWidth = sw; ctx.SrcHeight = sh; }
 	VideoPresenter->RenderVideoFrame(ctx);
 	return true;
@@ -834,6 +844,25 @@ TJS_BEGIN_NATIVE_PROP_DECL(matrix)
 	TJS_DENY_NATIVE_PROP_SETTER
 }
 TJS_END_NATIVE_PROP_DECL(matrix)
+//----------------------------------------------------------------------
+// ビューポート余白 (背景色 + 壁紙) の登録口 (iTVPViewportBackgroundHost) を
+// ポインタ値として公開する (videoPresenterHost と同じ規約)。 Window はこの
+// プロパティを読み、非 0 のときだけ余白設定を push する。
+TJS_BEGIN_NATIVE_PROP_DECL(viewportBackgroundHost)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_OGLDrawDevice);
+		iTVPViewportBackgroundHost * host =
+			static_cast<iTVPViewportBackgroundHost*>(_this->GetDevice());
+		*result = reinterpret_cast<tjs_int64>(host);
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_DENY_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_PROP_DECL(viewportBackgroundHost)
 //----------------------------------------------------------------------
 #ifdef KRKRZ_HAS_ELEMENTS
 // Elements ダイアログ overlay の描画アダプタ提供口 (iTVPDialogRendererHost) を

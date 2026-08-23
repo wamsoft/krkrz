@@ -65,13 +65,15 @@ static tjs_int TVPGlobalFontStateMagic = 0;
 
 
 enum {
-	FONT_RASTER_FREE_TYPE,
-#ifdef __WINVER__
-	FONT_RASTER_GDI,
-#endif
-#ifdef KRKRZ_USE_GLYPHWARE
-	FONT_RASTER_GLYPHWARE,
-#endif
+	// 番号は全ビルドで固定 (上流 吉里吉里Z の 0=FreeType / 1=GDI 互換 +
+	// 2=glyphware)。以前は条件コンパイルの連番だったため glyphware の番号が
+	// WINVER=2 / SDL=1 と食い違い、スクリプトをビルド間で共有できなかった。
+	// 未搭載のスロット (SDL/generic の GDI、glyphware 無効ビルドの GLYPHWARE)
+	// は NULL のまま確保し、指定時は TVPSetFontRasterizer が FreeType へ
+	// フォールバックする。
+	FONT_RASTER_FREE_TYPE,  // 0: 旧 FreeType (非 WINVER の既定)
+	FONT_RASTER_GDI,        // 1: GDI (WINVER のみ搭載。WINVER の既定)
+	FONT_RASTER_GLYPHWARE,  // 2: glyphware (KRKRZ_USE_GLYPHWARE 時のみ搭載)
 	FONT_RASTER_EOT
 };
 static FontRasterizer* TVPFontRasterizers[FONT_RASTER_EOT];
@@ -118,9 +120,16 @@ static tTVPAtExit
 	TVPUninitializeFontRaster(TVP_ATEXIT_PRI_RELEASE, TVPUninitializeFontRasterizers);
 
 void TVPSetFontRasterizer( tjs_int index ) {
-	// 未登録スロット (例: SDL/generic では GDI は NULL) への切替は無視する
-	// (GetCurrentRasterizer() が NULL を返してクラッシュするのを防ぐ)。
-	if( index < 0 || index >= FONT_RASTER_EOT || TVPFontRasterizers[index] == NULL ) return;
+	if( index < 0 || index >= FONT_RASTER_EOT ) return;
+	// 未搭載スロット (例: SDL/generic の GDI=1) は FreeType(0) へフォールバック
+	// する。番号は全ビルド共通なので、他ビルド向けの指定でも安全に動く。
+	// Font.rasterizer の読み戻しはフォールバック後の実効値を返すため、
+	// 「設定が反映されない = そのラスタライザは未搭載」の検出も従来どおり可能。
+	if( TVPFontRasterizers[index] == NULL ) {
+		TVPAddLog( ttstr(TJS_W("Font.rasterizer: ")) + ttstr(index) +
+			TJS_W(" is not available in this build; falling back to FreeType (0)") );
+		index = FONT_RASTER_FREE_TYPE;
+	}
 	if( TVPCurrentFontRasterizers != index ) {
 		TVPCurrentFontRasterizers = index;
 		TVPClearFontCache(); // ラスタライザが切り替わる時、キャッシュはクリアしてしまう
@@ -811,6 +820,24 @@ void tTVPNativeBaseBitmap::ApplyFont()
 		// compute font hash
 		FontHash = tTJSHashFunc<ttstr>::Make(Font.Face);
 		FontHash ^= Font.Height ^ Font.Flags ^ Font.Angle ^ (Font.EmojiMode << 5);
+		// 可変軸もグリフキャッシュのキーに含める (軸違いの同じ文字が誤ヒット
+		// しないように)。Variations は正規化済み文字列なのでそのままハッシュ可。
+		FontHash ^= (Font.Weight + 1) << 10;
+		if (!Font.Variations.IsEmpty())
+			FontHash ^= tTJSHashFunc<ttstr>::Make(Font.Variations);
+
+		// 可変軸指定が glyphware 以外のラスタライザ (旧 FreeType / GDI) に
+		// 来た場合は効かない。黙って無視すると原因が分からないので 1 回だけ警告。
+		if ((Font.Weight >= 0 || !Font.Variations.IsEmpty()) &&
+		    TVPGetFontRasterizer() != FONT_RASTER_GLYPHWARE) {
+			static bool warned = false;
+			if (!warned) {
+				warned = true;
+				TVPAddImportantLog(TJS_W("Font.weight / Font.variations are only ")
+					TJS_W("effective on the glyphware rasterizer (Font.rasterizer=2); ")
+					TJS_W("ignored on the current rasterizer"));
+			}
+		}
 	}
 	else
 	{

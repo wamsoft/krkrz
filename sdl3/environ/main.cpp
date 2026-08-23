@@ -70,10 +70,18 @@ int TVPGetOpenGamepadCount()
     return (int)g_open_gamepads.size();
 }
 
+// 追加のゲームパッドマッピング (resource の gamecontrollerdb.txt) を登録する。
+// sdl3/environ/pad.cpp。初回のみ実際に読み込む。
+extern void InitPadMapping();
+
 // which のパッドを (未オープンなら) 開いて g_open_gamepads に登録し、ハンドルを返す。
 // 既に開いていれば同じハンドルを返す (再オープンによる refcount 増加を避ける)。
 static SDL_Gamepad *EnsureGamepadOpen(SDL_JoystickID which)
 {
+    // マッピングはパッドを開く前に登録しておく必要がある
+    // (開いた後に足しても、そのパッドの割り当てには反映されない)。
+    InitPadMapping();
+
     SDL_Gamepad *gp = SDL_GetGamepadFromID(which);
     if (!gp) {
         gp = SDL_OpenGamepad(which);
@@ -173,7 +181,9 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event)
         break;
 
     case SDL_EVENT_TERMINATING:
-        // アプリ終了処理
+        // OS からの終了通知。 後始末をしたうえで、 ここで必ずループを終える。
+        // 以前は break していたためアプリが動き続け、 CS 機ではシステムが
+        // 「終了中」の表示のまま待ち続けていた。
         {
             TVPFireOnApplicationTerminating();
             SDL3Application *app = static_cast<SDL3Application *>(appstate);
@@ -181,7 +191,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event)
                 app->OnTerminatingEnd();
             }
         }
-        break;
+        return SDL_APP_SUCCESS;
 
     case SDL_EVENT_WINDOW_SHOWN:
         // ウィンドウが表示されたときの処理
@@ -331,6 +341,16 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
     // 各機種別のグローバル初期化処理を呼び出す SDL_Init より前のタイミング
     TVPAppInit(argc, argv);
 
+    // 「最後のトップレベルウィンドウに閉じる要求が来たら SDL_EVENT_QUIT も投げる」
+    // という SDL の既定を切る。 これが有効だと、 ウィンドウの × を押したときに
+    // SDL_EVENT_WINDOW_CLOSE_REQUESTED と SDL_EVENT_QUIT が両方積まれ、
+    // 前者から始まった onCloseQuery (終了確認ダイアログ) の最中に後者が
+    // SDL_AppEvent へ届いて無条件終了してしまう ("いいえ" を選べない)。
+    // 終了は onCloseQuery の結果を受けた Application->Terminate() 経由
+    // (SDL_AppIterate の IsTerminated) で行うので、 自動 QUIT は不要。
+    // 外部要因の QUIT (OS のログオフ等) は従来どおり SDL_AppEvent が処理する。
+    SDL_SetHint(SDL_HINT_QUIT_ON_LAST_WINDOW_CLOSE, "0");
+
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_AUDIO)) {
         SDL_Log("SDL_Init failed: %s", SDL_GetError());
         return SDL_APP_FAILURE;
@@ -388,6 +408,27 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
     // これより前の SDL_Init / config 読み出し時の alloc は全部素 malloc 直行
     // (オーバーヘッドゼロ、stats 対象外) で動く。
     TVPGlobalAllocStats::Initialize();
+
+#ifdef TVP_USE_OPENGL
+	// -forceegl=yes : GLES コンテキストを最初から EGL (Windows では ANGLE の
+	// libEGL.dll / libGLESv2.dll) で作らせる。SDL は既定で、ネイティブ GL の
+	// ES プロファイル (Windows なら WGL_EXT_create_context_es2_profile) が
+	// 使えればそちらを優先し、使えない場合のみ EGL へフォールバックする。
+	// GL ドライバの ES プロファイル実装に問題がある環境の切り分け / 回避用。
+	// このヒントは最初の GL ウィンドウ / コンテキスト生成時に参照されるため、
+	// TVPGetCommandLine が使えるここ (ウィンドウ生成前) で設定すれば間に合う。
+	{
+		tTJSVariant val;
+		if (TVPGetCommandLine(TJS_W("-forceegl"), &val)) {
+			ttstr s(val);
+			if (s == TJS_W("yes") || s == TJS_W("true") ||
+			    s == TJS_W("on") || s == TJS_W("1")) {
+				SDL_SetHint(SDL_HINT_OPENGL_ES_DRIVER, "1");
+				TVPLOG_INFO("-forceegl: SDL_OPENGL_ES_DRIVER=1 (create GLES context via EGL)");
+			}
+		}
+	}
+#endif
 
 #ifdef KRKRZ_ENABLE_DAP
 	// DAP server 起動 (-dap=<port> 指定時のみ)。

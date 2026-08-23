@@ -27,6 +27,19 @@ class tTJSNI_Texture : public tTJSNativeInstance, public iTVPTextureInfoIntrface
 	class tTJSNI_Rect* MarginRectInstance = nullptr;
 
 	void LoadTexture( const class tTVPBaseBitmap* bitmap, tTVPTextureColorFormat color);
+
+	/**
+	 * 32bit ビットマップの α チャンネルだけを 8bit テクスチャ (tcfAlpha) にする。
+	 *
+	 * tcfAlpha は本来「色を輝度化して 8bit にする」経路なので、
+	 * 輝度が白一色で α にデータを持つマスク画像には使えなかった。
+	 * クリッピングマスクは α しか参照しない (GLClip / clipmask.frag とも .a) ため、
+	 * この経路なら RGBA (4byte/px) の 1/4 のメモリで同じ結果になる。
+	 *
+	 * @param bitmap 32bpp のビットマップ
+	 */
+	void LoadTextureFromAlphaChannel( const class tTVPBaseBitmap* bitmap );
+
 	tjs_error LoadMipmapTexture( const class tTVPBaseBitmap* bitmap, class tTJSArrayNI* sizeList, enum tTVPBBStretchType type, tjs_real typeopt );
 
 	void SetMarginRectObject( const tTJSVariant & val );

@@ -6,8 +6,206 @@
 #include <vector>
 #include <cstdlib>
 #include <cstring>
+#include <atomic>
 
 extern int TVPOpenGLESVersion;
+
+// ---------------------------------------------------------------------------
+// テクスチャメモリ計測
+//
+// GL ドライバ内部の実確保量ではなく「こちらから要求したバイト数」の積算。
+// GL ドライバが通常ヒープから確保する環境 (一部のコンソール機) では、
+// この値がそのままヒープ圧迫量の目安になる。
+// ---------------------------------------------------------------------------
+namespace {
+std::atomic<std::uint64_t> s_gltex_bytes{0};
+std::atomic<std::uint64_t> s_glpbo_bytes{0};
+std::atomic<std::uint64_t> s_glfbo_bytes{0};
+std::atomic<std::uint64_t> s_gltex_peak{0};
+std::atomic<std::uint32_t> s_gltex_count{0};
+std::atomic<std::uint32_t> s_glpbo_count{0};
+std::atomic<std::uint32_t> s_glfbo_count{0};
+//! 最後にログへ出した合計値 (これとの差が閾値を超えたら再度出す)
+std::atomic<std::uint64_t> s_gltex_logged{0};
+
+constexpr double kMiB = 1024.0 * 1024.0;
+
+//! ピーク更新と、 一定量変化したときのログ出力
+void TVPNoteGLTextureMemory()
+{
+    const std::uint64_t tex   = s_gltex_bytes.load(std::memory_order_relaxed);
+    const std::uint64_t pbo   = s_glpbo_bytes.load(std::memory_order_relaxed);
+    const std::uint64_t fbo   = s_glfbo_bytes.load(std::memory_order_relaxed);
+    const std::uint64_t total = tex + pbo + fbo;
+
+    std::uint64_t peak = s_gltex_peak.load(std::memory_order_relaxed);
+    while (total > peak &&
+           !s_gltex_peak.compare_exchange_weak(peak, total, std::memory_order_relaxed)) {
+        // peak は compare_exchange_weak が最新値へ更新する
+    }
+
+    if (!GLTexture::MemLogEnabled) return;
+
+    const std::uint64_t logged = s_gltex_logged.load(std::memory_order_relaxed);
+    const std::uint64_t diff = (total > logged) ? (total - logged) : (logged - total);
+    if (diff < GLTexture::MemLogStepBytes) return;
+    s_gltex_logged.store(total, std::memory_order_relaxed);
+
+    TVPLOG_INFO("GLTexMem: total={:.1f}MiB (tex={:.1f}MiB n={} / pbo={:.1f}MiB n={} / fbo={:.1f}MiB n={}) peak={:.1f}MiB",
+                total / kMiB,
+                tex / kMiB, s_gltex_count.load(std::memory_order_relaxed),
+                pbo / kMiB, s_glpbo_count.load(std::memory_order_relaxed),
+                fbo / kMiB, s_glfbo_count.load(std::memory_order_relaxed),
+                s_gltex_peak.load(std::memory_order_relaxed) / kMiB);
+}
+} // namespace
+
+// 調査用ログ。 既定 OFF。 TJS の System.setTextureMemoryLog(true) で有効化する
+// (NX の GfxMem ログもこのフラグに連動する)。
+bool GLTexture::MemLogEnabled = false;
+
+void
+GLTexture::GetMemStats(MemStats &out)
+{
+    out.texture_bytes    = s_gltex_bytes.load(std::memory_order_relaxed);
+    out.pbo_bytes        = s_glpbo_bytes.load(std::memory_order_relaxed);
+    out.fbo_bytes        = s_glfbo_bytes.load(std::memory_order_relaxed);
+    out.total_bytes      = out.texture_bytes + out.pbo_bytes + out.fbo_bytes;
+    out.peak_total_bytes = s_gltex_peak.load(std::memory_order_relaxed);
+    out.texture_count    = s_gltex_count.load(std::memory_order_relaxed);
+    out.pbo_count        = s_glpbo_count.load(std::memory_order_relaxed);
+    out.fbo_count        = s_glfbo_count.load(std::memory_order_relaxed);
+}
+
+void
+GLTexture::ResetMemPeak()
+{
+    const std::uint64_t total = s_gltex_bytes.load(std::memory_order_relaxed) +
+                                s_glpbo_bytes.load(std::memory_order_relaxed) +
+                                s_glfbo_bytes.load(std::memory_order_relaxed);
+    s_gltex_peak.store(total, std::memory_order_relaxed);
+}
+
+void
+GLTexture::NoteFboMemory(std::int64_t bytes_delta, std::int32_t count_delta)
+{
+    if (bytes_delta > 0) {
+        s_glfbo_bytes.fetch_add((std::uint64_t)bytes_delta, std::memory_order_relaxed);
+    } else if (bytes_delta < 0) {
+        s_glfbo_bytes.fetch_sub((std::uint64_t)(-bytes_delta), std::memory_order_relaxed);
+    }
+    if (count_delta > 0) {
+        s_glfbo_count.fetch_add((std::uint32_t)count_delta, std::memory_order_relaxed);
+    } else if (count_delta < 0) {
+        s_glfbo_count.fetch_sub((std::uint32_t)(-count_delta), std::memory_order_relaxed);
+    }
+    TVPNoteGLTextureMemory();
+}
+
+void
+GLTexture::addMemStats(std::uint64_t tex_bytes, std::uint64_t pbo_bytes)
+{
+    // create() の呼び直しで二重計上しないよう、 既存分は一度戻す
+    if (tex_bytes_ || pbo_bytes_) subMemStats();
+
+    tex_bytes_ = tex_bytes;
+    pbo_bytes_ = pbo_bytes;
+    if (tex_bytes_) {
+        s_gltex_bytes.fetch_add(tex_bytes_, std::memory_order_relaxed);
+        s_gltex_count.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (pbo_bytes_) {
+        s_glpbo_bytes.fetch_add(pbo_bytes_, std::memory_order_relaxed);
+        s_glpbo_count.fetch_add(1, std::memory_order_relaxed);
+    }
+    TVPNoteGLTextureMemory();
+}
+
+void
+GLTexture::subMemStats()
+{
+    if (tex_bytes_) {
+        s_gltex_bytes.fetch_sub(tex_bytes_, std::memory_order_relaxed);
+        s_gltex_count.fetch_sub(1, std::memory_order_relaxed);
+        tex_bytes_ = 0;
+    }
+    if (pbo_bytes_) {
+        s_glpbo_bytes.fetch_sub(pbo_bytes_, std::memory_order_relaxed);
+        s_glpbo_count.fetch_sub(1, std::memory_order_relaxed);
+        pbo_bytes_ = 0;
+    }
+    TVPNoteGLTextureMemory();
+}
+
+// ---------------------------------------------------------------------------
+// TJS / オーバレイ向けアクセサ
+// GL のヘッダを include できない翻訳単位からも呼べるよう、 自由関数で公開する
+// (呼び出し側は extern 宣言だけで使える)。
+// ---------------------------------------------------------------------------
+void TVPGetGLTextureMemory(tjs_uint64 *texture_bytes, tjs_uint64 *pbo_bytes,
+                           tjs_uint64 *peak_bytes,
+                           tjs_uint32 *texture_count, tjs_uint32 *pbo_count)
+{
+    GLTexture::MemStats st;
+    GLTexture::GetMemStats(st);
+    if (texture_bytes) *texture_bytes = st.texture_bytes;
+    if (pbo_bytes)     *pbo_bytes     = st.pbo_bytes;
+    if (peak_bytes)    *peak_bytes    = st.peak_total_bytes;
+    if (texture_count) *texture_count = st.texture_count;
+    if (pbo_count)     *pbo_count     = st.pbo_count;
+}
+
+void TVPSetGLTextureMemoryLog(bool enable)
+{
+    GLTexture::MemLogEnabled = enable;
+}
+
+bool TVPGetGLTextureMemoryLogEnabled()
+{
+    return GLTexture::MemLogEnabled;
+}
+
+void TVPResetGLTextureMemoryPeak()
+{
+    GLTexture::ResetMemPeak();
+}
+
+//! 現在値を 1 行ログへ出す (シーン境界等での目印用)
+void TVPLogGLTextureMemory(const char *tag)
+{
+    GLTexture::MemStats st;
+    GLTexture::GetMemStats(st);
+    TVPLOG_INFO("GLTexMem[{}]: total={:.1f}MiB (tex={:.1f}MiB n={} / pbo={:.1f}MiB n={}) peak={:.1f}MiB",
+                tag ? tag : "",
+                st.total_bytes / kMiB,
+                st.texture_bytes / kMiB, st.texture_count,
+                st.pbo_bytes / kMiB, st.pbo_count,
+                st.peak_total_bytes / kMiB);
+}
+
+GLuint
+GLTexture::ensurePBO()
+{
+    if (pbo_) return pbo_;
+    if (texture_id_ == 0) return 0;
+    if (format_ == tTVPTextureColorFormat::Alpha) return 0; // α テクスチャは PBO 経路を使わない
+
+    const std::size_t size = (std::size_t)width_ * height_ * 4;
+    if (size == 0) return 0;
+
+    glGenBuffers(1, &pbo_);
+    if (pbo_ == 0) return 0;
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo_);
+    glBufferData(GL_PIXEL_UNPACK_BUFFER, size, 0, GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+    CheckGLErrorAndLog("glBufferData(PBO)");
+
+    pbo_bytes_ = size;
+    s_glpbo_bytes.fetch_add(pbo_bytes_, std::memory_order_relaxed);
+    s_glpbo_count.fetch_add(1, std::memory_order_relaxed);
+    TVPNoteGLTextureMemory();
+    return pbo_;
+}
 
 void 
 GLTexture::create( GLuint w, GLuint h, const GLvoid* bits, tTVPTextureColorFormat format) 
@@ -46,44 +244,26 @@ GLTexture::create( GLuint w, GLuint h, const GLvoid* bits, tTVPTextureColorForma
     if (format == tTVPTextureColorFormat::Alpha) {
 		glTexImage2D( GL_TEXTURE_2D, 0, GL_ALPHA, w, h, 0, GL_ALPHA, GL_UNSIGNED_BYTE, bits );
 		glBindTexture( GL_TEXTURE_2D, 0 );
+        addMemStats((std::uint64_t)w * h * pixel_size, 0);
         return;
     }
 
     glTexStorage2D(GL_TEXTURE_2D, 1, fmt, w, h);
     CheckGLErrorAndLog("glTexStorage2D");
 
-    // PBO を作成
-    int size = w * h * pixel_size;
-    glGenBuffers(1, &pbo_);
-    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo_);
-    glBufferData(GL_PIXEL_UNPACK_BUFFER, size, 0, GL_DYNAMIC_DRAW);
-    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
-
+    // 初期アップロードは直接転送で行う。
+    // PBO は「更新されるテクスチャ」だけが必要とするので、 実際に
+    // UpdateTexture() が呼ばれた時点で ensurePBO() が確保する (遅延確保)。
+    // ここで常に確保していた頃は、 静的テクスチャもテクスチャ実体と同サイズの
+    // PBO を持ち続けてしまい、 GPU メモリを丸ごと 2 倍消費していた。
     if (bits) {
-        if (pbo_) {
-            glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo_);
-            // GL_MAP_INVALIDATE_BUFFER_BIT を付ける (UpdateTexture 側と同じ)。
-            // WebGL2 (Emscripten の GLES3 エミュレーション) は buffer mapping が無く、
-            // GL_MAP_WRITE_BIT 単独だと「INVALIDATE_BUFFER/RANGE を含めよ」の警告と共に
-            // map 書き込みが反映されず、PBO が空のまま glTexSubImage2D され、
-            // PNG 由来テクスチャが全透明になる。全域を書き換えるので orphan で問題ない。
-            GLubyte *texPixels = (GLubyte *)glMapBufferRange(GL_PIXEL_UNPACK_BUFFER, 0, size, GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
-            if (texPixels) {
-                memcpy(texPixels, bits, size);
-                glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER);
-            }
-            //glTexImage2D( GL_TEXTURE_2D, 0, fmt, w, h, 0, xformat, GL_UNSIGNED_BYTE, 0 );
-            //CheckGLErrorAndLog("glTexImage2D");
-            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, glformat_, GL_UNSIGNED_BYTE, 0);
-            CheckGLErrorAndLog("glTexSubImage2D");
-            glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
-        } else {
-            //glTexImage2D( GL_TEXTURE_2D, 0, fmt, w, h, 0, format, GL_UNSIGNED_BYTE, bits );
-            //CheckGLErrorAndLog("glTexImage2D");
-            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, glformat_, GL_UNSIGNED_BYTE, bits);
-            CheckGLErrorAndLog("glTexSubImage2D");
-        }
+        //glTexImage2D( GL_TEXTURE_2D, 0, fmt, w, h, 0, format, GL_UNSIGNED_BYTE, bits );
+        //CheckGLErrorAndLog("glTexImage2D");
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, glformat_, GL_UNSIGNED_BYTE, bits);
+        CheckGLErrorAndLog("glTexSubImage2D");
     }
+
+    addMemStats((std::uint64_t)w * h * pixel_size, 0);
 
     if (glformat_ == GL_RGBA && _support_swizzle) {
         // スウィズルで R と B を入れ替える 
@@ -160,11 +340,18 @@ GLTexture::createMipmapTexture( std::vector<GLTextreImageSet>& img )
         glformat_ = uploadFormat;
         width_ = w;
         height_ = h;
+
+        // 統計: 全ミップレベル分の合計
+        std::uint64_t bytes = 0;
+        for( std::size_t i = 0; i < img.size(); i++ ) {
+            bytes += (std::uint64_t)img[i].width * img[i].height * 4;
+        }
+        addMemStats(bytes, 0);
     }
 }
 
-void 
-GLTexture::destory() 
+void
+GLTexture::destory()
 {
     if( texture_id_ != 0 ) {
         glDeleteTextures( 1, &texture_id_ );
@@ -175,6 +362,7 @@ GLTexture::destory()
         glDeleteBuffers(1, &pbo_);
         pbo_ = 0;
     }
+    subMemStats();
 }
 
 
@@ -271,7 +459,14 @@ GLTexture::UpdateTexture(int x, int y, int w, int h, std::function<void(char *de
 {
     if (w==0) w = width_;
     if (h==0) h = height_;
-    UpdateTexture(texture_id_, pbo_, glformat_, x, y, w, h, updator);
+
+    // PBO は「実際に更新されるテクスチャ」だけが必要。 PBO 経路を使う
+    // 転送サイズになった時点で初めて確保する (静的テクスチャは PBO を持たない)。
+    GLuint pbo = pbo_;
+    if (pbo == 0 && UsePBOForUpload((std::size_t)w * h * 4)) {
+        pbo = ensurePBO();
+    }
+    UpdateTexture(texture_id_, pbo, glformat_, x, y, w, h, updator);
 }
 
 void

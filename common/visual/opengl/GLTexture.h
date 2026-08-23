@@ -3,6 +3,7 @@
 
 #include "OpenGLHeader.h"
 #include <functional>
+#include <cstdint>
 
 #include "TextureInfo.h"
 
@@ -28,11 +29,35 @@ protected:
 	GLenum wrapT_;
 	bool hasMipmap_ = false;
 
+	//! このインスタンスが計上しているテクスチャ実体のバイト数 (統計用)
+	std::uint64_t tex_bytes_ = 0;
+	//! このインスタンスが計上しているアップロード用 PBO のバイト数 (統計用)
+	std::uint64_t pbo_bytes_ = 0;
+
 private:
 	/**
 	 * GPU上でテクスチャをコピーするヘルパーメソッド
 	 */
 	void copyTextureOnGPU(const GLTexture& source);
+
+	/**
+	 * アップロード用 PBO を必要になった時点で確保する (遅延確保)。
+	 *
+	 * 以前は create() で必ず PBO を確保していたが、 それだと
+	 * 「ファイルから読んだきり更新しない静的テクスチャ」 (立ち絵 / 背景 /
+	 * マスク / UI / オフスクリーン) でもテクスチャ実体と同サイズの PBO を
+	 * 常時保持することになり、 GPU メモリを丸ごと 2 倍消費していた。
+	 * GL ドライバが通常ヒープからメモリを確保する環境 (一部のコンソール機) では、
+	 * これが GL_OUT_OF_MEMORY の直接の原因になりうる。
+	 *
+	 * @return 確保できた PBO 名。 RGBA 以外や失敗時は 0 (直接転送で動作する)
+	 */
+	GLuint ensurePBO();
+
+	//! 統計カウンタ更新 (生成時)
+	void addMemStats(std::uint64_t tex_bytes, std::uint64_t pbo_bytes);
+	//! 統計カウンタ更新 (破棄時)。 このインスタンス分を差し引く
+	void subMemStats();
 
 public:
 	GLTexture() : texture_id_(0), width_(0), height_(0), pbo_(0), format_(tTVPTextureColorFormat::RGBA), stretchType_(GL_LINEAR), wrapS_(GL_CLAMP_TO_EDGE), wrapT_(GL_CLAMP_TO_EDGE) {}
@@ -235,6 +260,51 @@ public:
 		InitSupported();
 		return _support_srgb_write_control;
 	}
+
+	// -----------------------------------------------------------------
+	// テクスチャメモリ計測
+	//
+	// GL ドライバが実際に確保する量そのものではないが、 こちらから要求した
+	// バイト数 (テクスチャ実体 + アップロード用 PBO) を積算する。
+	// GL ドライバが通常ヒープを使う環境 (一部のコンソール機) で、 どれだけ
+	// GPU リソースを積んでいるかの実測値として使う。
+	// -----------------------------------------------------------------
+	struct MemStats {
+		std::uint64_t texture_bytes;    //!< テクスチャ実体の合計
+		std::uint64_t pbo_bytes;        //!< アップロード用 PBO の合計
+		std::uint64_t fbo_bytes;        //!< FBO (カラーテクスチャ + レンダーバッファ + PBO) の合計
+		std::uint64_t total_bytes;      //!< 上記の合計
+		std::uint64_t peak_total_bytes; //!< total_bytes の最大値
+		std::uint32_t texture_count;    //!< 生存テクスチャ数
+		std::uint32_t pbo_count;        //!< 生存 PBO 数
+		std::uint32_t fbo_count;        //!< 生存 FBO 数
+	};
+
+	/**
+	 * GLTexture を経由しない GPU メモリ (GLFrameBufferObject のカラーテクスチャ /
+	 * レンダーバッファ / PBO) を同じカウンタへ計上する。
+	 * Offscreen はこちらを通るので、 これが無いと実測から丸ごと抜け落ちる。
+	 *
+	 * @param bytes_delta 増減バイト数 (解放時は負)
+	 * @param count_delta 生存数の増減 (通常 +1 / -1、 増減なしは 0)
+	 */
+	static void NoteFboMemory(std::int64_t bytes_delta, std::int32_t count_delta);
+
+	//! 現在のテクスチャメモリ統計を取得する (スレッド安全)
+	static void GetMemStats(MemStats &out);
+
+	//! peak_total_bytes を現在値へリセットする
+	static void ResetMemPeak();
+
+	/**
+	 * 合計が一定量 (MemLogStepBytes) 増減するたびにログへ書き出す。
+	 * 既定 false (調査時のみ有効化する)。
+	 * TJS からは System.setTextureMemoryLog(true/false)。
+	 */
+	static bool MemLogEnabled;
+
+	//! ログを出す増減幅 (バイト)
+	static const std::uint64_t MemLogStepBytes = 8ull * 1024 * 1024;
 };
 
 class GLTextureDrawer

@@ -89,6 +89,9 @@ protected:
 	int mSurfaceWidth;
 	int mSurfaceHeight;
 
+	//-- 画面比率の固定 (0 = 固定なし)
+	tjs_int aspect_lock_w_ = 0, aspect_lock_h_ = 0;
+
 	//-- 表示ズーム (約分済み。既定 1/1)
 	tjs_int zoom_numer_;
 	tjs_int zoom_denom_;
@@ -286,6 +289,14 @@ public:
 	// generic ではウィンドウ (surface) をその大きさへリサイズし、実際の拡縮は
 	// viewport のフィット計算 (CalcDestRect) が行う。リサイズできない
 	// プラットフォームでは ResizeWindow が効かないので倍率だけが残る。
+	// 画面比率の固定 (16:9 等)。 0 を渡すと解除。 有効時は環境側が
+	// リサイズを比率へ拘束し、 SetZoom もこの比率で高さを決める。
+	void SetAspectLock(tjs_int w, tjs_int h);
+	tjs_int GetAspectLockW() const { return aspect_lock_w_; }
+	tjs_int GetAspectLockH() const { return aspect_lock_h_; }
+	// 環境側 (SDL3 = SDL_SetWindowAspectRatio) が実際の拘束を掛ける
+	virtual void ApplyAspectLock() {}
+
 	void SetZoom(tjs_int numer, tjs_int denom, bool set_logical = true);
 	void SetZoomNumer( tjs_int n ) { SetZoom( n, zoom_denom_ ); }
 	tjs_int GetZoomNumer() const { return zoom_numer_; }

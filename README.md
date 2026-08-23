@@ -148,12 +148,20 @@ INSTALL_PREFIX=install make install
 | `KRKRZ_BUILD_TESTS` | ON | パリティテスト (画像 / サウンド SIMD) のビルド |
 | `KRKRZ_DRAW_STATS` | OFF | DrawThreadPool 利用率の計測 ([DrawStats.md](doc/DrawStats.md)) |
 | `KRKRZ_RESOURCE_DIR` | `resource/` | 埋め込みリソースフォルダ (案件用に差し替え可) |
+| `KRKRZ_WIN_ICON` | 無し | Windows: exe へ埋め込むアイコン (`.ico` の絶対パス) |
 | `KRKRZ_VERSION_BUILD` | `0` | バージョン 4 桁目 ([Versioning.md](doc/Versioning.md)) |
 | `MASTER` | OFF | ログレベルを WARNING 固定にする (INFO を出さない) |
 
 `MASTER` 未定義時の起動時ログレベルは Release=INFO / Debug=DEBUG で、起動オプション
 `-loglevel=ERROR,WARNING,INFO,DEBUG,VERBOSE` で変更できます。詳細は
 [Logging.md](doc/Logging.md)。
+
+`KRKRZ_WIN_ICON` に `.ico` の絶対パスを渡すと、生成される `.rc` へ
+`MAINICON ICON <パス>` が追加され、ビルド直後から exe にアイコンが付きます
+(指定しない場合、exe にはアイコンリソースが 1 つも入りません)。リソース名を
+`MAINICON` にしてあるのは、後からアイコンを差し替えるツール (IconReset /
+`iconreset.tjs`) がその名前を前提にしているためです。`.ico` の内容が変われば
+`.res` を作り直すよう依存関係も設定されます。
 
 ---
 
@@ -175,15 +183,79 @@ DATAPATH=path/to/game make run
 krkrz64.exe <repo>/data/gallery -demotest
 ```
 
-WINVER で OpenGL 機能を使う場合、実行ファイルの隣に ANGLE の DLL が必要です。
+### 起動時の DrawDevice
+
+描画経路は起動オプション `-drawdevice=` で選択します。
+
+| ビルド | 選べる値 | 既定 |
+|---|---|---|
+| SDL3 | `sdl` (SDL_Renderer) / `sdlogl` (OpenGL ES 直接) / `ogl` (OpenGL ES + Canvas 等フル機能) | `sdlogl` (OpenGL 無効ビルドでは `sdl`) |
+| WINVER | `basic` (Direct3D 11) / `ogl` / `null` (描画なし・検証用) | `basic` |
+
+実行中に `Window.drawDevice` へ代入して切り替えることもできますが、**SDL3 ビルドを
+`-drawdevice=sdl` で起動した場合は、実行中に OpenGL 系へ切り替えることはできません**
+(OpenGL の初期化が通りません)。OpenGL 機能を使う場合は最初から `sdlogl` / `ogl` で
+起動してください。
+
+### OpenGL ES の実行環境
+
+エンジンの OpenGL 機能 (Canvas / Texture / Shader、`-drawdevice=ogl` / `sdlogl`) は
+OpenGL ES で動きます。必要なランタイムはビルドによって異なります。
+
+**WINVER ビルド**は常に EGL (ANGLE) 経由で GLES コンテキストを作るため、OpenGL
+機能を使う場合は実行ファイルの隣に ANGLE の DLL が必要です (`make run` は自動で
+コピーします):
 
 ```
 plugin/     libEGL.dll / libGLESv2.dll        (32bit)
 plugin64/   libEGL.dll / libGLESv2.dll        (64bit)
 ```
 
-SDL ビルドは OS 側に OpenGL ES 実装があればそれを使い、無い場合は同じ DLL を
-参照します (`make run` は Windows では自動でコピーします)。
+**SDL3 ビルド**は SDL の初期化時点で GLES コンテキスト前提の宣言を行うため、OpenGL
+を使う場合は最初から GLES が利用できる環境である必要があります。Windows では GLES
+コンテキストはまず OS の OpenGL ドライバ (WGL の ES プロファイル =
+`WGL_EXT_create_context_es2_profile`) から作られ、使えない場合に ANGLE (上記と同じ
+`libEGL.dll` / `libGLESv2.dll`) へフォールバックします。ドライバの ES プロファイル
+実装に問題がある場合 (描画が乱れる・初期化に失敗する等) は、起動オプション
+`-forceegl=yes` で最初から EGL (ANGLE) を使わせて切り分け・回避ができます。
+Linux / Android などは OS ネイティブの EGL / GLES を使います。
+
+コンテキストの要求バージョンは ES 3.2 で、作れない場合は 3.1 → 3.0 → 2.0 と
+下げて再試行します (ANGLE の D3D11 バックエンドは ES 3.0/3.1 までのため、EGL
+フォールバック時はこの再試行で成立します)。実際に得られたバージョンは起動ログの
+`Loaded GLES x.y` で確認できます。
+
+#### ANGLE DLL の入手
+
+ANGLE の DLL はリポジトリには含まれません。かつては Chromium のインストールに
+単体 DLL として含まれていましたが現在はその形では配布されていないため、
+プレビルドの利用が手軽です:
+
+- [mmozeiko/build-angle](https://github.com/mmozeiko/build-angle) —
+  upstream ANGLE を毎日ビルドして Releases に置いています (x64 / arm64。zip に
+  `libEGL.dll` / `libGLESv2.dll` / `d3dcompiler_47.dll` が含まれます)。
+  動作確認済み: 2026-07-25 版 (upstream
+  [cc226c81](https://github.com/google/angle/commit/cc226c81fda884e3b85aad1e00e581c12f8aee04))。
+- 32bit (x86) のプレビルドは提供されていないため、必要な場合は自前ビルド
+  (depot_tools + gn) になります。
+
+配置は実行ファイルの隣です。アンブレラリポジトリでは、ルートの `plugin/` (32bit) /
+`plugin64/` (64bit) に置いておくと `make run` がビルド出力へコピーします。
+
+> **注意**: exe の隣に DLL が無くても、PATH 上にある別アプリ同梱の ANGLE
+> (例: Oculus ランタイムの `libEGL.dll`) を拾って動いてしまうことがあります。
+> バージョンが古く初期化に失敗するなど紛らわしい症状になるため、OpenGL 機能を
+> 使う配布物には必ず DLL を同梱してください (ANGLE のライセンス表記は本体の
+> ライセンス収集機構に収録済みです)。
+
+### 表示言語
+
+エンジンのメッセージ (エラー文言等) とオプション解説 (`-userconf` の設定 UI) は
+多言語対応です (ja / en / chs / cht)。既定では OS の言語設定
+(`System.systemLanguage`) に追従し、起動オプション `-language=<タグ>` (BCP-47 または
+短縮形 ja / en / chs / cht) で明示指定できます。WINVER は PE リソースの言語解決
+(スレッド UI 言語) で、SDL3 は `resource/messages*.json` / `optiondesc*.json` の
+選択で切り替わります (メッセージ文字列への反映はコマンドライン直接指定のみ)。
 
 ---
 

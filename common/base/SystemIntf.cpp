@@ -562,6 +562,47 @@ TJS_BEGIN_NATIVE_PROP_DECL(platformName)
 }
 TJS_END_NATIVE_STATIC_PROP_DECL(platformName)
 //----------------------------------------------------------------------
+// 正規化したプラットフォームタグ ("windows"/"switch"/"switch2"/"ps5"/...)。
+// platformName が SDL の生文字列 ("Nintendo Switch" 等。空白入り・表記ゆれあり)
+// なのに対し、こちらは小文字・空白無しなので比較やファイル名に使える。
+// リソース内の config_<tag>.cf もこのタグで選択される。
+TJS_BEGIN_NATIVE_PROP_DECL(platformTag)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		if (result) *result = TVPGetPlatformTag();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_DENY_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_STATIC_PROP_DECL(platformTag)
+//----------------------------------------------------------------------
+// 本体 (OS / ハード) の表示言語。 BCP-47 の言語タグ ("ja" / "en-US" /
+// "zh-Hant" / "zh-Hans" ...)。 取得できない環境では空文字。
+//
+// ゲーム側の既定言語をハードの設定に合わせるための口。 言語そのものの
+// 選択・保存はゲーム側の責務で、 ここでは「本体が何語設定か」だけを返す。
+// 地域まで要らなければ '-' より前を見ればよい。
+//
+// ★ 旧 getLangName プラグイン (System.getCurrentUILangName) の置き換え。
+//    プラグイン版は Win が英語の言語名 ("Japanese")、 NX がコード
+//    ("ja"/"cn"/"tw") と戻り値が不揃いで、 PS5 は実装が無く "ja" 固定
+//    だった。 こちらは全機種 BCP-47 で統一している。
+TJS_BEGIN_NATIVE_PROP_DECL(systemLanguage)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		if (result) *result = TVPGetSystemLanguage();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_DENY_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_STATIC_PROP_DECL(systemLanguage)
+//----------------------------------------------------------------------
 TJS_BEGIN_NATIVE_PROP_DECL(osName)
 {
 	TJS_BEGIN_NATIVE_PROP_GETTER

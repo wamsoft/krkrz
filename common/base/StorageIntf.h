@@ -170,6 +170,15 @@ TJS_EXP_FUNC_DEF(ttstr, TVPGetTemporaryName, ());
 TJS_EXP_FUNC_DEF(ttstr, TVPGetAppPath, ());
 	// retrieve program path, in normalized storage name
 
+extern ttstr TVPGetResourcePath();
+	// エンジン組み込みリソース (config.cf / messages.json / 同梱フォント等) が
+	// 置かれている場所を、末尾 '/' 付きのストレージ名で返す。
+	// 参照先はプラットフォームで異なる:
+	//   WINVER / desktop  "resource://./"        (exe 埋め込み or OS リソース)
+	//   Emscripten (wasm) "file://./resource/"   (MEMFS へ preload)
+	// スクリプトからは System.resourcePath。プラットフォーム分岐を書かせない
+	// ための口なので、利用側は必ずこれを前置して使うこと。
+
 void TVPPreNormalizeStorageName(ttstr &name);
 		// called by TVPNormalizeStorageName before it process the storage name.
 		// user may pass the OS's native filename to the TVP storage system,

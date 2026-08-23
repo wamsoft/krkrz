@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #endif
 #include <memory>		// std::allocator
+#include <new>			// std::bad_alloc
 
 
 // STL allocator
@@ -28,9 +29,15 @@ struct aligned_allocator : public std::allocator<T>
 	}
 #else
 	T* allocate( std::size_t c ) {
-		T* ret;
-		posix_memalign(reinterpret_cast<void**>(&ret), TAlign, sizeof(T)*c);
-		return ret;
+		// posix_memalign は alignment が sizeof(void*) 以上の 2 冪でないと EINVAL を
+		// 返し、出力ポインタは未設定のまま残る。TAlign=4 (AxisParam<> 既定) のとき
+		// 未初期化ポインタをそのまま返してヒープ破壊するバグがあった
+		// (NX/PS5 の TVPResampleImage クラッシュの原因)。alignment を下駄上げし、
+		// 失敗は bad_alloc にする。
+		std::size_t align = TAlign < sizeof(void*) ? sizeof(void*) : TAlign;
+		void* ret = nullptr;
+		if( posix_memalign( &ret, align, sizeof(T)*c ) != 0 ) throw std::bad_alloc();
+		return static_cast<T*>( ret );
 	}
 #endif
 	// deallocate

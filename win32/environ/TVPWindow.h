@@ -170,6 +170,10 @@ public:
 	const ImeControl* GetIME() const { return ime_control_; }
 
 	static void SetClientSize( HWND hWnd, SIZE& size );
+	//! クライアント矩形 → 外形矩形 (per-monitor DPI 対応。AdjustWindowRectEx は使わない)
+	static BOOL AdjustWindowRectForWindow( HWND hWnd, RECT& rect );
+	//! 装飾ぶんのサイズ (外形 - クライアント)
+	static void GetFrameSize( HWND hWnd, int& fw, int& fh );
 
 //-- properties
 	bool GetVisible() const;
@@ -232,13 +236,16 @@ public:
 		max_size_.cy = h;
 		CheckMinMaxSize();
 	}
+	//! min/max 制約は「内側 (クライアント) サイズ」基準。
+	//! 外形は装飾の有無で環境ごとに意味が変わるので基準面にしない
+	//! (src/core/doc/WindowGeometry.md §1)。
 	void CheckMinMaxSize() {
 		int maxw = max_size_.cx;
 		int maxh = max_size_.cy;
 		int minw = min_size_.cx;
 		int minh = min_size_.cy;
-		int dw, dh;
-		GetSize( dw, dh );
+		int dw = GetInnerWidth();
+		int dh = GetInnerHeight();
 		int sw = dw;
 		int sh = dh;
 		if( maxw > 0 && dw > maxw ) dw = maxw;
@@ -246,7 +253,7 @@ public:
 		if( minw > 0 && dw < minw ) dw = minw;
 		if( minh > 0 && dh < minh ) dh = minh;
 		if( sw != dw || sh != dh ) {
-			SetSize( dw, dh );
+			SetInnerSize( dw, dh );
 		}
 	}
 

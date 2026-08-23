@@ -347,7 +347,109 @@ GL context が確立する前は何も出ない (起動直後の数フレーム)
 
 ---
 
-## 11. 関連ドキュメント
+## 11. GPU (GL テクスチャ / FBO) メモリ
+
+上の 4 allocator は **CPU 側**の話で、GL ドライバが確保するテクスチャ類は
+含まれない。GL 系 DrawDevice ではこちらを別途計測する。
+
+### 11.1 TJS API
+
+```tjs
+// 現在の GL テクスチャメモリ (OpenGL build かつ SDL3 / LIB ビルドのみ)
+//   %[ texture, pbo, total, peak, textureCount, pboCount ]
+var m = System.getTextureMemory();
+
+// 引数に文字列を渡すとその名前付きでログにも 1 行出す (シーン境界の目印用)
+System.getTextureMemory("scene01 enter");
+
+// 合計が 8MiB 増減するたびログへ出す (既定 OFF)
+System.setTextureMemoryLog(true);
+
+// peak を現在値へリセット
+System.resetTextureMemoryPeak();
+```
+
+> **注意 (2026-08-18 時点の実装ギャップ)**
+> `System.getTextureMemory()` が返す辞書には **fbo / fboCount が無く、`total` は
+> `texture` + `pbo` のみ**。一方 `peak` は内部集計 (FBO 込み) をそのまま返すので、
+> `Offscreen` を使っていると `peak > total` になる。FBO は
+> `GLTexture::GetMemStats()` では集計済みなので、TJS へ出すなら
+> `generic/base/SystemImpl.cpp` の `getTextureMemory` を 5 out-param 版の
+> `TVPGetGLTextureMemory()` から `GetMemStats()` へ差し替えるだけでよい。
+>
+> また、この 3 メソッドは `generic/base/SystemImpl.cpp` にしか無いので
+> **WINVER ビルドには存在しない** (WINVER でも `Window.drawDevice` を OGL 系へ
+> 切り替えれば GL テクスチャは使うため、計測したい場合は `win32/base/SystemImpl.cpp`
+> にも同じ登録が要る)。
+
+ログ形式 (合計が一定量増減したときに出るもの。FBO 込み):
+
+```
+GLTexMem: total=368.2MiB (tex=281.2MiB n=18 / pbo=23.7MiB n=3 / fbo=63.3MiB n=4) peak=368.2MiB
+```
+
+`System.getTextureMemory("tag")` のタグ付きログは別実装で、`total` は FBO 込みだが
+内訳に fbo を出さない (`GLTexMem[tag]: total=... (tex=... / pbo=...) peak=...`)。
+
+- `tex` … `Texture` (GLTexture) の実体
+- `pbo` … アップロード用 PBO。**更新されるテクスチャだけが持つ** (遅延確保)
+- `fbo` … `Offscreen` (GLFrameBufferObject) のカラーテクスチャ + D24S8
+  レンダーバッファ。1920x1080 なら 1 枚 15.8MiB (7.9 + 7.9)
+
+memoverlay にも 1 行出る:
+
+```
+GLTex 281.2M+pbo 23.7M n 18 pk368.2M
+```
+
+### 11.2 PBO は遅延確保
+
+以前は `GLTexture::create()` / `GLFrameBufferObject::create()` が生成時に
+必ず w*h*4 の PBO を確保していたため、ファイルから読んだきり更新しない
+テクスチャや Offscreen も倍のメモリを要求していた。現在は
+`UpdateTexture()` (または `pbo()`) が実際に呼ばれた時点で確保する。
+
+実測メモ (2026-08-17、あるコンソール機の GL ドライバ): 未使用 PBO は
+`glBufferData` の時点では**物理メモリを裏付けていなかった**ため、
+減るのはアドレス空間とドライバの管理オブジェクトが主。実メモリに効くのは
+下の α テクスチャ化のような「実体を減らす」対応。
+
+### 11.3 マスク画像は `tcfAlphaChannel` で 1/4 に
+
+クリッピングマスクは α しか参照しない (`GLClip` の drawMaskComposite /
+drawStencilWrite とも `.a`)。`Texture(filename, tcfAlphaChannel)` を使うと
+α チャンネルをそのまま `GL_ALPHA` (1byte/px) のテクスチャにするので
+RGBA の 1/4 で済む。PBO も付かない。
+
+```tjs
+var mask = new Texture("clip_str3L", tcfAlphaChannel);  // 1920x1080 で 2.0MiB
+```
+
+- 既存の `tcfAlpha` (=1) は **輝度**をグレイスケール化する経路なので、
+  「輝度は白一色・データは α」という一般的なマスク資材には使えない。
+  そのために追加したのが `tcfAlphaChannel` (=2)
+- 32bpp でない画像を渡した場合は従来のグレイスケール扱いにフォールバックする
+- 資材側の変更は不要
+
+### 11.4 GL ドライバ全体の確保量 (プラットフォーム依存)
+
+プラットフォームによっては GL ドライバが**通常ヒープから**メモリを確保する
+(GPU 専用ヒープを指定できない)。この場合、画像キャッシュ等がヒープを食えば
+その分 GL 側が確保できなくなり、`GL_OUT_OF_MEMORY` はヒープ枯渇として現れる。
+
+一部のコンソール機向け port では GFX ドライバのアロケータを差し替えて
+計測している (ログは `System.setTextureMemoryLog` に連動):
+
+```
+GfxMem: live=545.8MiB blocks=4700 peak=545.8MiB
+```
+
+`GfxMem` と `GLTexMem` の差がドライバ内部構造 (シェーダ / コマンドバッファ等)。
+port 固有の詳細は各 port のドキュメントを参照。
+
+---
+
+## 12. 関連ドキュメント
 
 - `doc/MemoryDesign.md` — 内部実装と設計の根拠
 - `doc/DrawStats.md` — 描画スレッドプール統計 (`KRKRZ_DRAW_STATS`)

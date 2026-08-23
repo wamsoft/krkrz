@@ -9,6 +9,7 @@
 //---------------------------------------------------------------------------
 #include "tjsCommHead.h"
 #include "ReadOptionDesc.h"
+#include "MsgLanguage.h"
 #include "DebugIntf.h"
 #include "Application.h"
 #include "CharacterSet.h"
@@ -52,14 +53,19 @@ tjs_string DeriveSidecarJsonPath(const tjs_char* plugin_name)
 tTVPCommandOptionList* TVPGetEngineCommandDesc()
 {
 	if (!Application) return nullptr;
-	tjs_string path = Application->ResourcePath() + TJS_W("optiondesc.json");
-	auto bytes = ReadFileBytes(path);
-	if (bytes.empty()) {
-		TVPAddImportantLog(ttstr(TJS_W("UserConfig: optiondesc.json not found at: "))
-			+ ttstr(path.c_str()));
-		return nullptr;
+	// 言語 suffix 候補 (-language= / OS 言語) を優先順に試す。
+	// 例: en-US → optiondesc-en.json → optiondesc.json
+	tjs_string path;
+	for (const std::string &sfx : TVPGetMessageResourceSuffixes()) {
+		tjs_string wsfx(sfx.begin(), sfx.end());
+		path = Application->ResourcePath() + TJS_W("optiondesc") + wsfx + TJS_W(".json");
+		auto bytes = ReadFileBytes(path);
+		if (bytes.empty()) continue;
+		return TVPParseCommandDescJson(bytes.data(), bytes.size());
 	}
-	return TVPParseCommandDescJson(bytes.data(), bytes.size());
+	TVPAddImportantLog(ttstr(TJS_W("UserConfig: optiondesc.json not found at: "))
+		+ ttstr(path.c_str()));
+	return nullptr;
 }
 
 tTVPCommandOptionList* TVPGetPluginCommandDesc(const tjs_char* name)

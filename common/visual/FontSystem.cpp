@@ -9,6 +9,8 @@
 #include "FontRasterizer.h"
 #include "StorageIntf.h"   // TVPCreateStream / TVPIsExistentStorage
 #include "tjs.h"           // iTJSBinaryStream / TVPReadBuffer
+#include "FontVariations.h" // TVPNormalizeFontVariations (fonts.json の axes 宣言)
+#include <cstdio>           // snprintf
 // PICOJSON_USE_INT64 は CMakeLists.txt でビルド全体に定義される
 #include "picojson/picojson.h"
 
@@ -71,8 +73,40 @@ void FontSystem::LoadFontMetadata() {
 		// family 名は当面 ASCII 前提 (非 ASCII は将来 UTF-8 変換を要検討)
 		tjs_string storage = ttstr( file.get<std::string>().c_str() ).AsStdString();
 		tjs_string famName = ttstr( fam.get<std::string>().c_str() ).AsStdString();
+
+		// 可変軸宣言 (任意): "axes": {"wght": 600, ...} 直書きと
+		// "instance": "SemiBold" (fvar named instance 名)。両方あれば適用時に
+		// axes が instance を上書きする。宣言名 (family/aliases) 単位で保持し、
+		// 同じファイルを別名 + 別軸で複数宣言できる (例: 通常と SemiBold)。
+		tjs_string axesSpec, instName;
+		{
+			const picojson::value& inst = fv.get("instance");
+			if( inst.is<std::string>() )
+				instName = ttstr( inst.get<std::string>().c_str() ).AsStdString();
+			const picojson::value& axes = fv.get("axes");
+			if( axes.is<picojson::object>() ) {
+				std::string spec;
+				for( const auto& kv : axes.get<picojson::object>() ) {
+					if( !kv.second.is<double>() ) continue;
+					if( !spec.empty() ) spec += ",";
+					char buf[64];
+					std::snprintf( buf, sizeof(buf), "%s=%g",
+					               kv.first.c_str(), kv.second.get<double>() );
+					spec += buf;
+				}
+				if( !spec.empty() ) {
+					try {
+						// 正規化 (小文字化/昇順/量子化)。不正タグ入りは宣言ごと無視
+						axesSpec = TVPNormalizeFontVariations( ttstr(spec.c_str()) ).AsStdString();
+					} catch( ... ) { axesSpec.clear(); }
+				}
+			}
+		}
+		const bool hasVar = !axesSpec.empty() || !instName.empty();
+
 		LazyFontFiles[ famName ] = storage;
 		LazyFontStorageAll[ famName ] = storage;   // 永続 (erase されない)
+		if( hasVar ) LazyFontVariations[ famName ] = { axesSpec, instName };
 		const picojson::value& al = fv.get("aliases");
 		if( al.is<picojson::array>() ) {
 			for( const auto& a : al.get<picojson::array>() )
@@ -80,6 +114,7 @@ void FontSystem::LoadFontMetadata() {
 					tjs_string aliasName = ttstr( a.get<std::string>().c_str() ).AsStdString();
 					LazyFontFiles[ aliasName ] = storage;
 					LazyFontStorageAll[ aliasName ] = storage;
+					if( hasVar ) LazyFontVariations[ aliasName ] = { axesSpec, instName };
 				}
 		}
 	}
@@ -104,6 +139,15 @@ bool FontSystem::GetLazyFontStorage( const tjs_string& name, tjs_string& storage
 	auto it = LazyFontStorageAll.find( name );
 	if( it == LazyFontStorageAll.end() ) return false;
 	storage = it->second;
+	return true;
+}
+//---------------------------------------------------------------------------
+bool FontSystem::GetLazyFontVariations( const tjs_string& name, tjs_string& axesSpec,
+                                        tjs_string& instanceName ) const {
+	auto it = LazyFontVariations.find( name );
+	if( it == LazyFontVariations.end() ) return false;
+	axesSpec = it->second.first;
+	instanceName = it->second.second;
 	return true;
 }
 //---------------------------------------------------------------------------

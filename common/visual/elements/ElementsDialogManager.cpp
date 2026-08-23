@@ -35,6 +35,7 @@
 #include "VirtualKey.h"
 #endif
 
+#include <elements/element/pad_icon.hpp>   // set_pad_theme / parse_pad_theme
 #include <elements_modal/modal.h>
 #include <elements_modal/navigator.h>   // フロー駆動 (画面遷移スタック)
 #include <elements_modal/effects.h>     // 画面切替エフェクト (fade / universal ブレンド)
@@ -324,18 +325,23 @@ struct tTVPElementsDialogManager::Impl
 		int dialog_w = 400;
 		int dialog_h = 220;
 
-		// マウス座標変換用に直近の DestRect 原点を保持。
-		int dest_offset_x = 0;
-		int dest_offset_y = 0;
-
-		// oversized present (authored サイズ > surface) の縮小率と配置オフセット
-		// (surface logical 座標)。 マウス座標を dialog 論理座標へ戻す逆変換に使う。
-		// 等倍 present (非 oversized) は 1.0 / 0,0 のまま。
+		// present fit の倍率と配置オフセット (window client 座標)。
+		// 配置 / 拡縮の基準領域は画面 JSON top-level "base" で選択:
+		// "window" (既定) = ウィンドウ全面 / "content" = ゲーム画像 (DestRect)。
+		// 拡縮率はゲーム基準面 (primary layer) に対する基準領域の比率
+		// (詳細は RenderInstance のコメント)。 マウス座標を dialog 論理座標へ
+		// 戻す逆変換にも使う。
 		float present_scale = 1.0f;
 		float present_off_x = 0.0f;
 		float present_off_y = 0.0f;
 
-		// 直近 render_to_buffer の描画矩形 (surface logical 座標)。 ヒットテスト用。
+		// 入力座標の補正用に直近の DestRect 原点を保持。 マウスイベントは
+		// TranslateWindowToDrawArea で DestRect 原点を引いた「描画領域基準」で
+		// 届く (スケールは掛かっていない) ので、 ウィンドウ座標へ足し戻す。
+		int dest_offset_x = 0;
+		int dest_offset_y = 0;
+
+		// 直近 render_to_buffer の描画矩形 (dialog 論理座標)。 ヒットテスト用。
 		elements_modal::overlay_session::render_rect last_rect{};
 		bool has_rect = false;
 		bool cursor_inside = false;   // mouse enter/leave 追跡
@@ -348,6 +354,18 @@ struct tTVPElementsDialogManager::Impl
 		iTVPDrawDevice* cache_device = nullptr;    // 前回描画したデバイス
 		int cache_buf_w = 0, cache_buf_h = 0;      // 前回の buffer ピクセルサイズ
 		int cache_sw = 0, cache_sh = 0;            // 前回の render_sw/sh (配置基準)
+		// 前回の surface サイズ (present fit の基準)。 ウィンドウリサイズ /
+		// フルスクリーン切替で変わったら cache_px 等の提示引数が古くなるので
+		// 再描画に回す。
+		int cache_surf_w = 0, cache_surf_h = 0;
+		// 前回の present fit 倍率。 基準面 (primary layer) サイズだけが変わって
+		// fit が変わるケース (surface / buffer サイズは同じ) でも提示引数を
+		// 作り直すために条件へ含める。
+		float cache_fit = 0.0f;
+		// 前回の配置 / 拡縮基準領域 ("base":"content" では DestRect)。
+		// DestRect だけが動くケース (setViewport 等) で提示位置を作り直す。
+		int cache_area_x = 0, cache_area_y = 0;
+		int cache_area_w = 0, cache_area_h = 0;
 		int cache_px = 0, cache_py = 0;            // 前回 PresentOverlay の引数
 		int cache_pw = 0, cache_ph = 0;
 
@@ -421,6 +439,11 @@ struct tTVPElementsDialogManager::Impl
 	iTVPWindow* input_window = nullptr;
 	// warp が生む合成 mouse move を実マウスと区別する期待座標 (layer 座標)。
 	// 一致 move はカーソル再表示させず (再 hide)、 不一致 = 実マウスで解除。
+	// 入力フォーカス (キーボード/パッドの届き先) の直近の持ち主。 上に載って
+	// いたダイアログが閉じて下の画面へ戻ったときに、 フォーカス表示と実カーソル
+	// を合わせ直すために使う。
+	void*   last_focus_owner = nullptr;
+
 	bool    warp_expect_active = false;
 	tjs_int warp_expect_x = 0;
 	tjs_int warp_expect_y = 0;
@@ -532,17 +555,19 @@ struct tTVPElementsDialogManager::Impl
 		return nullptr;
 	}
 
-	// マウス座標 (image-area 系) → session へ渡す座標。 通常 present は surface
-	// logical そのまま。 oversized present (縮小表示) 中は縮小率とセンタリングの
-	// 逆変換をかけて dialog 論理座標へ戻す (session 内 hit-test は論理座標のため)。
-	static float ToSurfaceX(const Instance& inst, tjs_int image_x)
+	// マウス座標 → session へ渡す座標。 入力は TranslateWindowToDrawArea で
+	// DestRect 原点を引いた「描画領域基準」で届く (スケールは掛かっていない)
+	// ので、 まず原点を足し戻して window client 座標にし、 present fit の
+	// 倍率と配置オフセットの逆変換をかけて dialog 論理座標へ戻す
+	// (session 内 hit-test は論理座標のため)。
+	static float ToSurfaceX(const Instance& inst, tjs_int draw_x)
 	{
-		return (static_cast<float>(image_x + inst.dest_offset_x)
+		return (static_cast<float>(draw_x + inst.dest_offset_x)
 		        - inst.present_off_x) / inst.present_scale;
 	}
-	static float ToSurfaceY(const Instance& inst, tjs_int image_y)
+	static float ToSurfaceY(const Instance& inst, tjs_int draw_y)
 	{
-		return (static_cast<float>(image_y + inst.dest_offset_y)
+		return (static_cast<float>(draw_y + inst.dest_offset_y)
 		        - inst.present_off_y) / inst.present_scale;
 	}
 
@@ -560,9 +585,17 @@ struct tTVPElementsDialogManager::Impl
 	// 入ったときだけ開始する focus 駆動に切り替える。 デスクトップ (false) は物理
 	// キーボードなので従来どおり開いた時点で開始してよい (ポップアップは出ない)。
 	// WINVER (Win32 host) は常に false = デスクトップ扱い。
+	//
+	// 物理キーボードが繋がっている場合も false (デスクトップ扱い) を返す。 この
+	// 状態では SDL の自動判定がキーボード UI を出さないので、 ホストが張った
+	// ベースライン (SDL3WindowForm の TVPUpdateBaselineTextInput) をそのまま
+	// 使えばよい。 ここで true を返すと focus が外れるたびに HostStopTextInput()
+	// でベースラインごと止めてしまい、 ゲーム側 (KAG の Edit レイヤ) の文字入力が
+	// 効かなくなる。
 	static bool PlatformUsesScreenKeyboard()
 	{
-		return HostHasScreenKeyboard();
+		if (!HostHasScreenKeyboard()) return false;
+		return !HostHasPhysicalKeyboard();
 	}
 
 	// focus 駆動でソフトキーボードを出している最中か (portable のみ使用)。
@@ -587,11 +620,10 @@ struct tTVPElementsDialogManager::Impl
 		if (instances.empty()) {
 			// デスクトップ (物理キーボード) では text input を有効のままでも
 			// ソフトキーボード等の副作用が無く、 ホスト (ゲーム) が常時テキスト
-			// 入力を必要とする場合がある (例: STEINS;GATE 8BIT の start 画面の
-			// タイプ入力)。 ここで無条件停止するとホスト側の文字入力まで止まる
-			// ため、 オンスクリーンキーボードを持つ環境でのみ停止する。 デスク
-			// トップでは host が設定したベースライン (form 生成時の StartTextInput)
-			// をそのまま残す。
+			// 入力を必要とする場合がある (例: タイトル画面での名前入力)。 ここで
+			// 無条件停止するとホスト側の文字入力まで止まるため、 オンスクリーン
+			// キーボードを持つ環境でのみ停止する。 デスクトップでは host が設定
+			// したベースライン (form 生成時の StartTextInput) をそのまま残す。
 			if (PlatformUsesScreenKeyboard()) {
 				HostStopTextInput();
 			}
@@ -1222,30 +1254,68 @@ void tTVPElementsDialogManager::Impl::RenderInstance(
 		sw = dx + dw;
 		sh = dy + dh;
 	}
+	// 入力座標の補正用 (ToSurfaceX/Y 参照)。 マウスは DestRect 原点を引いた
+	// 描画領域基準で届くため、 足し戻す分を控えておく。
 	inst.dest_offset_x = dx;
 	inst.dest_offset_y = dy;
 
-	// dialog の logical サイズが surface を超える場合 (1920x1080 authored 画面を
-	// 640x400x2=1280x720 等の小さいゲーム surface に重ねる時) は、 render_to_buffer
-	// には dialog 自身の logical サイズを "surface" として渡し、 canvas 全体を
-	// buffer に描かせる (real surface を渡すと中央配置/クリップで一部しか描かれない)。
-	// present 時にアスペクトを保って real surface へ縮小スケールする。
-	const bool oversized = (sw > 0 && sh > 0 &&
-	                        (w_logical > sw || h_logical > sh));
-	const int render_sw = oversized ? w_logical : sw;
-	const int render_sh = oversized ? h_logical : sh;
-
-	// present 縮小率 (oversized fit)。 非 oversized は等倍 present。
-	float fit = 1.0f;
-	if (oversized) {
-		fit = std::min(static_cast<float>(sw) / w_logical,
-		               static_cast<float>(sh) / h_logical);
+	// 配置 / 拡縮の基準領域は、 画面 JSON の top-level "base" で選べる:
+	//   "window" (既定) — **ウィンドウ (surface) 全体**。 Dot by dot 等の
+	//     インセット表示でもパネルはウィンドウ全面基準に置かれる。
+	//   "content"       — **ゲーム画像の表示領域 (DestRect)**。 字幕窓のように
+	//     ゲーム画像へ追従させたいパネル向け。 レターボックスやインセット
+	//     表示でもゲーム画像に張り付き、 拡縮もゲーム画像と同率になる。
+	//     DestRect が無効な場合はウィンドウ基準へフォールバック。
+	const bool content_base = inst.session &&
+		inst.session->placement_base() == elements_modal::overlay_base::content;
+	int area_x = 0, area_y = 0, area_w = sw, area_h = sh;
+	if (content_base && dw > 0 && dh > 0) {
+		area_x = dx; area_y = dy; area_w = dw; area_h = dh;
 	}
 
-	// 描画密度 (render_scale_mode コメント参照): auto は最終 present サイズで
-	// 直接描く。 >0 は authored 論理サイズ×倍率で描いて present 時に拡縮。
-	// 密度は buffer サイズとして overlay_session へ伝わる (canvas scale は
-	// session 側が buffer サイズ ÷ view logical から導出する)。
+	// 拡縮率 (present fit) の基準は「ゲームの基準面 (primary layer サイズ)」。
+	// 基準領域が基準面より大きいときは、 ゲーム画像と同様に UI も拡大して
+	// フィットさせる: 基準面いっぱいに author した全画面 UI は基準領域全面に、
+	// 小さいパネルは基準面に対する相対サイズを保ったまま拡大される。
+	// 基準領域が基準面と同サイズ (通常のウィンドウ表示 / "content" 基準で
+	// 等倍表示) なら等倍 = authored サイズのまま。
+	// ※ この基準をダイアログ自身の authored サイズにすると、 小さいパネルまで
+	//    基準領域いっぱいに拡大されてしまう (2026-08-22 の退行。 全画面 UI は
+	//    たまたま基準面 = authored なので区別が付かなかった)。
+	// 基準面が取れない場合 (primary layer 無しの UI 専用構成) はダイアログ自身の
+	// authored サイズを基準にする (= 全画面 UI とみなして基準領域へフィット)。
+	// いずれの基準でも、 パネル自身が基準領域へ収まらない場合は収まるまで
+	// 縮める (従来からの oversized 縮小)。
+	//
+	// render_to_buffer には dialog 自身の logical サイズを "surface" として
+	// 渡し、 canvas 全体を buffer に描かせる (実ウィンドウサイズを渡すと
+	// 中央配置/クリップで一部しか描かれない)。 present 時に fit へ拡縮し、
+	// 配置 (align/margin) は manager が基準領域内で行う。
+	const int render_sw = w_logical;
+	const int render_sh = h_logical;
+
+	float fit = 1.0f;
+	if (area_w > 0 && area_h > 0 && w_logical > 0 && h_logical > 0) {
+		tjs_int src_w = 0, src_h = 0;
+		if (device) device->GetSrcSize(src_w, src_h);
+		if (src_w > 0 && src_h > 0) {
+			fit = std::min(static_cast<float>(area_w) / src_w,
+			               static_cast<float>(area_h) / src_h);
+		} else {
+			fit = std::min(static_cast<float>(area_w) / w_logical,
+			               static_cast<float>(area_h) / h_logical);
+		}
+		// パネル自身が基準領域からはみ出すなら収まるまで縮小
+		fit = std::min(fit, std::min(static_cast<float>(area_w) / w_logical,
+		                             static_cast<float>(area_h) / h_logical));
+	}
+
+	// 描画密度 (render_scale_mode コメント参照): auto は最終 present ピクセル
+	// サイズで直接描く (縮小なら小さい buffer、 拡大なら大きい buffer =
+	// フルスクリーン拡大でも滲まない)。 >0 は authored 論理サイズ×倍率で
+	// 描いて present 時に拡縮。 密度は buffer サイズとして overlay_session へ
+	// 伝わる (canvas scale は session 側が buffer サイズ ÷ view logical から
+	// 導出する)。
 	const float density = (render_scale_mode > 0.0f) ? render_scale_mode : fit;
 	const int w_pixels = std::max(1, static_cast<int>(w_logical * density + 0.5f));
 	const int h_pixels = std::max(1, static_cast<int>(h_logical * density + 0.5f));
@@ -1287,7 +1357,11 @@ void tTVPElementsDialogManager::Impl::RenderInstance(
 	    && inst.cache_valid
 	    && inst.cache_device == device
 	    && inst.cache_buf_w == w_pixels && inst.cache_buf_h == h_pixels
-	    && inst.cache_sw == render_sw && inst.cache_sh == render_sh) {
+	    && inst.cache_sw == render_sw && inst.cache_sh == render_sh
+	    && inst.cache_surf_w == sw && inst.cache_surf_h == sh
+	    && inst.cache_fit == fit
+	    && inst.cache_area_x == area_x && inst.cache_area_y == area_y
+	    && inst.cache_area_w == area_w && inst.cache_area_h == area_h) {
 		const auto t_present = std::chrono::steady_clock::now();
 		renderer->PresentOverlay(layer, inst.cache_px, inst.cache_py,
 		                         inst.cache_pw, inst.cache_ph);
@@ -1309,7 +1383,11 @@ void tTVPElementsDialogManager::Impl::RenderInstance(
 	    && inst.trans_effect.empty()
 	    && inst.cache_valid && inst.cache_device == device
 	    && inst.cache_buf_w == w_pixels && inst.cache_buf_h == h_pixels
-	    && inst.cache_sw == render_sw && inst.cache_sh == render_sh;
+	    && inst.cache_sw == render_sw && inst.cache_sh == render_sh
+	    && inst.cache_surf_w == sw && inst.cache_surf_h == sh
+	    && inst.cache_fit == fit
+	    && inst.cache_area_x == area_x && inst.cache_area_y == area_y
+	    && inst.cache_area_w == area_w && inst.cache_area_h == area_h;
 
 	const auto t_raster = std::chrono::steady_clock::now();
 	elements_modal::overlay_session::render_rect rect{};
@@ -1372,36 +1450,26 @@ void tTVPElementsDialogManager::Impl::RenderInstance(
 	inst.last_rect = rect;
 	inst.has_rect = true;
 
-	// SDL_RenderTexture は dst 矩形へスケールするので、 buffer 全体を縮小 dst に
-	// 描けば downscale される。 縮小率とオフセットは Instance に保存し、
-	// ToSurfaceX/Y がマウス座標を dialog 論理座標へ逆変換する (マウス操作対応)。
-	int px = rect.x, py = rect.y, pw = w_logical, ph = h_logical;
-	if (oversized) {
-		// present 座標は surface logical (PresentOverlay が内部で dest へマップ)。
-		// 非 oversized 経路が rect.x/y をそのまま渡すのと同じ空間なので、 ここで
-		// dest offset (dx,dy) を足してはいけない。 surface 内で寄せるだけ。
-		pw = static_cast<int>(w_logical * fit + 0.5f);
-		ph = static_cast<int>(h_logical * fit + 0.5f);
-		// 配置は画面 JSON の top-level "align" / "margin" に従う (既定は中央)。
-		// 収まる画面では overlay_session が同じ計算をしているので、 縮小提示でも
-		// 揃うようにここで同じ式を使う (字幕窓のように下端へ寄せたいケース)。
-		float ax = 0.5f, ay = 0.5f;
-		int amargin = 0;
-		inst.session->placement(ax, ay, amargin);
-		const int free_x = sw - pw;
-		const int free_y = sh - ph;
-		px = amargin + static_cast<int>((free_x - 2 * amargin) * ax);
-		py = amargin + static_cast<int>((free_y - 2 * amargin) * ay);
-		if (px < 0) px = 0;
-		if (py < 0) py = 0;
-		inst.present_scale = fit;
-		inst.present_off_x = static_cast<float>(px);
-		inst.present_off_y = static_cast<float>(py);
-	} else {
-		inst.present_scale = 1.0f;
-		inst.present_off_x = 0.0f;
-		inst.present_off_y = 0.0f;
-	}
+	// 配置は基準領域 ("base" = ウィンドウ全面 or DestRect) 内で確定する。
+	// fit の倍率とオフセットは Instance に保存し、 ToSurfaceX/Y がマウス座標を
+	// dialog 論理座標へ逆変換する (マウス操作対応)。
+	// 配置は画面 JSON の top-level "align" / "margin" に従う (既定は中央)。
+	// session 側も同じ式で placement を計算するので、 拡縮提示でも揃う
+	// (字幕窓のように下端へ寄せたいケース)。
+	const int pw = static_cast<int>(w_logical * fit + 0.5f);
+	const int ph = static_cast<int>(h_logical * fit + 0.5f);
+	float ax = 0.5f, ay = 0.5f;
+	int amargin = 0;
+	inst.session->placement(ax, ay, amargin);
+	const int free_x = area_w - pw;
+	const int free_y = area_h - ph;
+	int px = area_x + amargin + static_cast<int>((free_x - 2 * amargin) * ax);
+	int py = area_y + amargin + static_cast<int>((free_y - 2 * amargin) * ay);
+	if (px < area_x) px = area_x;
+	if (py < area_y) py = area_y;
+	inst.present_scale = fit;
+	inst.present_off_x = static_cast<float>(px);
+	inst.present_off_y = static_cast<float>(py);
 
 	// 次フレーム以降の cached present 用に描画条件と提示引数を記録する。
 	inst.cache_valid = true;
@@ -1410,6 +1478,13 @@ void tTVPElementsDialogManager::Impl::RenderInstance(
 	inst.cache_buf_h = h_pixels;
 	inst.cache_sw = render_sw;
 	inst.cache_sh = render_sh;
+	inst.cache_surf_w = sw;
+	inst.cache_surf_h = sh;
+	inst.cache_fit = fit;
+	inst.cache_area_x = area_x;
+	inst.cache_area_y = area_y;
+	inst.cache_area_w = area_w;
+	inst.cache_area_h = area_h;
 	inst.cache_px = px;
 	inst.cache_py = py;
 	inst.cache_pw = pw;
@@ -1430,9 +1505,20 @@ tTVPElementsDialogManager& tTVPElementsDialogManager::Instance()
 	return instance;
 }
 
+// elements_modal の診断ログ (em_logf) を TVP ログへ回す。 既定は stderr で、
+// コンソール機では回収できないため。 API 契約は elements_modal/src/em_platform.h。
+namespace elements_modal {
+using em_log_sink = void (*)(const char* line);
+void em_set_log_sink(em_log_sink sink);
+}
+
 tTVPElementsDialogManager::tTVPElementsDialogManager()
 	: _impl(std::make_unique<Impl>())
 {
+	elements_modal::em_set_log_sink(
+		[](const char* line) {
+			TVPAddLog(ttstr("elements_modal: ") + ttstr(line));
+		});
 }
 
 tTVPElementsDialogManager::~tTVPElementsDialogManager() = default;
@@ -1499,6 +1585,44 @@ void tTVPElementsDialogManager::SetRenderCache(bool enable)
 bool tTVPElementsDialogManager::GetRenderCache() const
 {
 	return _impl->render_cache;
+}
+
+// pad_icon テーマの自動選択 (setPadTheme("auto"))。
+//   接続中のパッドの系統 (xbox / ps / switch) をそのままテーマにする。
+//   パッドが無い / 判らないときは動作プラットフォームで決める
+//   (Switch 本体なら switch、 PS5 なら ps、 それ以外は xbox)。
+static bool TVPPadThemeAuto = false;
+
+void tTVPElementsDialogManager::SetPadThemeAuto(bool enable)
+{
+	TVPPadThemeAuto = enable;
+	if (enable) ResolveAutoPadTheme();
+}
+
+bool tTVPElementsDialogManager::GetPadThemeAuto() const
+{
+	return TVPPadThemeAuto;
+}
+
+void tTVPElementsDialogManager::ResolveAutoPadTheme()
+{
+	if (!TVPPadThemeAuto || !Application) return;
+
+	tjs_string style = Application->GetJoypadStyle(0);
+	if (style.empty()) {
+		const std::vector<tjs_string> &tags = Application->GetPlatformTags();
+		for (const tjs_string &t : tags) {
+			if (t == TJS_W("switch")) { style = TJS_W("switch"); break; }
+			if (t == TJS_W("ps5"))    { style = TJS_W("ps");     break; }
+		}
+	}
+	if (style.empty()) style = TJS_W("xbox");
+
+	std::string utf8;
+	TVPUtf16ToUtf8(utf8, style);
+	auto t = cycfi::elements::parse_pad_theme(utf8);
+	if (t != cycfi::elements::pad_theme::none)
+		cycfi::elements::set_pad_theme(t);
 }
 
 void tTVPElementsDialogManager::SetPartialRedraw(bool enable)
@@ -1612,6 +1736,10 @@ bool tTVPElementsDialogManager::ShowFromJsonString(
 	// (feedback_elements_font_init_order)。 element 生成より前に font load を
 	// 完了させておく。
 	EnsureRuntimeInitialized();
+
+	// テーマ自動選択時は、 今つながっているパッドで決め直してから組む
+	// (途中でコントローラを替えても次に開く画面から絵が追従する)。
+	ResolveAutoPadTheme();
 
 	// 同一 handler が既にアクティブなら拒否 (1 Dialog = 1 インスタンス)。
 	if (_impl->FindByHandler(handler) &&
@@ -2115,9 +2243,21 @@ void tTVPElementsDialogManager::PaintOverlay(iTVPDrawDevice* device)
 	if (_impl->input_window) {
 		Impl::Instance* f = _impl->TopmostKeyboardFocus();
 		if (f && f->session && f->host_device == device) {
+			// 入力フォーカスの持ち主が変わったら (上のダイアログが閉じて
+			// 戻ってきた等)、 こちらのフォーカスは動いていないので
+			// take_key_focus_move は発火しない。 カーソルが閉じた
+			// ダイアログの位置に取り残されて hover 表示だけ別要素に
+			// 付くため、 セッションへ合わせ直しを依頼する。
+			if (_impl->last_focus_owner != static_cast<void*>(f)) {
+				_impl->last_focus_owner = static_cast<void*>(f);
+				f->session->notify_input_focus_gained();
+			}
 			float sx = 0.0f, sy = 0.0f;
 			if (f->session->take_key_focus_move(sx, sy)) {
-				// surface logical → layer 座標 (ToSurfaceX/Y の逆変換)
+				// session 座標 → 描画領域基準 (ToSurfaceX/Y の逆変換)。
+				// SetCursorPos は「描画矩形内の座標」を受ける契約
+				// (実装側で DestRect 原点を足し戻す) ため、 window client へ
+				// 直したあと DestRect 原点を引いて渡す。
 				tjs_int lx = static_cast<tjs_int>(
 					sx * f->present_scale + f->present_off_x + 0.5f)
 					- f->dest_offset_x;
@@ -2134,6 +2274,8 @@ void tTVPElementsDialogManager::PaintOverlay(iTVPDrawDevice* device)
 					static_cast<tTJSNI_BaseWindow*>(_impl->input_window))
 					->SetMouseCursorState(mcsTempHidden);
 			}
+		} else if (!f) {
+			_impl->last_focus_owner = nullptr;
 		}
 	}
 }
@@ -2226,6 +2368,13 @@ vk_routing RouteVk(tjs_uint vk)
 		case 0x1C9: return as_pad(pb::start);      // VK_PAD10 (Start)
 		case 0x1CA: return as_pad(pb::l3);         // VK_PAD11 (L3)
 		case 0x1CB: return as_pad(pb::r3);         // VK_PAD12 (R3)
+
+		// 位置基準のフェイスボタン (刻印ではなく配置)。 同じ物理ボタンが
+		// VK_PAD1..4 も一緒に飛ばしてくるので、 割り当てる側で使い分ける。
+		case 0x1D4: return as_pad(pb::face_south); // VK_PAD_FACE_SOUTH (下)
+		case 0x1D5: return as_pad(pb::face_east);  // VK_PAD_FACE_EAST  (右)
+		case 0x1D6: return as_pad(pb::face_west);  // VK_PAD_FACE_WEST  (左)
+		case 0x1D7: return as_pad(pb::face_north); // VK_PAD_FACE_NORTH (上)
 
 		case 0x1B5: case 0x1CC: case 0x1D0:
 			return as_pad(pb::dpad_left);

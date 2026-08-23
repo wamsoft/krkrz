@@ -118,6 +118,16 @@ inline bool TVPIsAnyMouseButtonPressedInShiftStateFlags(tjs_uint32 state)
 #define VK_PAD_R_RIGHT	0x1D2
 #define VK_PAD_R_DOWN	0x1D3
 // 20
+// 24 : 位置基準のフェイスボタン
+//   VK_PAD1..4 は「刻印 A/B/X/Y」を指す (任天堂系と Xbox で同じ文字の
+//   ボタンに乗る) のに対し、 こちらは「配置」を指す (下/右/左/上)。
+//   同じ物理ボタンが両方の VK を発火させるので、 割り当てる側は
+//   「刻印で揃えたいボタン」と「配置で揃えたいボタン」で使い分ける。
+#define VK_PAD_FACE_SOUTH	0x1D4 // 下 (Xbox=A / 任天堂=B / PS=×)
+#define VK_PAD_FACE_EAST	0x1D5 // 右 (Xbox=B / 任天堂=A / PS=○)
+#define VK_PAD_FACE_WEST	0x1D6 // 左 (Xbox=X / 任天堂=Y / PS=□)
+#define VK_PAD_FACE_NORTH	0x1D7 // 上 (Xbox=Y / 任天堂=X / PS=△)
+// 28
 #define VK_PADANY		0x1DF   // returns whether any one of pad buttons are pressed,
 							    // in System.getKeyState
 #define VK_PAD_LAST		0x1DF   // last PAD related key code

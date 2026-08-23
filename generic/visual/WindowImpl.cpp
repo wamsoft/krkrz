@@ -139,14 +139,20 @@ void tTJSNI_Window::UpdateContent()
 			UpdateDestRect = false;
 		}
 		// ビューポート余白 (背景色 + 壁紙) を DrawDevice へ反映 (変更時のみ)。
+		// 対応デバイスだけが iTVPViewportBackgroundHost を公開する
+		// (非対応なら何もしない = 余白は各デバイスの既定の塗りつぶし)。
 		if (DrawDevice && Form->IsViewportRenderDirty()) {
-			DrawDevice->SetViewportBackgroundColor(Form->GetViewportBgColor());
-			const tTJSVariant &wp = Form->GetViewportWallpaper();
-			if (wp.Type() == tvtObject && wp.AsObjectNoAddRef()) {
-				DrawDevice->SetViewportWallpaper(wp, Form->GetViewportWallpaperFit(),
-					Form->GetViewportWpAlignX(), Form->GetViewportWpAlignY());
-			} else {
-				DrawDevice->ClearViewportWallpaper();
+			iTVPViewportBackgroundHost *vbg =
+				TVPQueryViewportBackgroundHost(GetDrawDeviceObject());
+			if (vbg) {
+				vbg->SetViewportBackgroundColor(Form->GetViewportBgColor());
+				const tTJSVariant &wp = Form->GetViewportWallpaper();
+				if (wp.Type() == tvtObject && wp.AsObjectNoAddRef()) {
+					vbg->SetViewportWallpaper(wp, Form->GetViewportWallpaperFit(),
+						Form->GetViewportWpAlignX(), Form->GetViewportWpAlignY());
+				} else {
+					vbg->ClearViewportWallpaper();
+				}
 			}
 			Form->ClearViewportRenderDirty();
 		}
@@ -456,6 +462,21 @@ void tTJSNI_Window::ShowModal()
 	}
 }
 //---------------------------------------------------------------------------
+//---------------------------------------------------------------------------
+tjs_int tTJSNI_Window::GetFrameWidth() const
+{
+	if(!Form) return 0;
+	tjs_int f = Form->GetWidth() - Form->GetInnerWidth();
+	return f > 0 ? f : 0;
+}
+//---------------------------------------------------------------------------
+tjs_int tTJSNI_Window::GetFrameHeight() const
+{
+	if(!Form) return 0;
+	tjs_int f = Form->GetHeight() - Form->GetInnerHeight();
+	return f > 0 ? f : 0;
+}
+//---------------------------------------------------------------------------
 void tTJSNI_Window::HideMouseCursor()
 {
 	if(Form) Form->HideMouseCursor();
@@ -655,6 +676,22 @@ void tTJSNI_Window::SetInnerSize(tjs_int w, tjs_int h)
 }
 //---------------------------------------------------------------------------
 // ビューポート (ゲーム画面の表示画角制御)
+//---------------------------------------------------------------------------
+//---------------------------------------------------------------------------
+// 画面比率の固定 (16:9 等)。 Form が環境側へ拘束を掛ける。
+//---------------------------------------------------------------------------
+void tTJSNI_Window::SetAspectLock(tjs_int w, tjs_int h)
+{
+	if(Form) Form->SetAspectLock(w, h);
+}
+tjs_int tTJSNI_Window::GetAspectLockW() const
+{
+	return Form ? Form->GetAspectLockW() : 0;
+}
+tjs_int tTJSNI_Window::GetAspectLockH() const
+{
+	return Form ? Form->GetAspectLockH() : 0;
+}
 //---------------------------------------------------------------------------
 void tTJSNI_Window::SetViewportFit(tjs_int fit)
 {

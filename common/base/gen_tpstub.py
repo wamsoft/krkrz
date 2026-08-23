@@ -520,6 +520,7 @@ def main():
     process_exp_stub("win32/visual/WindowImpl.h")
     process_exp_stub("generic/visual/WindowImpl.h")
     OFH.append("#include \"ViewportConfig.h\"\n"); process_exp_stub("common/visual/ViewportConfig.h")
+    OFH.append("#include \"ViewportBackground.h\"\n"); process_exp_stub("common/visual/ViewportBackground.h")
     OFH.append("#include \"DrawDevice.h\"\n"); process_exp_stub("common/visual/DrawDevice.h")
     OFH.append("#include \"voMode.h\"\n"); process_exp_stub("common/visual/voMode.h")
     OFH.append("#include \"VideoOvlIntf.h\"\n"); process_exp_stub("common/visual/VideoOvlIntf.h")

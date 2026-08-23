@@ -20,6 +20,7 @@
 #include "OpenGLHeader.h"
 #include "GLShaderUtil.h"
 #include "OpenGLContext.h"
+#include "GLTexture.h"   // GLTexture::GetMemStats (GLTex 行)
 
 #include <cstdio>
 #include <cstring>
@@ -54,22 +55,23 @@ uint32_t GetTicksMs() {
 constexpr float kOverlayScale = 1.5f;
 constexpr int kPanelW       = 320;
 // Sound 行 + SysFree 行 ぶんで +24 (kRowH × 2)
+// さらに GLTex 行 (GL テクスチャ + PBO の実測) ぶんで +12 (kRowH × 1)
 #if defined(KRKRZ_DRAW_STATS) && defined(KRKRZ_SDLMEMORY_STAT)
-// Draw stats + render stats で +7 行 + キャッシュ件数 2 行 + GlobalAlloc 2 行 (GblK + GblS) + Sound 1 行 + SysFree 1 行
+// Draw stats + render stats で +7 行 + キャッシュ件数 2 行 + GLTex 1 行 + GlobalAlloc 2 行 (GblK + GblS) + Sound 1 行 + SysFree 1 行
+constexpr int kPanelH       = 320;
+constexpr int kHeaderH      = 240;
+#elif defined(KRKRZ_DRAW_STATS)
+// Draw stats あり、SDL stats なし → GLTex 1 行 + GlobalAlloc 1 行のみ (GblK) + Sound 1 行 + SysFree 1 行
 constexpr int kPanelH       = 308;
 constexpr int kHeaderH      = 228;
-#elif defined(KRKRZ_DRAW_STATS)
-// Draw stats あり、SDL stats なし → GlobalAlloc 1 行のみ (GblK) + Sound 1 行 + SysFree 1 行
-constexpr int kPanelH       = 296;
-constexpr int kHeaderH      = 216;
 #elif defined(KRKRZ_SDLMEMORY_STAT)
-// 通常時: 11 行 (FPS + File + Bitmap + Sound + RSS + Alloc/s + FileCache + ImageCache + GblK + GblS + SysFree)
+// 通常時: 12 行 (FPS + File + Bitmap + Sound + RSS + Alloc/s + FileCache + ImageCache + GLTex + GblK + GblS + SysFree)
+constexpr int kPanelH       = 236;
+constexpr int kHeaderH      = 156;
+#else
+// SDL stats なし: 11 行 (GblS が消える、Sound + SysFree + GLTex 追加)
 constexpr int kPanelH       = 224;
 constexpr int kHeaderH      = 144;
-#else
-// SDL stats なし: 10 行 (GblS が消える、Sound + SysFree 追加)
-constexpr int kPanelH       = 212;
-constexpr int kHeaderH      = 132;
 #endif
 constexpr int kPanelMargin  = 8;
 constexpr int kRowH         = 12;
@@ -606,6 +608,18 @@ void TVPRenderMemoryOverlayGL()
             latest.file_cache_count, latest.file_cache_pinned);
     putLine(cICache, "ImageCache: %5zu (pin %5zu)",
             latest.image_cache_count, latest.image_cache_pinned);
+
+    // GL テクスチャ実測 (テクスチャ実体 + アップロード用 PBO)。
+    // GL ドライバが通常ヒープから確保する環境では、 この値がそのまま
+    // ヒープ圧迫量の目安になる。 PBO は更新されるテクスチャだけが持つ。
+    {
+        const OverlayColor cGLTex{255, 224, 128, 255};
+        GLTexture::MemStats gl;
+        GLTexture::GetMemStats(gl);
+        putLine(cGLTex, "GLTex %5.1fM+pbo%5.1fM n%3u pk%5.1fM",
+                gl.texture_bytes / MB, gl.pbo_bytes / MB,
+                (unsigned)gl.texture_count, gl.peak_total_bytes / MB);
+    }
 
     // GlobalAllocStats (operator new + TJS_malloc + SDL3 alloc を一元集計)。
     // pool_cap > 0 なら pool 経路、0 は無効化または tracking 未活性。

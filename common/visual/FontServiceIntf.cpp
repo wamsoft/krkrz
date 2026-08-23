@@ -242,6 +242,39 @@ tTVPFontFaceHandle TVPFontAcquireFace(const ttstr & nameOrPath)
 	return raw;
 }
 
+tTVPFontFaceHandle TVPFontAcquireFaceInstance(const ttstr & nameOrPath,
+	const tTVPFontVarCoord * coords, tjs_int count)
+{
+	int id = EntryForToken(nameOrPath);
+	if (id < 0) return nullptr;
+	const glyphware::FontEntry & e = TVPGetGlyphwareRegistry().entry(id);
+	// レジストリ共有 face ではなく専用 face を開く (軸座標は face の状態なので、
+	// 共有 face に設定すると本体 drawText や他プラグインの描画まで変わる)
+	auto face = TVPGlyphwareOpenPrivateFace(e.key, e.faceIndex);
+	if (!face) return nullptr;
+	if (coords && count > 0) {
+		std::vector<glyphware::VarCoord> v;
+		v.reserve(static_cast<std::size_t>(count));
+		for (tjs_int i = 0; i < count; i++) v.push_back({coords[i].Tag, coords[i].Value});
+		face->setVariations(v);
+	}
+	glyphware::Face * raw = face.get();
+	// 専用 face なのでレジストリのキャッシュには載せず、keep-alive のみ登録する
+	FaceKeepAlive.emplace(raw, std::make_pair(std::move(face), 1));
+	return raw;
+}
+
+bool TVPFontGetFaceData(tTVPFontFaceHandle face, const tjs_uint8 ** data,
+	tjs_uint64 * size, tjs_int * faceIndex)
+{
+	glyphware::Face * f = FaceFromHandle(face);
+	if (!f || !f->data() || f->size() == 0) return false;
+	if (data) *data = f->data();
+	if (size) *size = static_cast<tjs_uint64>(f->size());
+	if (faceIndex) *faceIndex = static_cast<tjs_int>(f->faceIndex());
+	return true;
+}
+
 void TVPFontReleaseFace(tTVPFontFaceHandle face)
 {
 	auto it = FaceKeepAlive.find(FaceFromHandle(face));
@@ -336,6 +369,148 @@ bool TVPFontGetGlyphMetrics(tTVPFontFaceHandle face, tjs_uint32 glyphId,
 	out->Width = m.width;
 	out->Height = m.height;
 	return true;
+}
+
+bool TVPFontGetGlyphMetricsEx(tTVPFontFaceHandle face, tjs_uint32 glyphId,
+	tjs_int pixelSize, bool bold, bool italic, tjs_int mode,
+	tTVPFontGlyphMetrics * out)
+{
+	glyphware::Face * f = FaceFromHandle(face);
+	if (!f || !out) return false;
+
+	glyphware::GlyphMetrics m;
+	if (mode == TVP_FONT_METRICS_UNSCALED) {
+		// サイズ非依存 (フォントユニット)。pixelSize は使わない
+		if (!f->glyphMetricsUnscaled(glyphId, m, bold, italic)) return false;
+	} else {
+		if (pixelSize <= 0) return false;
+		if (!f->setPixelSize(pixelSize)) return false;
+		const glyphware::Hinting hinting = (mode == TVP_FONT_METRICS_UNHINTED)
+			? glyphware::Hinting::Unhinted : glyphware::Hinting::Hinted;
+		if (!f->glyphMetrics(glyphId, m, bold, italic, hinting)) return false;
+	}
+	out->AdvanceX = m.advanceX;
+	out->AdvanceY = m.advanceY;
+	out->BearingX = m.bearingX;
+	out->BearingY = m.bearingY;
+	out->Width = m.width;
+	out->Height = m.height;
+	return true;
+}
+
+bool TVPFontRenderGlyphMask(tTVPFontFaceHandle face, tjs_uint32 glyphId,
+	const tTVPFontRenderParams * params, tTVPFontGlyphMask * out)
+{
+	glyphware::Face * f = FaceFromHandle(face);
+	if (!f || !params || !out) return false;
+
+	glyphware::RenderParams rp;
+	rp.transform.xx = params->Transform[0];
+	rp.transform.xy = params->Transform[1];
+	rp.transform.dx = params->Transform[2];
+	rp.transform.yx = params->Transform[3];
+	rp.transform.yy = params->Transform[4];
+	rp.transform.dy = params->Transform[5];
+	rp.bold = params->Bold;
+	rp.italic = params->Italic;
+	rp.strokeWidth = params->StrokeWidth;
+	rp.join = (params->Join == TVP_FONT_JOIN_MITER) ? glyphware::StrokeJoin::Miter
+		: (params->Join == TVP_FONT_JOIN_BEVEL) ? glyphware::StrokeJoin::Bevel
+		: glyphware::StrokeJoin::Round;
+	rp.cap = (params->Cap == TVP_FONT_CAP_BUTT) ? glyphware::StrokeCap::Butt
+		: (params->Cap == TVP_FONT_CAP_SQUARE) ? glyphware::StrokeCap::Square
+		: glyphware::StrokeCap::Round;
+	rp.miterLimit = params->MiterLimit;
+
+	glyphware::GlyphMask mask;
+	if (!f->renderGlyphMask(glyphId, rp, mask)) return false;
+	out->Left = mask.left;
+	out->Top = mask.top;
+	out->Width = mask.width;
+	out->Height = mask.rows;
+	out->Pitch = mask.pitch;
+	out->Buffer = mask.buffer;
+	return true;
+}
+
+tjs_int TVPFontGetColorLayers(tTVPFontFaceHandle face, tjs_uint32 glyphId,
+	tjs_int pixelSize, iTVPFontColorLayerSink * sink, float * clipBox)
+{
+	glyphware::Face * f = FaceFromHandle(face);
+	if (!f || !sink || pixelSize <= 0) return 0;
+	if (!f->setPixelSize(pixelSize)) return 0;
+
+	std::vector<glyphware::ColorLayer> layers;
+	glyphware::ColorGlyphBox box;
+	if (!f->colorLayers(glyphId, layers, &box)) return 0;
+
+	if (clipBox) {
+		clipBox[0] = box.valid ? box.xMin : 0.f;
+		clipBox[1] = box.valid ? box.yMin : 0.f;
+		clipBox[2] = box.valid ? box.xMax : 0.f;
+		clipBox[3] = box.valid ? box.yMax : 0.f;
+	}
+
+	std::vector<tTVPFontColorStop> stops;
+	for (const glyphware::ColorLayer & l : layers) {
+		tTVPFontColorLayer out;
+		out.GlyphId = l.gid;
+		for (int i = 0; i < 6; i++) out.Transform[i] = l.transform[i];
+		out.PaintKind = (l.paint.kind == glyphware::PaintKind::LinearGradient) ? TVP_FONT_PAINT_LINEAR
+			: (l.paint.kind == glyphware::PaintKind::RadialGradient) ? TVP_FONT_PAINT_RADIAL
+			: TVP_FONT_PAINT_SOLID;
+		out.R = l.paint.r; out.G = l.paint.g; out.B = l.paint.b; out.A = l.paint.a;
+		out.X0 = l.paint.x0; out.Y0 = l.paint.y0;
+		out.X1 = l.paint.x1; out.Y1 = l.paint.y1;
+		out.R0 = l.paint.r0; out.R1 = l.paint.r1;
+
+		stops.clear();
+		stops.reserve(l.paint.stops.size());
+		for (const glyphware::ColorStop & s : l.paint.stops) {
+			tTVPFontColorStop cs;
+			cs.Offset = s.offset;
+			cs.R = s.r; cs.G = s.g; cs.B = s.b; cs.A = s.a;
+			stops.push_back(cs);
+		}
+		out.StopCount = static_cast<tjs_int>(stops.size());
+		out.Stops = stops.empty() ? nullptr : stops.data();
+
+		sink->Layer(out);
+	}
+	return static_cast<tjs_int>(layers.size());
+}
+
+//---------------------------------------------------------------------------
+// バリアブルフォント
+//---------------------------------------------------------------------------
+
+tjs_int TVPFontGetVarAxes(tTVPFontFaceHandle face, tTVPFontVarAxis * out, tjs_int maxCount)
+{
+	glyphware::Face * f = FaceFromHandle(face);
+	if (!f) return 0;
+	const std::vector<glyphware::VarAxis> & axes = f->descriptor().axes;
+	const tjs_int total = static_cast<tjs_int>(axes.size());
+	if (out && maxCount > 0) {
+		const tjs_int n = total < maxCount ? total : maxCount;
+		for (tjs_int i = 0; i < n; i++) {
+			out[i].Tag = axes[i].tag;
+			out[i].MinValue = axes[i].minValue;
+			out[i].DefaultValue = axes[i].defaultValue;
+			out[i].MaxValue = axes[i].maxValue;
+		}
+	}
+	return total;
+}
+
+bool TVPFontSetVariations(tTVPFontFaceHandle face, const tTVPFontVarCoord * coords,
+	tjs_int count)
+{
+	glyphware::Face * f = FaceFromHandle(face);
+	if (!f || !coords || count <= 0) return false;
+	std::vector<glyphware::VarCoord> v;
+	v.reserve(static_cast<std::size_t>(count));
+	for (tjs_int i = 0; i < count; i++) v.push_back({coords[i].Tag, coords[i].Value});
+	return f->setVariations(v);
 }
 
 namespace {
@@ -489,6 +664,10 @@ bool TVPFontNameKnown(const ttstr & name)
 	return false;
 }
 tTVPFontFaceHandle TVPFontAcquireFace(const ttstr &) { return nullptr; }
+tTVPFontFaceHandle TVPFontAcquireFaceInstance(const ttstr &, const tTVPFontVarCoord *,
+	tjs_int) { return nullptr; }
+bool TVPFontGetFaceData(tTVPFontFaceHandle, const tjs_uint8 **, tjs_uint64 *,
+	tjs_int *) { return false; }
 void TVPFontReleaseFace(tTVPFontFaceHandle) {}
 tTVPFontFaceChainHandle TVPFontAcquireFaceChain(const ttstr &) { return nullptr; }
 void TVPFontReleaseFaceChain(tTVPFontFaceChainHandle) {}
@@ -499,6 +678,15 @@ bool TVPFontGetLineMetrics(tTVPFontFaceHandle, tjs_int, tTVPFontLineMetrics *) {
 tjs_uint32 TVPFontGetGlyphIndex(tTVPFontFaceHandle, tjs_uint32) { return 0; }
 bool TVPFontGetGlyphMetrics(tTVPFontFaceHandle, tjs_uint32, tjs_int, bool, bool,
 	tTVPFontGlyphMetrics *) { return false; }
+bool TVPFontGetGlyphMetricsEx(tTVPFontFaceHandle, tjs_uint32, tjs_int, bool, bool,
+	tjs_int, tTVPFontGlyphMetrics *) { return false; }
+bool TVPFontRenderGlyphMask(tTVPFontFaceHandle, tjs_uint32,
+	const tTVPFontRenderParams *, tTVPFontGlyphMask *) { return false; }
+tjs_int TVPFontGetColorLayers(tTVPFontFaceHandle, tjs_uint32, tjs_int,
+	iTVPFontColorLayerSink *, float *) { return 0; }
+tjs_int TVPFontGetVarAxes(tTVPFontFaceHandle, tTVPFontVarAxis *, tjs_int) { return 0; }
+bool TVPFontSetVariations(tTVPFontFaceHandle, const tTVPFontVarCoord *, tjs_int)
+	{ return false; }
 bool TVPFontGetGlyphOutline(tTVPFontFaceHandle, tjs_uint32, bool, bool,
 	iTVPFontOutlineSink *) { return false; }
 bool TVPFontGetGlyphBitmap(tTVPFontFaceHandle, tjs_uint32, tjs_int, bool, bool, bool,

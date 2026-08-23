@@ -38,6 +38,11 @@ public:
 	// 指定物理パッドの機種名 (環境依存)。無効時は空文字列。
 	virtual tjs_string GetPhysicalPadName(int phys) = 0;
 
+	// 指定物理パッドのボタン表記の系統。 画面に出すボタン絵をどれにするか
+	// (刻印が A/B/X/Y か ×○□△ か) を決めるのに使う。
+	// 戻り値は "xbox" / "ps" / "switch" のいずれか。 判らなければ空文字列。
+	virtual tjs_string GetPhysicalPadStyle(int /*phys*/) { return tjs_string(); }
+
 	// 振動。low/high は 0〜255。未対応/無効時は false。
 	virtual bool RumblePhysical(int phys, int low, int high, int duration_ms) = 0;
 	virtual bool StopRumblePhysical(int phys) = 0;
@@ -113,6 +118,7 @@ public:
 	tjs_uint32 GetPadState(int no);
 	float      GetPadAxis(int no, int axisId);
 	tjs_string GetJoypadType(int no);
+	tjs_string GetJoypadStyle(int no);
 	int        GetJoypadCount();
 	bool       HasJoypad(int no);
 	bool       Rumble(int no, int low, int high, int duration_ms);

@@ -68,10 +68,12 @@
 
 ## glyphware 統合 (drawText / 名前解決)
 
-- **ラスタライザ**: enum は `FONT_RASTER_FREE_TYPE`(0) / WINVER のみ
-  `FONT_RASTER_GDI` / `FONT_RASTER_GLYPHWARE` (`LayerBitmapImpl.cpp`)。既定は
-  WINVER=GDI・他=FreeType (不変)。glyphware ラスタライザはグリフ生成のみ
-  差し替えで cell-stepping/影/縁取り/下線/VS15-16 は classic 経路を流用。
+- **ラスタライザ**: 番号は全ビルド固定 — `FONT_RASTER_FREE_TYPE`(0) /
+  `FONT_RASTER_GDI`(1、WINVER のみ搭載) / `FONT_RASTER_GLYPHWARE`(2)
+  (`LayerBitmapImpl.cpp`)。未搭載番号の指定は FreeType(0) へフォールバック
+  (読み戻しは実効値)。既定は WINVER=GDI・他=FreeType (不変)。glyphware
+  ラスタライザはグリフ生成のみ差し替えで cell-stepping/影/縁取り/下線/
+  VS15-16 は classic 経路を流用。
 - **名前解決順** (`TVPGlyphwareResolveFontKey`): ①fonts.json/実行時登録の
   宣言名→storage ②実在ストレージパス ③(WINVER) GDI フォント名→`@gdi:` キー
   ④素通し。パス風トークン (`://`/区切り/フォント拡張子) は GDI 解決へ回さない
@@ -135,15 +137,21 @@ glyphware 無効ビルド (`KRKRZ_USE_GLYPHWARE=OFF`) ではバイト供給/名�
 | 名前解決 | `TVPFontResolveKey(nameOrPath)` | 宣言名 → storage / パス / (WINVER) GDI 名 → `@gdi:` キー |
 | | `TVPFontNameKnown(name)` | 名前が解決可能か |
 | face | `TVPFontAcquireFace` / `TVPFontReleaseFace` | 単一 face の取得 (名前解決込み・レジストリ共有) |
+| | `TVPFontAcquireFaceInstance(nameOrPath, coords, n)` | **専用** face (非共有) を開き軸座標を適用。解放は `TVPFontReleaseFace` |
+| | `TVPFontGetFaceData(face, &data, &size, &faceIndex)` | face の SFNT バイト列 (共有バッファ) の直接参照。`@gdi:` キーでも取れる |
 | 連鎖 | `TVPFontAcquireFaceChain(csv)` / `TVPFontReleaseFaceChain` | カンマ区切りフォールバック連鎖 (空=既定フェイス) |
 | | `TVPFontChainCount` / `TVPFontChainFaceAt` | 連鎖内 face の borrow 参照 |
 | | `TVPFontChainFaceForChar(chain, cp, preferLast)` | コードポイント収録 face の選択 (絵文字は preferLast=true) |
 | メトリクス | `TVPFontGetLineMetrics(face, px, &out)` | ascent/descent/lineGap/underline/strikeout/unitsPerEm |
 | グリフ | `TVPFontGetGlyphIndex(face, cp)` | cp→glyph id (0=未収録) |
-| | `TVPFontGetGlyphMetrics(face, gid, px, bold, italic, &out)` | 合成 bold/italic 込み advance/bearing (描画一致) |
+| | `TVPFontGetGlyphMetrics(face, gid, px, bold, italic, &out)` | 合成 bold/italic 込み advance/bearing (描画一致・グリッドフィット) |
+| | `TVPFontGetGlyphMetricsEx(face, gid, px, bold, italic, mode, &out)` | `TVP_FONT_METRICS_HINTED`/`UNHINTED`/`UNSCALED`。**組版エンジンは UNHINTED か UNSCALED を使う** |
 | | `TVPFontGetGlyphOutline(face, gid, bold, italic, sink)` | アウトライン分解 (**フォントユニット・y-up**。px/UnitsPerEm でスケール) |
 | | `TVPFontGetGlyphBitmap(face, gid, px, color, bold, italic, &out)` | GRAY (8bit) / BGRA (カラー絵文字・前乗算)。バッファは次のグリフ取得まで有効 |
+| | `TVPFontGetColorLayers(face, gid, px, sink, clipBox)` | COLR (v0/v1) を「アウトライン+変換+塗り」のレイヤー列に展開。**消費側のラスタライザでベクタ描画**する用 (ビットマップ絵文字は対象外) |
 | シェイピング | `TVPFontShapeLine(chain, text, px, baseDir, sink)` | 1 行を BiDi+itemize+HarfBuzz で視覚順の整形済みグリフ列に |
+| 可変軸 | `TVPFontGetVarAxes(face, out, maxCount)` | fvar 軸 (tag/min/default/max) の列挙。戻り値は総数 |
+| | `TVPFontSetVariations(face, coords, n)` | 軸座標の設定。**face の状態**なので共有 face に使わないこと |
 | 検索 | `TVPFontQueryFaces(params, sink)` | 名前+weight/slant+script+収録文字のランク付き検索 |
 | | `TVPFontGetFaceInfo(nameOrPath, &out)` | 単一フォントの SFNT メタデータ |
 | ThorVG 連携 | `TVPGetFontTvgBridge()` | ThorVG "gw" ローダ用ブリッジ (`TvgGwBridge*`) |
@@ -153,6 +161,15 @@ glyphware 無効ビルド (`KRKRZ_USE_GLYPHWARE=OFF`) ではバイト供給/名�
 - face はレジストリで共有キャッシュされる。`TVPFontAcquireFace` は
   keep-alive 参照を増やすだけで、本体 drawText (`Font.rasterizer=2` 相当)
   と同じ face 実体を共有する。
+- **ピクセルサイズ・変形・可変軸座標は face の状態**であり、共有 face では
+  他の利用者がいつでも書き換える。グリフ取得系が毎回 `pixelSize` を受け取るのは
+  このためで、利用者は取得のたびにサイズを指定する (ブリッジも同様に張り直す)。
+  可変軸のように「自分専用の設定を保ちたい」場合は
+  `TVPFontAcquireFaceInstance` で専用 face を開く (バイト列は共有のまま)。
+- 自前でシェイパを走らせる利用者 (minikin のようにフォントデータから独自に
+  hb_face を作るもの) は `TVPFontGetFaceData` で SFNT バイト列を借りる。
+  advance は必ず `TVPFontGetGlyphMetricsEx` の UNHINTED/UNSCALED で取ること
+  (HINTED は整数ピクセルに丸まるので、文字を並べるほど位置がずれる)。
 - `TVPFontShapeLine` の出力 (`tTVPFontShapedGlyph`) は視覚順・baseline ペン
   位置。`FaceIndexInChain` → `TVPFontChainFaceAt` で対応 face を得る。
 - アウトラインはサイズ非依存 (FT_LOAD_NO_SCALE)。ベクタ消費者は
@@ -202,6 +219,230 @@ gw ローダを選択し、`GlyphwareTvgBridge.cpp` が glyphware で全 I/F を
   `tvgGwSetBridge((const TvgGwBridge*)TVPGetFontTvgBridge())` を呼んで自分の
   コピーへブリッジを注入する (layerExVector の `initThorvg` が実例)。
   `GdiPlus.loadFont` は Storages パス (`resource://` 含む) をそのまま受ける。
+
+## バリアブルフォント (可変軸) の全体展開 【P0〜P5 実装済 (2026-08-24)】
+
+P0 (named instances) / P1 (tTVPFont + 描画経路 + TJS) / P2 (fonts.json) /
+P3 (照会 API) / P4 (自動マッピング) / P5 (Elements / gw ブリッジへの軸伝搬 =
+`#tag=val` サフィックス、下記) まで実装済み。TJS からの使い方:
+
+```tjs
+Font.rasterizer = 2;                 // drawText で使う場合 (drawShapedText 系は常時有効)
+layer.font.weight = 700;             // wght 軸 (100-900、void で解除)
+layer.font.variations = "wdth=87.5"; // 汎用軸 (正規化されて保持される)
+Font.getVarAxes("フォント名");        // [%[tag, name, min, default, max]]
+Font.getFontInfo("フォント名");       // axes / namedInstances 入り辞書
+Font.defaultUseVarStyle = true;      // bold/italic を軸で表現 (オプトイン)
+```
+
+fonts.json 宣言 (P2):
+
+```json
+{ "file": "myfont.ttf", "family": "MyFont SemiBold", "instance": "SemiBold" }
+{ "file": "myfont.ttf", "family": "MyFont Narrow",   "axes": { "wdth": 75 } }
+```
+
+実装時の確定事項 (設計からの差分含む):
+
+- **適用順 (勝ち順)**: fonts.json の named instance → 同 axes 直書き →
+  `Font.weight` → `Font.variations` (同名軸は後者が上書き)。重ね掛けは
+  face の現在座標へ合成してから private face を作るので、宣言インスタンスの
+  他軸を潰さない (`TVPGlyphwareFaceWithVariations` の合成規則)。
+- **queryFonts は軸を返さない** (「宣言 entry を開かず判定する」性質を守る
+  ため)。軸情報は `getFontInfo` / `getVarAxes` (解決のために開く API) で返す。
+- **自動マッピング (P4)** の軸有無判定は連鎖の **primary face 基準**で、
+  合成 bold/italic の無効化は連鎖全体に効く (フォールバック face 単位の
+  細分化はしない)。bold は wght=700、italic は slnt=-10 → ital=1 の順。
+- 軸違いのグリフ誤ヒット防止はフォントハッシュ
+  (`tTVPNativeBaseBitmap::ApplyFont` の FontHash) に Weight/Variations を
+  含めることで実現。`tTVPFont::operator==` にも両方入っている。
+- 実装ファイル: 正規化/パース = `common/visual/FontVariations.{h,cpp}`、
+  private face LRU (既定 32) と宣言軸適用 = `common/visual/GlyphwareHost.cpp`、
+  経路適用 = `GlyphwareFontRasterizer.cpp` (drawText) /
+  `GlyphwareText.cpp` `PrepareContext` (shaped 系)。
+
+### `#tag=val` サフィックス表記 (P5: Elements / gw ブリッジへの軸伝搬)
+
+フォント名/キーに `#tag=val[,tag=val...]` を後置すると、その名前が指す
+フォントの**可変軸インスタンス**を意味する (例: `"MyFont#wght=700"`、
+`"MyFont#wght=700,wdth=75"`)。次の場所で一様に通る:
+
+- `Font.face` のトークン (フォールバック連鎖の各要素に個別指定可)
+- Elements JSON の `"font"` (label / text_area など。text_area の折り返し計算
+  = BlockTextBackend も同じインスタンスで測る)
+- gw ブリッジのホストキー (`tvg::Text::load` に渡る storage パス表記)
+
+**無指定軸の既定 (wght=400 正規化)**: 可変フォントを wght 未指定で参照した
+場合 (サフィックス無し、fonts.json 宣言にも wght 無し、下記の登録も無し)、
+**fvar の既定インスタンスではなく wght=400 相当**で表示する (CSS の
+font-weight 既定に合わせた規則)。fvar 既定が Regular でないフォント
+(Noto VF = Thin 等) も、VF 1 本だけの登録で無指定が Regular 相当に読める。
+wght 軸を持たない face は不変、fvar 既定が既に 400 の face は共有 face の
+まま (無駄なインスタンス化はしない)。明示指定は常に勝つ。
+
+無指定時の既定を変えたい場合は `Font.setDefaultVariations(name, axes)` で
+名前単位に登録する (`axes` = `"wght=300,wdth=87.5"` 形式、void/空文字列で
+解除、現在値は `getDefaultVariations`)。優先順は弱い方から:
+**wght=400 正規化 < setDefaultVariations < fonts.json 宣言 (axes/instance) <
+`#suffix` / Font.weight / Font.variations** (同名軸は強い方が勝つ)。
+elements 単体 (FT ローダ) ビルドには同じ規則の
+`cycfi::elements::set_default_variations()` がある (gw ビルドではエンジン側が
+一元管理するため elements 側は no-op)。
+
+同じファミリ名で static 版と VF 版の両方が登録されている場合 (例:
+`NotoSansSC-Regular.otf` と `NotoSansSC-VF.ttf` を同じ "Noto Sans SC" で登録)、
+サフィックス**無し**の解決は従来どおり先着エントリ (= static を先に登録して
+おけば既定の見た目は不変)、サフィックス**付き**の解決は可変フォントの
+エントリを優先する (static を掴むと軸が黙って効かないため)。可変判定は
+elements 登録時に行う — バイトが手元にあるビルドは sfnt の 'fvar' 直接判定、
+gw ビルドはブリッジ `isVariable` (glyphware face の axes 有無) で判定する。
+
+解決は `TVPGlyphwareFaceForToken()` (`GlyphwareHost.cpp`) に一本化:
+ベース名を fonts.json 宣言 → storage パス → GDI 名の順で解決し、宣言軸 →
+サフィックス軸の順で private face LRU から合成インスタンスを得る。fonts.json
+宣言に軸が付いていた場合もサフィックスは**その上に重なる** (同名軸は
+サフィックスが勝つ)。カンマが連鎖/ファミリ列挙の区切りと衝突する問題は
+「`tag=数値` 形状のトークンは直前の `#` 付きトークンの続き」とみなす結合で
+回避している (`TVPGlyphwareBuildChain` と elements 側 `match_ex` の双方)。
+
+thorvg 側 (fork) は `名前#tag=val` を独立フォントとして登録する。FT ローダ
+ビルド (elements 単体アプリ等) では file IO が無効でも、メモリ登録済みの
+ベースフォントから `LoaderMgr::font()` がインスタンスを派生生成するので、
+同じ JSON がエンジン外 (elements_console 等) でも同一表示になる。
+
+以下は設計時の記録 (決定事項・データモデルの根拠)。
+
+現状 (2026-08-20) の到達点は「**エンジンとプラグイン公開 API は VF 対応済み、
+TJS のフォントパラメータとして指定する口が無い**」。
+
+- glyphware: `Descriptor::axes` (fvar 軸列挙)、`Face::setVariations` /
+  `variations` / `axisRange`。`FT_Set_Var_Design_Coordinates` の後に
+  `hb_ft_font_changed()` を呼ぶのでシェイパ側も同期する (`src/Face.cpp`)。
+- tp_stub: `TVPFontGetVarAxes` / `TVPFontSetVariations` /
+  `TVPFontAcquireFaceInstance` (専用インスタンス)。
+- krkr_richtext: 独自 FreeType 実装は撤去済みで、`HostFontBackend` が可変軸を
+  持つフォントを検出すると `TVPFontAcquireFaceInstance` に切り替える。TJS へは
+  `RichText.Style.fontWeight` (wght) / `fontWidth` (wdth) として露出。
+- **欠けているもの**: `tTVPFont` に軸フィールドが無いため、`Layer.font` /
+  `drawText` / `drawShapedText` 系 / Elements から軸を指定できない。
+  `fonts.json` にも軸宣言が無く、`getFontInfo` / `queryFonts` も軸を返さない。
+
+### 決定事項 (2026-08-20)
+
+| # | 論点 | 決定 |
+|---|---|---|
+| ① | 適用ラスタライザ | **glyphware 経路 (`rasterizer=2`) のみ**。GDI / 旧 FreeType 経路には実装しない (軸指定は無視 + 警告)。**最終的にはラスタライザを glyphware へ一本化する**方針なので、旧経路への二重実装は行わない (一本化自体は別議題) |
+| ② | 指定の粒度 | `font.weight` (一級・100-900) + `font.variations` (汎用軸) の 2 本立て |
+| ③ | bold/italic の軸マッピング | 既定 OFF + グローバルスイッチでオプトイン |
+| ④ | キャッシュ | 軸値を量子化 + 軸付き face は LRU |
+| ⑤ | `fonts.json` | 軸直書き (`axes`) と named instance 名 (`instance`) の両対応 |
+| ⑥ | フォールバック連鎖 | **同名軸を持つ face にだけ適用** |
+
+### データモデル
+
+`tTVPFont` (`common/visual/tvpfontstruc.h`) に 2 つ足す:
+
+```
+tjs_int Weight = -1;      // 100-900、-1 = 未指定
+ttstr   Variations;       // 正規化済み "wdth=87.5,wght=700"
+```
+
+- `Weight` と `Variations` を分けるのは、**weight が「軸」と「face 選択条件」の
+  二役**を持つため。VF に `wght` 軸があれば軸へ、無ければレジストリ検索での
+  face 選択 (`tTVPFontQueryParams::Weight`) へ回す。`Variations` に `wght` が
+  明示されていればそちらが優先。
+- `Variations` は setter で正規化する: タグは 4 文字小文字、**タグ昇順**、
+  重複は後勝ち、量子化 (下記) 済み、**軸の既定値と一致する項目は落とす**。
+  正規化しておくと文字列比較だけでキャッシュキーとして使える。
+- `operator==` に両方を含める。さらに `tTVPFontAndCharacterData` /
+  `tTVPFontHashFunc` (`common/visual/CharacterData.h`) にも反映する。
+  **ここを忘れると軸違いの同じ文字がグリフキャッシュで誤ヒットする**。
+
+### 軸値の量子化とキャッシュ
+
+軸をアニメーションさせるとグリフキャッシュと face インスタンスが際限なく
+増えるので、正規化の段階で丸める。
+
+- 既定の丸め幅: `wght` = 1、その他の軸 = 0.5。
+- 軸付き face は `TVPGlyphwareOpenPrivateFace` (`GlyphwareHost.h`、既存) を
+  ラップした LRU キャッシュで再利用する。キーは
+  `(loaderKey, faceIndex, 正規化 Variations)`。既定上限 32 face。
+- **共有 face (`TVPFontAcquireFace` / レジストリ) に `setVariations` しない**
+  規約は従来どおり。適用すべき軸が空になった face は共有 face をそのまま使い、
+  無駄なインスタンス化をしない。
+
+### 適用経路
+
+1. **drawText**: `GlyphwareFontRasterizer::RebuildChain()`
+   (`common/visual/GlyphwareFontRasterizer.cpp`) で連鎖構築時に軸を適用。
+   `TVPGlyphwareBuildChain()` に軸付きオーバーロードを足す。
+2. **drawShapedText 系**: `TVPShapedTextStyleFromFont()`
+   (`common/visual/GlyphwareText.cpp:18`) が `tTVPFont` → `tTVPShapedTextStyle`
+   の唯一の変換点なので、`tTVPShapedTextStyle` に軸を足して
+   `PrepareContext()` の連鎖構築へ渡せば `drawShapedText` /
+   `drawShapedTextArea` / `measureShapedText` / `shapedTextCount` が一斉に通る。
+3. **連鎖への適用規則 (⑥)**: 各 face について「その face が実際に持つ軸のうち、
+   指定と同名のものだけ」を適用する。日本語フォントと絵文字フォントで軸構成が
+   違うのが普通なので、全適用も無適用も不自然になる。
+4. **Elements / ThorVG gw**: フォント登録がホストキー渡しなので、キー表記に軸を
+   埋める (`<key>#wght=700` 等) か Elements 側 style に axes を足すかを実装時に
+   決める。段階としては後回し (P5)。
+
+### bold / italic → 軸の自動マッピング (③)
+
+- グローバルスイッチ `Font.defaultUseVarStyle` (既定 `false`)。
+- `true` のとき、`TVP_TF_BOLD` かつ `wght` 軸あり → `wght=700`、
+  `TVP_TF_ITALIC` かつ `slnt` / `ital` 軸あり → `slnt=-10` / `ital=1`。
+- 明示された `Weight` / `Variations` があればそちらが勝つ。
+- 軸で太らせた/傾けた場合は**合成ボールド/イタリックを無効化**する
+  (二重適用の防止)。
+- 既定 OFF なのは既存案件の見た目が変わるため。①(a) の間は影響範囲が
+  `rasterizer=2` の利用者に限られるので、一本化のタイミングで既定を見直す。
+
+### fonts.json 宣言インスタンス (⑤)
+
+```json
+{ "name": "MyFont SemiBold", "file": "...", "axes": { "wght": 600 } }
+{ "name": "MyFont SemiBold", "file": "...", "instance": "SemiBold" }
+```
+
+- `instance` は fvar の **named instance** 名。glyphware が現状 named instance
+  を読んでいないので、`Descriptor` に `namedInstances` を足す
+  (`FT_MM_Var::namedstyle` を拾うだけ) 必要がある。
+- 宣言インスタンスは「名前 → キー + 軸」の対応になるため、名前解決の戻り値に
+  軸を添える必要がある。`TVPGlyphwareResolveFontKey()` は `std::string` を
+  返す既存 API なので、**軸付きの内部解決関数を別に足して既存 API は互換維持**
+  する。
+- 案件側は「名前を指すだけ」で VF を使えるので、`font.weight` /
+  `font.variations` に触れなくても恩恵が届く。
+
+### TJS API 追加
+
+- `Font.weight` (インスタンス、100-900、既定 `void`/-1)
+- `Font.variations` (インスタンス、`"wght=700,wdth=87.5"`)
+- `Font.defaultUseVarStyle` (静的、既定 false)
+- `Font.getVarAxes(nameOrPath)` → `[%[tag, min, default, max]]`
+- `Font.getFontInfo` / `Font.queryFonts` の返す辞書に `axes` /
+  `namedInstances` を追加 (`LayerIntf.cpp:10151` の
+  `TVPFontFaceInfoToDictionary`)
+
+### 段階分け
+
+| Phase | 内容 | 規模 |
+|---|---|---|
+| P0 | glyphware に `namedInstances` を追加 | 小 |
+| P1 | `tTVPFont` 拡張 + 正規化 + キャッシュキー + 軸付き face LRU + drawText/shaped 経路への適用 + `font.weight` / `font.variations` | **中 (本丸)** |
+| P2 | `fonts.json` の `axes` / `instance` + 名前解決への軸伝搬 | 小〜中 |
+| P3 | `getVarAxes` / `getFontInfo` の軸露出 | 小 |
+| P4 | bold/italic 自動マッピング (オプトイン) | 小 |
+| P5 | Elements / gw ブリッジへの軸伝搬 | 中 |
+| — | (別議題) ラスタライザの glyphware 一本化 | 大 |
+
+### 非対応の明示
+
+GDI ラスタライザ (WINVER 既定) と旧 FreeType ラスタライザ (非 WINVER 既定) では
+軸指定は**効かない**。黙って無視すると原因が分からないので、軸指定付きの描画が
+これらの経路に来たら**起動後 1 回だけ警告ログ**を出す。
 
 ## 埋め込み方針 (現状)
 

@@ -128,6 +128,16 @@ elements_modal README「変数 store」節): `text_list` / `rect_list` +
 有効/無効 mask、 `'0'`/`'1'` 文字列)、 `selected_var`+`selected_value`
 (atlas_choice / radio_button のラジオグループ変数、 双方向) も setVar 駆動。
 
+要素の見た目そのものを駆動するものも同じ経路:  `opacity_var` (要素単位の
+不透明度、 `"0.6"` 形式)、 `visible_var` (表示 / 非表示。 `"0"` / `"false"` /
+空文字で非表示。 **非表示の間はフォーカスも当たり判定も外れる**が、 canvas は
+絶対座標配置なので**場所は空いたまま**になる — 機種別に項目を消す用途向け。
+`animated_sprite` に付けた場合は**再表示のたびに先頭フレームから再生し直す**
+— 経過時間は隠れている間も進むので、 これが無いと `loop: false` のアニメが
+2 回目以降ずっと最終フレームのままになる)、
+トップレベルの `background_opacity_var` (**背景板だけ**の不透明度。 中身の文字や
+ボタンには掛からないので、 下のゲーム画面を透かしても可読性が落ちない)。
+
 ### モーダルへの初期変数注入 (`showModalFile(path, %[vars])`)
 
 overlay モーダル (`showModalJson` / `showModalFile` / `showModalDict` の引数
@@ -148,6 +158,29 @@ var r = dlg.showModalFile("ui/launcher.jsonc",
 
 - `Dialog.registerFont(family, path[, weight[, slant[, stretch]]])` /
   `Dialog.registerFontDir(dir)` — storage パス (XP3 内可) からフォント登録。
+- **可変フォントのインスタンス指定**: 画面 JSON の `"font"` にファミリ名 +
+  `#tag=val[,tag=val...]` で軸を指定できる (例 `"MyFont#wght=700"`、
+  `"MyFont#wght=700,wdth=75"`)。ベースファミリを登録しておけばインスタンスは
+  初回使用時に派生生成される。label / text_area とも有効で、text_area の
+  折り返し計算も同じインスタンスで行われる。表記の詳細は
+  `doc/FontEngine.md` の「`#tag=val` サフィックス表記」。
+- **無指定時の既定**: 可変フォントを軸指定なしで参照した場合は wght=400 相当
+  (CSS の font-weight 既定と同じ) に正規化される。fvar 既定が Regular でない
+  VF (Noto VF = Thin 等) も、VF 1 本の登録で無指定が Regular 相当に読める。
+  既定を変えたいときは `Font.setDefaultVariations(name, axes)` (glyphware
+  ホスト共通の登録なので Elements の描画にも効く)。
+- **登録名 = 軸インスタンスの別名登録**: `registerFont` の **path 側**に
+  `#tag=val` を付けると、「その family 名 = その軸インスタンス」として
+  登録できる。既存の画面 JSON がウェイト入りの名前 (PSD 由来の
+  `"MyFont-Medium"` 等) を使っている場合、JSON を書き換えずに本物の
+  ウェイトへ差し替えられる:
+  ```tjs
+  // ベース (無指定 = wght=400 正規化)。先に登録する — 埋め込みファミリ名の
+  // 解決は先着エントリが勝つため、素の VF を先頭に置く
+  Dialog.registerFont("MyFont", "fonts/MyFont-VF.ttf");
+  // 画面 JSON が使う名前 = 同じ VF の wght=500 インスタンス
+  Dialog.registerFont("MyFont-Medium", "fonts/MyFont-VF.ttf#wght=500");
+  ```
 - `Dialog.defaultFontFamily = "Open Sans, Roboto, Noto Sans JP, ..."` —
   theme 全スロットの family 列を明示。 **明示設定後は EnsureRuntimeInitialized
   の自動並び (登録済み family から生成) に上書きされない**。 自動並びは
@@ -162,7 +195,10 @@ var r = dlg.showModalFile("ui/launcher.jsonc",
 - `Dialog.setPadIconBase(dir)` — pad_icon (Kenney input prompts) のベース
   ディレクトリ (storage パス、 配下に xbox/ps/switch/keyboard + vector/*.svg)。
   未設定だと pad_icon は灰色プレースホルダになる。
-- `Dialog.setPadTheme(name)` — "xbox"/"ps"/"switch"/"keyboard"/"none"。
+- `Dialog.setPadTheme(name)` — "xbox"/"ps"/"switch"/"keyboard"/"none"/"auto"。
+  "auto" は接続パッドの系統 (`System.padStyle`) から自動選択し、 画面を開く
+  たびに決め直す (パッドが無ければ動作プラットフォームで決まる。 途中で
+  コントローラを替えても次に開く画面から追従)。
   画面 JSON の top-level `pad_theme` があればそちらが優先。
 
 ### 実行時画像の注入 (`registerImage` / `image` ウィジェット)
@@ -207,15 +243,39 @@ overlay の ThorVG ラスタライズ密度を切り替える。 表示中の画
 から反映されるので、 品質/負荷の比較にも使える。
 
 - `0` (既定) = **auto**: 最終 present サイズで直接ラスタライズする。 authored
-  サイズが surface より大きい画面 (1920x1080 authored → 1280x720 surface 等)
-  は縮小率ぶん小さい buffer で描くため、 CPU ラスタ / テクスチャ転送コストが
-  最小になる。
+  サイズと表示先が異なる場合は fit 倍率ぶんの buffer で描く (縮小なら小さく、
+  フルスクリーン等の拡大なら大きく = 拡大でも滲まない)。
 - `>0` = authored 論理サイズ × この倍率で描き、 present 時に GPU 拡縮する
   (`1.0` = 原寸レンダ→拡縮表示、 `2.0` = 旧 supersampling 相当)。
 
-なお oversized present (縮小表示) 中のマウス座標は manager が縮小率と
-センタリングの逆変換をかけて dialog 論理座標へ戻すため、 どのモードでも
-マウス操作は authored 座標系の hit-test に正しく届く。
+パネルの配置 / 拡縮の基準領域は、 画面 JSON top-level の **`"base"`** で選ぶ:
+
+- `"window"` (既定) — **ウィンドウ (surface) 全体**。 ゲーム画像の DestRect には
+  追従しない (Dot by dot 等でゲームがインセット表示でも、 パネルはウィンドウ
+  全面基準)。 システムメニュー等の「画面 UI」向け。
+- `"content"` — **ゲーム画像の表示領域 (DestRect)**。 レターボックスや
+  インセット表示でもゲーム画像に張り付き、 拡縮もゲーム画像と同率になる。
+  字幕窓のようにゲーム画像へ追従させたいパネル向け。 DestRect が無効な場合は
+  `"window"` へフォールバック。
+
+拡縮率の基準は **ゲームの基準面 (primary layer サイズ)** で、 基準領域が
+基準面より大きい/小さいときは縦横比を保ってその比率で拡縮する (縮小も
+**拡大**も。 4K フルスクリーンでは基準面いっぱいに author した全画面 UI が
+ウィンドウ全面に広がり、 小さいパネルも基準面に対する相対サイズを保って
+拡大される。 基準領域が基準面と同サイズなら等倍 = authored サイズのまま)。
+基準面が取れない構成 (primary layer 無し) ではダイアログ自身の authored
+サイズが基準になり、 パネルが基準領域へ収まらない場合は収まるまで縮小
+される。
+
+マウス座標は manager が fit 倍率とセンタリング、 および入力イベントに
+掛かっている DestRect 原点シフト (TranslateWindowToDrawArea) の逆変換を
+かけて dialog 論理座標へ戻すため、 どのモードでもマウス操作は authored
+座標系の hit-test に正しく届く。
+
+> フルスクリーン (4K 等) では auto 密度の全面ラスタが高価になる
+> (実測: 3840x2160 全面 ThorVG ≈ 70ms)。 `Dialog.partialRedraw = true`
+> (既定) なら hover 等の変化は矩形限定 (~12ms) で済むので、 全面描画へ
+> 落とす設定は避けること。
 
 ゲーム側セットアップ例:
 
@@ -744,7 +804,7 @@ Dialog.clearHotKeys();
 | 種別 | VK の例 | 配送先 |
 |---|---|---|
 | `key` | VK_RETURN / VK_TAB / VK_ESC / 方向キー / 英数字 | `overlay_session::on_key_down(cycfi::elements::key_code, mods)` |
-| `pad_button` | VK_PAD1〜VK_PAD12 / VK_PADLEFT 等 / VK_PAD_L_LEFT 等 | `overlay_session::on_pad_button(cycfi::elements::pad_button, down)` |
+| `pad_button` | VK_PAD1〜VK_PAD12 / VK_PADLEFT 等 / VK_PAD_L_LEFT 等 / VK_PAD_FACE_* (位置基準 → `pb::face_*`) | `overlay_session::on_pad_button(cycfi::elements::pad_button, down)` |
 
 overlay_session の入力 API は **host 非依存の cycfi 中立型** (`mouse_button::what` / `key_code` /
 `pad_button` / `pad_axis` + `mod_*`) を受ける (SDL / Win32 のネイティブ enum は経由しない)。
@@ -828,6 +888,7 @@ JSON / JSONC (コメント + 末尾カンマ) 対応。 要素タイプ・属性
 
 - **`"size": [w, h]`** (top-level) — ダイアログの希望論理サイズ (上限)。 実際は content の自然サイズにフィット縮小される (上側余白対策、 [project_elements_dialog_size] 系)。
 - **`"align"`** + **`"margin"`** (top-level) — overlay 上での配置。 `align` は `"center"` (既定) / `"top"` / `"bottom"` / `"left"` / `"right"` と、 それらの組合せ `"top_left"` / `"top_right"` / `"bottom_left"` / `"bottom_right"` (文字列に `top`/`bottom`/`left`/`right` が含まれるかで縦横独立に判定)。 `margin` は非中央側のサーフェス端からの余白 px (既定 0)。 入力座標の補正 (overlay_session の last_rect) も同じ配置で行われるのでクリック判定はズレない。 全 overlay 経路 (showJson / showFlow / startFlow) で有効。 例: ゲーム画面左上にメニューを出す → `"align": "top_left", "margin": 24`。
+- **`"base"`** (top-level) — 配置 / 拡縮の基準領域。 `"window"` (既定) = ウィンドウ全面 / `"content"` = ゲーム画像の表示領域 (DestRect)。 字幕窓のようにゲーム画像へ追従させたいパネルは `"base": "content"` を指定する (上の「renderScale / 配置」節参照)。 widget 内の `base` (text_area の文字方向) とは別物。
 - **`"initial_focus": true`** (focusable widget) — 起動時にフォーカスを当てる候補。 複数あった場合 build 順で先勝ち。
 - **`text_area` ウィジェット** — 矩形に流し込む静的テキスト。 **本体 `Layer.drawShapedTextArea` と改行位置が一致する** (どちらも `glyphware::layoutBlock` を通るため。 行頭行末禁則つき) のが `text_box` との違いで、 加えて `"align"` / `"line_spacing"` / `"count_var"` (文字送り) を持つ。 字幕 / セリフ窓向け。 詳細は下の「矩形テキスト (`text_area`)」節。
 - **`"close_on_click": true`** (button) — click で modal を閉じ、 `result.action = id` で確定する。 **デフォルト false** で、 click は `Dialog.onAction` を発火させるだけで終了させない。 OK / Cancel など「閉じるボタン」だけに付ける運用。 navigator フローでは、 画面遷移する button (transitions と組) と、 その場で動作させる button (close_on_click 無し → onAction のみ) を使い分ける。 なお TJS Dictionary 経由 (`showDict` 等) では true が int 1 で届くが、 bool 属性は number 0/非0 も真偽として受容する (elements_modal 2026-07-20 対応済。 古い pin では効かないので注意)。
@@ -836,6 +897,7 @@ JSON / JSONC (コメント + 末尾カンマ) 対応。 要素タイプ・属性
   ```jsonc
   "input": {
       "arrow_focus_nav": true,           // 矢印で 2D フォーカスナビ
+      "arrow_focus_enter": "directional",  // フォーカス無しから入る位置 (first 既定 / directional)
       "focus_wrap": true,                 // 端で反対端へ回り込み (既定 false)
       "skip_disabled": true,              // disabled 要素を nav スキップ (既定 false)
       "repeat_delay_ms": 400,             // dpad/stick 長押しリピート開始
@@ -868,6 +930,11 @@ JSON / JSONC (コメント + 末尾カンマ) 対応。 要素タイプ・属性
   ```
 
 `force: true` の shortcut は input_box 編集中でも反応する (リスト内編集中の save 押下を許容するケース等)。
+
+`arrow_focus_enter` は「**どこにもフォーカスが無い状態で方向キーを押したとき、
+どの要素へ入るか**」。 `"first"` (既定) は収集順の先頭へ、 `"directional"` は
+押した方向の端へ入る (右キーなら一番右の要素)。 `initial_focus` を置かずに開く
+確認ダイアログで、 いきなり「はい」ではなく押した方向の選択肢へ入れたいとき用。
 
 ### 矩形テキスト (`text_area`) — 本体と同じ折返し
 

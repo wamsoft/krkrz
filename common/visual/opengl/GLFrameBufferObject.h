@@ -12,9 +12,10 @@ protected:
 	GLint glformat_;
 	GLuint framebuffer_id_;
 	GLuint renderbuffer_id_;
-	GLuint pbo_;
+	mutable GLuint pbo_; //!< 遅延確保するので const な pbo() からも触れるようにする
 	GLuint width_;
 	GLuint height_;
+	mutable std::uint64_t mem_bytes_ = 0; //!< 統計に計上済みのバイト数 (PBO の遅延確保で増える)
 	// format は GL_RGBA でないと問題が出る GPU があるようなのでそれのみ。
 
 public:
@@ -30,8 +31,10 @@ public:
 	GLFrameBufferObject& operator=( const GLFrameBufferObject& ) = delete;
 	GLFrameBufferObject( GLFrameBufferObject&& ) = delete;
 	GLFrameBufferObject& operator=( GLFrameBufferObject&& ) = delete;
-	// with_pbo=false で読み戻し用 PBO の確保を省略する (ポストエフェクトの
-	// 中間バッファ等、glReadPixels しない用途のメモリ節約)。
+	// with_pbo は互換のために残しているが、 現在はどちらでも PBO を先に確保しない。
+	// PBO は pbo() が実際に呼ばれた時点で確保する (遅延確保)。
+	// FBO は「カラーテクスチャ + D24S8 レンダーバッファ」だけで w*h*8 使うので、
+	// 誰も使わない PBO を常時持つと 1.5 倍になってしまう。
 	bool create( GLuint w, GLuint h, bool with_pbo = true );
 	void destory() {
 		if( texture_id_ != 0 ) {
@@ -50,6 +53,10 @@ public:
 			glDeleteFramebuffers( 1, &framebuffer_id_ );
 			framebuffer_id_ = 0;
 		}
+		if( mem_bytes_ != 0 ) {
+			GLTexture::NoteFboMemory( -(std::int64_t)mem_bytes_, -1 );
+			mem_bytes_ = 0;
+		}
 		width_ = height_ = 0;
 	}
 	void bindFramebuffer();
@@ -58,11 +65,16 @@ public:
 	GLuint textureId() const { return texture_id_; }
 	GLuint width() const { return width_; }
 	GLuint height() const { return height_; }
-	GLint pbo() const { return pbo_; }
+
+	//! 読み戻し/転送用 PBO。 呼ばれた時点で確保する (通常は誰も呼ばないので確保されない)
+	GLint pbo() const { return ensurePBO(); }
 
 	tTVPTextureColorFormat format() const { return tTVPTextureColorFormat::RGBA; }
 	GLint glformat() const { return glformat_; }
 
+private:
+	//! PBO を必要になった時点で確保する
+	GLuint ensurePBO() const;
 };
 
 

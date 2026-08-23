@@ -5,6 +5,7 @@
 #include "tjsCommHead.h"
 #include "tvpinputdefs.h"
 #include "WindowIntf.h"
+#include "ViewportConfig.h"
 
 #include "TVPWindow.h"
 #include "MouseCursor.h"
@@ -104,7 +105,19 @@ private:
 	//-- drawdevice related
 	bool NextSetWindowHandleToDrawDevice;
 	tTVPRect LastSentDrawDeviceDestRect;
-	
+
+	//-- ビューポート (クライアントとゲーム画面が食い違ったときの配置ポリシー)。
+	//   詳細 = src/core/doc/WindowGeometry.md。
+	tTVPViewportConfig mViewport;
+	//-- 余白の塗り (背景色 + 壁紙)。DrawDevice が保持・描画するので、ここは
+	//   スクリプト設定の受け皿。dirty 時に UpdateContent が DrawDevice へ push する。
+	tjs_uint32 mViewportBgColor;            //!< 余白の背景色 (0xAARRGGBB)
+	tTJSVariant mViewportWallpaper;         //!< 余白の壁紙 Layer/Bitmap (void なら無し)
+	tTVPViewportFit mViewportWallpaperFit;  //!< 壁紙のフィット方式
+	double mViewportWpAlignX;               //!< 壁紙の水平配置 0..1
+	double mViewportWpAlignY;               //!< 壁紙の垂直配置 0..1
+	bool mViewportRenderDirty;              //!< DrawDevice へ再 push する必要あり
+
 	//-- interface to plugin
 	tObjectList<tTVPMessageReceiverRecord> WindowMessageReceivers;
 	
@@ -272,6 +285,27 @@ public:
 	void ShowWindowAsModal();
 
 	void SetVisibleFromScript(bool b);
+
+	//-- ビューポート設定 (配置は DestRect 再計算で反映)
+	void SetViewportConfig(const tTVPViewportConfig &cfg);
+	const tTVPViewportConfig & GetViewportConfig() const { return mViewport; }
+
+	//-- 余白の塗り (generic 側 TTVPWindowForm と同じ API)
+	void SetViewportBgColor(tjs_uint32 color);
+	tjs_uint32 GetViewportBgColor() const { return mViewportBgColor; }
+	void SetViewportWallpaper(const tTJSVariant &image, tTVPViewportFit fit,
+		double alignX, double alignY);
+	const tTJSVariant & GetViewportWallpaper() const { return mViewportWallpaper; }
+	tTVPViewportFit GetViewportWallpaperFit() const { return mViewportWallpaperFit; }
+	double GetViewportWpAlignX() const { return mViewportWpAlignX; }
+	double GetViewportWpAlignY() const { return mViewportWpAlignY; }
+	bool IsViewportRenderDirty() const { return mViewportRenderDirty; }
+	void SetViewportRenderDirty() { mViewportRenderDirty = true; }
+	void ClearViewportRenderDirty() { mViewportRenderDirty = false; }
+	void RequestViewportRedraw();
+
+	//! -display= 指定ディスプレイへの初回配置が済んだか (WindowFormUnit.cpp)
+	bool StartupDisplayApplied;
 
 	void RegisterWindowMessageReceiver(tTVPWMRRegMode mode, void * proc, const void *userdata);
 

@@ -74,7 +74,7 @@ TJS: System.getPadState/getPadAxis/getJoypadType/… + Window.onKeyDown(VK_PAD*)
 
 ## 3. ボタン状態と軸状態
 
-### 3.1 ボタン (24-bit bitmap) — `SDL3Application::GetPadState(int no)`
+### 3.1 ボタン (28-bit bitmap) — `SDL3Application::GetPadState(int no)`
 
 `pad.cpp` で SDL Gamepad API から組み立てて返します。スクリプトからは
 直接見えず、`SendPadEvent` 経由でキーイベントに変換されます。
@@ -105,6 +105,16 @@ TJS: System.getPadState/getPadAxis/getJoypadType/… + Window.onKeyDown(VK_PAD*)
 | 21  | R_↑    | VK_PAD_R_UP     | 〃                                |
 | 22  | R_→    | VK_PAD_R_RIGHT  | 〃                                |
 | 23  | R_↓    | VK_PAD_R_DOWN   | 〃                                |
+| 24  | 下     | VK_PAD_FACE_SOUTH | SDL_GAMEPAD_BUTTON_SOUTH (配置基準) |
+| 25  | 右     | VK_PAD_FACE_EAST  | SDL_GAMEPAD_BUTTON_EAST  (配置基準) |
+| 26  | 左     | VK_PAD_FACE_WEST  | SDL_GAMEPAD_BUTTON_WEST  (配置基準) |
+| 27  | 上     | VK_PAD_FACE_NORTH | SDL_GAMEPAD_BUTTON_NORTH (配置基準) |
+
+bit 24〜27 は bit 0〜3 と**同じ物理ボタン**を「配置」で指したものです。
+bit 0〜3 (VK_PAD1..4) は刻印 A/B/X/Y に解決される (§3.2) のに対し、
+こちらは常に 下/右/左/上 を指します。 1 回の押下で両方のビットが立つので、
+割り当てる側が「刻印で揃えたいボタン」と「配置で揃えたいボタン」で
+使い分けます (例: 決定は刻印の A、 コマンド決定は配置の 上)。
 
 bit 16〜23 は左右スティックを `analog_to_key()` で 8 方向 DPAD 化した値で、
 半径 0.6 以上のときに方向ビットが立ちます。**生のスティック値が欲しい

@@ -898,9 +898,8 @@ bool tTJSNI_BaseWindow::GetWaitVSync() const
 	return WaitVSync;
 }
 
-#ifdef __GENERIC__
 //---------------------------------------------------------------------------
-// ビューポート fit 名 ⇔ tTVPViewportFit 変換 (Generic 版のみ)
+// ビューポート fit 名 ⇔ tTVPViewportFit 変換
 //---------------------------------------------------------------------------
 static tjs_int TVPViewportFitFromString(const ttstr &s)
 {
@@ -924,7 +923,6 @@ static const tjs_char * TVPViewportFitToString(tjs_int f)
 	default:        return TJS_W("contain");
 	}
 }
-#endif
 
 //---------------------------------------------------------------------------
 // tTJSNC_Window : TJS Window class
@@ -1834,11 +1832,78 @@ TJS_BEGIN_NATIVE_PROP_DECL(innerHeight)
 	TJS_END_NATIVE_PROP_SETTER
 }
 TJS_END_NATIVE_PROP_DECL(innerHeight)
-#ifdef __GENERIC__
+//----------------------------------------------------------------------
+// 装飾ぶんのサイズ (width - innerWidth / height - innerHeight)。
+// 枠を持たない環境 (モバイル / コンソール / ボーダレス) では 0。
+// outer 基準で書かれたコードを inner 基準へ移植するための橋渡し。
+TJS_BEGIN_NATIVE_PROP_DECL(frameWidth)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Window);
+		*result = _this->GetFrameWidth();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_DENY_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_PROP_DECL(frameWidth)
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_PROP_DECL(frameHeight)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Window);
+		*result = _this->GetFrameHeight();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_DENY_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_PROP_DECL(frameHeight)
 //----------------------------------------------------------------------
 // ビューポート (ゲーム画面の表示画角制御)。外側 surface (innerWidth/Height)
-// 内に内側ゲーム (primaryLayer) を fit/zoom/align/offset で配置し、余白を
-// 背景色/壁紙で埋める。Generic (SDL) 版のみ。
+// 内に内側ゲーム (primaryLayer) を fit/zoom/align/offset で配置する。
+// 配置計算は全バリアント共通 (src/core/doc/WindowGeometry.md §3 の「軸B」)。
+// 余白の背景色/壁紙だけは DrawDevice 実装が要るので下の方で Generic 限定。
+//----------------------------------------------------------------------
+//----------------------------------------------------------------------
+// 画面比率の固定。 "16:9" のような文字列で指定し、 "" で解除。
+// 有効にするとウィンドウのリサイズがこの比率へ拘束される (デスクトップ SDL3)。
+// ゲーム画面自体の配置は viewport が行うので、 レイヤ比率とは独立。
+TJS_BEGIN_NATIVE_PROP_DECL(aspectLock)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(_this, tTJSNI_Window);
+		tjs_int w = _this->GetAspectLockW(), h = _this->GetAspectLockH();
+		if(w <= 0 || h <= 0) { *result = ttstr(); return TJS_S_OK; }
+		ttstr s(w); s += TJS_W(":"); s += ttstr(h);
+		*result = s;
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+	TJS_BEGIN_NATIVE_PROP_SETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(_this, tTJSNI_Window);
+		ttstr s(*param);
+		tjs_int w = 0, h = 0;
+		const tjs_char *p = s.c_str();
+		if(p) {
+			// "W:H" / "W/H" を読む。 数字以外は区切りとして扱う。
+			while(*p >= TJS_W('0') && *p <= TJS_W('9')) { w = w * 10 + (*p - TJS_W('0')); p++; }
+			if(*p) p++;
+			while(*p >= TJS_W('0') && *p <= TJS_W('9')) { h = h * 10 + (*p - TJS_W('0')); p++; }
+		}
+		if(w <= 0 || h <= 0) { w = 0; h = 0; }
+		_this->SetAspectLock(w, h);
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_PROP_DECL(aspectLock)
 //----------------------------------------------------------------------
 TJS_BEGIN_NATIVE_PROP_DECL(viewportFit)
 {
@@ -1954,6 +2019,7 @@ TJS_BEGIN_NATIVE_PROP_DECL(viewportOffsetY)
 }
 TJS_END_NATIVE_PROP_DECL(viewportOffsetY)
 //----------------------------------------------------------------------
+// 余白の背景色 / 壁紙。配置計算と同じく全バリアント共通。
 TJS_BEGIN_NATIVE_PROP_DECL(viewportBgColor)
 {
 	TJS_BEGIN_NATIVE_PROP_GETTER
@@ -2013,7 +2079,6 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/setViewport)
 	return TJS_S_OK;
 }
 TJS_END_NATIVE_METHOD_DECL(/*func. name*/setViewport)
-#endif // __GENERIC__
 //----------------------------------------------------------------------
 TJS_BEGIN_NATIVE_PROP_DECL(zoomNumer)
 {

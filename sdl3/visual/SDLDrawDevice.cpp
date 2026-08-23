@@ -689,6 +689,25 @@ TJS_BEGIN_NATIVE_PROP_DECL(sdlVideoPresenterHost)
 }
 TJS_END_NATIVE_PROP_DECL(sdlVideoPresenterHost)
 //----------------------------------------------------------------------
+// ビューポート余白 (背景色 + 壁紙) の登録口 (iTVPViewportBackgroundHost) を
+// ポインタ値として公開する (videoPresenterHost と同じ規約)。 Window はこの
+// プロパティを読み、非 0 のときだけ余白設定を push する。
+TJS_BEGIN_NATIVE_PROP_DECL(viewportBackgroundHost)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_SDLDrawDevice);
+		iTVPViewportBackgroundHost * host =
+			static_cast<iTVPViewportBackgroundHost*>(_this->GetDevice());
+		*result = reinterpret_cast<tjs_int64>(host);
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_DENY_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_PROP_DECL(viewportBackgroundHost)
+//----------------------------------------------------------------------
 #ifdef KRKRZ_HAS_ELEMENTS
 // Elements ダイアログ overlay の描画アダプタ提供口 (iTVPDialogRendererHost) を
 // ポインタ値として公開する (videoPresenterHost と同じ規約)。 外部 (プラグイン等) が

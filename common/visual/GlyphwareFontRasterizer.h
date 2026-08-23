@@ -32,6 +32,10 @@ class GlyphwareFontRasterizer : public FontRasterizer {
 	tjs_int Ascent;        // primary-face ascent at PixelSize (common baseline)
 	tjs_int ChainEmojiMode; // effective emoji mode the current Chain was built for
 	bool HasFont;
+	// effective synthetic bold/italic: TVP_TF_BOLD/ITALIC, minus styles that
+	// Font.defaultUseVarStyle expressed through variable-font axes instead.
+	bool SynthBold = false;
+	bool SynthItalic = false;
 
 	void RebuildChain(const tTVPFont& font);
 	// codepoint -> (chain face index, glyph id); returns false if none cover it.

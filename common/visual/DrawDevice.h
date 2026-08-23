@@ -14,9 +14,8 @@
 #include "LayerIntf.h"
 #include "LayerManager.h"
 #include "ComplexRect.h"
-#ifdef __GENERIC__
 #include "ViewportConfig.h"
-#endif
+#include "ViewportBackground.h"
 
 class iTVPWindow;
 class tTJSNI_BaseLayer;
@@ -25,9 +24,7 @@ class tTJSNI_BaseLayer;
 typedef void* HWND;
 #endif
 
-#ifdef __GENERIC__
 #include <functional>
-#endif
 
 /*[*/
 //---------------------------------------------------------------------------
@@ -434,32 +431,14 @@ public:
 	//! @note		このメソッドは、VSync待ちを有効にするかどうかを設定する。
 	//!				有効にすると、描画デバイスは低層側の機能で VSYnc を待つ
 	virtual void SetWaitVSync(bool enable) = 0;
-
-	//---------------------------------------------------------------------------
-	// ビューポート余白塗り (ゲーム画面が surface 全面を覆わないときの周囲)
-	//---------------------------------------------------------------------------
-
-	//! @brief		(Window->DrawDevice) 余白の背景色を設定する
-	//! @param		color	0xAARRGGBB
-	//! @note		既定は no-op。tTVPDrawDevice が保持・描画する。
-	//!				iTVPDrawDevice 直接実装 (NullDrawDevice 等) は何もしない。
-	virtual void SetViewportBackgroundColor(tjs_uint32 color) {}
-
-	//! @brief		(Window->DrawDevice) 余白の壁紙を設定する
-	//! @param		image	壁紙となる Layer / Bitmap オブジェクトを保持する Variant。
-	//!						void / null でクリア。tTJSVariant が参照を保持するので
-	//!						イメージデータは維持される。描画デバイス (プラグイン可) は
-	//!						imageWidth/imageHeight/mainImageBuffer/mainImageBufferPitch
-	//!						プロパティから画像イメージを取得する (内部型は渡さない)。
-	//! @param		fit		壁紙のフィット方式
-	//! @param		alignX	水平配置 0..1
-	//! @param		alignY	垂直配置 0..1
-	virtual void SetViewportWallpaper(const tTJSVariant &image,
-		tTVPViewportFit fit, double alignX, double alignY) {}
-
-	//! @brief		(Window->DrawDevice) 余白の壁紙をクリアする
-	virtual void ClearViewportWallpaper() {}
 #endif
+
+	// ビューポート余白塗り (背景色 + 壁紙) は iTVPDrawDevice には載せない。
+	// vtable を増やすと既存プラグイン製の描画デバイスと食い違うため、
+	// 対応デバイスだけが iTVPViewportBackgroundHost を実装し、TJS プロパティ
+	// "viewportBackgroundHost" でポインタを公開する規約にしている
+	// (videoPresenterHost / dialogRendererHost と同じ方式)。
+	// 詳細 = common/visual/ViewportBackground.h
 
 };
 //---------------------------------------------------------------------------
@@ -467,8 +446,12 @@ public:
 
 //---------------------------------------------------------------------------
 //! @brief		描画デバイスインターフェースの基本的な実装
+//! @note		ビューポート余白 (背景色 + 壁紙) の保持もここで行い、
+//!				iTVPViewportBackgroundHost として公開できるようにする。
+//!				実際に余白を描くかは各派生デバイス次第で、描けるデバイスだけが
+//!				TJS プロパティ "viewportBackgroundHost" を生やす。
 //---------------------------------------------------------------------------
-class tTVPDrawDevice : public iTVPDrawDevice
+class tTVPDrawDevice : public iTVPDrawDevice, public iTVPViewportBackgroundHost
 {
 protected:
 	iTVPWindow * Window;
@@ -477,7 +460,6 @@ protected:
 	tTVPRect DestRect; //!< 描画先位置
 	tTVPRect ClipRect; //!< クリッピング矩形
 
-#ifdef __GENERIC__
 	//-- ビューポート余白 (背景色 + 壁紙)。基底で保持し、各描画デバイスの
 	//   Show() が ViewportWallpaperGen の変化を見てテクスチャを遅延アップロードする。
 	tjs_uint32 ViewportBgColor;                       //!< 余白背景色
@@ -486,7 +468,6 @@ protected:
 	double ViewportWpAlignX;                          //!< 壁紙水平配置 0..1
 	double ViewportWpAlignY;                          //!< 壁紙垂直配置 0..1
 	tjs_uint32 ViewportWallpaperGen;                  //!< 壁紙世代カウンタ (変更検出)
-#endif
 
 protected:
 	tTVPDrawDevice(); //!< コンストラクタ
@@ -538,12 +519,11 @@ public:
 	virtual void TJS_INTF_METHOD NotifyLayerResize(iTVPLayerManager * manager);
 	virtual void TJS_INTF_METHOD NotifyLayerImageChange(iTVPLayerManager * manager);
 
-#ifdef __GENERIC__
-//---- ビューポート余白塗り (基底は保持のみ。実描画は各描画デバイスの Show())
-	virtual void SetViewportBackgroundColor(tjs_uint32 color);
+//---- iTVPViewportBackgroundHost (基底は保持のみ。実描画は各描画デバイスの Show())
+	virtual void SetViewportBackgroundColor(tjs_uint32 color) override;
 	virtual void SetViewportWallpaper(const tTJSVariant &image,
-		tTVPViewportFit fit, double alignX, double alignY);
-	virtual void ClearViewportWallpaper();
+		tTVPViewportFit fit, double alignX, double alignY) override;
+	virtual void ClearViewportWallpaper() override;
 	// 描画デバイス向けアクセサ
 	tjs_uint32 GetViewportBgColor() const { return ViewportBgColor; }
 	const tTJSVariant & GetViewportWallpaper() const { return ViewportWallpaper; }
@@ -561,7 +541,6 @@ public:
 	//! @return	有効な壁紙画像を取得できたら true
 	bool GetViewportWallpaperImage(tjs_int &w, tjs_int &h, tjs_int &pitch,
 		const tjs_uint8 *&buffer) const;
-#endif
 
 //---- ユーザーインターフェース関連
 	// window → drawdevice

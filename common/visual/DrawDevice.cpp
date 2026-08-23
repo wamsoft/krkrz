@@ -46,16 +46,30 @@ tTVPDrawDevice::tTVPDrawDevice()
 	PrimaryLayerManagerIndex = 0;
 	DestRect.clear();
 	ClipRect.clear();
-#ifdef __GENERIC__
 	ViewportBgColor = 0xff000000;
 	ViewportWallpaperFit = vfCover;
 	ViewportWpAlignX = 0.5;
 	ViewportWpAlignY = 0.5;
 	ViewportWallpaperGen = 0;
-#endif
 }
 
-#ifdef __GENERIC__
+//---------------------------------------------------------------------------
+// 描画デバイスの TJS オブジェクトから余白塗りの登録口を得る。
+// 規定プロパティ "viewportBackgroundHost" にポインタ値が入っている
+// (videoPresenterHost と同じ規約)。 非対応デバイスは NULL。
+//---------------------------------------------------------------------------
+iTVPViewportBackgroundHost * TVPQueryViewportBackgroundHost(const tTJSVariant &ddobj)
+{
+	if( ddobj.Type() != tvtObject ) return NULL;
+	tTJSVariantClosure clo = ddobj.AsObjectClosureNoAddRef();
+	if( clo.Object == NULL ) return NULL;
+	tTJSVariant val;
+	if( TJS_FAILED( clo.PropGet(0, TJS_W("viewportBackgroundHost"), NULL, &val, NULL) ) )
+		return NULL;
+	tjs_int64 p = (tjs_int64)val;
+	if( p == 0 ) return NULL;
+	return reinterpret_cast<iTVPViewportBackgroundHost*>((intptr_t)p);
+}
 //---------------------------------------------------------------------------
 void tTVPDrawDevice::SetViewportBackgroundColor(tjs_uint32 color)
 {
@@ -106,7 +120,6 @@ bool tTVPDrawDevice::GetViewportWallpaperImage(tjs_int &w, tjs_int &h,
 	if (w <= 0 || h <= 0 || !buffer) return false;
 	return true;
 }
-#endif
 //---------------------------------------------------------------------------
 
 

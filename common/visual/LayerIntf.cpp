@@ -36,6 +36,7 @@
 #include "TVPSysFont.h"
 #endif
 #include "FontRasterizer.h"
+#include "FontVariations.h"   // TVPNormalizeFontVariations / TVPFontDefaultUseVarStyle
 #include "RectItf.h"
 #include "FontSystem.h"
 #include "FontServiceIntf.h"
@@ -4685,6 +4686,39 @@ void tTJSNI_BaseLayer::SetFontEmojiMode(tjs_int mode)
 tjs_int tTJSNI_BaseLayer::GetFontEmojiMode() const
 {
 	return Font.EmojiMode;
+}
+//---------------------------------------------------------------------------
+void tTJSNI_BaseLayer::SetFontWeight(tjs_int weight)
+{
+	// -1 = 未指定 (face 選択・軸とも既定)。それ以外は usWeightClass 相当 1-1000
+	if(weight < 0) weight = -1;
+	else { if(weight < 1) weight = 1; if(weight > 1000) weight = 1000; }
+	if(Font.Weight != weight)
+	{
+		Font.Weight = weight;
+		FontChanged = true;
+	}
+}
+//---------------------------------------------------------------------------
+tjs_int tTJSNI_BaseLayer::GetFontWeight() const
+{
+	return Font.Weight;
+}
+//---------------------------------------------------------------------------
+void tTJSNI_BaseLayer::SetFontVariations(const ttstr & variations)
+{
+	// 正規化 (タグ小文字化・昇順・量子化)。不正な書式はここで例外になる
+	ttstr norm = TVPNormalizeFontVariations(variations);
+	if(Font.Variations != norm)
+	{
+		Font.Variations = norm;
+		FontChanged = true;
+	}
+}
+//---------------------------------------------------------------------------
+ttstr tTJSNI_BaseLayer::GetFontVariations() const
+{
+	return Font.Variations;
 }
 //---------------------------------------------------------------------------
 void tTJSNI_BaseLayer::SetFontAngle(tjs_int angle)
@@ -9937,6 +9971,35 @@ tjs_int tTJSNI_Font::GetFontEmojiMode() const
 	else return Font.EmojiMode;
 }
 //---------------------------------------------------------------------------
+void tTJSNI_Font::SetFontWeight(tjs_int weight)
+{
+	if( Layer ) Layer->SetFontWeight(weight);
+	else
+	{
+		if(weight < 0) weight = -1;
+		else { if(weight < 1) weight = 1; if(weight > 1000) weight = 1000; }
+		Font.Weight = weight;
+	}
+}
+//---------------------------------------------------------------------------
+tjs_int tTJSNI_Font::GetFontWeight() const
+{
+	if( Layer ) return Layer->GetFontWeight();
+	else return Font.Weight;
+}
+//---------------------------------------------------------------------------
+void tTJSNI_Font::SetFontVariations(const ttstr & variations)
+{
+	if( Layer ) Layer->SetFontVariations(variations);
+	else Font.Variations = TVPNormalizeFontVariations(variations);
+}
+//---------------------------------------------------------------------------
+ttstr tTJSNI_Font::GetFontVariations() const
+{
+	if( Layer ) return Layer->GetFontVariations();
+	else return Font.Variations;
+}
+//---------------------------------------------------------------------------
 void tTJSNI_Font::SetFontAngle(tjs_int angle)
 {
 	if( Layer ) Layer->SetFontAngle( angle );
@@ -10144,6 +10207,96 @@ const tTVPFont& tTJSNI_Font::GetFont() const
 }
 //---------------------------------------------------------------------------
 
+
+//---------------------------------------------------------------------------
+// Font.getVarAxes / getFontInfo の可変軸露出用ヘルパ (glyphware 経由)
+//---------------------------------------------------------------------------
+#ifdef KRKRZ_USE_GLYPHWARE
+#include "GlyphwareHost.h"
+#include "CharacterSet.h"   // TVPUtf16ToUtf8
+#include "glyphware/Face.h"
+
+// フォント名/パスを glyphware face へ解決する (fonts.json 宣言名 / storage /
+// GDI 名。registry 共有 face なので開いた face はキャッシュされる)。
+static std::shared_ptr<glyphware::Face> TVPFontResolveGlyphwareFace(const ttstr& nameOrPath)
+{
+	std::string token;
+	TVPUtf16ToUtf8(token, tjs_string(nameOrPath.c_str()));
+	if (token.empty()) return nullptr;
+	std::string key = TVPGlyphwareResolveFontKey(token);
+	if (key.empty()) return nullptr;
+	return TVPGetGlyphwareRegistry().face(TVPGlyphwareEntryForKey(key));
+}
+
+// big-endian pack された軸タグ → "wght" 等の文字列 (末尾空白は落とす)
+static ttstr TVPFontVarTagToString(tjs_uint32 tag)
+{
+	tjs_char buf[5];
+	tjs_int n = 0;
+	for (int i = 0; i < 4; ++i) {
+		tjs_char c = static_cast<tjs_char>((tag >> (24 - i * 8)) & 0xff);
+		if (c == 0) break;
+		buf[n++] = c;
+	}
+	while (n > 0 && buf[n-1] == TJS_W(' ')) --n;
+	buf[n] = 0;
+	return ttstr(buf);
+}
+
+// descriptor の可変軸情報を配列 (axes) / 配列 (namedInstances) として dic へ足す。
+// 非 VF (axes 空) では何も足さない。
+static void TVPFontAppendVariableInfoToDict(iTJSDispatch2* dic,
+                                            const glyphware::FontDescriptor& d)
+{
+	if (d.axes.empty()) return;
+	tTJSVariant tv;
+	{
+		iTJSDispatch2 *arr = TJSCreateArrayObject();
+		tjs_int idx = 0;
+		for (const auto& ax : d.axes) {
+			iTJSDispatch2 *a = TJSCreateDictionaryObject();
+			tTJSVariant v;
+			v = TVPFontVarTagToString(ax.tag); a->PropSet(TJS_MEMBERENSURE, TJS_W("tag"), nullptr, &v, a);
+			v = ttstr(ax.name.c_str());        a->PropSet(TJS_MEMBERENSURE, TJS_W("name"), nullptr, &v, a);
+			v = (double)ax.minValue;           a->PropSet(TJS_MEMBERENSURE, TJS_W("min"), nullptr, &v, a);
+			v = (double)ax.defaultValue;       a->PropSet(TJS_MEMBERENSURE, TJS_W("default"), nullptr, &v, a);
+			v = (double)ax.maxValue;           a->PropSet(TJS_MEMBERENSURE, TJS_W("max"), nullptr, &v, a);
+			tTJSVariant e(a, a);
+			a->Release();
+			arr->PropSetByNum(TJS_MEMBERENSURE, idx++, &e, arr);
+		}
+		tv = tTJSVariant(arr, arr);
+		arr->Release();
+		dic->PropSet(TJS_MEMBERENSURE, TJS_W("axes"), nullptr, &tv, dic);
+	}
+	if (!d.namedInstances.empty()) {
+		iTJSDispatch2 *arr = TJSCreateArrayObject();
+		tjs_int idx = 0;
+		for (const auto& ni : d.namedInstances) {
+			iTJSDispatch2 *a = TJSCreateDictionaryObject();
+			tTJSVariant v;
+			v = ttstr(ni.name.c_str()); a->PropSet(TJS_MEMBERENSURE, TJS_W("name"), nullptr, &v, a);
+			{
+				iTJSDispatch2 *co = TJSCreateDictionaryObject();
+				for (const auto& c : ni.coords) {
+					tTJSVariant cv = (double)c.second;
+					co->PropSet(TJS_MEMBERENSURE, TVPFontVarTagToString(c.first).c_str(),
+					            nullptr, &cv, co);
+				}
+				tTJSVariant cvv(co, co);
+				co->Release();
+				a->PropSet(TJS_MEMBERENSURE, TJS_W("coords"), nullptr, &cvv, a);
+			}
+			tTJSVariant e(a, a);
+			a->Release();
+			arr->PropSetByNum(TJS_MEMBERENSURE, idx++, &e, arr);
+		}
+		tv = tTJSVariant(arr, arr);
+		arr->Release();
+		dic->PropSet(TJS_MEMBERENSURE, TJS_W("namedInstances"), nullptr, &tv, dic);
+	}
+}
+#endif // KRKRZ_USE_GLYPHWARE
 
 //---------------------------------------------------------------------------
 // Font.queryFonts / Font.getFontInfo 用ヘルパ (フォントサービス → TJS 辞書)
@@ -10461,6 +10614,13 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/getFontInfo)
 	if(result)
 	{
 		iTJSDispatch2 *dic = TVPFontFaceInfoToDictionary(info);
+#ifdef KRKRZ_USE_GLYPHWARE
+		// 可変軸情報 (axes / namedInstances) を追加する。getFontInfo は解決の
+		// ためにフォントを開くので、ここで descriptor を読んでも追加コスト無し。
+		// (queryFonts は「開かず宣言値で返す」性質を守るため軸は返さない)
+		if (auto face = TVPFontResolveGlyphwareFace(*param[0]))
+			TVPFontAppendVariableInfoToDict(dic, face->descriptor());
+#endif
 		*result = tTJSVariant(dic, dic);
 		dic->Release();
 	}
@@ -10468,6 +10628,95 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/getFontInfo)
 	return TJS_S_OK;
 }
 TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/getFontInfo)
+//----------------------------------------------------------------------
+// getVarAxes(nameOrPath) : バリアブルフォントの可変軸一覧を
+// [%[tag, name, min, default, max]] で返す。非 VF は空配列、解決できない
+// 場合は void。glyphware 無効ビルドでは常に空配列。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/getVarAxes)
+{
+	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
+	if(!result) return TJS_S_OK;
+
+#ifdef KRKRZ_USE_GLYPHWARE
+	auto face = TVPFontResolveGlyphwareFace(*param[0]);
+	if(!face)
+	{
+		result->Clear();
+		return TJS_S_OK;
+	}
+	iTJSDispatch2 *arr = TJSCreateArrayObject();
+	tjs_int idx = 0;
+	for (const auto& ax : face->descriptor().axes) {
+		iTJSDispatch2 *a = TJSCreateDictionaryObject();
+		tTJSVariant v;
+		v = TVPFontVarTagToString(ax.tag); a->PropSet(TJS_MEMBERENSURE, TJS_W("tag"), nullptr, &v, a);
+		v = ttstr(ax.name.c_str());        a->PropSet(TJS_MEMBERENSURE, TJS_W("name"), nullptr, &v, a);
+		v = (double)ax.minValue;           a->PropSet(TJS_MEMBERENSURE, TJS_W("min"), nullptr, &v, a);
+		v = (double)ax.defaultValue;       a->PropSet(TJS_MEMBERENSURE, TJS_W("default"), nullptr, &v, a);
+		v = (double)ax.maxValue;           a->PropSet(TJS_MEMBERENSURE, TJS_W("max"), nullptr, &v, a);
+		tTJSVariant e(a, a);
+		a->Release();
+		arr->PropSetByNum(TJS_MEMBERENSURE, idx++, &e, arr);
+	}
+	*result = tTJSVariant(arr, arr);
+	arr->Release();
+#else
+	iTJSDispatch2 *arr = TJSCreateArrayObject();
+	*result = tTJSVariant(arr, arr);
+	arr->Release();
+#endif
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/getVarAxes)
+//----------------------------------------------------------------------
+// setDefaultVariations(nameOrPath [, axes]) : 無指定時に適用する既定可変軸を
+// フォント名 (Font.face 等で使うトークン表記、"#suffix" 抜き) 単位で登録する。
+// axes は "wght=300,wdth=87.5" 形式。void/空文字列で解除。優先順は
+// suffix / Font.weight / Font.variations > fonts.json 宣言 > 本登録 >
+// wght=400 正規化。glyphware 無効ビルドでは何もしない。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/setDefaultVariations)
+{
+	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
+#ifdef KRKRZ_USE_GLYPHWARE
+	ttstr name(*param[0]);
+	ttstr axes;
+	if(numparams >= 2 && param[1]->Type() != tvtVoid)
+	{
+		axes = ttstr(*param[1]);
+		if(!axes.IsEmpty())
+		{
+			// 書式検証 (不正はここで例外に)
+			std::vector<tTVPFontAxisCoord> coords;
+			TVPParseFontVariations(axes, coords);
+		}
+	}
+	std::string nameU8, axesU8;
+	TVPUtf16ToUtf8(nameU8, name.AsStdString());
+	TVPUtf16ToUtf8(axesU8, axes.AsStdString());
+	TVPGlyphwareSetDefaultVariations(nameU8, axesU8);
+#endif
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/setDefaultVariations)
+//----------------------------------------------------------------------
+// getDefaultVariations(nameOrPath) : setDefaultVariations の現在値 (無ければ空文字列)
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/getDefaultVariations)
+{
+	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
+	if(!result) return TJS_S_OK;
+#ifdef KRKRZ_USE_GLYPHWARE
+	std::string nameU8;
+	TVPUtf16ToUtf8(nameU8, ttstr(*param[0]).AsStdString());
+	auto axes = TVPGlyphwareGetDefaultVariations(nameU8);
+	tjs_string tmp;
+	TVPUtf8ToUtf16(tmp, axes);
+	*result = ttstr(tmp.c_str());
+#else
+	*result = ttstr();
+#endif
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/getDefaultVariations)
 //----------------------------------------------------------------------
 
 //-- properties
@@ -10535,6 +10784,79 @@ TJS_BEGIN_NATIVE_PROP_DECL(emojiMode)
 	TJS_END_NATIVE_PROP_SETTER
 }
 TJS_END_NATIVE_PROP_DECL(emojiMode)
+//----------------------------------------------------------------------
+// weight: フォントウェイト (100-900、void/-1 = 未指定)。glyphware 経路では
+// wght 軸を持つ face の可変軸として効く (variations の wght 明示が優先)。
+TJS_BEGIN_NATIVE_PROP_DECL(weight)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Font);
+		tjs_int w = _this->GetFontWeight();
+		if(w < 0) *result = tTJSVariant();   // 未指定は void
+		else *result = w;
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_BEGIN_NATIVE_PROP_SETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Font);
+		if(param->Type() == tvtVoid) _this->SetFontWeight(-1);
+		else _this->SetFontWeight((tjs_int)*param);
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_PROP_DECL(weight)
+//----------------------------------------------------------------------
+// variations: 可変軸指定 "wght=700,wdth=87.5"。設定時に正規化される
+// (タグ小文字化/昇順/量子化)。void または空文字列でクリア。
+TJS_BEGIN_NATIVE_PROP_DECL(variations)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Font);
+		*result = _this->GetFontVariations();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_BEGIN_NATIVE_PROP_SETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Font);
+		if(param->Type() == tvtVoid) _this->SetFontVariations(ttstr());
+		else _this->SetFontVariations(*param);
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_PROP_DECL(variations)
+//----------------------------------------------------------------------
+// defaultUseVarStyle (クラスプロパティ): bold/italic を可変軸 (wght/slnt/ital)
+// で表現できる face ではそちらを使い、合成スタイルを無効化する (既定 false)。
+void TVPClearFontCache();   // LayerBitmapImpl.cpp
+TJS_BEGIN_NATIVE_PROP_DECL(defaultUseVarStyle)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		if(result) *result = TVPFontDefaultUseVarStyle ? (tjs_int)1 : (tjs_int)0;
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_BEGIN_NATIVE_PROP_SETTER
+	{
+		bool b = ((tjs_int)*param) != 0;
+		if(TVPFontDefaultUseVarStyle != b) {
+			TVPFontDefaultUseVarStyle = b;
+			TVPClearFontCache();   // 合成⇔軸の切替はグリフキャッシュに影響する
+		}
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_PROP_DECL(defaultUseVarStyle)
 //----------------------------------------------------------------------
 // defaultEmojiMode: 絵文字モードのグローバル既定 (クラスプロパティ)。emojiMode を
 // 個別指定していない (=既定) Font はこの値に従う。変更でフォントキャッシュは破棄。

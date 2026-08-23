@@ -317,6 +317,14 @@ public:
 	//!        テクスチャへも部分転送する。 renderCache 有効時のみ機能する
 	//!        (staging に前回フレームが残っていることが前提)。
 	//!        false: 変化フレームは常に全面再描画 (A/B 比較・切り分け用)。
+	// pad_icon のテーマを接続パッドから自動で決めるか (setPadTheme("auto"))。
+	// 有効にすると画面を開くたびに決め直すので、 途中でコントローラを
+	// 替えても次に開いた画面から絵が追従する。
+	void SetPadThemeAuto(bool enable);
+	bool GetPadThemeAuto() const;
+	// auto のときだけ、 今つながっているパッドを見てテーマを設定し直す。
+	void ResolveAutoPadTheme();
+
 	void SetPartialRedraw(bool enable);
 	bool GetPartialRedraw() const;
 

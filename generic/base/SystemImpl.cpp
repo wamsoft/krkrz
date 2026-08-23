@@ -115,6 +115,32 @@ ttstr TVPGetPlatformName()
 //---------------------------------------------------------------------------
 
 //---------------------------------------------------------------------------
+// TVPGetPlatformTag
+//---------------------------------------------------------------------------
+ttstr TVPGetPlatformTag()
+{
+	// GetPlatformTags() は「一般 → 具体」順なので末尾が最も具体的
+	const std::vector<tjs_string> &tags = Application->GetPlatformTags();
+	if (tags.empty()) return ttstr();
+	return ttstr(tags.back().c_str());
+}
+//---------------------------------------------------------------------------
+
+//---------------------------------------------------------------------------
+// TVPGetSystemLanguage
+//   本体 (OS / ハード) の表示言語を BCP-47 で返す。 取得できなければ空文字。
+//   機種ごとの取得手段は Application 派生クラス側 (SDL3 既定 =
+//   SDL_GetPreferredLocales / NX = nn::oe / PS5 = sceSystemServiceParam)。
+//---------------------------------------------------------------------------
+ttstr TVPGetSystemLanguage()
+{
+	const std::string lang = Application->GetSystemLanguage();
+	if (lang.empty()) return ttstr();
+	return ttstr(lang.c_str());
+}
+//---------------------------------------------------------------------------
+
+//---------------------------------------------------------------------------
 // TVPGetOSName
 //---------------------------------------------------------------------------
 ttstr TVPGetOSName()
@@ -596,6 +622,90 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/setDrawStatsLog)
 TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
 	/*func. name*/setDrawStatsLog)
 //----------------------------------------------------------------------
+#ifdef TVP_USE_OPENGL
+// GL テクスチャメモリ計測 (GLTexture.cpp の自由関数を extern 参照)。
+// GL ヘッダを include せずに済むよう、 ここでは宣言だけする。
+extern void TVPGetGLTextureMemory(tjs_uint64 *texture_bytes, tjs_uint64 *pbo_bytes,
+                                  tjs_uint64 *peak_bytes,
+                                  tjs_uint32 *texture_count, tjs_uint32 *pbo_count);
+extern void TVPSetGLTextureMemoryLog(bool enable);
+extern bool TVPGetGLTextureMemoryLogEnabled();
+extern void TVPResetGLTextureMemoryPeak();
+extern void TVPLogGLTextureMemory(const char *tag);
+
+// 現在の GL テクスチャメモリ使用量を返す。
+//   System.getTextureMemory() → %[
+//     texture: ...,       // テクスチャ実体の合計バイト数
+//     pbo: ...,           // アップロード用 PBO の合計バイト数 (遅延確保)
+//     total: ...,         // 合計
+//     peak: ...,          // total の最大値
+//     textureCount: ...,  // 生存テクスチャ数
+//     pboCount: ...       // 生存 PBO 数
+//   ]
+// 引数に文字列を渡すと、 その名前付きで 1 行ログにも出す
+// (シーン境界などに目印を打ちたいとき用)。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/getTextureMemory)
+{
+	tjs_uint64 tex = 0, pbo = 0, peak = 0;
+	tjs_uint32 texcount = 0, pbocount = 0;
+	TVPGetGLTextureMemory(&tex, &pbo, &peak, &texcount, &pbocount);
+
+	if (numparams >= 1 && param[0]->Type() != tvtVoid) {
+		ttstr tag = *param[0];
+		tTJSNarrowStringHolder narrow(tag.c_str());
+		TVPLogGLTextureMemory((const char *)narrow);
+	}
+
+	iTJSDispatch2 *dict = TJSCreateDictionaryObject();
+	if (!dict) return TJS_E_FAIL;
+	auto setVal = [&](const tjs_char *name, tjs_uint64 val) {
+		tTJSVariant v(static_cast<tjs_int64>(val));
+		dict->PropSet(TJS_MEMBERENSURE, name, nullptr, &v, dict);
+	};
+	setVal(TJS_W("texture"),      tex);
+	setVal(TJS_W("pbo"),          pbo);
+	setVal(TJS_W("total"),        tex + pbo);
+	setVal(TJS_W("peak"),         peak);
+	setVal(TJS_W("textureCount"), texcount);
+	setVal(TJS_W("pboCount"),     pbocount);
+
+	if (result) *result = tTJSVariant(dict, dict);
+	dict->Release();
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
+	/*func. name*/getTextureMemory)
+//----------------------------------------------------------------------
+// GL テクスチャメモリ合計が一定量 (8MiB) 増減するたびに log へ出す機能の
+// ON/OFF。引数なしで toggle、bool 引数で明示制御。既定は OFF
+// (GLTexture::MemLogEnabled = false)。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/setTextureMemoryLog)
+{
+	bool enable;
+	if (numparams >= 1 && param[0]->Type() != tvtVoid) {
+		enable = ((tjs_int)*param[0]) != 0;
+	} else {
+		enable = !TVPGetGLTextureMemoryLogEnabled();
+	}
+	TVPSetGLTextureMemoryLog(enable);
+	if (result) *result = (tjs_int)(enable ? 1 : 0);
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
+	/*func. name*/setTextureMemoryLog)
+//----------------------------------------------------------------------
+// GL テクスチャメモリの peak を現在値へリセットする。
+// 「ここから先の最大」を測りたいときに使う。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/resetTextureMemoryPeak)
+{
+	TVPResetGLTextureMemoryPeak();
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
+	/*func. name*/resetTextureMemoryPeak)
+//----------------------------------------------------------------------
+#endif // TVP_USE_OPENGL
+//----------------------------------------------------------------------
 TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/nullpo)
 {
 	// force make a null-po
@@ -628,6 +738,22 @@ TJS_BEGIN_NATIVE_PROP_DECL(exePath)
 	TJS_DENY_NATIVE_PROP_SETTER
 }
 TJS_END_NATIVE_STATIC_PROP_DECL_OUTER(cls, exePath)
+//----------------------------------------------------------------------
+// エンジン組み込みリソースの置き場 (末尾 '/' 付き)。
+// desktop = "resource://./" / wasm = "file://./resource/" のように
+// プラットフォームで変わるので、同梱フォント等を参照するときはこれを前置する。
+TJS_BEGIN_NATIVE_PROP_DECL(resourcePath)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		*result = TVPGetResourcePath();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_DENY_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_STATIC_PROP_DECL_OUTER(cls, resourcePath)
 //----------------------------------------------------------------------
 // -replweb で開いているブラウザ REPL ビューワーの URL。未起動なら空文字列。
 TJS_BEGIN_NATIVE_PROP_DECL(replWebURL)
@@ -856,6 +982,59 @@ TJS_BEGIN_NATIVE_PROP_DECL(padEnabled)
 	TJS_END_NATIVE_PROP_SETTER
 }
 TJS_END_NATIVE_STATIC_PROP_DECL_OUTER(cls, padEnabled)
+
+
+// VK_PAD1..4 (A/B/X/Y) をどのフェイスボタンに割り当てるか (読み書き)。
+//   "label"    … ボタンの刻印に合わせる (既定)。任天堂系は SOUTH=B / EAST=A /
+//                WEST=Y / NORTH=X なので、位置基準とは A/B・X/Y が入れ替わる。
+//                PlayStation は ×→A / ○→B / □→X / △→Y (位置基準と同結果)。
+//   "position" … SDL の位置 (SOUTH/EAST/WEST/NORTH) をそのまま A/B/X/Y と読む
+//                (Xbox 名準拠。従来互換)。
+// 起動オプション -padbuttons=label|position と同じもの。詳細 doc/Gamepad.md。
+TJS_BEGIN_NATIVE_PROP_DECL(padButtonMapping)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		*result = Application->GetPadButtonMappingByLabel() ?
+			ttstr(TJS_W("label")) : ttstr(TJS_W("position"));
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_BEGIN_NATIVE_PROP_SETTER
+	{
+		ttstr s = *param;
+		if (s == TJS_W("label")) {
+			Application->SetPadButtonMappingByLabel(true);
+		} else if (s == TJS_W("position")) {
+			Application->SetPadButtonMappingByLabel(false);
+		} else {
+			TVPAddLog(TJS_W("(warning) System.padButtonMapping: must be \"label\" or \"position\""));
+			return TJS_E_INVALIDPARAM;
+		}
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_STATIC_PROP_DECL_OUTER(cls, padButtonMapping)
+
+
+// 接続しているパッドのボタン表記の系統 (読み取り専用)。
+//   "xbox" / "ps" / "switch"。 判らないときは空文字列。
+//   画面に出すボタン絵をどれにするかの判断に使う
+//   (ElementsDialog.setPadTheme("auto") はこれを見ている)。
+TJS_BEGIN_NATIVE_PROP_DECL(padStyle)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		*result = ttstr(Application->GetJoypadStyle(0).c_str());
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_DENY_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_STATIC_PROP_DECL_OUTER(cls, padStyle)
 
 
 TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/addFont)

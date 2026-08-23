@@ -6,6 +6,7 @@
 
 #include "app.h"
 #include <filesystem>
+#include <iterator>
 #include <SDL3/SDL_dialog.h>
 
 class MySDL3Application : public SDL3Application  {
@@ -15,6 +16,10 @@ public:
 	virtual ~MySDL3Application(){}
     virtual bool InitPath();
     virtual const tjs_string& TempPath() const; //< テンポラリ領域のパス
+
+private:
+    //! @brief 実行ファイルのフルパスを解決する ( ファイル名込み )
+    tjs_string ResolveExePath(const tjs_string& appPath) const;
 };
 
 static inline tjs_string IncludeTrailingBackslash( const tjs_string& path ) {
@@ -75,6 +80,27 @@ static bool IsExistent(const char *path)
 	tjs_string _path;
 	TVPUtf8ToUtf16(_path, path);
 	return TVPIsExistentStorageNoSearch(_path.c_str());
+}
+
+// 実行ファイルのフルパスを解決する。
+// SDL は「実行ファイルのあるディレクトリ」 (SDL_GetBasePath) しか返さないので、
+// ファイル名は OS 固有 API か argv[0] から取る。 いずれも取れなければ
+// 従来と同じ appPath + "krkrz.exe" にフォールバックする。
+tjs_string MySDL3Application::ResolveExePath(const tjs_string& appPath) const
+{
+#if defined(SDL_PLATFORM_WINDOWS)
+	wchar_t buf[1024];
+	const DWORD len = ::GetModuleFileNameW(NULL, buf, static_cast<DWORD>(std::size(buf)));
+	if(len > 0 && len < std::size(buf)) return tjs_string(reinterpret_cast<const tjs_char*>(buf));
+#endif
+	// argv[0] ( InitArgs は InitPath より前に呼ばれている )
+	if(!_args.empty() && !_args[0].empty()) {
+		const tjs_string& argv0 = _args[0];
+		// パス区切りを含むならそのまま、 含まないなら appPath の下と見なす
+		if(argv0.find_first_of(TJS_W("/\\")) != tjs_string::npos) return argv0;
+		return appPath + argv0;
+	}
+	return appPath + TJS_W("krkrz.exe");
 }
 
 bool MySDL3Application::InitPath()
@@ -157,8 +183,10 @@ bool MySDL3Application::InitPath()
 	TVPUtf8ToUtf16(_AppPath, appPath);
 	TVPUtf8ToUtf16(_ProjectPath, projectPath);
 
-	/// XXX
-	_ExePath = _AppPath + TJS_W("krkrz.exe");
+	// 実行ファイルのフルパス。 <exe名>.cf / <exe名>.cfu の名前決定と
+	// -userconf の書き出し先に使うため、 実際の exe 名を取る必要がある
+	// ( 以前は固定で "krkrz.exe" を繋いでいた )。
+	_ExePath = ResolveExePath(_AppPath);
 #if defined(SDL_PLATFORM_ANDROID)
 	_PluginPath = TJS_W("");
 #elif defined(SDL_PLATFORM_APPLE)

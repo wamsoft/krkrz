@@ -4,6 +4,7 @@
 #ifdef KRKRZ_USE_GLYPHWARE
 
 #include "GlyphwareHost.h"      // resolve / effective key / build chain
+#include "FontVariations.h"     // 可変軸の実効座標
 #include "LayerBitmapIntf.h"    // tTVPBaseBitmap
 #include "CharacterSet.h"       // TVPUtf16ToUtf8
 #include "tvpfontstruc.h"       // tTVPFont / TVP_TF_*
@@ -24,6 +25,8 @@ void TVPShapedTextStyleFromFont(tTVPShapedTextStyle& out, const tTVPFont& font)
 	out.underline = (font.Flags & TVP_TF_UNDERLINE) != 0;
 	out.strikeout = (font.Flags & TVP_TF_STRIKEOUT) != 0;
 	out.angle = font.Angle;
+	out.weight = font.Weight;
+	out.variations = font.Variations;
 }
 //---------------------------------------------------------------------------
 
@@ -36,6 +39,10 @@ struct ShapeContext {
 	std::vector<std::shared_ptr<glyphware::Face>> chain;
 	glyphware::BaseDirection dir = glyphware::BaseDirection::Auto;
 	int size = 0;
+	// 実効の合成 bold/italic (defaultUseVarStyle で可変軸へマッピングされた
+	// ぶんは落ちる)。描画は style.bold/italic ではなくこちらを使う。
+	bool bold = false;
+	bool italic = false;
 };
 
 bool PrepareContext(ShapeContext& ctx, const tTVPShapedTextStyle& style,
@@ -51,6 +58,18 @@ bool PrepareContext(ShapeContext& ctx, const tTVPShapedTextStyle& style,
 	// chain (first covering face per codepoint wins). e.g. "meiryo.ttc,seguiemj.ttf".
 	TVPGlyphwareBuildChain(keyU8, ctx.chain);
 	if (ctx.chain.empty()) return false;
+
+	// 可変軸 (style.weight / style.variations) を連鎖の各 face が持つ同名軸へ
+	// 適用する (private face の LRU 経由)。defaultUseVarStyle 有効時は
+	// bold/italic を軸へ自動マッピングし、合成スタイルを落とす。
+	ctx.bold = style.bold;
+	ctx.italic = style.italic;
+	{
+		std::vector<tTVPFontAxisCoord> coords;
+		TVPFontGetEffectiveVarCoords(style.weight, style.variations, coords);
+		TVPGlyphwareAutoStyleCoords(ctx.chain[0], coords, ctx.bold, ctx.italic);
+		TVPGlyphwareApplyVariationsToChain(ctx.chain, coords);
+	}
 
 	ctx.dir = base == 1 ? glyphware::BaseDirection::LTR
 	        : base == 2 ? glyphware::BaseDirection::RTL
@@ -271,7 +290,7 @@ int TVPGlyphwareDrawText(tTVPBaseBitmap* dest, tjs_int x, tjs_int y,
 
 	BlitResult res;
 	const ClipRect clip = FullClip(dest);
-	BlitLine(dest, x, y, ll, style.bold, style.italic, cr, cg, cb, ca,
+	BlitLine(dest, x, y, ll, ctx.bold, ctx.italic, cr, cg, cb, ca,
 	         rotated, cph, sph, clip, res);
 
 	// decoration lines over the drawn portion
@@ -384,7 +403,7 @@ bool TVPGlyphwareDrawTextArea(tTVPBaseBitmap* dest, tjs_int x, tjs_int y,
 		const tjs_int lx = x + static_cast<tjs_int>(bl.x);
 		const tjs_int baseline = y + static_cast<tjs_int>(bl.y);
 		BlitResult res;
-		BlitLine(dest, lx, baseline, bl.layout, style.bold, style.italic,
+		BlitLine(dest, lx, baseline, bl.layout, ctx.bold, ctx.italic,
 		         cr, cg, cb, ca, false, 1.0, 0.0, clip, res);
 		BlitDecorations(dest, clip, ctx, lx, baseline, style, res,
 		                cr, cg, cb, ca);

@@ -7,9 +7,7 @@
 #include "GLTexture.h"
 #include "GLVideoPresenter.h"   // iTVPGLVideoPresenter / iTVPGLVideoPresenterHost
 #include "EventIntf.h"   // tTVPRepeatedExceptionGuard
-#ifdef __GENERIC__
 #include "OGLViewportBackground.h"
-#endif
 #include <functional>
 #include <mutex>
 #include <memory>
@@ -55,8 +53,17 @@ class tTVPOGLDrawDevice : public tTVPDrawDevice
 	class tTJSNI_Matrix32 *MatrixInstance;
 
 	GLfloat _position[8];
+	//! GL の実フレームバッファサイズ (glViewport / 読み戻しの基準)。
+	//! 常にフルスクリーンの環境 (PS5 等) では、 ウィンドウの inner サイズ
+	//! (= DestRect の座標系) と一致しない。
 	int SurfaceWidth;
 	int SurfaceHeight;
+
+	//! 論理サーフェス (inner) サイズの問い合わせ先。 SetWindowInterface で取得。
+	class tTJSNI_Window *NIWindow = nullptr;
+
+	//! DestRect (論理サーフェス座標) を GL の実フレームバッファ座標へ移す。
+	tTVPRect ToPhysicalRect(const tTVPRect &r, int physW, int physH) const;
 
 	~tTVPOGLDrawDevice(); //!< デストラクタ
 
@@ -142,17 +149,16 @@ public:
 	virtual void SetWaitVSync(bool enable);
 
 private:
-#ifdef __GENERIC__
-	// ビューポート余白の壁紙テクスチャキャッシュ (背景色は base が保持)
-	tTVPGLWallpaperCache mWallpaperCache;
-#endif
-
 	// overlay 動画 presenter (単一スロット、最後に登録した 1 つを pull する)。
 	// フレームバッファ / GLTexture は presenter 側 (GLVideoPresenter.cpp) が持つ。
 	iTVPGLVideoPresenter *VideoPresenter;
 	bool ShowVideo();
 
-#endif
+#endif // __GENERIC__
+
+private:
+	// ビューポート余白の壁紙テクスチャキャッシュ (背景色は base が保持)。全バリアント共通。
+	tTVPGLWallpaperCache mWallpaperCache;
 
 #ifdef KRKRZ_HAS_ELEMENTS
 public:

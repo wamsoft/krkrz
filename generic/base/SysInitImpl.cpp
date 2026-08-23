@@ -17,6 +17,7 @@
 
 #include "SysInitImpl.h"
 #include "StorageIntf.h"
+#include "ConfigLine.h"
 #include "StorageImpl.h"
 #include "MsgImpl.h"
 #include "GraphicsLoaderIntf.h"
@@ -546,12 +547,110 @@ void TVPMainWindowClosed()
 //---------------------------------------------------------------------------
 // GetCommandLine
 //---------------------------------------------------------------------------
+// リソース内の設定を読む。
+//
+//   config.cf            … 全機種共通 (従来どおり)
+//   config_<tag>.cf      … プラットフォーム別 (tag = "windows"/"switch"/
+//                           "switch2"/"ps5"/"android" ... = System.platformTag)
+//
+// 同じリソース資材に機種別の定義を同梱できるようにするためのもの。
+// 無い場合は単に読み飛ばす (エラーにしない)。
+//
+// 優先順位は「具体的なものが勝つ」。 TVPGetCommandLine は
+// TVPProgramArguments を先頭から探して最初の一致を返すので、
+// 具体的なタグを先頭側へ積む (Switch2 なら switch2 → switch → 共通)。
 static std::vector<std::string> * TVPGetEmbeddedOptions()
 {
+	std::vector<std::string> *ret = new std::vector<std::string>();
+
+	// GetPlatformTags() は「一般 → 具体」順なので、逆順 (具体 → 一般) に読む
+	const std::vector<tjs_string> &tags = Application->GetPlatformTags();
+	for (auto it = tags.rbegin(); it != tags.rend(); ++it) {
+		tjs_string path = Application->ResourcePath() +
+			TJS_W("config_") + *it + TJS_W(".cf");
+		std::vector<std::string> *sub = NULL;
+		try {
+			sub = TVPReadLines(path.c_str());
+		} catch(...) {
+			sub = NULL;   // 無ければ読み飛ばす
+		}
+		if (sub) {
+			ret->insert(ret->end(), sub->begin(), sub->end());
+			delete sub;
+		}
+	}
+
+	// 最後に共通 config.cf (= 最も優先度が低い)
 	tjs_string path = Application->ResourcePath() + TJS_W("config.cf");
-	return TVPReadLines(path.c_str());
+	std::vector<std::string> *base = NULL;
+	try {
+		base = TVPReadLines(path.c_str());
+	} catch(...) {
+		base = NULL;
+	}
+	if (base) {
+		ret->insert(ret->end(), base->begin(), base->end());
+		delete base;
+	}
+
+	if (ret->empty()) { delete ret; return NULL; }
+	return ret;
 }
 
+//---------------------------------------------------------------------------
+// 設定ファイル ( .cf / .cfu ) の場所
+//
+// デスクトップ ( Win/Mac/Linux ) では WINVER と同じ規約に揃える:
+//   <exe名>.cf    … 実行ファイルと同じ場所 ( krkrz64.exe → krkrz64.cf )
+//   <exe名>.cfu   … データ保存場所。 `-userconf` が書き出す先
+// 従来の固定名 config.cf ( 実行ファイルと同じ場所 ) も互換のため読み続ける。
+// 優先度は  .cfu > <exe名>.cf > config.cf > 埋め込み。
+//
+// 非デスクトップ ( Android/iOS/wasm/組み込み機 ) は従来どおり config.cf のみ。
+// 「実行ファイルの隣」や ExePath が意味を持たない環境があるため、
+// そちらの挙動は変えない。
+//---------------------------------------------------------------------------
+// exe パスを「ディレクトリ」と「拡張子を除いたファイル名」に分解する。
+static bool TVPSplitExePathForConfig(tjs_string &dir, tjs_string &stem)
+{
+	const tjs_string exe = Application->ExePath();
+	if(exe.empty()) return false;
+
+	const tjs_string::size_type sep = exe.find_last_of(TJS_W("/\\"));
+	dir  = (sep == tjs_string::npos) ? tjs_string() : exe.substr(0, sep + 1);
+	stem = (sep == tjs_string::npos) ? exe : exe.substr(sep + 1);
+
+	const tjs_string::size_type dot = stem.find_last_of(TJS_W('.'));
+	if(dot != tjs_string::npos && dot != 0) stem = stem.substr(0, dot);
+	return !stem.empty();
+}
+//---------------------------------------------------------------------------
+// 実行ファイルと同じ場所の <exe名>.cf 。 対象外の環境では空文字列を返す。
+static tjs_string TVPGetExeLocalConfigFileName()
+{
+#ifdef KRKRZ_DESKTOP
+	tjs_string dir, stem;
+	if(TVPSplitExePathForConfig(dir, stem)) return dir + stem + TJS_W(".cf");
+#endif
+	return tjs_string();
+}
+//---------------------------------------------------------------------------
+// データ保存場所の <exe名>.cfu 。 対象外の環境では空文字列を返す。
+// TVPNativeDataPath 確定後に呼ぶこと。
+static tjs_string TVPGetUserConfigFileName()
+{
+#ifdef KRKRZ_DESKTOP
+	tjs_string dir, stem;
+	if(!TVPSplitExePathForConfig(dir, stem)) return tjs_string();
+	tjs_string datapath = TVPNativeDataPath;
+	if(datapath.empty()) return tjs_string();
+	if(datapath.back() != TJS_W('/') && datapath.back() != TJS_W('\\'))
+		datapath += TJS_W("/");
+	return datapath + stem + TJS_W(".cfu");
+#else
+	return tjs_string();
+#endif
+}
 //---------------------------------------------------------------------------
 static std::vector<std::string> * TVPGetConfigFileOptions(const tjs_string& filename)
 {
@@ -686,9 +785,12 @@ static void PushConfigFileOptions(const std::vector<std::string> * options)
 	if(!options) return;
 	for(unsigned int j = 0; j < options->size(); j++)
 	{
-		if( (*options)[j].c_str()[0] != ';') // unless comment
-			TVPProgramArguments.push_back(
-			TVPParseCommandLineOne(TJS_W("-") + ttstr((*options)[j].c_str())));
+		// 行末の改行・前後の空白・BOM を落としてから解釈する。
+		// ( これをしないと素の値に '\n' / '\r' が紛れ込む。ConfigLine.h 参照 )
+		const std::string line = TVPNormalizeConfigLine((*options)[j]);
+		if(TVPIsConfigLineIgnorable(line)) continue; // 空行 / コメント
+		TVPProgramArguments.push_back(
+			TVPParseCommandLineOne(TJS_W("-") + ttstr(line.c_str())));
 	}
 }
 //---------------------------------------------------------------------------
@@ -700,7 +802,12 @@ static void TVPInitProgramArgumentsAndDataPath(bool stop_after_datapath_got)
 
 
 		// find options from self executable image
-		const int num_option_layers = 3;
+		// 優先度は 低 → 高 の順に options[0..3]
+		//   [0] 埋め込みリソース ( config_<tag>.cf → config.cf )
+		//   [1] config.cf   ( 実行ファイルと同じ場所・従来の固定名 )
+		//   [2] <exe名>.cf  ( 実行ファイルと同じ場所・デスクトップのみ )
+		//   [3] <exe名>.cfu ( データ保存場所・デスクトップのみ )
+		const int num_option_layers = 4;
 		std::vector<std::string> * options[num_option_layers];
 		for(int i = 0; i < num_option_layers; i++) options[i] = NULL;
 		try
@@ -708,24 +815,26 @@ static void TVPInitProgramArgumentsAndDataPath(bool stop_after_datapath_got)
 			// read embedded options and default configuration file
 			options[0] = TVPGetEmbeddedOptions();
 			options[1] = TVPGetConfigFileOptions( Application->AppPath() + TJS_W("config.cf") );
+			{
+				const tjs_string execonf = TVPGetExeLocalConfigFileName();
+				if(!execonf.empty()) options[2] = TVPGetConfigFileOptions(execonf);
+			}
 
 			// at this point, we need to push all exsting known options
 			// to be able to see datapath
 			PushAllCommandlineArguments();
-			PushConfigFileOptions(options[1]); // has more priority
+			PushConfigFileOptions(options[2]); // has more priority
+			PushConfigFileOptions(options[1]);
 			PushConfigFileOptions(options[0]); // has lesser priority
 
 			TVPNativeDataPath = Application->InitDataPath();
 
 			if(stop_after_datapath_got) return;
 
-			// read per-user configuration file
-			// TVPNativeDataPath がローカルパスでないとこれだと開けない
-			if (false) {
-				ttstr fname  = TVPNativeDataPath;
-				fname += TVPChopStorageExt(TVPExtractStorageName(ttstr(Application->ExePath().c_str())));
-				fname += TJS_W(".cfu");	
-				options[2] = TVPGetConfigFileOptions(fname.c_str());
+			// read per-user configuration file ( -userconf の出力先 )
+			{
+				const tjs_string userconf = TVPGetUserConfigFileName();
+				if(!userconf.empty()) options[3] = TVPGetConfigFileOptions(userconf);
 			}
 
 			// push each options into option stock
@@ -733,8 +842,9 @@ static void TVPInitProgramArgumentsAndDataPath(bool stop_after_datapath_got)
 			// option priority order.
 			TVPProgramArguments.clear();
 			PushAllCommandlineArguments();
-			PushConfigFileOptions(options[2]); // has more priority
-			PushConfigFileOptions(options[1]); // has more priority
+			PushConfigFileOptions(options[3]); // has more priority
+			PushConfigFileOptions(options[2]);
+			PushConfigFileOptions(options[1]);
 			PushConfigFileOptions(options[0]); // has lesser priority
 		} catch(...) {
 			for(int i = 0; i < num_option_layers; i++)

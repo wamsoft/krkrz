@@ -146,6 +146,11 @@ public:
 
 //-- ビューポート (ゲーム画面の表示画角制御)。Form に設定を保持し、配置は
 //   DestRect 再計算、余白色/壁紙は UpdateContent で DrawDevice へ push する。
+	// 画面比率の固定 (0,0 で解除)
+	void SetAspectLock(tjs_int w, tjs_int h);
+	tjs_int GetAspectLockW() const;
+	tjs_int GetAspectLockH() const;
+
 	void SetViewportFit(tjs_int fit);
 	tjs_int GetViewportFit() const;
 	void SetViewportZoom(double scale);
@@ -200,6 +205,9 @@ public:
 	tjs_int GetInnerWidth() const;
 	void SetInnerHeight(tjs_int h);
 	tjs_int GetInnerHeight() const;
+	//! 装飾ぶんのサイズ (外形 - 内側)。枠を持たない環境では 0
+	tjs_int GetFrameWidth() const;
+	tjs_int GetFrameHeight() const;
 
 	void SetInnerSize(tjs_int w, tjs_int h);
 

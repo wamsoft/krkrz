@@ -164,6 +164,30 @@ ttstr TVPGetPlatformName()
 }
 //---------------------------------------------------------------------------
 
+//---------------------------------------------------------------------------
+// TVPGetPlatformTag
+//   WINVER (Win32 host) は常に "windows"。 ビット数は platformName 側で分かる。
+//---------------------------------------------------------------------------
+ttstr TVPGetPlatformTag()
+{
+	return ttstr(TJS_W("windows"));
+}
+//---------------------------------------------------------------------------
+
+//---------------------------------------------------------------------------
+// TVPGetSystemLanguage
+//   WINVER (Win32 host) は GetUserDefaultLocaleName が BCP-47 をそのまま
+//   返す ("ja-JP" / "en-US" / "zh-Hant-TW" ...) のでそれを使う。
+//---------------------------------------------------------------------------
+ttstr TVPGetSystemLanguage()
+{
+	wchar_t buf[LOCALE_NAME_MAX_LENGTH] = {0};
+	if (::GetUserDefaultLocaleName(buf, LOCALE_NAME_MAX_LENGTH) <= 0)
+		return ttstr();
+	return ttstr(buf);
+}
+//---------------------------------------------------------------------------
+
 
 
 typedef void (WINAPI *RtlGetVersionFunc)(OSVERSIONINFOEX* );
@@ -1217,6 +1241,22 @@ TJS_BEGIN_NATIVE_PROP_DECL(exePath)
 	TJS_DENY_NATIVE_PROP_SETTER
 }
 TJS_END_NATIVE_STATIC_PROP_DECL_OUTER(cls, exePath)
+//----------------------------------------------------------------------
+// エンジン組み込みリソースの置き場 (末尾 '/' 付き)。
+// WINVER は exe 埋め込みの "resource://./"。他プラットフォームでは変わるので、
+// 同梱フォント等を参照するときはこれを前置する。
+TJS_BEGIN_NATIVE_PROP_DECL(resourcePath)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		*result = TVPGetResourcePath();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_DENY_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_STATIC_PROP_DECL_OUTER(cls, resourcePath)
 //----------------------------------------------------------------------
 // -replweb で開いているブラウザ REPL ビューワーの URL。未起動なら空文字列。
 TJS_BEGIN_NATIVE_PROP_DECL(replWebURL)

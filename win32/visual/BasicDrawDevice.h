@@ -55,6 +55,24 @@ class tTVPBasicDrawDevice : public tTVPDrawDevice, public iTVPVideoPresenterHost
 	tjs_uint TextureWidth;	//!< テクスチャ(=元画像)の横幅
 	tjs_uint TextureHeight;	//!< テクスチャ(=元画像)の縦幅
 
+	//-- ビューポート余白の壁紙テクスチャ (背景色は ClearRenderTargetView で塗る)。
+	//   基底 (tTVPDrawDevice) が保持する壁紙オブジェクトから、世代カウンタが
+	//   変わったときだけアップロードする。
+	ID3D11Texture2D*			WallpaperTexture;
+	ID3D11ShaderResourceView*	WallpaperSRV;
+	tjs_uint32					WallpaperGen;		//!< アップロード済みの世代
+	tjs_uint					WallpaperWidth;
+	tjs_uint					WallpaperHeight;
+
+	void DestroyWallpaperTexture();
+	//! 世代が変わっていれば壁紙テクスチャを作り直す (Show の描画スレッドで呼ぶ)
+	void EnsureWallpaperTexture();
+	//! 余白の壁紙を描く (背景色クリア後・ゲーム描画前)
+	void DrawViewportWallpaper( float sw, float sh );
+	//! 四角形 1 枚を現在の SRV で描く (頂点バッファを書き換えて Draw)
+	void DrawTexturedQuad( float nl, float nt, float nr, float nb,
+		float sl, float st, float sr, float sb );
+
 	//-- CPU シャドウ (TextureBuffer) のうち、GPU テクスチャへまだ反映していない領域。
 	//   NotifyBitmapCompleted で積み、DrawCompositedFrame で転送してクリアする。
 	std::vector<tTVPRect> DirtyRects;

@@ -90,6 +90,12 @@ void tTVPXInputPadProvider::ReadSlot(int user)
 	if (b & XINPUT_GAMEPAD_DPAD_UP)        key |= (1u << 13);
 	if (b & XINPUT_GAMEPAD_DPAD_RIGHT)     key |= (1u << 14);
 	if (b & XINPUT_GAMEPAD_DPAD_DOWN)      key |= (1u << 15);
+	// 配置基準のフェイスボタン (bit24..27)。 XInput は Xbox 配置固定なので
+	// 刻印 A/B/X/Y = 下/右/左/上 とそのまま対応する。
+	if (b & XINPUT_GAMEPAD_A)              key |= (1u << 24); // 下
+	if (b & XINPUT_GAMEPAD_B)              key |= (1u << 25); // 右
+	if (b & XINPUT_GAMEPAD_X)              key |= (1u << 26); // 左
+	if (b & XINPUT_GAMEPAD_Y)              key |= (1u << 27); // 上
 
 	// 軸。XInput の Y は +上なので、画面座標系 (+下) に合わせて符号反転。
 	float lx = g.sThumbLX / 32767.0f;

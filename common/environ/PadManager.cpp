@@ -8,7 +8,8 @@
 #include "SysInitIntf.h"    // TVPGetCommandLine
 
 //---------------------------------------------------------------------------
-// ビット位置 (doc/Gamepad.md §3.1) → VK_PAD* キーコード対応。24 ビット。
+// ビット位置 (doc/Gamepad.md §3.1) → VK_PAD* キーコード対応。28 ビット。
+// bit24..27 は bit0..3 と同じ物理ボタンを「配置」で指したもの (刻印ではない)。
 //---------------------------------------------------------------------------
 static const int TVPPadVirtualKeyMap[] = {
 	VK_PAD1,        // 0  A
@@ -35,8 +36,12 @@ static const int TVPPadVirtualKeyMap[] = {
 	VK_PAD_R_UP,    // 21 右スティック ↑
 	VK_PAD_R_RIGHT, // 22 右スティック →
 	VK_PAD_R_DOWN,  // 23 右スティック ↓
+	VK_PAD_FACE_SOUTH, // 24 フェイス 下 (配置基準)
+	VK_PAD_FACE_EAST,  // 25 フェイス 右
+	VK_PAD_FACE_WEST,  // 26 フェイス 左
+	VK_PAD_FACE_NORTH, // 27 フェイス 上
 };
-#define TVP_NUM_PAD_KEY 24
+#define TVP_NUM_PAD_KEY 28
 
 // 十字系グループ (bit12..23 = 十字 + 左右スティック方向)。トリガ系はその補集合。
 static const tjs_uint32 CROSS_GROUP_MASK = 0xfffu << 12;
@@ -117,7 +122,18 @@ void tTVPPadManager::GenerateKeyEvents(tjs_uint32 newstate)
 		tjs_uint32 t = LastPushedTrigger;
 		do
 		{
-			for(tjs_int i = 0; i < TVP_NUM_PAD_KEY; i++)
+			// 刻印基準 (bit0..23) と配置基準 (bit24..27) から 1 つずつ。
+			// 同じ物理ボタンが両方のビットを立てるので、 片方だけ拾うと
+			// もう一方の基準で割り当てたキーがリピートしなくなる。
+			for(tjs_int i = 0; i < 24; i++)
+			{
+				if((1u<<i) & t)
+				{
+					RepeatKeys.push_back(TVPPadVirtualKeyMap[i]);
+					break;
+				}
+			}
+			for(tjs_int i = 24; i < TVP_NUM_PAD_KEY; i++)
 			{
 				if((1u<<i) & t)
 				{
@@ -233,6 +249,13 @@ tjs_string tTVPPadManager::GetJoypadType(int no)
 	return Provider->GetPhysicalPadName(phys);
 }
 //---------------------------------------------------------------------------
+tjs_string tTVPPadManager::GetJoypadStyle(int no)
+{
+	int phys = LogicalToPhysical(no);
+	if (phys < 0 || !Provider) return tjs_string();
+	return Provider->GetPhysicalPadStyle(phys);
+}
+//---------------------------------------------------------------------------
 int tTVPPadManager::GetJoypadCount()
 {
 	return (Enabled && Provider) ? Provider->GetPhysicalPadCount() : 0;
@@ -268,6 +291,8 @@ bool tTVPPadManager::GetAsyncKeyState(tjs_uint keycode)
 		code = keycode - VK_PAD_L_LEFT + 16;
 	} else if (keycode >= VK_PAD_R_LEFT && keycode <= VK_PAD_R_DOWN) {
 		code = keycode - VK_PAD_R_LEFT + 20;
+	} else if (keycode >= VK_PAD_FACE_SOUTH && keycode <= VK_PAD_FACE_NORTH) {
+		code = keycode - VK_PAD_FACE_SOUTH + 24;
 	}
 	if (code >= 0) {
 		return (LastActiveState & (1u << code)) != 0;

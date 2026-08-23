@@ -47,6 +47,8 @@ public:
 	virtual tjs_uint32 GetPhysicalPadState(int phys) override;
 	virtual float GetPhysicalPadAxis(int phys, int axisId) override;
 	virtual tjs_string GetPhysicalPadName(int phys) override;
+	// XInput は Xbox 配列固定
+	virtual tjs_string GetPhysicalPadStyle(int phys) override { return (phys >= 0) ? tjs_string(TJS_W("xbox")) : tjs_string(); }
 	virtual bool RumblePhysical(int phys, int low, int high, int duration_ms) override;
 	virtual bool StopRumblePhysical(int phys) override;
 };

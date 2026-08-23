@@ -25,13 +25,16 @@ status: **未着手 (要望・設計メモ)** — 2026-08 記録
 は先頭優先で線形検索する:
 
 1. 実コマンドライン (`PushAllCommandlineArguments`) — **最優先**
-2. per-user `.cfu` (`<datapath>/<exe名>.cfu`) — ※現在 `if (false)` で**無効化中**
-3. `config.cf` (exe と同階層)
-4. embedded options (exe 埋め込み) — 最下位
+2. per-user `.cfu` (`<datapath>/<exe名>.cfu`) — デスクトップのみ
+3. `<exe名>.cf` (exe と同階層) — デスクトップのみ
+4. `config.cf` (exe と同階層) — 全環境
+5. embedded options (`resource://config_<tag>.cf` → `config.cf`) — 最下位
 
 つまり「exe 同階層の `config.cf` に共通オプションを列挙」は既にできる。
-`.cfu` (ユーザ別) の口も枠だけ残っている (datapath がローカルでないと開けない
-問題で無効化されている)。
+デスクトップ (Win/Mac/Linux) では WINVER と同じ `<exe名>.cf` / `<exe名>.cfu` も
+読む (2026-08 に generic 側を WINVER と揃えた。それ以前は `config.cf` のみで、
+`.cfu` は `if (false)` で無効化されていた)。非デスクトップは従来どおり
+`config.cf` のみ。
 
 ## 実現案
 
@@ -52,9 +55,10 @@ status: **未着手 (要望・設計メモ)** — 2026-08 記録
 `TVPRewriteProgramArguments(std::vector<ttstr>&)` を用意し、アプリ (プラグイン
 含む) が引数列を自由に書き換えられるようにする。柔軟だが規約が緩くなる。
 
-### 案C: `.cfu` の復活 + プロファイル化
-無効化中の per-user `.cfu` を、datapath 非依存な既知パス (personal path 等) から
-読むよう直し、そこにプロファイル選択を書けるようにする。
+### 案C: `.cfu` のプロファイル化
+per-user `.cfu` の読み込みはデスクトップで有効化済み (`<datapath>/<exe名>.cfu`)。
+そこにプロファイル選択を書けるようにする。datapath がローカルパスとは限らない
+環境向けに、datapath 非依存な既知パス (personal path 等) を候補に足す余地もある。
 
 ## 検討ポイント
 

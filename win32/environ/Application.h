@@ -346,6 +346,13 @@ public:
 	tjs_uint32 GetPadState(int no) { return PadManager_.GetPadState(no); }
 	float GetPadAxis(int no, int axisId) { return PadManager_.GetPadAxis(no, axisId); }
 	tjs_string GetJoypadType(int no) { return PadManager_.GetJoypadType(no); }
+	tjs_string GetJoypadStyle(int no) { return PadManager_.GetJoypadStyle(no); }
+	// generic 側 tTVPApplication::GetPlatformTags と同形のアクセサ (共通コードの
+	// ResolveAutoPadTheme 等が参照)。WINVER のタグは常に "windows" のみ。
+	const std::vector<tjs_string>& GetPlatformTags() const {
+		static const std::vector<tjs_string> tags{ tjs_string(TJS_W("windows")) };
+		return tags;
+	}
 	tjs_int GetJoypadCount() { return PadManager_.GetJoypadCount(); }
 	bool HasJoypad(int no) { return PadManager_.HasJoypad(no); }
 	bool RumbleGamepad(int no, int low, int high, int duration_ms) { return PadManager_.Rumble(no, low, high, duration_ms); }

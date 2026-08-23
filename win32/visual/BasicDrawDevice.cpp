@@ -96,6 +96,10 @@ tTVPBasicDrawDevice::tTVPBasicDrawDevice()
 
 	Texture = NULL;
 	TextureSRV = NULL;
+	WallpaperTexture = NULL;
+	WallpaperSRV = NULL;
+	WallpaperGen = 0;
+	WallpaperWidth = WallpaperHeight = 0;
 	TextureBuffer = NULL;
 	TexturePitch = 0;
 	TextureWidth = TextureHeight = 0;
@@ -153,8 +157,16 @@ void tTVPBasicDrawDevice::DestroyPresentPipeline()
 	TVPSafeRelease(VertexShader);
 }
 //---------------------------------------------------------------------------
+void tTVPBasicDrawDevice::DestroyWallpaperTexture()
+{
+	TVPSafeRelease(WallpaperSRV);
+	TVPSafeRelease(WallpaperTexture);
+	WallpaperWidth = WallpaperHeight = 0;
+}
+//---------------------------------------------------------------------------
 void tTVPBasicDrawDevice::DestroyTexture()
 {
+	DestroyWallpaperTexture();
 	TVPSafeRelease(TextureSRV);
 	TVPSafeRelease(Texture);
 	if(TextureBuffer) { free(TextureBuffer); TextureBuffer = NULL; }
@@ -922,23 +934,7 @@ void tTVPBasicDrawDevice::DrawCompositedFrame()
 	float nt = 1.0f - dt * 2.0f / sh;
 	float nb = 1.0f - db * 2.0f / sh;
 
-	// TRIANGLESTRIP の 4 頂点
-	tTVPBDDVertex verts[4] = {
-		{ nl, nt, sl, st },
-		{ nr, nt, sr, st },
-		{ nl, nb, sl, sb },
-		{ nr, nb, sr, sb },
-	};
-
-	D3D11_MAPPED_SUBRESOURCE mapped;
-	if( SUCCEEDED(D3DContext->Map(VertexBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)) ) {
-		memcpy(mapped.pData, verts, sizeof(verts));
-		D3DContext->Unmap(VertexBuffer, 0);
-	} else {
-		return;
-	}
-
-	// -- 描画
+	// -- 描画 (頂点は DrawTexturedQuad が四角形ごとに書き込む)
 	D3D11_VIEWPORT vp; ZeroMemory(&vp, sizeof(vp));
 	vp.Width = sw; vp.Height = sh; vp.MinDepth = 0.0f; vp.MaxDepth = 1.0f;
 	D3DContext->RSSetViewports(1, &vp);
@@ -946,8 +942,14 @@ void tTVPBasicDrawDevice::DrawCompositedFrame()
 	ID3D11RenderTargetView* rtvs[1] = { BackBufferRTV };
 	D3DContext->OMSetRenderTargets(1, rtvs, NULL);
 
-	const float black[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
-	D3DContext->ClearRenderTargetView(BackBufferRTV, black);
+	// ビューポート余白の背景色でクリア (既定は不透明黒)
+	tjs_uint32 bg = GetViewportBgColor();
+	const float bgcol[4] = {
+		((bg >> 16) & 0xff) / 255.0f,
+		((bg >>  8) & 0xff) / 255.0f,
+		( bg        & 0xff) / 255.0f,
+		((bg >> 24) & 0xff) / 255.0f };
+	D3DContext->ClearRenderTargetView(BackBufferRTV, bgcol);
 
 	UINT stride = sizeof(tTVPBDDVertex), offset = 0;
 	D3DContext->IASetInputLayout(InputLayout);
@@ -955,15 +957,108 @@ void tTVPBasicDrawDevice::DrawCompositedFrame()
 	D3DContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
 	D3DContext->VSSetShader(VertexShader, NULL, 0);
 	D3DContext->PSSetShader(PixelShader, NULL, 0);
-	D3DContext->PSSetShaderResources(0, 1, &TextureSRV);
 	ID3D11SamplerState* samp = TVPZoomInterpolation ? SamplerLinear : SamplerPoint;
 	D3DContext->PSSetSamplers(0, 1, &samp);
-	D3DContext->Draw(4, 0);
+
+	// 壁紙があれば余白として先に描く (ゲーム画面はこの上に重なる)
+	DrawViewportWallpaper( sw, sh );
+
+	// ゲーム画面 (頂点は上で VertexBuffer へ書き込み済みだが、壁紙描画で
+	// 上書きされるので描き直す)
+	D3DContext->PSSetShaderResources(0, 1, &TextureSRV);
+	DrawTexturedQuad( nl, nt, nr, nb, sl, st, sr, sb );
 
 	// SRV を外しておく (次フレーム UpdateSubresource 時の hazard 回避)
 	ID3D11ShaderResourceView* nullsrv[1] = { NULL };
 	D3DContext->PSSetShaderResources(0, 1, nullsrv);
 }
+//---------------------------------------------------------------------------
+// ビューポート余白の壁紙 (背景色は ClearRenderTargetView が塗る)
+//---------------------------------------------------------------------------
+void tTVPBasicDrawDevice::EnsureWallpaperTexture()
+{
+	tjs_uint32 gen = GetViewportWallpaperGen();
+	if( gen == WallpaperGen && (WallpaperSRV || GetViewportWallpaper().Type() != tvtObject) ) return;
+	WallpaperGen = gen;
+	DestroyWallpaperTexture();
+	if( !D3DDevice ) return;
+
+	// 壁紙オブジェクト (Layer/Bitmap) からプロパティ経由で画像を取得する。
+	// PropGet を伴うので世代変化時 (= テクスチャ未作成時) のみ行う。
+	tjs_int ww, wh, srcpitch;
+	const tjs_uint8 *buffer;
+	if( !GetViewportWallpaperImage( ww, wh, srcpitch, buffer ) ) return;
+	if( ww <= 0 || wh <= 0 || !buffer ) return;
+
+	// kirikiri bitmap は ARGB8888 (メモリ上 B,G,R,A) = DXGI_FORMAT_B8G8R8A8_UNORM
+	// と同じ並びなので、そのまま初期データとして渡せる。ただし pitch は負値
+	// (ボトムアップ) がありうるので行単位でコピーする。
+	std::vector<tjs_uint8> tmp( (size_t)ww * 4 * wh );
+	for( tjs_int y = 0; y < wh; y++ ) {
+		const tjs_uint8 *src = buffer + (tjs_int64)srcpitch * y;
+		memcpy( &tmp[(size_t)ww * 4 * y], src, (size_t)ww * 4 );
+	}
+
+	D3D11_TEXTURE2D_DESC td; ZeroMemory(&td, sizeof(td));
+	td.Width = ww;
+	td.Height = wh;
+	td.MipLevels = 1;
+	td.ArraySize = 1;
+	td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+	td.SampleDesc.Count = 1;
+	td.Usage = D3D11_USAGE_IMMUTABLE;
+	td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+	D3D11_SUBRESOURCE_DATA init; ZeroMemory(&init, sizeof(init));
+	init.pSysMem = tmp.data();
+	init.SysMemPitch = (UINT)(ww * 4);
+
+	if( FAILED(D3DDevice->CreateTexture2D(&td, &init, &WallpaperTexture)) ) return;
+	if( FAILED(D3DDevice->CreateShaderResourceView(WallpaperTexture, NULL, &WallpaperSRV)) ) {
+		DestroyWallpaperTexture();
+		return;
+	}
+	WallpaperWidth = (tjs_uint)ww;
+	WallpaperHeight = (tjs_uint)wh;
+}
+//---------------------------------------------------------------------------
+void tTVPBasicDrawDevice::DrawTexturedQuad( float nl, float nt, float nr, float nb,
+	float sl, float st, float sr, float sb )
+{
+	tTVPBDDVertex verts[4] = {
+		{ nl, nt, sl, st },
+		{ nr, nt, sr, st },
+		{ nl, nb, sl, sb },
+		{ nr, nb, sr, sb },
+	};
+	D3D11_MAPPED_SUBRESOURCE mapped;
+	if( FAILED(D3DContext->Map(VertexBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)) ) return;
+	memcpy(mapped.pData, verts, sizeof(verts));
+	D3DContext->Unmap(VertexBuffer, 0);
+	D3DContext->Draw(4, 0);
+}
+//---------------------------------------------------------------------------
+void tTVPBasicDrawDevice::DrawViewportWallpaper( float sw, float sh )
+{
+	EnsureWallpaperTexture();
+	if( !WallpaperSRV || WallpaperWidth == 0 || WallpaperHeight == 0 ) return;
+
+	// 壁紙は surface 全面に対してフィットさせる (配置は壁紙専用の fit/align)。
+	tTVPViewportConfig cfg;
+	cfg.fit = GetViewportWallpaperFit();
+	cfg.alignX = GetViewportWpAlignX();
+	cfg.alignY = GetViewportWpAlignY();
+	tTVPRect r = TVPCalcViewportDestRect( cfg, (tjs_int)sw, (tjs_int)sh,
+		(tjs_int)WallpaperWidth, (tjs_int)WallpaperHeight );
+
+	float nl = r.left   * 2.0f / sw - 1.0f;
+	float nr = r.right  * 2.0f / sw - 1.0f;
+	float nt = 1.0f - r.top    * 2.0f / sh;
+	float nb = 1.0f - r.bottom * 2.0f / sh;
+
+	D3DContext->PSSetShaderResources(0, 1, &WallpaperSRV);
+	DrawTexturedQuad( nl, nt, nr, nb, 0.0f, 0.0f, 1.0f, 1.0f );
+}
+//---------------------------------------------------------------------------
 //---------------------------------------------------------------------------
 // Track V-E: overlay 動画 presenter (pull 型)
 //---------------------------------------------------------------------------
@@ -1130,6 +1225,25 @@ TJS_BEGIN_NATIVE_PROP_DECL(videoPresenterHost)
 	TJS_DENY_NATIVE_PROP_SETTER
 }
 TJS_END_NATIVE_PROP_DECL(videoPresenterHost)
+//----------------------------------------------------------------------
+// ビューポート余白 (背景色 + 壁紙) の登録口 (iTVPViewportBackgroundHost) を
+// ポインタ値として公開する (videoPresenterHost と同じ規約)。 Window はこの
+// プロパティを読み、非 0 のときだけ余白設定を push する。
+TJS_BEGIN_NATIVE_PROP_DECL(viewportBackgroundHost)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_BasicDrawDevice);
+		iTVPViewportBackgroundHost * host =
+			static_cast<iTVPViewportBackgroundHost*>(_this->GetDevice());
+		*result = reinterpret_cast<tjs_int64>(host);
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_DENY_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_PROP_DECL(viewportBackgroundHost)
 //----------------------------------------------------------------------
 #ifdef KRKRZ_HAS_ELEMENTS
 // Elements ダイアログ overlay の描画アダプタ提供口 (iTVPDialogRendererHost) を

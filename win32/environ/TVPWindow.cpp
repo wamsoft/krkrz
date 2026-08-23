@@ -272,14 +272,32 @@ LRESULT WINAPI tTVPWindow::Proc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
 		return 0;
 	case WM_DPICHANGED:
 		{
-			// 異DPIモニタへ移動 (または DPI 変更) 時、OS 提案の新矩形へリサイズ/再配置。
-			// マニフェスト PerMonitorV2 では OS が自動スケールしないため必須。クライアント
-			// サイズ変化は BasicDrawDevice(D3D11) の swapchain 追従で描画に反映される。
+			// 異DPIモニタへ移動 (または DPI 変更) 時の追従。
+			//
+			// ゲームはピクセル単位で作られているので、モニタを跨いだだけで絵の
+			// 大きさが変わらないほうが都合が良い。したがって **クライアント
+			// (inner) の物理ピクセルサイズを維持**する。OS 提案矩形はサイズを
+			// DPI 比でスケールしてくるので、**位置だけ**採用し、サイズは
+			// 「現クライアント + 新しい DPI での枠」で組み直す。
+			// src/core/doc/WindowGeometry.md §4 参照。
 			RECT* prc = reinterpret_cast<RECT*>(lParam);
-			if( prc ) {
-				::SetWindowPos( hWnd, NULL, prc->left, prc->top,
-					prc->right - prc->left, prc->bottom - prc->top,
-					SWP_NOZORDER | SWP_NOACTIVATE );
+			RECT cr;
+			if( prc && ::GetClientRect( hWnd, &cr ) ) {
+				RECT wr = { 0, 0, cr.right - cr.left, cr.bottom - cr.top };
+				DWORD style = ::GetWindowLong( hWnd, GWL_STYLE );
+				DWORD exStyle = ::GetWindowLong( hWnd, GWL_EXSTYLE );
+				BOOL menu = HasMenu( hWnd ) ? TRUE : FALSE;
+				// 新しい DPI は wParam の HIWORD。この時点で GetDpiForWindow は
+				// まだ旧値を返すことがあるので、必ず通知された値を使う。
+				UINT newdpi = HIWORD( wParam );
+				if( ::AdjustWindowRectExForDpi( &wr, style, menu, exStyle, newdpi ) ) {
+					::SetWindowPos( hWnd, NULL, prc->left, prc->top,
+						wr.right - wr.left, wr.bottom - wr.top,
+						SWP_NOZORDER | SWP_NOACTIVATE );
+				} else {
+					::SetWindowPos( hWnd, NULL, prc->left, prc->top, 0, 0,
+						SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSIZE );
+				}
 			}
 		}
 		return 0;
@@ -288,23 +306,22 @@ LRESULT WINAPI tTVPWindow::Proc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
 			MINMAXINFO* lpmmi = (LPMINMAXINFO)lParam;
 			// lpmmi->ptMaxPosition 最大化時の位置
 			// lpmmi->ptMaxSize 最大化時のサイズ
-			// 最小サイズ
-			if( min_size_.cx > 0 ) {
-				lpmmi->ptMinTrackSize.x = min_size_.cx;
-			}
-			if( min_size_.cy > 0 ) {
-				lpmmi->ptMinTrackSize.y = min_size_.cy;
-			}
-			if( max_size_.cx > 0 ) {
-				lpmmi->ptMaxTrackSize.x = max_size_.cx; // サイズ変更時の最大サイズ
-			} else {
-				lpmmi->ptMaxTrackSize.x = INT_MAX; // サイズ変更時の最大サイズ
-			}
-			if( max_size_.cy > 0 ) {
-				lpmmi->ptMaxTrackSize.y = max_size_.cy; // サイズ変更時の最大サイズ
-			} else {
-				lpmmi->ptMaxTrackSize.y = INT_MAX; // サイズ変更時の最大サイズ
-			}
+			//
+			// min_size_ / max_size_ は「内側 (クライアント) サイズ」基準なので、
+			// 装飾ぶんを足して外形基準の Track サイズへ変換する。
+			// 未指定 (0) のときは OS 既定の最小 (SM_CXMINTRACK 等) を残さず、
+			// リファレンスどおり「制限なし」にする
+			// (src/core/doc/WindowGeometry.md §5)。
+			// 未指定 (0) では OS 既定の最小 (SM_CXMINTRACK 等) を残さず「制限なし」
+			// を明示する。ただし Windows はキャプション付きウィンドウに対して
+			// これより下げられない下限を別に持っており、実測では内側幅 ~116 論理px
+			// で止まる (src/core/doc/WindowGeometry.md §7 参照)。
+			int fw = 0, fh = 0;
+			if( created_ ) GetFrameSize( hWnd, fw, fh );
+			lpmmi->ptMinTrackSize.x = ( min_size_.cx > 0 ) ? ( min_size_.cx + fw ) : 1;
+			lpmmi->ptMinTrackSize.y = ( min_size_.cy > 0 ) ? ( min_size_.cy + fh ) : 1;
+			lpmmi->ptMaxTrackSize.x = ( max_size_.cx > 0 ) ? ( max_size_.cx + fw ) : INT_MAX;
+			lpmmi->ptMaxTrackSize.y = ( max_size_.cy > 0 ) ? ( max_size_.cy + fh ) : INT_MAX;
 			return 0;
 		}
 	case WM_ACTIVATE: {
@@ -514,12 +531,35 @@ bool tTVPWindow::HasMenu( HWND hWnd ) {
 	}
 	return hMenu != NULL;
 }
-void tTVPWindow::SetClientSize( HWND hWnd, SIZE& size ) {
+//! クライアント矩形から装飾込みの外形矩形を求める (per-monitor DPI 対応)。
+//! AdjustWindowRectEx は PerMonitorV2 でも「システム DPI」で枠を計算してしまうため、
+//! ウィンドウが別 DPI のモニタ上にあると外形が誤算される。必ずこちらを使う。
+//! src/core/doc/WindowGeometry.md §7 参照。
+BOOL tTVPWindow::AdjustWindowRectForWindow( HWND hWnd, RECT& rect ) {
 	DWORD style = ::GetWindowLong( hWnd, GWL_STYLE );
 	DWORD exStyle = ::GetWindowLong( hWnd, GWL_EXSTYLE );
+	BOOL menu = HasMenu( hWnd ) ? TRUE : FALSE;
+	return ::AdjustWindowRectExForDpi( &rect, style, menu, exStyle, ::GetDpiForWindow( hWnd ) );
+}
+
+//! 現在のスタイル / DPI での装飾ぶんのサイズ (外形 - クライアント) を得る
+void tTVPWindow::GetFrameSize( HWND hWnd, int& fw, int& fh ) {
+	RECT rect;
+	::SetRect( &rect, 0, 0, 100, 100 );
+	if( AdjustWindowRectForWindow( hWnd, rect ) ) {
+		fw = (rect.right - rect.left) - 100;
+		fh = (rect.bottom - rect.top) - 100;
+	} else {
+		fw = fh = 0;
+	}
+	if( fw < 0 ) fw = 0;
+	if( fh < 0 ) fh = 0;
+}
+
+void tTVPWindow::SetClientSize( HWND hWnd, SIZE& size ) {
 	RECT rect;
 	::SetRect( &rect, 0, 0, size.cx, size.cy );
-	if( ::AdjustWindowRectEx( &rect, style, HasMenu( hWnd ) ? TRUE : FALSE, exStyle ) ) {
+	if( AdjustWindowRectForWindow( hWnd, rect ) ) {
 		RECT rect2;
 		if( ::GetWindowRect( hWnd, &rect2 ) ) {
 			if( ::SetWindowPos( hWnd, NULL, rect2.left, rect2.top, rect.right-rect.left, rect.bottom-rect.top, SIZE_CHANGE_FLAGS ) == 0 ) {
@@ -568,6 +608,15 @@ void tTVPWindow::SetCaption( const tjs_string& v ) {
 }
 
 void tTVPWindow::SetBorderStyle(tTVPBorderStyle st) {
+	// 装飾変更の前にクライアントサイズを控える (末尾で復元する)
+	SIZE saved_client = { 0, 0 };
+	{
+		RECT cr;
+		if( ::GetClientRect( GetHandle(), &cr ) ) {
+			saved_client.cx = cr.right - cr.left;
+			saved_client.cy = cr.bottom - cr.top;
+		}
+	}
 	const DWORD notStyle = WS_POPUP | WS_CAPTION | WS_BORDER | WS_THICKFRAME | WS_DLGFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU;
 	DWORD style = ::GetWindowLong( GetHandle(), GWL_STYLE);
 	style &= ~notStyle;
@@ -624,6 +673,13 @@ void tTVPWindow::SetBorderStyle(tTVPBorderStyle st) {
 	::GetSystemMenu( GetHandle(), TRUE );
 	::SendMessage( GetHandle(), WM_NCCREATE, 0, 0 );
 	::SetWindowPos( GetHandle(), 0, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOZORDER | SWP_NOSIZE | SWP_NOACTIVATE );
+	// 枠の増減で描画領域 (クライアント) が変わらないようにする。
+	// サイズ仕様の基準面は inner なので、装飾を変えても中身のサイズは維持する
+	// (SDL/generic と同じ。src/core/doc/WindowGeometry.md §1 参照)。
+	if( saved_client.cx > 0 && saved_client.cy > 0 ) {
+		SIZE cs = saved_client;
+		SetClientSize( GetHandle(), cs );
+	}
 	::InvalidateRect( GetHandle(), NULL, TRUE );
 }
 tTVPBorderStyle tTVPWindow::GetBorderStyle() const {

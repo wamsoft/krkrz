@@ -8,6 +8,17 @@ enum class tTVPTextureColorFormat : tjs_int {
 	// Luminance or Compressed texture
 };
 
+/**
+ * TJS の Texture(filename/bitmap, format) にだけ指定できる拡張フォーマット値
+ * (SysInitScript の tcfAlphaChannel)。 α チャンネルをそのまま 8bit テクスチャにする。
+ *
+ * tcfAlpha (=1) は「色を輝度化して 8bit」なので、 輝度が白一色で α に形状を持つ
+ * マスク画像には使えない。 クリッピングマスクは α しか参照しない (GLClip /
+ * clipmask.frag とも .a) ため、 こちらを使えば RGBA (4byte/px) の 1/4 のメモリで
+ * 同じ結果が得られる。 生成されたテクスチャの format() は Alpha になる。
+ */
+const tjs_int TVP_TCF_ALPHA_CHANNEL = 2;
+
 class iTVPTextureInfoIntrface {
 public:
 

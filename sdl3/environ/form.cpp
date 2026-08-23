@@ -36,12 +36,43 @@
 // SDL3WindowForm 実装
 // ----------------------------------------------------
 
+// ホスト (ゲーム本体) 向けテキスト入力のベースライン有効化を現在の状況に合わせる。
+//
+// デスクトップは常時有効でよい。 オンスクリーンキーボードを持つ環境 (NX / PS5 /
+// Android) は SDL_StartTextInput がキーボード UI を出してしまう (NX ならブロッキング
+// の swkbd アプレット、 PS5 なら SceImeDialog) ため、 従来は一切呼んでいなかった。
+// しかしそれだと物理 (USB) キーボードを繋いだときに SDL_SendKeyboardText() が
+// SDL_TextInputActive() のゲートで捨てられ、 ESC や矢印などのキーイベントだけ届いて
+// 文字が一切入力できない (NX 実機で確認)。
+//
+// 物理キーボードがある場合は SDL 側の自動判定 (AutoShowingScreenKeyboard) が
+// キーボード UI の表示を抑止するので、 有効化してよい。 キーボードは実行中に
+// 抜き差しされるので SDL_EVENT_KEYBOARD_ADDED / REMOVED で追従する。
+static void TVPUpdateBaselineTextInput(SDL_Window* window)
+{
+	if (!window) return;
+	if (!SDL_HasScreenKeyboardSupport()) {
+		SDL_StartTextInput(window);
+		return;
+	}
+	if (SDL_HasKeyboard()) {
+		SDL_StartTextInput(window);
+	} else {
+		// 物理キーボード無し。 ここで有効のままにすると OS のキーボード UI が
+		// 出るので止める。 入力手段はゲーム側のソフトキーボードか、 Elements の
+		// フォーカス駆動 (UpdateFocusDrivenTextInput) が担当する。
+		SDL_StopTextInput(window);
+	}
+}
+
 SDL3WindowForm::SDL3WindowForm(class tTJSNI_Window* win)
  : TTVPWindowForm(win)
  , mWindow(nullptr)
  , mVisible(false)
  , mBorderStyle(bsSizeable)
  , mMinWidth(0), mMinHeight(0), mMaxWidth(0), mMaxHeight(0)
+ , mStartupDisplayApplied(false)
+ , mFixedSurfaceWidth(0), mFixedSurfaceHeight(0)
 {
 	SDL_WindowFlags flags = SDL_WINDOW_HIDDEN;
 #if defined(TVP_USE_OPENGL)
@@ -51,6 +82,14 @@ SDL3WindowForm::SDL3WindowForm(class tTJSNI_Window* win)
 	flags |= SDL_WINDOW_FULLSCREEN;
 	int width  = 1920;
 	int height = 1080; 
+	// 常にフルスクリーンの環境では、 SDL が返すウィンドウサイズは実
+	// フレームバッファ (PS5 なら 3840x2160) になる。 描画の基準面まで
+	// それに合わせると、 1920x1080 で作った UI が実画面の中央に原寸で
+	// 出てしまう (Elements の overlay は縮小はしても拡大しないため)。
+	// 基準面はここで要求した論理サイズに固定し、 実サイズへの引き伸ばしは
+	// SDL_SetRenderLogicalPresentation に任せる。
+	mFixedSurfaceWidth  = width;
+	mFixedSurfaceHeight = height;
 #else
 	flags |= SDL_WINDOW_RESIZABLE;
 	int width = 32;
@@ -58,23 +97,29 @@ SDL3WindowForm::SDL3WindowForm(class tTJSNI_Window* win)
 #endif
 	// ウィンドウ作成
 	mWindow = SDL_CreateWindow("", width, height, flags);
+	ApplyAspectLock();   // 比率固定が先に設定されていれば反映
 	if (mWindow) {
 		// ウィンドウのユーザーデータとして自身を設定
 		//SDL_SetWindowFullscreen(mWindow, true);
 		SDL_SetPointerProperty(SDL_GetWindowProperties(mWindow), "form", this);
+		// -display= 指定があれば、まだ非表示のうちに目的のディスプレイへ移して
+		// おく (スクリプトが位置を指定した場合は初回表示時に再度寄せ直す)
+		TVPMoveWindowToStartupDisplay(mWindow);
 		// テキスト入力を有効化 (SDL_EVENT_TEXT_INPUT を発生させ、KAG の Edit
 		// レイヤ等へ文字入力を配送できるようにする。未呼出だと TEXT_INPUT が
-		// 一切発生せず、STEINS;GATE 8BIT の start 画面のタイプ入力が通らない)。
+		// 一切発生せず、ゲーム側 (タイトル画面の名前入力等) のタイプ入力が
+		// 通らない)。
 		// ただしオンスクリーンキーボードを持つ環境では SDL_StartTextInput が
 		// キーボード UI を即座に出してしまう (NX/Ounce ではブロッキングの
 		// swkbd アプレット起動、Android ではソフトキーボード表示) ため、
 		// 起動時のベースライン有効化は物理キーボード環境限定とする。
-		// これらの環境では Elements 側のフォーカス駆動
+		// これらの環境で物理キーボードが無い場合は Elements 側のフォーカス駆動
 		// (ElementsDialogManager::UpdateFocusDrivenTextInput) が
 		// テキスト欄に focus が入ったときにのみ開始する。
-		if (!SDL_HasScreenKeyboardSupport()) {
-			SDL_StartTextInput(mWindow);
-		}
+		// なお NX では起動直後 (キーボードのポーリング前) はまだ
+		// SDL_HasKeyboard() が false なので、 実際の有効化は後述の
+		// SDL_EVENT_KEYBOARD_ADDED 受信時に行われる。
+		TVPUpdateBaselineTextInput(mWindow);
 	} else {
 		const char *error = SDL_GetError();
 		TVPLOG_ERROR("SDL3WindowForm: Failed to create SDL Window: {}", error);
@@ -119,6 +164,37 @@ SDL3WindowForm::~SDL3WindowForm()
 //     破棄しない (従来の false 分岐と同じ寿命)。
 static std::unordered_map<SDL_Window*, SDL_GLContext> sMainGLContexts;
 
+// GLES コンテキストを生成する。要求バージョン (main.cpp で設定する既定 3.2) で
+// 作れない場合は 3.1 → 3.0 → 2.0 と下げて再試行する。
+// 例: ANGLE の D3D11 バックエンド (EGL フォールバック時 / -forceegl=yes 時) は
+// ES 3.1 までしか作れず、3.2 要求は EGL_BAD_ATTRIBUTE で失敗する。
+// 成功した属性はそのまま残るので、以降のコンテキスト生成 (compositor の分離
+// コンテキスト等) も同じバージョンで作られる。
+// 実際に得られたバージョンは後段の InitGLES が "Loaded GLES x.y" でログに出す。
+SDL_GLContext TVPCreateGLContextWithFallback(SDL_Window *window)
+{
+	SDL_GLContext ctx = SDL_GL_CreateContext(window);
+	if (ctx) return ctx;
+	static const int candidates[][2] = { {3,1}, {3,0}, {2,0} };
+	for (const auto &v : candidates) {
+		TVPLOG_WARNING("SDL_GL_CreateContext failed ({}); retrying with GLES {}.{}",
+		               SDL_GetError(), v[0], v[1]);
+		SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, v[0]);
+		SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, v[1]);
+		ctx = SDL_GL_CreateContext(window);
+		if (ctx) return ctx;
+	}
+	// ここで失敗すると後段の gladLoadGLES2 も必ず失敗する。原因究明の
+	// 手がかり (SDL のエラーと環境要件) をこの時点でログに残す。
+	TVPLOG_ERROR("SDL_GL_CreateContext failed: {}", SDL_GetError());
+	TVPLOG_ERROR("GLES context is unavailable. On Windows this needs either");
+	TVPLOG_ERROR("  - an OpenGL driver with ES profile support");
+	TVPLOG_ERROR("    (WGL_EXT_create_context_es2_profile), or");
+	TVPLOG_ERROR("  - ANGLE's libEGL.dll / libGLESv2.dll next to the executable");
+	TVPLOG_ERROR("    (required when -forceegl=yes).");
+	return nullptr;
+}
+
 static SDL_GLContext TVPGetOrCreateMainGLContext(SDL_Window *window)
 {
 	auto it = sMainGLContexts.find(window);
@@ -131,7 +207,7 @@ static SDL_GLContext TVPGetOrCreateMainGLContext(SDL_Window *window)
 	// コンテキストへ行ってしまい、他方のウィンドウの画面が更新されなくなる。
 	// 共有ぶんの破棄は DestroyNativeWindow が参照数を見て最後の 1 つで行う。
 	SDL_GLContext ctx = SDL_GL_GetCurrentContext();
-	if (!ctx) ctx = SDL_GL_CreateContext(window);
+	if (!ctx) ctx = TVPCreateGLContextWithFallback(window);
 	sMainGLContexts[window] = ctx;
 	return ctx;
 }
@@ -193,7 +269,10 @@ SDL3WindowForm::OnCloseCancel()
 void
 SDL3WindowForm::GetSurfaceSize(int &w, int &h) const
 {
-	if (mWindow) {
+	if (mFixedSurfaceWidth > 0 && mFixedSurfaceHeight > 0) {
+		w = mFixedSurfaceWidth;
+		h = mFixedSurfaceHeight;
+	} else if (mWindow) {
 		SDL_GetWindowSize(mWindow, &w, &h);
 	} else {
 		w = 0;
@@ -204,9 +283,18 @@ SDL3WindowForm::GetSurfaceSize(int &w, int &h) const
 void
 SDL3WindowForm::ResizeWindow(int w, int h)
 {
-	TTVPWindowForm::ResizeWindow(w, h);
 	if (mWindow) {
 		SDL_SetWindowSize(mWindow, w, h);
+		// min/max でクランプされることがあるので、要求値ではなく実サイズを
+		// 基底の surface サイズ (ビューポート計算の外側サイズ) へ反映する。
+		// 論理サーフェスを固定する環境 (常にフルスクリーン) ではその値を使う
+		// (実サイズを流し込むと DestRect が実フレームバッファ基準になり、
+		//  論理サイズで提示している分だけ拡大されてしまう)。
+		int aw = w, ah = h;
+		GetSurfaceSize(aw, ah);
+		TTVPWindowForm::ResizeWindow(aw, ah);
+	} else {
+		TTVPWindowForm::ResizeWindow(w, h);
 	}
 }
 
@@ -234,6 +322,13 @@ SDL3WindowForm::SetVisible(bool b)
 		mVisible = b;
 		if (mWindow) {
 			if (mVisible) {
+				// -display= 指定時、初回表示の直前に目的のディスプレイへ寄せる
+				// (スクリプトが setPos した後でも拾えるようにするため。以降は
+				//  ユーザがウィンドウを動かせるよう一度きりの適用とする)
+				if (!mStartupDisplayApplied) {
+					mStartupDisplayApplied = true;
+					TVPMoveWindowToStartupDisplay(mWindow);
+				}
 				SDL_ShowWindow(mWindow);
 			} else {
 				SDL_HideWindow(mWindow);
@@ -392,13 +487,28 @@ SDLBorders GetBorders(SDL_Window *w)
 }
 } // anonymous
 
+// ウィンドウ移動は必ず TVPSDLSetWindowPositionKeepingSize 経由で行う。
+// 別 DPI のモニタへ移してもクライアントの物理ピクセルサイズを維持するため
+// (src/core/doc/WindowGeometry.md §4 の DPI ポリシー)。
+void
+SDL3WindowForm::MoveWindowTo(int l, int t)
+{
+	if (!mWindow) return;
+	TVPSDLSetWindowPositionKeepingSize(mWindow, l, t);
+	// surface サイズ (ビューポート計算の外側サイズ) を実値へ同期する
+	// (論理サーフェス固定の環境ではその値)
+	int w = 0, h = 0;
+	GetSurfaceSize(w, h);
+	TTVPWindowForm::ResizeWindow(w, h);
+}
+
 void
 SDL3WindowForm::SetLeft(int l)
 {
 	if (!mWindow) return;
 	int x = 0, y = 0;
 	SDL_GetWindowPosition(mWindow, &x, &y);
-	SDL_SetWindowPosition(mWindow, l, y);
+	MoveWindowTo(l, y);
 }
 
 int
@@ -416,7 +526,7 @@ SDL3WindowForm::SetTop(int t)
 	if (!mWindow) return;
 	int x = 0, y = 0;
 	SDL_GetWindowPosition(mWindow, &x, &y);
-	SDL_SetWindowPosition(mWindow, x, t);
+	MoveWindowTo(x, t);
 }
 
 int
@@ -431,7 +541,7 @@ SDL3WindowForm::GetTop() const
 void
 SDL3WindowForm::SetPosition(int l, int t)
 {
-	if (mWindow) SDL_SetWindowPosition(mWindow, l, t);
+	MoveWindowTo(l, t);
 }
 
 int
@@ -478,6 +588,20 @@ SDL3WindowForm::SetSize(int w, int h)
 	ResizeWindow(cw, ch);   // 内部の surface サイズ追跡も更新される
 }
 
+//---------------------------------------------------------------------------
+// 画面比率の固定。 SDL にリサイズ時の拘束を掛ける (min=max=同じ比率)。
+// 0 (未設定) のときは拘束を外す。
+//---------------------------------------------------------------------------
+void SDL3WindowForm::ApplyAspectLock()
+{
+	if (!mWindow) return;
+	int aw = GetAspectLockW(), ah = GetAspectLockH();
+	float r = (aw > 0 && ah > 0) ? (float)aw / (float)ah : 0.0f;
+	SDL_SetWindowAspectRatio(mWindow, r, r);
+}
+
+// min/max は「内側 (クライアント) サイズ」基準。SDL の
+// SDL_SetWindowMinimum/MaximumSize がそのままクライアント基準なので素通し。
 void SDL3WindowForm::SetMinWidth(int v)  { SetMinSize(v, mMinHeight); }
 void SDL3WindowForm::SetMinHeight(int v) { SetMinSize(mMinWidth, v); }
 void SDL3WindowForm::SetMinSize(int w, int h)
@@ -491,6 +615,35 @@ void SDL3WindowForm::SetMaxSize(int w, int h)
 {
 	mMaxWidth = w; mMaxHeight = h;
 	if (mWindow) SDL_SetWindowMaximumSize(mWindow, w > 0 ? w : 0, h > 0 ? h : 0);
+}
+int SDL3WindowForm::GetMinWidth() const  { return mMinWidth; }
+int SDL3WindowForm::GetMinHeight()       { return mMinHeight; }
+int SDL3WindowForm::GetMaxWidth()        { return mMaxWidth; }
+int SDL3WindowForm::GetMaxHeight()       { return mMaxHeight; }
+
+//---------------------------------------------------------------------------
+// 内側 (クライアント) サイズ。
+//   基底はリサイズ要求値をキャッシュして返すため、min/max でクランプされたり
+//   要求が通らなかったときに実サイズと食い違う。 SDL へ問い合わせて実値を返す。
+//---------------------------------------------------------------------------
+int
+SDL3WindowForm::GetInnerWidth() const
+{
+	if (mFixedSurfaceWidth > 0) return mFixedSurfaceWidth;
+	if (!mWindow) return TTVPWindowForm::GetInnerWidth();
+	int w = 0, h = 0;
+	SDL_GetWindowSize(mWindow, &w, &h);
+	return w;
+}
+
+int
+SDL3WindowForm::GetInnerHeight() const
+{
+	if (mFixedSurfaceHeight > 0) return mFixedSurfaceHeight;
+	if (!mWindow) return TTVPWindowForm::GetInnerHeight();
+	int w = 0, h = 0;
+	SDL_GetWindowSize(mWindow, &w, &h);
+	return h;
 }
 
 // SDL には「枠スタイル」という 1 つの属性は無く、枠の有無 (bordered) と
@@ -610,6 +763,13 @@ bool
 SDL3WindowForm::AppEvent(const SDL_Event& event)
 {
 	switch (event.type) {
+		case SDL_EVENT_KEYBOARD_ADDED:
+		case SDL_EVENT_KEYBOARD_REMOVED: {
+			// 物理キーボードの抜き差しでベースラインのテキスト入力を切り替える。
+			// (NX/PS5 は起動後に初めてキーボードが登録されるのでここが本番)
+			TVPUpdateBaselineTextInput(mWindow);
+			break;
+		}
 		case SDL_EVENT_KEY_DOWN:
 		case SDL_EVENT_KEY_UP: {
 #ifdef KRKRZ_HAS_ELEMENTS
@@ -782,7 +942,8 @@ public:
 			SDL_GLContext prev = SDL_GL_GetCurrentContext();
 			// 現在のコンテキストがあれば共有グループにする (無ければ単独コンテキスト)
 			SDL_GL_SetAttribute(SDL_GL_SHARE_WITH_CURRENT_CONTEXT, prev ? 1 : 0);
-			mGLContext = SDL_GL_CreateContext(mWindow);  // 生成すると mGLContext がカレントになる
+			mGLContext = TVPCreateGLContextWithFallback(mWindow);  // 生成すると mGLContext がカレントになる
+			if (!mGLContext) TVPLOG_ERROR("SDL_GL_CreateContext (compositor) failed: {}", SDL_GetError());
 			// 後続の画面コンテキスト生成に共有属性が波及しないよう戻す
 			SDL_GL_SetAttribute(SDL_GL_SHARE_WITH_CURRENT_CONTEXT, 0);
 			// 直前のコンテキストを復帰し、画面デバイスの想定を乱さない

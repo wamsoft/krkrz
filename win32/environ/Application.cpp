@@ -264,6 +264,26 @@ int APIENTRY wWinMain( _In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstanc
 		}
 #endif
 
+		// -language=<tag> : メッセージ / リソースの言語を明示指定する。
+		// WINVER のメッセージ文字列 (string_table_*.rc) や設定ダイアログの
+		// 文字列は PE リソースの言語解決 (スレッド UI 言語) に従うため、
+		// メッセージ読込 (TVPLoadMessage) より前にスレッド UI 言語へ反映する。
+		// 未指定時は OS のユーザ言語のまま = 従来どおり OS 言語に追従する。
+		// BCP-47 ("en-US" / "zh-Hans" ...) のほか短縮形 ja/en/chs/cht も受け付ける。
+		{
+			const wchar_t *langArg = L"-language=";
+			const size_t langArgLen = wcslen(langArg);
+			for (int i = 1; i < __argc; i++) {
+				if (wcsncmp(__wargv[i], langArg, langArgLen) != 0) continue;
+				std::wstring tag = __wargv[i] + langArgLen;
+				if (_wcsicmp(tag.c_str(), L"chs") == 0) tag = L"zh-Hans";
+				else if (_wcsicmp(tag.c_str(), L"cht") == 0) tag = L"zh-Hant";
+				LCID lcid = ::LocaleNameToLCID(tag.c_str(), LOCALE_ALLOW_NEUTRAL_NAMES);
+				if (lcid != 0) ::SetThreadUILanguage(LANGIDFROMLCID(lcid));
+				break;
+			}
+		}
+
 		TVPStartup();
 
 		// メッセージ文字列をリソースから読込み

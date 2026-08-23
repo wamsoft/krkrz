@@ -126,6 +126,12 @@ else()
 	set(KRKRZ_DESKTOP OFF)
 endif()
 
+# デスクトップ判定はソース側でも使う ( 設定ファイル .cf/.cfu の探索規約を
+# WINVER と揃えるかどうかの分岐。 generic/base/SysInitImpl.cpp )
+if(KRKRZ_DESKTOP)
+	add_compile_definitions(KRKRZ_DESKTOP=1)
+endif()
+
 # REPL はデスクトップでのみデフォルト有効
 option(KRKRZ_REPL "enable interactive TJS REPL (requires icline)" ${KRKRZ_DESKTOP})
 # 端末制御 (raw mode / termios / Win32 console API) を持たない環境向けに
@@ -857,6 +863,22 @@ foreach(RESOURCE ${RESOURCE_FILES})
     get_filename_component(NAME ${RESOURCE} NAME)
     file(APPEND ${RC_FILE} "${NAME} BINARY \"${RESOURCE}\"\n")
 endforeach()
+
+# アプリアイコン。 案件側から -DKRKRZ_WIN_ICON=<.ico の絶対パス> で渡す。
+# 生成 .rc はこれまで BINARY リソースしか吐いておらず、 exe にアイコン
+# リソースが 1 つも無かった。 そのため後段でアイコンを差し替える類のツール
+# (IconReset 等) も「リソースが見つからない」で失敗する。 ここで埋めておけば
+# ビルド直後から案件のアイコンが付く。 名前を MAINICON にしてあるのは既存の
+# 差し替えツールがその名前を前提にしているため (後から差し替えも効く)。
+if (KRKRZ_WIN_ICON)
+    if (EXISTS "${KRKRZ_WIN_ICON}")
+        file(APPEND ${RC_FILE} "MAINICON ICON \"${KRKRZ_WIN_ICON}\"\n")
+        list(APPEND RESOURCE_FILES "${KRKRZ_WIN_ICON}")   # 下の OBJECT_DEPENDS へ
+        message(STATUS "krkrz: app icon = ${KRKRZ_WIN_ICON}")
+    else()
+        message(WARNING "krkrz: KRKRZ_WIN_ICON not found: ${KRKRZ_WIN_ICON}")
+    endif()
+endif()
 
 # .rc は参照先バイナリの「内容」を含めて .res へ埋め込むが、ビルドツールは
 # .rc 自身のタイムスタンプしか見ない。resource/*.json 更新時に .res が再生成

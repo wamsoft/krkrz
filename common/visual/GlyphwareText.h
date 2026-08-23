@@ -24,6 +24,11 @@ struct tTVPShapedTextStyle
 	bool underline = false;
 	bool strikeout = false;
 	tjs_int angle = 0;   // 1/10 deg, CCW (Font.angle). Ignored by DrawTextArea.
+	// variable-font axes (Font.weight / Font.variations). Applied to the faces
+	// of the fallback chain that actually have the same-named axes; `weight`
+	// merges in as wght unless `variations` already names wght.
+	tjs_int weight = -1;      // 100-900, -1 = unspecified
+	ttstr variations;         // normalized "wdth=87.5,wght=700"
 };
 
 // Fill `out` from an engine font descriptor.

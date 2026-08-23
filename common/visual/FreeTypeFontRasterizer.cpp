@@ -53,18 +53,21 @@ void FreeTypeFontRasterizer::ApplyFont( class tTVPNativeBaseBitmap *bmp, bool fo
 // 開いて登録)。フォントが無ければ何もしない (mode 毎に一度だけ試行)。
 static void TVPEnsureBundledEmojiFontRegistered( tjs_int mode ) {
 	static bool triedMono = false, triedColor = false;
-	const tjs_char* bundled = nullptr;
+	const tjs_char* fname = nullptr;
 	if( mode == TVP_EMOJI_MONO ) {
 		if( triedMono ) return; triedMono = true;
-		bundled = TJS_W("resource://./notoemoji-regular.ttf");
+		fname = TJS_W("notoemoji-regular.ttf");
 	} else if( mode == TVP_EMOJI_COLOR ) {
 		if( triedColor ) return; triedColor = true;
-		bundled = TJS_W("resource://./notocoloremoji.ttf");
+		fname = TJS_W("notocoloremoji.ttf");
 	} else return;
-	if( TVPIsExistentStorageNoSearch( ttstr(bundled) ) ) {
-		try { TVPFontSystem->AddExtraFont( ttstr(bundled).AsStdString(), nullptr ); }
-		catch(...) {}
-	}
+	// リソースの置き場はプラットフォームで変わる (resource://./ / file://./resource/)
+	// ため、直書きせず TVPGetResourcePath() を前置する。
+	try {
+		ttstr bundled = TVPGetResourcePath() + ttstr(fname);
+		if( TVPIsExistentStorageNoSearch( bundled ) )
+			TVPFontSystem->AddExtraFont( bundled.AsStdString(), nullptr );
+	} catch(...) {}
 }
 //---------------------------------------------------------------------------
 void FreeTypeFontRasterizer::ApplyFont( const tTVPFont& font ) {

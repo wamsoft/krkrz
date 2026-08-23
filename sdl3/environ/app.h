@@ -21,14 +21,27 @@ protected:
 	bool mEnableTouch;
 	enum tTVPBorderStyle mBorderStyle;	//< SDL には枠スタイルの概念が無いので値を保持する
 	int mMinWidth, mMinHeight, mMaxWidth, mMaxHeight;
+	bool mStartupDisplayApplied;		//< -display= 指定ディスプレイへの初回配置が済んだか
+	//! 論理サーフェスのサイズ (0 = 実ウィンドウに追従)。
+	//! コンソールのように常にフルスクリーンで、 実フレームバッファが
+	//! ディスプレイ解像度 (PS5 なら 4K) になる環境では、 描画の基準面は
+	//! 生成時に要求した論理サイズに固定する。 実サイズへの引き伸ばしは
+	//! SDL_SetRenderLogicalPresentation が行う。
+	int mFixedSurfaceWidth, mFixedSurfaceHeight;
 
 	bool checkTouchDevice();
+
+	//! ウィンドウ移動 (クライアントの物理ピクセルサイズを維持する)
+	void MoveWindowTo(int l, int t);
 
 public:
 	virtual void *NativeWindowHandle() const {
 		return mWindow;
 	}
 	virtual void DestroyNativeWindow();
+
+	// 画面比率の固定 (SDL_SetWindowAspectRatio)。 0 で解除。
+	virtual void ApplyAspectLock() override;
 
 	virtual void GetSurfaceSize(int &w, int &h) const;
 	virtual void ResizeWindow(int w, int h);
@@ -65,6 +78,15 @@ public:
 	virtual void SetMaxWidth(int v);
 	virtual void SetMaxHeight(int v);
 	virtual void SetMaxSize(int w, int h);
+	// 基底は 0 固定 (= 書き込み専用になってしまう) なので保持値を返す
+	virtual int  GetMinWidth() const;
+	virtual int  GetMinHeight();
+	virtual int  GetMaxWidth();
+	virtual int  GetMaxHeight();
+
+	// 内側 (クライアント) サイズ。キャッシュではなく SDL へ問い合わせて実値を返す
+	virtual int  GetInnerWidth() const;
+	virtual int  GetInnerHeight() const;
 
 	virtual void SetBorderStyle(enum tTVPBorderStyle st);
 	virtual enum tTVPBorderStyle GetBorderStyle() const;
@@ -142,9 +164,28 @@ public:
 
 	virtual const tjs_string& getPlatformName() const override { return _platformName; }
 	virtual const tjs_string& getOsName() const override { return _osName; }
+	virtual const std::vector<tjs_string>& GetPlatformTags() const override {
+		if (!_platformTagsInit) InitPlatformTags();
+		return _platformTags;
+	}
+
+	// このプラットフォームのタグ指定 (';' 区切り、「一般 → 具体」順)。
+	// 機種名を本体に持たないための口で、機種依存部の派生クラスが override する。
+	// 例) Switch 後継機なら "switch;switch2" を返すと、config_switch.cf の
+	//     共通設定に config_switch2.cf の個別設定を重ねられる。
+	virtual const char *getPlatformTagSpec() const;
+
+	// 本体の表示言語 (BCP-47)。 SDL の SDL_GetPreferredLocales() を既定実装に
+	// する (Windows / Linux / macOS / Android で機能する)。 SDL の locale
+	// バックエンドを持たない機種 (NX / PS5) は派生クラスで override する。
+	virtual std::string GetSystemLanguage() const override;
 
 	// アプリ処理用の WindowForm 実装を返す
 	virtual TTVPWindowForm *CreateWindowForm(class tTJSNI_Window *win) override;
+
+	// スクリーンサイズ等の基準になるディスプレイを返す (0 = 取得できず)。
+	// メインウィンドウのあるディスプレイ → -display= 指定 → プライマリ の順。
+	SDL_DisplayID BaseDisplayID() const;
 
 	// スクリーンサイズを返す
 	virtual tjs_int ScreenWidth() const override;
@@ -226,8 +267,13 @@ public:
 	virtual tjs_uint32 GetPhysicalPadState(int phys) override;
 	virtual float GetPhysicalPadAxis(int phys, int axisId) override;
 	virtual tjs_string GetPhysicalPadName(int phys) override;
+	virtual tjs_string GetPhysicalPadStyle(int phys) override;
 	virtual bool RumblePhysical(int phys, int low, int high, int duration_ms) override;
 	virtual bool StopRumblePhysical(int phys) override;
+
+	// VK_PAD1..4 を刻印基準で割り当てるか (System.padButtonMapping / -padbuttons)
+	virtual void SetPadButtonMappingByLabel(bool by_label) override;
+	virtual bool GetPadButtonMappingByLabel() override;
 
 	/**
 	 * アプリ終了通知の開始と終了
@@ -247,6 +293,10 @@ protected:
 
 	tjs_string _platformName; //< プラットフォーム名
 	tjs_string _osName; //< OS名
+	//< 正規化タグ (config_<tag>.cf / System.platformTag)。初回参照時に構築
+	mutable std::vector<tjs_string> _platformTags;
+	mutable bool _platformTagsInit = false;
+	void InitPlatformTags() const;
 
 	bool _Terminated;
 	int _TerminateCode;
@@ -264,6 +314,29 @@ protected:
 
 // 生成用
 extern SDL3Application *GetSDL3Application();
+
+// --- -display= (起動するディスプレイの指定) ---------------------------------
+//! -display= で選ばれたディスプレイ。未指定/解決失敗なら 0
+extern SDL_DisplayID TVPGetStartupDisplayID();
+/**
+ * -display= で指定されたディスプレイ上へウィンドウを移動する。
+ *
+ * 別のディスプレイに乗っている場合は、そのディスプレイの作業領域原点からの
+ * 相対位置を保ったまま移動する。 いずれの場合も、はみ出しは指定ディスプレイの
+ * 作業領域内へ寄せる。 -display= 未指定時は何もしない。
+ */
+extern void TVPMoveWindowToStartupDisplay(SDL_Window *window);
+
+/**
+ * クライアント (内側) の物理ピクセルサイズを保ったままウィンドウを移動する。
+ *
+ * SDL3 の Windows バックエンドは、SDL 自身の `SetWindowPos` に由来する DPI 変更
+ * (`expected_resize`) では `WM_DPICHANGED` で何もしないため、プログラムから
+ * 別 DPI のモニタへ移すと外形が据え置かれてクライアントが枠差ぶんずれる。
+ * ここで移動前後のサイズを比べ、変わっていたら元の値へ再適用する。
+ * src/core/doc/WindowGeometry.md §4 参照。
+ */
+extern void TVPSDLSetWindowPositionKeepingSize(SDL_Window *window, int x, int y);
 
 // for iTVPLocalFileSystem
 extern bool SDL_NormalizeStorageName(tjs_string &name);

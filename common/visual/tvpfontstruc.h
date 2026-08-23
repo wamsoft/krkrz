@@ -47,13 +47,22 @@ struct tTVPFont
 
 	tjs_int EmojiMode = TVP_EMOJI_DEFAULT; // 絵文字モード (TVP_EMOJI_*)
 
+	// バリアブルフォント (可変軸)。glyphware 経路 (Font.rasterizer=2 の drawText
+	// と drawShapedText 系) でのみ効く。旧 FreeType / GDI 経路では無視 (警告 1 回)。
+	tjs_int Weight = -1;   // 100-900、-1 = 未指定。wght 軸があれば軸へ、無ければ
+	                       // face 選択条件へ。Variations の wght 明示が優先。
+	ttstr Variations;      // 正規化済み軸指定 "wdth=87.5,wght=700" (タグ昇順・
+	                       // 量子化済み。TVPNormalizeFontVariations が生成)
+
 	bool operator == (const tTVPFont & rhs) const
 	{
 		return Height == rhs.Height &&
 			Flags == rhs.Flags &&
 			Angle == rhs.Angle &&
 			Face == rhs.Face &&
-			EmojiMode == rhs.EmojiMode;
+			EmojiMode == rhs.EmojiMode &&
+			Weight == rhs.Weight &&
+			Variations == rhs.Variations;
 	}
 	bool operator != (const tTVPFont & rhs) const {
 		return !(operator==(rhs));

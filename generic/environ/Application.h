@@ -443,6 +443,8 @@ public:
 	void EndContinuousEvent();
 
 	virtual tjs_string GetJoypadType(int no) { return PadManager_.GetJoypadType(no); } //< joypadの種別（環境依存値）
+	//< joypad のボタン表記の系統 ("xbox" / "ps" / "switch"。 判らなければ空)
+	virtual tjs_string GetJoypadStyle(int no) { return PadManager_.GetJoypadStyle(no); }
 	virtual tjs_int GetJoypadCount() { return PadManager_.GetJoypadCount(); } //< 接続されているjoypadの数
 	virtual bool HasJoypad(int no) { return PadManager_.HasJoypad(no); } //< 指定番号のjoypadが有効か
 
@@ -453,6 +455,35 @@ public:
 	// パッド機能の有効/無効 (System.padEnabled)。CLI -joypad より優先。
 	void SetJoypadEnabled(bool b) { PadManager_.SetEnabled(b); }
 	bool GetJoypadEnabled() { return PadManager_.IsEnabled(); }
+
+	// VK_PAD1..4 (A/B/X/Y) をボタンの刻印で割り当てるか (System.padButtonMapping)。
+	// true = 刻印基準 (既定。任天堂系は SOUTH=B / EAST=A なので位置とは異なる)
+	// false = 位置基準 (SDL の SOUTH/EAST/WEST/NORTH をそのまま A/B/X/Y と読む)
+	// パッドを持たないバックエンドでは常に位置基準扱い。
+	virtual void SetPadButtonMappingByLabel(bool /*by_label*/) {}
+	virtual bool GetPadButtonMappingByLabel() { return false; }
+
+	// プラットフォームタグ (System.platformTag / config_<tag>.cf に使う)。
+	// getPlatformName() が SDL_GetPlatform() の生文字列 ("Nintendo Switch" /
+	// "PlayStation 5" 等。 空白入り・表記ゆれあり) なのに対し、 こちらは
+	// 小文字・空白無しに正規化した短いタグ ("switch" / "ps5" / "windows" ...)。
+	// 一般的なものから具体的なものへ並べる (Switch2 = {"switch", "switch2"})。
+	// コンパイル時に決まる値なので、 初期化のごく初期 (config.cf 読み込み時)
+	// から参照できる。
+	virtual const std::vector<tjs_string>& GetPlatformTags() const {
+		static const std::vector<tjs_string> empty;
+		return empty;
+	}
+
+	// 本体 (OS / ハード) の表示言語設定 (System.systemLanguage)。
+	// 戻り値は BCP-47 の言語タグ ("ja" / "en-US" / "zh-Hant" / "zh-Hans" ...)。
+	// 取得できない環境は空文字を返す (呼び出し側でゲーム既定へフォールバック)。
+	//
+	// ★ 旧 getLangName プラグインの置き換え。 プラグイン版は Win が英語の
+	//    言語名 ("Japanese")、 NX がコード ("ja"/"cn"/"tw") と戻り値が
+	//    不揃いで、 PS5 は実装が無く "ja" 固定だった。 こちらは全機種で
+	//    BCP-47 に統一する。
+	virtual std::string GetSystemLanguage() const { return std::string(); }
 
 	// ----------------------------------------------------------------------
     // 動画関係処理

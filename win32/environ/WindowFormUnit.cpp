@@ -20,6 +20,7 @@
 #include "tvpinputdefs.h"
 
 #include "Application.h"
+#include "TVPScreen.h"	// TVPMoveWindowToStartupDisplay (-display=)
 #include "TVPSysFont.h"
 #include "TickCount.h"
 #include "WindowsUtil.h"
@@ -193,14 +194,24 @@ TTVPWindowForm::TTVPWindowForm( tTJSNI_Window* ni, tTJSNI_Window* parent ) : tTV
 	HWND hParent = NULL;
 	if( parent ) hParent = parent->GetSurfaceWindowHandle();
 	CreateWnd( TJS_W("TVPMainWindow"), Application->GetTitle(), 10, 10, hParent );
+	StartupDisplayApplied = false;
 	TVPInitWindowOptions();
-	
+
 	// initialize members
 	TJSNativeInstance = ni;
 	Application->AddWindow(this);
 	
 	NextSetWindowHandleToDrawDevice = true;
 	LastSentDrawDeviceDestRect.clear();
+
+	// ビューポート既定 (contain + 中央寄せ)。 tTVPViewportConfig の既定そのままで、
+	// SDL/generic と共通。 src/core/doc/WindowGeometry.md §4 参照。
+	mViewport = tTVPViewportConfig();
+	mViewportBgColor = 0xff000000;
+	mViewportWallpaperFit = vfCover;
+	mViewportWpAlignX = 0.5;
+	mViewportWpAlignY = 0.5;
+	mViewportRenderDirty = true;   // 初回に DrawDevice へ push させる
 
 	in_mode_ = false;
 	Focusable = true;
@@ -246,6 +257,12 @@ TTVPWindowForm::TTVPWindowForm( tTJSNI_Window* ni, tTJSNI_Window* parent ) : tTV
 
 	DisplayOrientation = orientUnknown;
 	DisplayRotate = -1;
+
+	// -display= 指定があれば、まだ非表示のうちに目的のディスプレイへ移しておく
+	// (スクリプトが位置を指定した場合は初回表示時に再度寄せ直す)。
+	// ここまで来ないと SetWindowPos → WM_MOVE/WM_SIZE のハンドラが参照する
+	// TJSNativeInstance 等のメンバが未初期化で、移動がそのままクラッシュになる。
+	TVPMoveWindowToStartupDisplay( GetHandle() );
 }
 TTVPWindowForm::~TTVPWindowForm() {
 	if( HintTimer ) {
@@ -462,32 +479,19 @@ void TTVPWindowForm::SetDrawDeviceDestRect()
 		destrect.right = destrect.left + w;
 		destrect.bottom = destrect.top + h;
 	} else {
-		// ウィンドウの実クライアント (物理px) を取得し、layer×zoom (w,h) を
-		// アスペクト維持でクライアントにフィット (letterbox) させる。
-		// 異DPIモニタへの移動 (WM_DPICHANGED) 等でクライアントが layer×zoom と
-		// 食い違っても DestRect がクライアントに追従するので、描画・入力
-		// (TransformToPrimaryLayerManager は DestRect 幅でスケール)・ダイアログの
-		// オフセットを防ぐ。SDL の SetRenderLogicalPresentation 相当を WINVER 側の
-		// DestRect 計算で表現したもの。DPI 変更は縦横同率スケールなのでフィット後は
-		// クライアント全体を占め offset=0 になる。windowed の入力は生クライアント座標を
-		// DestRect 原点 (=0,0) 基準で扱うため、中央寄せはせず左上詰めにして整合を保つ。
+		// ウィンドウの実クライアント (物理px) の中へ、ゲーム画面 (layer×zoom =
+		// w,h) をビューポート設定にしたがって配置する。 SDL/generic と同じ共通
+		// 計算 (TVPCalcViewportDestRect) を使う。 詳細 =
+		// src/core/doc/WindowGeometry.md の「軸B」。
+		//
+		// クライアントが layer×zoom と食い違っても (異 DPI モニタへの移動、
+		// ユーザによるリサイズ等) DestRect がクライアントへ追従するので、
+		// 描画・入力・ダイアログのオフセットを防げる。
 		tjs_int cw = GetInnerWidth();
 		tjs_int ch = GetInnerHeight();
 		if( cw < 1 ) cw = w;
 		if( ch < 1 ) ch = h;
-		tjs_int dw, dh;
-		if( (tjs_int64)cw * h <= (tjs_int64)ch * w ) {
-			dw = cw;
-			dh = MulDiv( h, cw, w );
-		} else {
-			dh = ch;
-			dw = MulDiv( w, ch, h );
-		}
-		if( dw < 1 ) dw = 1;
-		if( dh < 1 ) dh = 1;
-		destrect.left = destrect.top = 0;
-		destrect.right = dw;
-		destrect.bottom = dh;
+		destrect = TVPCalcViewportDestRect( mViewport, cw, ch, w, h );
 	}
 
 	if( LastSentDrawDeviceDestRect != destrect ) {
@@ -501,6 +505,40 @@ void TTVPWindowForm::SetDrawDeviceDestRect()
 		}
 		LastSentDrawDeviceDestRect = destrect;
 	}
+}
+void TTVPWindowForm::SetViewportConfig(const tTVPViewportConfig &cfg)
+{
+	mViewport = cfg;
+	SetDrawDeviceDestRect();	// 配置が変わったので DestRect を作り直す
+}
+void TTVPWindowForm::SetViewportBgColor(tjs_uint32 color)
+{
+	mViewportBgColor = color;
+	mViewportRenderDirty = true;
+	RequestViewportRedraw();
+}
+void TTVPWindowForm::SetViewportWallpaper(const tTJSVariant &image,
+	tTVPViewportFit fit, double alignX, double alignY)
+{
+	if( image.Type() == tvtObject && image.AsObjectNoAddRef() ) {
+		mViewportWallpaper = image;
+	} else {
+		mViewportWallpaper.Clear();
+	}
+	mViewportWallpaperFit = fit;
+	mViewportWpAlignX = alignX;
+	mViewportWpAlignY = alignY;
+	mViewportRenderDirty = true;
+	RequestViewportRedraw();
+}
+//---------------------------------------------------------------------------
+// 余白 (背景色 / 壁紙) だけが変わっても WINVER は再描画契機が無いので、
+// 明示的に更新を要求して DrawDevice の Show を回す。
+//---------------------------------------------------------------------------
+void TTVPWindowForm::RequestViewportRedraw()
+{
+	if( TJSNativeInstance ) TJSNativeInstance->RequestUpdate();
+	::InvalidateRect( GetHandle(), NULL, FALSE );
 }
 void TTVPWindowForm::OnPaint() {
 	// a painting event
@@ -645,6 +683,7 @@ void TTVPWindowForm::AdjustNumerAndDenom(tjs_int &n, tjs_int &d){
 	d = d / a;
 }
 void TTVPWindowForm::SetZoom( tjs_int numer, tjs_int denom, bool set_logical ) {
+	if( numer <= 0 || denom <= 0 ) return;
 	bool ischanged = false;
 	// set layer zooming factor;
 	// the zooming factor is passed in numerator/denoiminator style.
@@ -661,6 +700,22 @@ void TTVPWindowForm::SetZoom( tjs_int numer, tjs_int denom, bool set_logical ) {
 		// in fullscreen mode, zooming factor is controlled by the system
 		ActualZoomDenom = denom;
 		ActualZoomNumer = numer;
+
+		// 「クライアント (inner) == レイヤサイズ × zoom」の不変条件をエンジン側で
+		// 保証する (旧 kirikiri2 / SDL・generic と同じ意味論)。
+		// src/core/doc/WindowGeometry.md §3 参照。
+		//
+		// set_logical == false はフルスクリーン遷移中にシステムが決めた倍率を
+		// 流し込む経路なので、ウィンドウサイズには触らない。
+		if( set_logical && LayerWidth > 0 && LayerHeight > 0 ) {
+			tjs_int w = MulDiv( LayerWidth, numer, denom );
+			tjs_int h = MulDiv( LayerHeight, numer, denom );
+			if( w < 1 ) w = 1;
+			if( h < 1 ) h = 1;
+			if( w != GetInnerWidth() || h != GetInnerHeight() ) {
+				SetInnerSize( w, h );
+			}
+		}
 	}
 	InternalSetPaintBoxSize();
 	if( ischanged ) ::InvalidateRect( GetHandle(), NULL, FALSE );
@@ -928,6 +983,13 @@ void TTVPWindowForm::ShowWindowAsModal() {
 //---------------------------------------------------------------------------
 void TTVPWindowForm::SetVisibleFromScript(bool b)
 {
+	// -display= 指定時、初回表示の直前に目的のディスプレイへ寄せる。
+	// (スクリプトが setPos した後でもここで拾えるようにするため。以降は
+	//  ユーザがウィンドウを動かせるよう、一度きりの適用とする)
+	if( b && !StartupDisplayApplied ) {
+		StartupDisplayApplied = true;
+		TVPMoveWindowToStartupDisplay( GetHandle() );
+	}
 	if(Focusable) {
 		SetVisible( b );
 	} else {
@@ -1498,24 +1560,29 @@ void TTVPWindowForm::OnKeyPress( WORD vk, int repeat, bool prevkeystate, bool co
 		TVPPostInputEvent(new tTVPOnKeyPressInputEvent(TJSNativeInstance, vk));
 	}
 }
+//---------------------------------------------------------------------------
+// クライアント座標 ⇔ 描画領域 (DestRect 原点基準) 座標の変換。
+//
+//   tTVPDrawDevice::TransformToPrimaryLayerManager は「DestRect の 0,0 を原点と
+//   した座標」を期待しているので、入力を配送する前にここで原点を合わせる。
+//   従来はフルスクリーンのオフセットだけを引いていた (windowed は DestRect が
+//   常に左上詰め = 原点 0,0 だったため) が、ビューポートで中央寄せ等を指定
+//   できるようになるので、実際に DrawDevice へ送った DestRect の原点を使う。
+//   LastSentDrawDeviceDestRect はフルスクリーン時も FullScreenDestRect の
+//   原点を保持しているので、両方まとめてこれで足りる。
+//---------------------------------------------------------------------------
 void TTVPWindowForm::TranslateWindowToDrawArea(int &x, int &y) {
-	if( GetFullScreenMode() ) {
-		x -= FullScreenDestRect.left;
-		y -= FullScreenDestRect.top;
-	}
+	x -= LastSentDrawDeviceDestRect.left;
+	y -= LastSentDrawDeviceDestRect.top;
 }
 
 void TTVPWindowForm::TranslateWindowToDrawArea(double&x, double &y) {
-	if( GetFullScreenMode() ) {
-		x -= FullScreenDestRect.left;
-		y -= FullScreenDestRect.top;
-	}
+	x -= LastSentDrawDeviceDestRect.left;
+	y -= LastSentDrawDeviceDestRect.top;
 }
 void TTVPWindowForm::TranslateDrawAreaToWindow(int &x, int &y) {
-	if( GetFullScreenMode() ) {
-		x += FullScreenDestRect.left;
-		y += FullScreenDestRect.top;
-	}
+	x += LastSentDrawDeviceDestRect.left;
+	y += LastSentDrawDeviceDestRect.top;
 }
 void TTVPWindowForm::FirePopupHide() {
 	// fire "onPopupHide" event

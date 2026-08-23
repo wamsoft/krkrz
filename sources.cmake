@@ -82,6 +82,7 @@ common/tjs2/tjsVariant.cpp
 common/tjs2/tjsVariantString.cpp
 common/base/BinaryStream.cpp
 common/base/CharacterSet.cpp
+common/base/DisplaySelect.cpp
 common/base/EventIntf.cpp
 common/base/FileAllocator.cpp
 common/base/KrkrzAllocator.cpp
@@ -103,6 +104,8 @@ common/environ/TouchPoint.cpp
 common/environ/PadManager.cpp
 common/extension/Extension.cpp
 common/msg/MsgIntf.cpp
+common/msg/MsgLanguage.cpp
+common/visual/FontVariations.cpp
 common/msg/ReadOptionDescUtil.cpp
 common/sound/MathAlgorithms.cpp
 common/sound/PhaseVocoderDSP.cpp
@@ -239,6 +242,7 @@ common/visual/opengl/OGLDrawDevice.cpp
 common/visual/opengl/GLVideoPresenter.cpp
 common/visual/opengl/GLVideoPresenter.h
 common/visual/opengl/OGLViewportBackground.h
+common/visual/opengl/OGLSurfaceRect.h
 common/visual/opengl/CanvasIntf.cpp
 common/visual/opengl/GLCompositorIntf.cpp
 common/visual/opengl/GLCompositorIntf.h

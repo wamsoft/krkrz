@@ -328,6 +328,33 @@ public:
 
 	void HideMouseCursor();
 
+//-- ビューポート (ゲーム画面の表示画角制御)。Form に設定を保持し、DestRect の
+//   再計算で反映する。余白の背景色/壁紙は DrawDevice 側の実装が要るため
+//   当面 Generic 限定 (src/core/doc/WindowGeometry.md 参照)。
+	// 画面比率の固定 (WINVER 未対応。 API だけ揃える)
+	void SetAspectLock(tjs_int w, tjs_int h) {}
+	tjs_int GetAspectLockW() const { return 0; }
+	tjs_int GetAspectLockH() const { return 0; }
+
+	void SetViewportFit(tjs_int fit);
+	tjs_int GetViewportFit() const;
+	void SetViewportZoom(double scale);
+	double GetViewportZoom() const;
+	void SetViewportAlignX(double v);
+	double GetViewportAlignX() const;
+	void SetViewportAlignY(double v);
+	double GetViewportAlignY() const;
+	void SetViewportOffsetX(tjs_int v);
+	tjs_int GetViewportOffsetX() const;
+	void SetViewportOffsetY(tjs_int v);
+	tjs_int GetViewportOffsetY() const;
+	void SetViewportBgColor(tjs_uint32 color);
+	tjs_uint32 GetViewportBgColor() const;
+	// 壁紙: 文字列なら Bitmap を生成してロード、Layer/Bitmap オブジェクトならそのまま
+	// 参照保持して Form へ渡す。fit/align は壁紙用。
+	void SetViewportWallpaper(const tTJSVariant &image, tjs_int fit, double alignX, double alignY);
+	void ClearViewportWallpaper();
+
 //-- properties
 	bool GetVisible() const;
 	void SetVisible(bool s);
@@ -374,6 +401,9 @@ public:
 	tjs_int GetInnerWidth() const;
 	void SetInnerHeight(tjs_int h);
 	tjs_int GetInnerHeight() const;
+	//! 装飾ぶんのサイズ (外形 - 内側)。枠を持たない環境では 0
+	tjs_int GetFrameWidth() const;
+	tjs_int GetFrameHeight() const;
 
 	void SetInnerSize(tjs_int w, tjs_int h);
 

@@ -7,6 +7,7 @@
 #include "tjsHashSearch.h"
 #include <string>
 #include <unordered_map>
+#include <utility>
 
 class tTVPWStringHash {
 public:
@@ -47,6 +48,10 @@ class FontSystem {
 	// 起動時にメタデータを読んでここへ登録するだけ(FreeType パースはしない)。
 	// 実ファイルは EnsureLazyFontLoaded() で初回使用時に AddExtraFont される。
 	std::unordered_map<tjs_string, tjs_string> LazyFontFiles;
+	// fonts.json 宣言の可変軸: フォント名 -> (正規化済み axes spec, named instance 名)。
+	// "axes" 直書きと "instance" (fvar named instance 名) の両対応。両方あれば
+	// axes が instance を上書きする (適用は GlyphwareHost の chain 構築時)。
+	std::unordered_map<tjs_string, std::pair<tjs_string, tjs_string>> LazyFontVariations;
 	// 上と同じ name->storage だが EnsureLazyFontLoaded で erase されない永続版。
 	// glyphware など FreeType 遅延ロードとは別経路の name 解決に使う
 	// (GetLazyFontStorage)。FreeType が先に消費しても名前→ストレージは引ける。
@@ -71,6 +76,10 @@ public:
 	// data/fonts.json 宣言名(family/alias) からストレージ名を引く。glyphware など
 	// フォント名でフォントファイルを解決したい利用側向け。見つかれば true。
 	bool GetLazyFontStorage( const tjs_string& name, tjs_string& storage ) const;
+
+	// fonts.json 宣言名の可変軸宣言 (axes / instance) を引く。宣言が無ければ false。
+	bool GetLazyFontVariations( const tjs_string& name, tjs_string& axesSpec,
+	                            tjs_string& instanceName ) const;
 	// 既知の name→storage 対応 (fonts.json 宣言 + 実行時登録) を列挙する
 	// (フォントサービスの検索がレジストリへ流し込むのに使う)
 	void EnumerateLazyFontStorages( std::vector<std::pair<tjs_string, tjs_string>>& out ) const;

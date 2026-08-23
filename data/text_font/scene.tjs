@@ -240,7 +240,8 @@ class TextGlyphwareScene extends DemoScene
         }
         // 絵文字: カラー (fonts.json 宣言、単体起動などで無ければ解決されず
         // スキップ) → 埋め込みモノクロ (常に有効) の順でフォールバック
-        chain += ",Noto Color Emoji,resource://./notoemoji-regular.ttf";
+        // (リソースの置き場は System.resourcePath で吸収。直書きすると wasm で外れる)
+        chain += ",Noto Color Emoji," + System.resourcePath + "notoemoji-regular.ttf";
         draw();
         setInfo("Layer.drawShapedText — HarfBuzz シェイピング + BiDi + フォールバック連鎖 / drawShapedTextArea で矩形内折り返し");
     }

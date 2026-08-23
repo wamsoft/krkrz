@@ -31,14 +31,26 @@ tjs_error TJS_INTF_METHOD tTJSNI_Texture::Construct(tjs_int numparams, tTJSVaria
 	/**
 	* 画像読み込みする場合以下のパラメータが指定可能であるが、p2パラメータは非公開(undocument)としておく
 	* @param bitmap/filename テクスチャの元となるBitmapクラスのインスタンス
-	* @param format カラーフォーマット(tcfRGBA or tcfAlpha), tcfAlpha選択時に色情報はグレイスケール化される
+	* @param format カラーフォーマット(tcfRGBA / tcfAlpha / tcfAlphaChannel)
+	*               tcfAlpha       : 色情報をグレイスケール化して 8bit テクスチャにする
+	*               tcfAlphaChannel: α チャンネルをそのまま 8bit テクスチャにする
+	*                                (クリッピングマスクのように α だけを使う画像用。
+	*                                 RGBA の 1/4 のメモリで済む)
 	* @param is9patch 9patch情報を読み込むかどうか
 	* @param p2 サイズ2の累乗化(必須ではないが高速化する環境もある、一応指定可能に) : undocument
 	*/
 	if( param[0]->Type() == tvtString ) {
 		tTVPTextureColorFormat color = tTVPTextureColorFormat::RGBA;
+		bool fromAlphaChannel = false;
 		if( numparams > 1 ) {
-			color = (tTVPTextureColorFormat)(tjs_int)*param[1];
+			const tjs_int fmt = (tjs_int)*param[1];
+			if( fmt == TVP_TCF_ALPHA_CHANNEL ) {
+				// α チャンネルを 8bit テクスチャにする。 読み込み自体は 32bpp で行う
+				fromAlphaChannel = true;
+				color = tTVPTextureColorFormat::Alpha;
+			} else {
+				color = (tTVPTextureColorFormat)fmt;
+			}
 		}
 		bool is9patch = false;
 		if( numparams > 2 ) {
@@ -51,7 +63,9 @@ tjs_error TJS_INTF_METHOD tTJSNI_Texture::Construct(tjs_int numparams, tTJSVaria
 		ttstr filename = *param[0];
 		std::unique_ptr<tTVPBaseBitmap> bitmap( new tTVPBaseBitmap( TVPGetInitialBitmap() ) );
 		// tTVPBaseBitmap経由して読み込む。キャッシュ機構などは共有される。
-		tTVPGraphicLoadMode mode = color == tTVPTextureColorFormat::Alpha ? glmGrayscale : glmNormal;
+		// tcfAlphaChannel は α が必要なので 32bpp (glmNormal) で読む
+		tTVPGraphicLoadMode mode =
+			( color == tTVPTextureColorFormat::Alpha && !fromAlphaChannel ) ? glmGrayscale : glmNormal;
 		TVPLoadGraphic( bitmap.get(), filename, clNone, 0, 0, mode, nullptr, nullptr, true );
 		if( is9patch && bitmap->Is32BPP() ) {
 			bitmap->Read9PatchInfo( Scale9Patch, Margin9Patch );
@@ -84,7 +98,11 @@ tjs_error TJS_INTF_METHOD tTJSNI_Texture::Construct(tjs_int numparams, tTJSVaria
 				bitmap->SetSizeWithFill( dw, dh, 0 );
 			}
 		}
-		LoadTexture( bitmap.get(), color );
+		if( fromAlphaChannel ) {
+			LoadTextureFromAlphaChannel( bitmap.get() );
+		} else {
+			LoadTexture( bitmap.get(), color );
+		}
 	} else if( param[0]->Type() == tvtObject ) {
 
 		// 第一引数が Texture の場合はコピー実行
@@ -156,8 +174,15 @@ tjs_error TJS_INTF_METHOD tTJSNI_Texture::Construct(tjs_int numparams, tTJSVaria
 		}
 		if(!bmp) TVPThrowExceptionMessage(TVPParameterRequireClassInstance, TJS_W("Bitmap"));
 		tTVPTextureColorFormat color = tTVPTextureColorFormat::RGBA;
+		bool fromAlphaChannel = false;
 		if( numparams > 1 ) {
-			color = (tTVPTextureColorFormat)(tjs_int)*param[1];
+			const tjs_int fmt = (tjs_int)*param[1];
+			if( fmt == TVP_TCF_ALPHA_CHANNEL ) {
+				fromAlphaChannel = true;
+				color = tTVPTextureColorFormat::Alpha;
+			} else {
+				color = (tTVPTextureColorFormat)fmt;
+			}
 		}
 		bool is9patch = false;
 		if( numparams > 2 ) {
@@ -192,6 +217,12 @@ tjs_error TJS_INTF_METHOD tTJSNI_Texture::Construct(tjs_int numparams, tTJSVaria
 		}
 		SrcWidth = bitmap->GetWidth();
 		SrcHeight = bitmap->GetHeight();
+		if( fromAlphaChannel ) {
+			// α チャンネルをそのまま 8bit テクスチャにする
+			// (2 の累乗化との併用は未対応)
+			LoadTextureFromAlphaChannel( bitmap );
+			return TJS_S_OK;
+		}
 		bool gray = color == tTVPTextureColorFormat::Alpha;
 		if( gray == bitmap->Is8BPP() ) {
 			if( powerof2 ) {
@@ -243,7 +274,11 @@ tjs_error TJS_INTF_METHOD tTJSNI_Texture::Construct(tjs_int numparams, tTJSVaria
 		bool alpha = false;
 		tTVPTextureColorFormat color = tTVPTextureColorFormat::RGBA;
 		if( numparams > 2 ) {
-			color = (tTVPTextureColorFormat)(tjs_int)*param[2];
+			const tjs_int fmt = (tjs_int)*param[2];
+			// 空テクスチャなので tcfAlphaChannel は tcfAlpha と同じ扱いでよい
+			color = ( fmt == TVP_TCF_ALPHA_CHANNEL )
+				? tTVPTextureColorFormat::Alpha
+				: (tTVPTextureColorFormat)fmt;
 		}
 		// 未初期化データでテクスチャを作る。後でコピーする前提。
 		Texture.create( width, height, nullptr, color );
@@ -279,6 +314,28 @@ void tTJSNI_Texture::SetMarginRectObject( const tTJSVariant & val ) {
 			}
 		}
 	}
+}
+//----------------------------------------------------------------------
+void tTJSNI_Texture::LoadTextureFromAlphaChannel( const class tTVPBaseBitmap* bitmap ) {
+	const tjs_int w = bitmap->GetWidth();
+	const tjs_int h = bitmap->GetHeight();
+	if( w <= 0 || h <= 0 ) return;
+	if( !bitmap->Is32BPP() ) {
+		// 32bpp でなければ α が無いので、 従来通りグレイスケールとして扱う
+		LoadTexture( bitmap, tTVPTextureColorFormat::Alpha );
+		return;
+	}
+
+	// α チャンネルだけを取り出して 8bit テクスチャにする (RGBA の 1/4)
+	std::unique_ptr<tjs_uint8[]> buffer( new tjs_uint8[(size_t)w*h] );
+	for( tjs_int y = 0; y < h; y++ ) {
+		const tjs_uint32* sl = (const tjs_uint32*)bitmap->GetScanLine(y);
+		tjs_uint8* dest = &buffer[(size_t)w*y];
+		for( tjs_int x = 0; x < w; x++ ) {
+			dest[x] = (tjs_uint8)(sl[x] >> 24);
+		}
+	}
+	Texture.create( w, h, buffer.get(), tTVPTextureColorFormat::Alpha );
 }
 //----------------------------------------------------------------------
 void tTJSNI_Texture::LoadTexture( const class tTVPBaseBitmap* bitmap, tTVPTextureColorFormat color) {

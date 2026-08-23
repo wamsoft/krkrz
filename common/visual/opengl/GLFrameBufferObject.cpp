@@ -87,18 +87,37 @@ bool GLFrameBufferObject::create( GLuint w, GLuint h, bool with_pbo ) {
 	height_ = h;
 	glBindFramebuffer( GL_FRAMEBUFFER, fb );
 
-	// PBO を作成 (成功時のみ)
-	if( with_pbo ) {
-		int size = w * h * pixel_size;
-		glGenBuffers(1, &pbo_);
-		glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo_);
-		glBufferData(GL_PIXEL_UNPACK_BUFFER, size, 0, GL_DYNAMIC_DRAW);
-		glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
-	}
+	// PBO はここでは作らない。 pbo() が呼ばれた時点で ensurePBO() が確保する。
+	// (エンジン内に pbo() の利用箇所は無く、 常時確保すると FBO 1 枚あたり
+	//  さらに w*h*4 を無駄に持つことになるため)
+	(void)with_pbo;
 
     glBindTexture( GL_TEXTURE_2D, 0 );
 
+	// 統計: カラーテクスチャ + D24S8 レンダーバッファ
+	mem_bytes_ = (std::uint64_t)w * h * pixel_size;
+	if( renderbuffer_id_ != 0 ) {
+		mem_bytes_ += (std::uint64_t)w * h * 4; // D24S8
+	}
+	GLTexture::NoteFboMemory( (std::int64_t)mem_bytes_, 1 );
+
 	return result;
+}
+//----------------------------------------------------------------------
+GLuint GLFrameBufferObject::ensurePBO() const {
+	if( pbo_ ) return pbo_;
+	if( framebuffer_id_ == 0 || width_ == 0 || height_ == 0 ) return 0;
+
+	const std::size_t size = (std::size_t)width_ * height_ * 4;
+	glGenBuffers( 1, &pbo_ );
+	if( pbo_ == 0 ) return 0;
+	glBindBuffer( GL_PIXEL_UNPACK_BUFFER, pbo_ );
+	glBufferData( GL_PIXEL_UNPACK_BUFFER, size, 0, GL_DYNAMIC_DRAW );
+	glBindBuffer( GL_PIXEL_UNPACK_BUFFER, 0 );
+
+	mem_bytes_ += size;
+	GLTexture::NoteFboMemory( (std::int64_t)size, 0 );
+	return pbo_;
 }
 bool GLFrameBufferObject::exchangeTexture( GLuint tex_id ) {
 	GLint fb;

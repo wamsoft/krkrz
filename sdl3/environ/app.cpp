@@ -4,7 +4,11 @@
 #include "StorageIntf.h"
 #include "LogIntf.h"
 #include "SysInitIntf.h"
+#include "DebugIntf.h"
+#include "DisplaySelect.h"
 #include "app.h"
+
+#include <vector>
 #ifdef KRKRZ_HAS_ELEMENTS
 #include "ElementsModalRunner.h"   // TVPInputStringElements
 #endif
@@ -12,6 +16,7 @@
 #include <SDL3/SDL_platform_defines.h>
 #include <SDL3/SDL_dialog.h>   // SelectFile (SDL_ShowOpenFileDialog)
 #include <SDL3/SDL_misc.h>     // ShellExecute (SDL_OpenURL)
+#include <SDL3/SDL_locale.h>   // GetSystemLanguage (SDL_GetPreferredLocales)
 
 #if defined(SDL_PLATFORM_WINDOWS)
 	#include <windows.h>
@@ -83,9 +88,92 @@ SDL3Application::SDL3Application()
 	_ResourcePath = TJS_W("resource://./");
 #endif
 
-	// platform 
+	// platform
 	TVPUtf8ToUtf16(_platformName, SDL_GetPlatform());
 	TVPUtf8ToUtf16(_osName, GetOSVersion());
+	// _platformTags は初回参照時に構築する (getPlatformTagSpec が virtual なので
+	// ここで呼ぶと派生クラスの override が効かない)
+}
+
+// --- プラットフォームタグ ------------------------------------------------
+//
+// config_<tag>.cf の選択や System.platformTag に使う短い識別子。
+//
+// ★ タグの値そのもの (機種の呼称) は本体には持たない。
+//    getPlatformTagSpec() を機種依存部の Application 派生クラスが override して
+//    返す (getPlatformName() が SDL 側から来るのと同じ考え方)。
+//    ';' 区切りで複数返せる。 並びは「一般 → 具体」で、 世代違いなどで
+//    共通設定と個別設定を重ねたいときに使う。
+//
+// ここでの既定は、 標準マクロで判別できる汎用プラットフォームのみ。
+const char *SDL3Application::getPlatformTagSpec() const
+{
+#if defined(_WIN32)
+	return "windows";
+#elif defined(__EMSCRIPTEN__)
+	return "web";
+#elif defined(__ANDROID__)
+	return "android";
+#elif defined(__APPLE__)
+	return "macos";
+#elif defined(__linux__)
+	return "linux";
+#else
+	return "";
+#endif
+}
+
+// --- 本体の表示言語 (System.systemLanguage) --------------------------------
+//
+// SDL_GetPreferredLocales() は優先順のリストを返すので先頭を採る。
+// SDL_Locale は language ("ja") と country ("JP", 無ければ nullptr) の 2 つ。
+// BCP-47 として "ja-JP" のように連結して返す (country 無しなら言語のみ)。
+//
+// SDL に locale バックエンドが無い機種 (NX / PS5) では count=0 / nullptr が
+// 返るので、 そこは機種依存部の派生クラスが override して本体 API を叩く。
+std::string SDL3Application::GetSystemLanguage() const
+{
+	int count = 0;
+	SDL_Locale **locales = SDL_GetPreferredLocales(&count);
+	if (!locales) return std::string();
+
+	std::string result;
+	if (count > 0 && locales[0] && locales[0]->language) {
+		result = locales[0]->language;
+		if (locales[0]->country && locales[0]->country[0]) {
+			result += '-';
+			result += locales[0]->country;
+		}
+	}
+	SDL_free(locales);
+	return result;
+}
+
+// 仮想関数を使うので、 コンストラクタではなく初回参照時に構築する
+// (基底クラスの構築中に呼ぶと派生の override が効かないため)。
+void SDL3Application::InitPlatformTags() const
+{
+	_platformTags.clear();
+
+	const char *spec_c = getPlatformTagSpec();
+	const std::string spec = spec_c ? spec_c : "";
+	std::string cur;
+	for (size_t i = 0; i <= spec.size(); ++i) {
+		const char c = (i < spec.size()) ? spec[i] : ';';
+		if (c == ';' || c == ',' || c == ' ') {
+			if (!cur.empty()) {
+				tjs_string t;
+				TVPUtf8ToUtf16(t, cur.c_str());
+				_platformTags.push_back(t);
+				cur.clear();
+			}
+		} else {
+			// 小文字化して英数のみ残す (ファイル名に使うため)
+			if (c >= 'A' && c <= 'Z')      cur += (char)(c - 'A' + 'a');
+			else if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) cur += c;
+		}
+	}
+	_platformTagsInit = true;
 }
 
 SDL3Application::~SDL3Application()
@@ -132,10 +220,148 @@ SDL3Application::CreateWindowForm(class tTJSNI_Window *win)
 	return form;
 }
 
-tjs_int 
+//---------------------------------------------------------------------------
+// -display= (起動するディスプレイの指定) 実装
+//---------------------------------------------------------------------------
+namespace {
+//! 接続中のディスプレイを共通形で列挙する (番号は SDL の並び順に 1 origin)
+std::vector<tTVPDisplayEntry> EnumDisplayEntries(std::vector<SDL_DisplayID> &ids)
+{
+	std::vector<tTVPDisplayEntry> entries;
+	int count = 0;
+	SDL_DisplayID *list = SDL_GetDisplays(&count);
+	if (!list) return entries;
+	SDL_DisplayID primary = SDL_GetPrimaryDisplay();
+	for (int i = 0; i < count; i++) {
+		tTVPDisplayEntry e;
+		e.index = (tjs_int)i + 1;
+		const char *name = SDL_GetDisplayName(list[i]);
+		if (name) {
+			tjs_string wname;
+			TVPUtf8ToUtf16(wname, name);
+			e.name = wname;
+		}
+		SDL_Rect bounds;
+		if (SDL_GetDisplayBounds(list[i], &bounds)) {
+			e.left = bounds.x; e.top = bounds.y;
+			e.width = bounds.w; e.height = bounds.h;
+		}
+		e.primary = (list[i] == primary);
+		entries.push_back(e);
+		ids.push_back(list[i]);
+	}
+	SDL_free(list);
+	return entries;
+}
+} // anonymous namespace
+//---------------------------------------------------------------------------
+SDL_DisplayID TVPGetStartupDisplayID()
+{
+	static SDL_DisplayID selected = 0;
+	static bool resolved = false;
+	if (resolved) return selected;
+	resolved = true;
+
+	tjs_string opt;
+	if (!TVPGetStartupDisplayOption(opt)) return 0;
+
+	std::vector<SDL_DisplayID> ids;
+	std::vector<tTVPDisplayEntry> entries = EnumDisplayEntries(ids);
+	if (TVPIsDisplayListRequest(opt)) {
+		TVPLogDisplayList(entries);
+		return 0;
+	}
+	tjs_int idx = TVPMatchDisplay(opt, entries);
+	if (idx < 0) {
+		TVPAddImportantLog(ttstr(TJS_W("(warning) -display=")) + ttstr(opt) +
+			ttstr(TJS_W(" : no such display; using the default one")));
+		TVPLogDisplayList(entries);
+		return 0;
+	}
+	selected = ids[idx];
+	TVPAddImportantLog(ttstr(TJS_W("(info) -display=")) + ttstr(opt) + ttstr(TJS_W(" -> display ")) +
+		ttstr((tjs_int)entries[idx].index) + ttstr(TJS_W(" : ")) + ttstr(entries[idx].name));
+	return selected;
+}
+//---------------------------------------------------------------------------
+void TVPSDLSetWindowPositionKeepingSize(SDL_Window *window, int x, int y)
+{
+	if (!window) return;
+	int w = 0, h = 0;
+	SDL_GetWindowSize(window, &w, &h);
+	SDL_SetWindowPosition(window, x, y);
+	if (w <= 0 || h <= 0) return;
+	int aw = 0, ah = 0;
+	SDL_GetWindowSize(window, &aw, &ah);
+	if (aw != w || ah != h) {
+		// 移動先の DPI が違ってサイズが変わってしまったので戻す
+		SDL_SetWindowSize(window, w, h);
+	}
+}
+//---------------------------------------------------------------------------
+void TVPMoveWindowToStartupDisplay(SDL_Window *window)
+{
+	if (!window) return;
+	SDL_DisplayID target = TVPGetStartupDisplayID();
+	if (!target) return;
+
+	SDL_Rect tb;
+	if (!SDL_GetDisplayUsableBounds(target, &tb)) return;
+
+	int x = 0, y = 0, w = 0, h = 0;
+	SDL_GetWindowPosition(window, &x, &y);
+	SDL_GetWindowSize(window, &w, &h);
+	// SDL の位置/サイズはクライアント領域基準。作業領域への収まりを見るには
+	// 枠 (タイトルバー含む) を足した外側の矩形で判定する必要がある
+	int bt = 0, bl = 0, bb = 0, br = 0;
+	SDL_GetWindowBordersSize(window, &bt, &bl, &bb, &br);
+	int ow = w + bl + br;
+	int oh = h + bt + bb;
+
+	int l = x, t = y;
+	SDL_DisplayID current = SDL_GetDisplayForWindow(window);
+	if (current != target) {
+		// 別ディスプレイ上にいる場合は、現ディスプレイ作業領域の原点からの
+		// 相対位置を保って移動する
+		SDL_Rect cb;
+		if (!current || !SDL_GetDisplayUsableBounds(current, &cb)) { cb = tb; cb.x = 0; cb.y = 0; }
+		l = x - cb.x + tb.x;
+		t = y - cb.y + tb.y;
+	}
+	// 既に目的のディスプレイ上にいる場合でも、はみ出しは作業領域内へ寄せる
+	// (配置後にスクリプトがウィンドウを大きくした場合など)
+	int ol = l - bl, ot = t - bt;
+	if (ol + ow > tb.x + tb.w) ol = tb.x + tb.w - ow;
+	if (ot + oh > tb.y + tb.h) ot = tb.y + tb.h - oh;
+	if (ol < tb.x) ol = tb.x;
+	if (ot < tb.y) ot = tb.y;
+
+	TVPSDLSetWindowPositionKeepingSize(window, ol + bl, ot + bt);
+}
+//---------------------------------------------------------------------------
+
+// スクリーンサイズ等の基準になるディスプレイ。
+// System.screenWidth/screenHeight は「メインウィンドウのあるディスプレイが対象、
+// メインウィンドウが無ければプライマリ」と規定されている (WINVER も同じ挙動)。
+// -display= 指定時は、メインウィンドウが出来るまでの間もそのディスプレイを使う。
+SDL_DisplayID
+SDL3Application::BaseDisplayID() const
+{
+	if (SDL3WindowForm *mainForm = (SDL3WindowForm*)MainWindowForm()) {
+		if (SDL_Window *window = (SDL_Window*)(mainForm->NativeWindowHandle())) {
+			SDL_DisplayID display = SDL_GetDisplayForWindow(window);
+			if (display) return display;
+		}
+	}
+	SDL_DisplayID display = TVPGetStartupDisplayID();
+	if (display) return display;
+	return SDL_GetPrimaryDisplay();
+}
+
+tjs_int
 SDL3Application::ScreenWidth() const
 {
-	SDL_DisplayID display = SDL_GetPrimaryDisplay();
+	SDL_DisplayID display = BaseDisplayID();
 	if (display) {
 		SDL_Rect bounds;
 		// SDL3 の SDL_GetDisplayBounds は成功で true を返す (SDL2 の
@@ -148,10 +374,10 @@ SDL3Application::ScreenWidth() const
 	return 0;
 }
 
-tjs_int 
+tjs_int
 SDL3Application::ScreenHeight() const
 {
-	SDL_DisplayID display = SDL_GetPrimaryDisplay();
+	SDL_DisplayID display = BaseDisplayID();
 	if (display) {
 		SDL_Rect bounds;
 		// SDL3 の SDL_GetDisplayBounds は成功で true を返す (SDL2 の
@@ -510,8 +736,20 @@ SDL3Application::OnUnhandledScriptException(const tjs_string& message, const tjs
 tjs_int 
 SDL3Application::GetDensity() const
 {
-	// 固定値として返す（実際のDPIを取得する方法もある）
-	return 96;
+	// WINVER (GetDpiForWindow) と揃えて実 DPI を返す。SDL の content scale は
+	// 96dpi = 1.0 倍なので 96 を掛ける。取れない環境は 96 (等倍) にフォールバック。
+	float scale = 0.0f;
+	if (SDL3WindowForm *mainForm = (SDL3WindowForm*)MainWindowForm()) {
+		if (SDL_Window *window = (SDL_Window*)(mainForm->NativeWindowHandle())) {
+			scale = SDL_GetWindowDisplayScale(window);
+		}
+	}
+	if (scale <= 0.0f) {
+		SDL_DisplayID display = BaseDisplayID();
+		if (display) scale = SDL_GetDisplayContentScale(display);
+	}
+	if (scale <= 0.0f) return 96;
+	return (tjs_int)(scale * 96.0f + 0.5f);
 }
 
 #include "SDLDrawDevice.h"

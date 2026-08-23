@@ -16,6 +16,7 @@ struct IDirect3D9;
 
 #include <algorithm>
 #include "MsgImpl.h"
+#include "BitmapIntf.h"          // TVPCreateBitmapObject (文字列指定時の壁紙生成)
 #include "WindowIntf.h"
 #include "LayerImpl.h"
 #include "WindowFormUnit.h"
@@ -846,7 +847,11 @@ bool tTJSNI_Window::GetWindowActive()
 //---------------------------------------------------------------------------
 void tTJSNI_Window::ResetDrawDevice()
 {
-	if(Form) Form->ResetDrawDevice();
+	if(Form) {
+		Form->ResetDrawDevice();
+		// 新しい DrawDevice へビューポート余白 (色/壁紙) を再 push させる
+		Form->SetViewportRenderDirty();
+	}
 }
 //---------------------------------------------------------------------------
 void tTJSNI_Window::FullScreenGuard() const {
@@ -1051,6 +1056,26 @@ void TJS_INTF_METHOD tTJSNI_Window::ResetImeMode()
 void tTJSNI_Window::UpdateContent()
 {
 	if ( DrawDevice ) {
+		// ビューポート余白 (背景色 + 壁紙) を DrawDevice へ反映 (変更時のみ)。
+		// 対応デバイスだけが iTVPViewportBackgroundHost を公開する
+		// (非対応なら何もしない = 余白は各デバイスの既定の塗りつぶし)。
+		// 実際の描画は各 DrawDevice の Show() が行う。
+		if( Form && Form->IsViewportRenderDirty() ) {
+			iTVPViewportBackgroundHost * vbg =
+				TVPQueryViewportBackgroundHost( GetDrawDeviceObject() );
+			if( vbg ) {
+				vbg->SetViewportBackgroundColor(Form->GetViewportBgColor());
+				const tTJSVariant &wp = Form->GetViewportWallpaper();
+				if( wp.Type() == tvtObject && wp.AsObjectNoAddRef() ) {
+					vbg->SetViewportWallpaper(wp, Form->GetViewportWallpaperFit(),
+						Form->GetViewportWpAlignX(), Form->GetViewportWpAlignY());
+				} else {
+					vbg->ClearViewportWallpaper();
+				}
+			}
+			Form->ClearViewportRenderDirty();
+		}
+
 		// is called from event dispatcher
 		DrawDevice->Update();
 
@@ -1201,9 +1226,158 @@ void tTJSNI_Window::ShowModal()
 	}
 }
 //---------------------------------------------------------------------------
+void tTJSNI_Window::SetViewportBgColor(tjs_uint32 color)
+{
+	if(Form) Form->SetViewportBgColor(color);
+}
+tjs_uint32 tTJSNI_Window::GetViewportBgColor() const
+{
+	if(!Form) return 0xff000000;
+	return Form->GetViewportBgColor();
+}
+void tTJSNI_Window::SetViewportWallpaper(const tTJSVariant &image, tjs_int fit,
+	double alignX, double alignY)
+{
+	if(!Form) return;
+
+	if(image.Type() == tvtString) {
+		// 文字列 (storage) 指定: Bitmap オブジェクトを生成してロードし、その
+		// オブジェクトを Variant として保持する (参照保持でイメージは維持される)。
+		ttstr storage(image);
+		if(storage.IsEmpty()) {
+			Form->SetViewportWallpaper(tTJSVariant(), (tTVPViewportFit)fit, alignX, alignY);
+			return;
+		}
+		iTJSDispatch2 *bmp = TVPCreateBitmapObject();
+		try {
+			tTJSVariant nameval(storage);
+			tTJSVariant *args[1] = { &nameval };
+			bmp->FuncCall(0, TJS_W("load"), nullptr, nullptr, 1, args, bmp);
+			tTJSVariant bmpvar(bmp, bmp); // AddRef される
+			Form->SetViewportWallpaper(bmpvar, (tTVPViewportFit)fit, alignX, alignY);
+		} catch(...) {
+			bmp->Release();
+			throw;
+		}
+		bmp->Release();
+		return;
+	}
+
+	if(image.Type() == tvtObject) {
+		iTJSDispatch2 *obj = image.AsObjectNoAddRef();
+		if(obj) {
+			// Layer / Bitmap のみ許可。いずれもDrawDevice 側で imageWidth 等の
+			// プロパティから画像イメージを取得する。
+			bool isLayer  = obj->IsInstanceOf(0, nullptr, nullptr, TJS_W("Layer"),  obj) == TJS_S_TRUE;
+			bool isBitmap = obj->IsInstanceOf(0, nullptr, nullptr, TJS_W("Bitmap"), obj) == TJS_S_TRUE;
+			if(!isLayer && !isBitmap)
+				TVPThrowExceptionMessage(TVPSetViewportWallpaperWallpaperMustBeAStringLayerOrBitmap);
+			Form->SetViewportWallpaper(image, (tTVPViewportFit)fit, alignX, alignY);
+			return;
+		}
+	}
+
+	// void / null / 非対応 → クリア。
+	Form->SetViewportWallpaper(tTJSVariant(), (tTVPViewportFit)fit, alignX, alignY);
+}
+void tTJSNI_Window::ClearViewportWallpaper()
+{
+	if(Form) Form->SetViewportWallpaper(tTJSVariant(), vfCover, 0.5, 0.5);
+}
+//---------------------------------------------------------------------------
+tjs_int tTJSNI_Window::GetFrameWidth() const
+{
+	if(!Form) return 0;
+	tjs_int f = Form->GetWidth() - Form->GetInnerWidth();
+	return f > 0 ? f : 0;
+}
+//---------------------------------------------------------------------------
+tjs_int tTJSNI_Window::GetFrameHeight() const
+{
+	if(!Form) return 0;
+	tjs_int f = Form->GetHeight() - Form->GetInnerHeight();
+	return f > 0 ? f : 0;
+}
+//---------------------------------------------------------------------------
 void tTJSNI_Window::HideMouseCursor()
 {
 	if(Form) Form->HideMouseCursor();
+}
+//---------------------------------------------------------------------------
+// ビューポート (ゲーム画面の表示画角制御)。Form に設定を保持し、DestRect の
+// 再計算で反映する。generic 側と同じ実装形 (WindowGeometry.md 参照)。
+//---------------------------------------------------------------------------
+void tTJSNI_Window::SetViewportFit(tjs_int fit)
+{
+	if(!Form) return;
+	tTVPViewportConfig c = Form->GetViewportConfig();
+	c.fit = (tTVPViewportFit)fit;
+	Form->SetViewportConfig(c);
+}
+tjs_int tTJSNI_Window::GetViewportFit() const
+{
+	if(!Form) return vfContain;
+	return (tjs_int)Form->GetViewportConfig().fit;
+}
+void tTJSNI_Window::SetViewportZoom(double scale)
+{
+	if(!Form) return;
+	tTVPViewportConfig c = Form->GetViewportConfig();
+	c.customScale = scale;
+	Form->SetViewportConfig(c);
+}
+double tTJSNI_Window::GetViewportZoom() const
+{
+	if(!Form) return 1.0;
+	return Form->GetViewportConfig().customScale;
+}
+void tTJSNI_Window::SetViewportAlignX(double v)
+{
+	if(!Form) return;
+	tTVPViewportConfig c = Form->GetViewportConfig();
+	c.alignX = v;
+	Form->SetViewportConfig(c);
+}
+double tTJSNI_Window::GetViewportAlignX() const
+{
+	if(!Form) return 0.0;
+	return Form->GetViewportConfig().alignX;
+}
+void tTJSNI_Window::SetViewportAlignY(double v)
+{
+	if(!Form) return;
+	tTVPViewportConfig c = Form->GetViewportConfig();
+	c.alignY = v;
+	Form->SetViewportConfig(c);
+}
+double tTJSNI_Window::GetViewportAlignY() const
+{
+	if(!Form) return 0.0;
+	return Form->GetViewportConfig().alignY;
+}
+void tTJSNI_Window::SetViewportOffsetX(tjs_int v)
+{
+	if(!Form) return;
+	tTVPViewportConfig c = Form->GetViewportConfig();
+	c.offsetX = v;
+	Form->SetViewportConfig(c);
+}
+tjs_int tTJSNI_Window::GetViewportOffsetX() const
+{
+	if(!Form) return 0;
+	return Form->GetViewportConfig().offsetX;
+}
+void tTJSNI_Window::SetViewportOffsetY(tjs_int v)
+{
+	if(!Form) return;
+	tTVPViewportConfig c = Form->GetViewportConfig();
+	c.offsetY = v;
+	Form->SetViewportConfig(c);
+}
+tjs_int tTJSNI_Window::GetViewportOffsetY() const
+{
+	if(!Form) return 0;
+	return Form->GetViewportConfig().offsetY;
 }
 //---------------------------------------------------------------------------
 bool tTJSNI_Window::GetVisible() const

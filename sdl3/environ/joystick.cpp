@@ -50,6 +50,12 @@ tjs_uint32 SDL3Application::GetPadState(int no)
             key_state |= (1 << i);
         }
     }
+    // 配置基準のフェイスボタン (bit24..27)。 生ジョイスティックは刻印が
+    // 判らないので、 SDL の慣例 (ボタン 0..3 = 下/右/左/上) をそのまま写す。
+    for (int i = 0; i < 4; i++) {
+        if (SDL_GetJoystickButton(joystick, i)) key_state |= (1u << (24 + i));
+    }
+
     // HAT（方向パッド）の状態を取得
     int hat_count = SDL_GetNumJoystickHats(joystick);
     if (hat_count > 0) {

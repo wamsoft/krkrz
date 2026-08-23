@@ -45,6 +45,8 @@ class tTVPSDLOGLDrawDevice : public tTVPDrawDevice
 	iTJSDispatch2 *Owner;
 	iTJSDispatch2 *Self;
 	tTJSVariant WindowObject;
+	//! 論理サーフェス (inner) サイズの問い合わせ先。 SetWindowInterface で取得。
+	class tTJSNI_Window *NIWindow;
 
 	class iTVPGLContext *GLContext;
 	GLTextureDrawer TextureDrawer;
@@ -56,8 +58,15 @@ class tTVPSDLOGLDrawDevice : public tTVPDrawDevice
 	SDLOGLTextureUpdateRect mTextureUpdateRect;
 
 	GLfloat _position[8];
+	//! GL の実フレームバッファサイズ (glViewport / 読み戻しの基準)。
+	//! 常にフルスクリーンの環境 (PS5 等) ではウィンドウの inner サイズ
+	//! (論理サーフェス) と一致しないので、 DestRect との換算が要る。
 	int SurfaceWidth;
 	int SurfaceHeight;
+
+	//! DestRect (論理サーフェス座標) を GL の実フレームバッファ座標へ移す。
+	//! 論理と物理が同じ環境 (デスクトップ / NX) では素通し。
+	tTVPRect ToPhysicalRect(const tTVPRect &r, int physW, int physH) const;
 
 	~tTVPSDLOGLDrawDevice();
 

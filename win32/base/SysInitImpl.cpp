@@ -19,6 +19,7 @@
 
 #include "SysInitImpl.h"
 #include "StorageIntf.h"
+#include "ConfigLine.h"
 #include "StorageImpl.h"
 #include "MsgImpl.h"
 #include "GraphicsLoaderIntf.h"
@@ -1729,9 +1730,12 @@ static void PushConfigFileOptions(const std::vector<std::string> * options)
 	if(!options) return;
 	for(unsigned int j = 0; j < options->size(); j++)
 	{
-		if( (*options)[j].c_str()[0] != ';') // unless comment
-			TVPProgramArguments.push_back(
-			TVPParseCommandLineOne(TJS_W("-") + ttstr((*options)[j].c_str())));
+		// 行末の改行・前後の空白・BOM を落としてから解釈する。
+		// ( これをしないと素の値に '\n' / '\r' が紛れ込む。ConfigLine.h 参照 )
+		const std::string line = TVPNormalizeConfigLine((*options)[j]);
+		if(TVPIsConfigLineIgnorable(line)) continue; // 空行 / コメント
+		TVPProgramArguments.push_back(
+			TVPParseCommandLineOne(TJS_W("-") + ttstr(line.c_str())));
 	}
 }
 //---------------------------------------------------------------------------

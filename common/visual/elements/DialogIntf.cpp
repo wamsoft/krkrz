@@ -1208,6 +1208,9 @@ tTJSNC_Dialog::tTJSNC_Dialog() : inherited(TJS_W("Dialog"))
 	// setPadTheme(name)
 	//
 	// pad_icon の全体テーマ ("xbox"/"ps"/"switch"/"keyboard"/"none") を設定する。
+	// "auto" を渡すと、 接続しているパッドの系統から自動で決める
+	// (パッドが無ければ動作プラットフォームで。 画面を開くたびに決め直すので
+	//  途中でコントローラを替えても次の画面から追従する)。
 	// 画面 JSON の top-level "pad_theme" が指定されていればそちらが優先される
 	// (build 時に上書き)。 戻り値は名前を解釈できたかどうか。
 	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/setPadTheme)
@@ -1217,6 +1220,13 @@ tTJSNC_Dialog::tTJSNC_Dialog() : inherited(TJS_W("Dialog"))
 		std::string utf8;
 		tjs_string ts(name.c_str());
 		TVPUtf16ToUtf8(utf8, ts);
+		auto &mgr = tTVPElementsDialogManager::Instance();
+		if (utf8 == "auto") {
+			mgr.SetPadThemeAuto(true);
+			if (result) *result = true;
+			return TJS_S_OK;
+		}
+		mgr.SetPadThemeAuto(false);
 		auto t = cycfi::elements::parse_pad_theme(utf8);
 		bool ok = (t != cycfi::elements::pad_theme::none) || (utf8 == "none");
 		if (ok) cycfi::elements::set_pad_theme(t);

@@ -4,8 +4,10 @@
 #ifdef KRKRZ_USE_GLYPHWARE
 
 #include "GlyphwareHost.h"      // resolve / effective key / build chain
+#include "FontVariations.h"     // 可変軸の実効座標 (Font.weight / Font.variations)
 #include "LayerBitmapIntf.h"    // tTVPNativeBaseBitmap::GetFont
 #include "CharacterSet.h"       // TVPUtf16ToUtf8
+#include "StorageIntf.h"        // TVPGetResourcePath (同梱リソースの置き場)
 #include "MsgIntf.h"            // TVPFontRasterizeError
 #include "glyphware/glyphware.h"
 #ifdef __WINVER__
@@ -55,8 +57,13 @@ void GlyphwareFontRasterizer::RebuildChain(const tTVPFont& font) {
 		if (ename && ename[0]) TVPUtf16ToUtf8(e, tjs_string(ename));
 		if (!e.empty() && TVPGlyphwareFontNameAvailable(e))
 			emojiKey = e;
-		else
-			emojiKey = "resource://./notoemoji-regular.ttf";   // embedded mono emoji
+		else {
+			// 同梱モノクロ絵文字。リソースの置き場はプラットフォームで変わる
+			// (resource://./ / file://./resource/) ので直書きしない。
+			std::string resbase;
+			TVPUtf16ToUtf8(resbase, tjs_string(TVPGetResourcePath().c_str()));
+			emojiKey = resbase + "notoemoji-regular.ttf";
+		}
 		if (!keyU8.empty()) keyU8 += ",";
 		keyU8 += emojiKey;
 	}
@@ -74,6 +81,21 @@ void GlyphwareFontRasterizer::ApplyFont(const tTVPFont& font) {
 	CurrentFont = font;
 	RebuildChain(font);
 	ChainEmojiMode = TVPResolveEmojiMode(font.EmojiMode);
+
+	// 可変軸の適用: Font.variations (+ Font.weight) の実効座標を、連鎖の各 face が
+	// 持つ同名軸にだけ適用する (private face の LRU 経由。共有 face は不変)。
+	// Font.defaultUseVarStyle 有効時は bold/italic を軸へ自動マッピングし、
+	// 軸で表現できたぶんの合成スタイルを無効化する。
+	SynthBold = (font.Flags & TVP_TF_BOLD) != 0;
+	SynthItalic = (font.Flags & TVP_TF_ITALIC) != 0;
+	{
+		std::vector<tTVPFontAxisCoord> coords;
+		TVPFontGetEffectiveVarCoords(font, coords);
+		TVPGlyphwareAutoStyleCoords(Chain.empty() ? nullptr : Chain[0],
+		                            coords, SynthBold, SynthItalic);
+		TVPGlyphwareApplyVariationsToChain(Chain, coords);
+	}
+
 	PixelSize = font.Height < 0 ? -font.Height : font.Height;
 	if (PixelSize <= 0) PixelSize = 1;
 	Ascent = 0;
@@ -123,8 +145,7 @@ void GlyphwareFontRasterizer::GetTextExtent(tjs_uint32 ch, tjs_int& w, tjs_int& 
 		glyphware::GlyphMetrics gm;
 		// pass bold/italic so getTextWidth (which drives this) matches the drawn
 		// advance (GetBitmap emboldens); otherwise measured != rendered width.
-		if (Chain[fi]->glyphMetrics(gid, gm, (CurrentFont.Flags & TVP_TF_BOLD) != 0,
-		                            (CurrentFont.Flags & TVP_TF_ITALIC) != 0)) {
+		if (Chain[fi]->glyphMetrics(gid, gm, SynthBold, SynthItalic)) {
 			w = static_cast<tjs_int>(std::lround(gm.advanceX));
 			h = static_cast<tjs_int>(std::lround(gm.advanceY));
 		}
@@ -168,8 +189,10 @@ tTVPCharacterData* GlyphwareFontRasterizer::GetBitmap(
 	face->setPixelSize(PixelSize);
 	const tjs_int baseline = Ascent;
 
-	const bool bold = (F.Flags & TVP_TF_BOLD) != 0;
-	const bool italic = (F.Flags & TVP_TF_ITALIC) != 0;
+	// 合成 bold/italic は ApplyFont が計算した実効値 (defaultUseVarStyle で
+	// 軸へマッピングされたぶんは落ちている) を使う。
+	const bool bold = SynthBold;
+	const bool italic = SynthItalic;
 	const bool underline = (F.Flags & TVP_TF_UNDERLINE) != 0;
 	const bool strikeout = (F.Flags & TVP_TF_STRIKEOUT) != 0;
 	// request color bitmaps only in the color-emoji mode (matching the classic
@@ -292,8 +315,7 @@ void GlyphwareFontRasterizer::GetGlyphDrawRect(const ttstr& text, tTVPRect& area
 		int fi; tjs_uint32 gid;
 		if (!ResolveGlyph(ch, fi, gid)) continue;
 		glyphware::GlyphMetrics gm;
-		if (!Chain[fi]->glyphMetrics(gid, gm, (CurrentFont.Flags & TVP_TF_BOLD) != 0,
-		                             (CurrentFont.Flags & TVP_TF_ITALIC) != 0)) continue;
+		if (!Chain[fi]->glyphMetrics(gid, gm, SynthBold, SynthItalic)) continue;
 		tTVPRect rt;
 		rt.left = penx + static_cast<tjs_int>(std::lround(gm.bearingX));
 		rt.top = baseline - static_cast<tjs_int>(std::lround(gm.bearingY));

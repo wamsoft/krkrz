@@ -97,9 +97,10 @@ void* GwOpenFace(void*, const char* data, uint32_t size, int copy)
 void* GwOpenFaceByKey(void*, const char* keyU8)
 {
 	if (!keyU8 || !*keyU8) return nullptr;
-	std::string key = TVPGlyphwareResolveFontKey(std::string(keyU8));
-	if (key.empty()) return nullptr;
-	auto face = TVPGetGlyphwareRegistry().face(TVPGlyphwareEntryForKey(key));
+	// TVPGlyphwareFaceForToken は宣言名/パス/GDI 名の解決に加えて、
+	// fonts.json 宣言軸と可変軸 suffix ("key#wght=700" 等) も適用する。
+	// Elements JSON の "font": "MyFont#wght=700" はこの経路で face 化される。
+	auto face = TVPGlyphwareFaceForToken(std::string(keyU8));
 	if (!face) return nullptr;
 
 	auto* f = new tTVPGwBridgeFace();
@@ -239,6 +240,12 @@ uint32_t GwShapeRun(void*, void* face, const char* utf8, uint32_t len,
 	return static_cast<uint32_t>(f->ShapeBuf.size());
 }
 
+int GwIsVariable(void*, void* face)
+{
+	auto* f = AsFace(face);
+	return (f->Face && !f->Face->descriptor().axes.empty()) ? 1 : 0;
+}
+
 // 本体側のブリッジ実体。exe 内 thorvg へは tvgGwSetBridge で登録し、独自に
 // thorvg を静的リンクするプラグイン (layerExVector 等) へは
 // TVPGetFontTvgBridge (FontServiceIntf) 経由でこのポインタを渡す
@@ -270,6 +277,7 @@ struct tTVPGwBridgeInstaller
 		gTVPGwBridge.height = GwHeight;
 		gTVPGwBridge.glyphOutline = GwGlyphOutline;
 		gTVPGwBridge.shapeRun = GwShapeRun;
+		gTVPGwBridge.isVariable = GwIsVariable;
 		tvgGwSetBridge(&gTVPGwBridge);
 		TVPSetFontTvgBridgePointer(&gTVPGwBridge);
 	}

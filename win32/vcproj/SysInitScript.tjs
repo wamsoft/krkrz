@@ -332,6 +332,11 @@ const
  VK_PAD_R_UP=0x1D1,
  VK_PAD_R_RIGHT=0x1D2,
  VK_PAD_R_DOWN=0x1D3,
+/* face buttons by position (not by label) */
+ VK_PAD_FACE_SOUTH=0x1D4,
+ VK_PAD_FACE_EAST=0x1D5,
+ VK_PAD_FACE_WEST=0x1D6,
+ VK_PAD_FACE_NORTH=0x1D7,
  VK_PADANY = 0x1DF,
 
 /* pad axis IDs for System.getPadAxis (see doc/Gamepad.md) */
@@ -363,6 +368,7 @@ const
 /* Textrue color format */
  tcfRGBA = 0,
  tcfAlpha = 1,
+ tcfAlphaChannel = 2,
 
 /* Pointer type */
  ptUnknown = 0,

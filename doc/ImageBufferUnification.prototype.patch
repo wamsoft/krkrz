@@ -1,0 +1,310 @@
+diff --git a/common/base/ScriptMgnIntf.cpp b/common/base/ScriptMgnIntf.cpp
+index 2bef29dd..1197f183 100644
+--- a/common/base/ScriptMgnIntf.cpp
++++ b/common/base/ScriptMgnIntf.cpp
+@@ -238,6 +238,23 @@ void TVPInitScriptEngine()
+ 	REGISTER_OBJECT(ImageFunction, TVPCreateNativeClass_ImageFunction());
+ 	REGISTER_OBJECT(BitmapLayerTreeOwner, TVPCreateNativeClass_BitmapLayerTreeOwner());
+ 
++	// [PROTOTYPE] ImageBuffer を Layer / Bitmap の共通ネイティブ基底として設定する
++	{
++		tTJSNativeClass *ibcls = TVPCreateNativeClass_ImageBuffer();
++		tTJSVariant ibval(ibcls);
++		global->PropSet(TJS_MEMBERENSURE|TJS_IGNOREPROP, TJS_W("ImageBuffer"), NULL, &ibval, global);
++
++		tTJSVariant layercls, bmpcls;
++		global->PropGet(0, TJS_W("Layer"),  NULL, &layercls, global);
++		global->PropGet(0, TJS_W("Bitmap"), NULL, &bmpcls,   global);
++		if( layercls.Type() == tvtObject )
++			((tTJSNativeClass*)layercls.AsObjectNoAddRef())->SetSuper(ibcls);
++		if( bmpcls.Type() == tvtObject )
++			((tTJSNativeClass*)bmpcls.AsObjectNoAddRef())->SetSuper(ibcls);
++
++		ibcls->Release();
++	}
++
+ #ifdef KRKRZ_HAS_ELEMENTS
+ 	REGISTER_OBJECT(Dialog, TVPCreateNativeClass_Dialog());
+ #endif
+diff --git a/common/tjs2/tjsObjectExtendable.cpp b/common/tjs2/tjsObjectExtendable.cpp
+index dc22220a..df0e47f5 100644
+--- a/common/tjs2/tjsObjectExtendable.cpp
++++ b/common/tjs2/tjsObjectExtendable.cpp
+@@ -144,6 +144,18 @@ tTJSExtendableObject::NativeInstanceSupport(tjs_uint32 flag, tjs_int32 classid,
+ tjs_error TJS_INTF_METHOD tTJSExtendableObject::ClassInstanceInfo(tjs_uint32 flag, tjs_uint num, tTJSVariant *value) {
+ 	if( flag == TJS_CII_SET_SUPRECLASS ) {
+ 		SetSuper( value->AsObjectNoAddRef() );
++		// [PROTOTYPE] super のクラス名をこのオブジェクトにも登録する。
++		// これをしないと `obj instanceof "<super のクラス名>"` が偽になる
++		// (IsInstanceOf は membername==NULL のとき super へ委譲しないため)。
++		if( SuperClass ) {
++			tjs_uint i = 0;
++			for(;;) {
++				tTJSVariant name;
++				if( TJS_FAILED(SuperClass->ClassInstanceInfo(TJS_CII_GET, i, &name)) ) break;
++				inherited::ClassInstanceInfo( TJS_CII_ADD, 0, &name );
++				i++;
++			}
++		}
+ 		return TJS_S_OK;
+ 	} else if( flag == TJS_CII_GET_SUPRECLASS ) {
+ 		if( SuperClass ) {
+diff --git a/common/visual/BitmapIntf.cpp b/common/visual/BitmapIntf.cpp
+index 14dd1d01..27dc5976 100644
+--- a/common/visual/BitmapIntf.cpp
++++ b/common/visual/BitmapIntf.cpp
+@@ -7,6 +7,7 @@
+ #include "TVPColor.h"
+ #include "LayerIntf.h"
+ #include "Application.h"
++#include "ImageFunction.h" // [PROTOTYPE] TVPLinkImageBufferOwner
+ 
+ tTJSNI_Bitmap::tTJSNI_Bitmap() : Owner(NULL), Bitmap(NULL), Loading(false) {
+ 	TVPTempBitmapHolderAddRef();
+@@ -19,6 +20,7 @@ tTJSNI_Bitmap::~tTJSNI_Bitmap() {
+ // uint, uint, [bpp] 幅、高さ、bppの順で指定
+ tjs_error TJS_INTF_METHOD tTJSNI_Bitmap::Construct(tjs_int numparams, tTJSVariant **param, iTJSDispatch2 *tjs_obj) {
+ 	Owner = tjs_obj;
++	TVPLinkImageBufferOwner( tjs_obj, this ); // [PROTOTYPE] super へ後方参照を注入
+ 	if( numparams > 0 ) {
+ 		if( param[0]->Type() == tvtString ) {
+ 			tjs_uint32 colorkey = clNone;
+diff --git a/common/visual/ImageFunction.cpp b/common/visual/ImageFunction.cpp
+index 91d8434b..029bd6d0 100644
+--- a/common/visual/ImageFunction.cpp
++++ b/common/visual/ImageFunction.cpp
+@@ -1029,4 +1029,149 @@ tTJSNativeClass * TVPCreateNativeClass_ImageFunction()
+ {
+ 	tTJSNativeClass *cls = new tTJSNC_ImageFunction();
+ 	return cls;
++}
++
++//---------------------------------------------------------------------------
++// [PROTOTYPE] ImageBuffer
++//---------------------------------------------------------------------------
++tjs_uint32 tTJSNC_ImageBuffer::ClassID = -1;
++
++tjs_error TJS_INTF_METHOD tTJSNI_ImageBuffer::Construct(tjs_int numparams,
++	tTJSVariant **param, iTJSDispatch2 *tjs_obj)
++{
++	// 派生 (Layer/Bitmap) のコンストラクタ引数がそのまま流れてくるので無視する
++	return TJS_S_OK;
++}
++
++void TJS_INTF_METHOD tTJSNI_ImageBuffer::Invalidate()
++{
++	OwnerBitmap = nullptr;
++	OwnerLayer = nullptr;
++}
++
++tTVPBaseBitmap* tTJSNI_ImageBuffer::GetTargetBitmap() const
++{
++	if( OwnerBitmap ) return OwnerBitmap->GetBitmap();
++	if( OwnerLayer )  return OwnerLayer->GetMainImage();
++	return nullptr;
++}
++
++// objthis から実体を解決できるか (検証項目 2) を試すヘルパ。
++// 解決できた種別を文字列で返す。
++static ttstr TVPProbeResolveFromObjThis(iTJSDispatch2 *objthis)
++{
++	if( !objthis ) return ttstr(TJS_W("objthis=null"));
++
++	tTJSNI_Bitmap *bmp = nullptr;
++	if( TJS_SUCCEEDED(objthis->NativeInstanceSupport(TJS_NIS_GETINSTANCE,
++			tTJSNC_Bitmap::ClassID, (iTJSNativeInstance**)&bmp)) && bmp )
++		return ttstr(TJS_W("Bitmap"));
++
++	tTJSNI_BaseLayer *lay = nullptr;
++	if( TJS_SUCCEEDED(objthis->NativeInstanceSupport(TJS_NIS_GETINSTANCE,
++			tTJSNC_Layer::ClassID, (iTJSNativeInstance**)&lay)) && lay )
++		return ttstr(TJS_W("Layer"));
++
++	tTJSNI_ImageBuffer *ib = nullptr;
++	if( TJS_SUCCEEDED(objthis->NativeInstanceSupport(TJS_NIS_GETINSTANCE,
++			tTJSNC_ImageBuffer::ClassID, (iTJSNativeInstance**)&ib)) && ib )
++		return ttstr(TJS_W("ImageBuffer(super instance only)"));
++
++	return ttstr(TJS_W("none"));
++}
++
++tTJSNC_ImageBuffer::tTJSNC_ImageBuffer() : inherited(TJS_W("ImageBuffer"))
++{
++	TJS_BEGIN_NATIVE_MEMBERS(ImageBuffer)
++	TJS_DECL_EMPTY_FINALIZE_METHOD
++//----------------------------------------------------------------------
++TJS_BEGIN_NATIVE_CONSTRUCTOR_DECL(/*var.name*/_this, /*var.type*/tTJSNI_ImageBuffer,
++	/*TJS class name*/ImageBuffer)
++{
++	return TJS_S_OK;
++}
++TJS_END_NATIVE_CONSTRUCTOR_DECL(/*TJS class name*/ImageBuffer)
++//----------------------------------------------------------------------
++// 検証(2)(4): objthis の正体と、後方参照経由での実体解決を報告する
++TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/ibProbe)
++{
++	TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_ImageBuffer);
++
++	ttstr via = TVPProbeResolveFromObjThis(objthis);
++
++	ttstr owner(TJS_W("none"));
++	if( _this->GetOwnerBitmap() ) owner = TJS_W("Bitmap");
++	else if( _this->GetOwnerLayer() ) owner = TJS_W("Layer");
++
++	tTVPBaseBitmap *bmp = _this->GetTargetBitmap();
++	ttstr size(TJS_W("-"));
++	if( bmp ) size = ttstr((tjs_int)bmp->GetWidth()) + TJS_W("x") + ttstr((tjs_int)bmp->GetHeight());
++
++	if( result )
++		*result = ttstr(TJS_W("objthis->")) + via
++			+ TJS_W(" / owner=") + owner
++			+ TJS_W(" / size=") + size;
++	return TJS_S_OK;
++}
++TJS_END_NATIVE_METHOD_DECL(/*func. name*/ibProbe)
++//----------------------------------------------------------------------
++// 検証(3): Layer / Bitmap に同名 (fillRect) がある場合の shadow 確認用。
++// ImageBuffer 側が呼ばれたら分かるように文字列を返すだけにする。
++TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/fillRect)
++{
++	if( result ) *result = ttstr(TJS_W("ImageBuffer::fillRect"));
++	return TJS_S_OK;
++}
++TJS_END_NATIVE_METHOD_DECL(/*func. name*/fillRect)
++//----------------------------------------------------------------------
++// 実処理を基底に置けるかの確認: 後方参照経由で実体へ書き込む
++TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/ibFill)
++{
++	TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_ImageBuffer);
++	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
++
++	tTVPBaseBitmap *bmp = _this->GetTargetBitmap();
++	if( !bmp ) return TJS_E_INVALIDPARAM;
++
++	tjs_uint32 value = static_cast<tjs_uint32>((tjs_int64)*param[0]);
++	tTVPRect r(0, 0, bmp->GetWidth(), bmp->GetHeight());
++	bmp->Fill(r, value);
++	return TJS_S_OK;
++}
++TJS_END_NATIVE_METHOD_DECL(/*func. name*/ibFill)
++//----------------------------------------------------------------------
++
++	TJS_END_NATIVE_MEMBERS
++}
++
++tTJSNativeInstance *tTJSNC_ImageBuffer::CreateNativeInstance()
++{
++	return new tTJSNI_ImageBuffer();
++}
++
++tTJSNativeClass * TVPCreateNativeClass_ImageBuffer()
++{
++	return new tTJSNC_ImageBuffer();
++}
++
++static tTJSNI_ImageBuffer* TVPGetImageBufferInstance(iTJSDispatch2 *tjs_obj)
++{
++	if( !tjs_obj ) return nullptr;
++	tTJSNI_ImageBuffer *ib = nullptr;
++	if( TJS_SUCCEEDED(tjs_obj->NativeInstanceSupport(TJS_NIS_GETINSTANCE,
++			tTJSNC_ImageBuffer::ClassID, (iTJSNativeInstance**)&ib)) )
++		return ib;
++	return nullptr;
++}
++
++void TVPLinkImageBufferOwner(iTJSDispatch2 *tjs_obj, tTJSNI_Bitmap* b)
++{
++	tTJSNI_ImageBuffer *ib = TVPGetImageBufferInstance(tjs_obj);
++	if( ib ) ib->SetOwnerBitmap(b);
++}
++
++void TVPLinkImageBufferOwner(iTJSDispatch2 *tjs_obj, tTJSNI_BaseLayer* l)
++{
++	tTJSNI_ImageBuffer *ib = TVPGetImageBufferInstance(tjs_obj);
++	if( ib ) ib->SetOwnerLayer(l);
+ }
+\ No newline at end of file
+diff --git a/common/visual/ImageFunction.h b/common/visual/ImageFunction.h
+index f989ff8d..f7ab7d1a 100644
+--- a/common/visual/ImageFunction.h
++++ b/common/visual/ImageFunction.h
+@@ -37,4 +37,59 @@ protected:
+ };
+ 
+ extern tTJSNativeClass * TVPCreateNativeClass_ImageFunction();
++
++//---------------------------------------------------------------------------
++// [PROTOTYPE] ImageBuffer : Layer / Bitmap の共通ネイティブ基底クラス検証用
++//---------------------------------------------------------------------------
++// 検証項目:
++//  (1) tTJSNativeClass::SetSuper() で Layer / Bitmap に共通基底を持たせられるか
++//  (2) 基底クラスのメソッド呼び出し時に objthis が「派生インスタンス」なのか
++//      「super インスタンス」なのか (= objthis から実体を解決できるか)
++//  (3) 派生に同名メンバがある場合に派生側が優先されるか (shadow)
++//  (4) NativeInstanceSupport が super へフォールスルーするか
++//  (5) instanceof が super まで見えるか
++class tTJSNI_ImageBuffer : public tTJSNativeInstance
++{
++	typedef tTJSNativeInstance inherited;
++
++	// 派生 (Layer / Bitmap) のネイティブインスタンスへの後方参照。
++	// 派生側の Construct から SetOwner() で注入される想定。
++	class tTJSNI_Bitmap*    OwnerBitmap;
++	class tTJSNI_BaseLayer* OwnerLayer;
++
++public:
++	tTJSNI_ImageBuffer() : OwnerBitmap(nullptr), OwnerLayer(nullptr) {}
++	tjs_error TJS_INTF_METHOD
++		Construct(tjs_int numparams, tTJSVariant **param,
++			iTJSDispatch2 *tjs_obj);
++	void TJS_INTF_METHOD Invalidate();
++
++	void SetOwnerBitmap(class tTJSNI_Bitmap* b) { OwnerBitmap = b; }
++	void SetOwnerLayer(class tTJSNI_BaseLayer* l) { OwnerLayer = l; }
++	class tTJSNI_Bitmap*    GetOwnerBitmap() const { return OwnerBitmap; }
++	class tTJSNI_BaseLayer* GetOwnerLayer() const { return OwnerLayer; }
++
++	// 後方参照経由で実体のビットマップを得る
++	tTVPBaseBitmap* GetTargetBitmap() const;
++};
++
++class tTJSNC_ImageBuffer : public tTJSNativeClass
++{
++	typedef tTJSNativeClass inherited;
++
++public:
++	tTJSNC_ImageBuffer();
++	static tjs_uint32 ClassID;
++
++protected:
++	tTJSNativeInstance *CreateNativeInstance();
++};
++
++extern tTJSNativeClass * TVPCreateNativeClass_ImageBuffer();
++
++// Layer / Bitmap の Construct から呼ばれ、super の ImageBuffer インスタンスへ
++// 後方参照を注入する。super が無ければ何もしない。
++extern void TVPLinkImageBufferOwner(iTJSDispatch2 *tjs_obj, class tTJSNI_Bitmap* b);
++extern void TVPLinkImageBufferOwner(iTJSDispatch2 *tjs_obj, class tTJSNI_BaseLayer* l);
++
+ #endif // ImageFunctionH
+diff --git a/common/visual/LayerIntf.cpp b/common/visual/LayerIntf.cpp
+index 1252a4ac..8bc01d93 100644
+--- a/common/visual/LayerIntf.cpp
++++ b/common/visual/LayerIntf.cpp
+@@ -39,6 +39,7 @@
+ #include "RectItf.h"
+ #include "FontSystem.h"
+ #include "FontServiceIntf.h"
++#include "ImageFunction.h" // [PROTOTYPE] TVPLinkImageBufferOwner
+ #ifdef KRKRZ_USE_GLYPHWARE
+ #include "GlyphwareText.h"
+ #endif
+@@ -442,6 +443,7 @@ tTJSNI_BaseLayer::Construct(tjs_int numparams, tTJSVariant **param,
+ 	if(numparams < 2) return TJS_E_BADPARAMCOUNT;
+ 
+ 	Owner = tjs_obj; // no addref
++	TVPLinkImageBufferOwner( tjs_obj, this ); // [PROTOTYPE] super へ後方参照を注入
+ 
+ 	// get the window native instance
+ 	tTJSVariantClosure clo = param[0]->AsObjectClosureNoAddRef();

@@ -1,7 +1,8 @@
 # ゲーム画面の表示画角制御 (ビューポート)
 
-SDL ビルドで、外側ウインドウ (surface) の中に内側ゲーム画面を任意のサイズ・
-位置・倍率で配置し、周囲の余白を背景色や壁紙画像で埋める機能。
+外側ウインドウ (surface) の中に内側ゲーム画面を任意のサイズ・位置・倍率で
+配置し、周囲の余白を背景色や壁紙画像で埋める機能。全バリアント共通
+(WINVER 対応は 2026-08-17。仕様の位置づけは [WindowGeometry.md](WindowGeometry.md) 参照)。
 
 ## 概念モデル
 
@@ -25,9 +26,14 @@ SDL ビルドで、外側ウインドウ (surface) の中に内側ゲーム画�
 
 ## 対応状況
 
-- **SDL ビルドのみ** (`__GENERIC__`)。3 つの DrawDevice すべてで動作:
-  `tTVPSDLDrawDevice` (SDL_Renderer) / `tTVPSDLOGLDrawDevice` / `tTVPOGLDrawDevice` (GL)。
-- **WINVER は据え置き** (従来の zoom ロック動作のまま、API は登録されない)。
+- 配置の指定 (fit / zoom / align / offset) は**全バリアント共通**。
+- 余白の**塗り分け**は、描画デバイスが `iTVPViewportBackgroundHost` を実装し
+  TJS プロパティ `viewportBackgroundHost` を公開している場合のみ効く
+  (`common/visual/ViewportBackground.h`)。同梱の 4 デバイス
+  `tTVPBasicDrawDevice` (D3D11) / `tTVPSDLDrawDevice` (SDL_Renderer) /
+  `tTVPSDLOGLDrawDevice` / `tTVPOGLDrawDevice` (GL) はすべて対応。
+  非対応デバイス (NullDrawDevice / プラグイン製) では余白はそのデバイス既定の
+  塗りつぶしのままになる。
 
 ## TJS API (`Window` のメンバー)
 

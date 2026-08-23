@@ -598,6 +598,28 @@ static void TVPAdjustNumerAndDenom( tjs_int &n, tjs_int &d )
 	d = d / a;
 }
 
+//---------------------------------------------------------------------------
+// 画面比率の固定
+//   有効にすると、 リサイズ (環境側の拘束) と SetZoom の両方がこの比率を守る。
+//   ゲーム画面自体は viewport が枠の中へ配置するので、 レイヤ比率とは独立。
+//---------------------------------------------------------------------------
+void TTVPWindowForm::SetAspectLock( tjs_int w, tjs_int h )
+{
+	if( w < 0 || h < 0 ) return;
+	if( w == 0 || h == 0 ) { w = 0; h = 0; }
+	aspect_lock_w_ = w;
+	aspect_lock_h_ = h;
+	ApplyAspectLock();
+	if( w > 0 && h > 0 ) {
+		// 今のサイズを比率へ合わせる (幅基準)
+		tjs_int cw = GetInnerWidth(), ch = GetInnerHeight();
+		if( cw > 0 && ch > 0 ) {
+			tjs_int nh = (tjs_int)( (tjs_int64)cw * h / w );
+			if( nh > 0 && nh != ch ) SetInnerSize( cw, nh );
+		}
+	}
+}
+//---------------------------------------------------------------------------
 void TTVPWindowForm::SetZoom( tjs_int numer, tjs_int denom, bool set_logical )
 {
 	if( numer <= 0 || denom <= 0 ) return;
@@ -614,6 +636,10 @@ void TTVPWindowForm::SetZoom( tjs_int numer, tjs_int denom, bool set_logical )
 
 	tjs_int w = (tjs_int)( (tjs_int64)lw * numer / denom );
 	tjs_int h = (tjs_int)( (tjs_int64)lh * numer / denom );
+	// 比率固定中は高さを比率から決める (レイヤ比率へ戻さない)
+	if( aspect_lock_w_ > 0 && aspect_lock_h_ > 0 ) {
+		h = (tjs_int)( (tjs_int64)w * aspect_lock_h_ / aspect_lock_w_ );
+	}
 	if( w < 1 ) w = 1;
 	if( h < 1 ) h = 1;
 	SetInnerSize( w, h );

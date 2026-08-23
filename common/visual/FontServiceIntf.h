@@ -49,7 +49,8 @@ struct tTVPFontLineMetrics
 	float StrikeoutThickness;
 };
 
-// グリフ単位のメトリクス (ピクセル)
+// グリフ単位のメトリクス (ピクセル。TVP_FONT_METRICS_UNSCALED 指定時のみ
+// フォントユニット)
 struct tTVPFontGlyphMetrics
 {
 	float AdvanceX;
@@ -58,6 +59,103 @@ struct tTVPFontGlyphMetrics
 	float BearingY;
 	float Width;
 	float Height;
+};
+
+// グリフメトリクスの取得モード (TVPFontGetGlyphMetricsEx)
+#define TVP_FONT_METRICS_HINTED		0	// グリッドフィット (描画と一致。既定)
+#define TVP_FONT_METRICS_UNHINTED	1	// リニア (advance が整数に丸まらない。組版用)
+#define TVP_FONT_METRICS_UNSCALED	2	// フォントユニット (pixelSize 無視・サイズ非依存)
+
+// バリアブルフォント (fvar) の軸情報
+struct tTVPFontVarAxis
+{
+	tjs_uint32 Tag;             // ビッグエンディアン詰めタグ ('wght' 等)
+	float MinValue;
+	float DefaultValue;
+	float MaxValue;
+};
+
+// バリアブルフォントの軸座標指定
+struct tTVPFontVarCoord
+{
+	tjs_uint32 Tag;
+	float Value;
+};
+
+// グリフのラスタライズ指定 (TVPFontRenderGlyphMask)
+//
+// アウトラインをピクセルにする処理は品質 (AA / ストローク / グリッドフィット)
+// を外すと目立つので本体側で持つ。消費者は返った 8bit カバレッジを好きな色で
+// 合成するだけでよく、本体 drawText と見た目が揃う。
+#define TVP_FONT_JOIN_MITER		0
+#define TVP_FONT_JOIN_ROUND		1
+#define TVP_FONT_JOIN_BEVEL		2
+#define TVP_FONT_CAP_BUTT		0
+#define TVP_FONT_CAP_ROUND		1
+#define TVP_FONT_CAP_SQUARE		2
+
+struct tTVPFontRenderParams
+{
+	// 行優先 2x3: {xx, xy, dx, yx, yy, dy}
+	// **フォントユニット (y-up) → ピクセル (y-up)** のアフィン。サイズ・斜体
+	// シアー・幅スケール・サブピクセル位置をここに畳み込む (アウトラインに
+	// 焼き込んでからラスタライズするので後段でのスケール劣化が無い)
+	float Transform[6];
+	bool Bold;                  // 合成ボールド
+	bool Italic;                // 合成イタリック
+	float StrokeWidth;          // 0 = 塗り、>0 = 縁取り (内部は塗らない)
+	tjs_int Join;               // TVP_FONT_JOIN_*
+	tjs_int Cap;                // TVP_FONT_CAP_*
+	float MiterLimit;
+};
+
+// 8bit カバレッジマスク。Left/Top はペン原点からのオフセット (ピクセル、
+// **y 上向き正**)。Buffer は同一 face への次のラスタライズ呼び出しまで有効
+struct tTVPFontGlyphMask
+{
+	tjs_int Left;
+	tjs_int Top;
+	tjs_int Width;
+	tjs_int Height;
+	tjs_int Pitch;
+	const tjs_uint8 * Buffer;
+};
+
+// カラーグリフ (COLR v0/v1) のレイヤー
+//
+// COLR グリフは「アウトライン + 塗り」のレイヤーを変換で入れ子にしたペイント
+// グラフで、FreeType が合成したビットマップを貰う代わりにグラフを貰えば、
+// **消費側のラスタライザ**で任意サイズに描ける (ベクタテキスト向け)。
+// 座標系は FreeType 準拠の y-up。アウトラインは TVPFontGetGlyphOutline の
+// フォントユニット、Transform とグラデーション座標は指定ピクセルサイズ基準
+// (Transform がフォントユニット→ピクセルのスケールを含む)。
+#define TVP_FONT_PAINT_SOLID	0
+#define TVP_FONT_PAINT_LINEAR	1	// 線形グラデーション
+#define TVP_FONT_PAINT_RADIAL	2	// 放射グラデーション
+
+struct tTVPFontColorStop
+{
+	float Offset;               // 0..1
+	tjs_uint8 R, G, B, A;
+};
+
+struct tTVPFontColorLayer
+{
+	tjs_uint32 GlyphId;         // 塗りつぶす対象のアウトライングリフ
+	float Transform[6];         // 行優先 2x3: {xx, xy, dx, yx, yy, dy}
+	tjs_int PaintKind;          // TVP_FONT_PAINT_*
+	tjs_uint8 R, G, B, A;       // SOLID
+	float X0, Y0, X1, Y1;       // LINEAR: 始点/終点、RADIAL: 焦点/中心
+	float R0, R1;               // RADIAL: 半径
+	tjs_int StopCount;          // グラデーションのカラーストップ数
+	const tTVPFontColorStop * Stops;   // コールバック中のみ有効
+};
+
+// カラーレイヤーの受け取り (背面から前面の順に Layer が呼ばれる)
+class iTVPFontColorLayerSink
+{
+public:
+	virtual void TJS_INTF_METHOD Layer(const tTVPFontColorLayer & layer) = 0;
 };
 
 // グリフビットマップ形式
@@ -198,6 +296,19 @@ TJS_EXP_FUNC_DEF(tTVPFontFaceHandle, TVPFontAcquireFace, (const ttstr & nameOrPa
 
 TJS_EXP_FUNC_DEF(void, TVPFontReleaseFace, (tTVPFontFaceHandle face));
 
+TJS_EXP_FUNC_DEF(tTVPFontFaceHandle, TVPFontAcquireFaceInstance, (const ttstr & nameOrPath,
+	const tTVPFontVarCoord * coords, tjs_int count));
+	// バリアブルフォントの**専用インスタンス**を取得する。TVPFontAcquireFace と
+	// 違い、レジストリ共有 face ではなく専用の face を開く (軸座標は face の
+	// 状態なので、共有 face に設定すると本体/他プラグインの描画まで変わる)。
+	// フォントバイト列は共有バッファのまま。解放は TVPFontReleaseFace
+
+TJS_EXP_FUNC_DEF(bool, TVPFontGetFaceData, (tTVPFontFaceHandle face,
+	const tjs_uint8 ** data, tjs_uint64 * size, tjs_int * faceIndex));
+	// face の SFNT バイト列 (共有バッファ) を直接参照する。自前でシェイパを
+	// 走らせる利用者 (minikin 等、フォントデータから独自に hb_face を作る系) 向け。
+	// ストレージパスキーでも "@gdi:" キーでも取得でき、face ハンドルの生存中有効
+
 TJS_EXP_FUNC_DEF(tTVPFontFaceChainHandle, TVPFontAcquireFaceChain,
 	(const ttstr & commaSeparatedNames));
 	// カンマ区切りのフォント名リストからフォールバック連鎖を構築する。
@@ -233,6 +344,14 @@ TJS_EXP_FUNC_DEF(bool, TVPFontGetGlyphMetrics, (tTVPFontFaceHandle face,
 	tTVPFontGlyphMetrics * out));
 	// 合成 bold/italic 適用後の advance/bearing (描画と一致する値)
 
+TJS_EXP_FUNC_DEF(bool, TVPFontGetGlyphMetricsEx, (tTVPFontFaceHandle face,
+	tjs_uint32 glyphId, tjs_int pixelSize, bool bold, bool italic, tjs_int mode,
+	tTVPFontGlyphMetrics * out));
+	// mode (TVP_FONT_METRICS_*) 付きのメトリクス取得。
+	// TVPFontGetGlyphMetrics は mode=HINTED と等価。
+	// 組版エンジンは UNHINTED (または UNSCALED) を使うこと: HINTED の advance は
+	// 整数ピクセルに丸められるので、文字を並べるほど位置がずれる
+
 TJS_EXP_FUNC_DEF(bool, TVPFontGetGlyphOutline, (tTVPFontFaceHandle face,
 	tjs_uint32 glyphId, bool bold, bool italic, iTVPFontOutlineSink * sink));
 	// グリフアウトラインを分解して sink へ通知する。座標は**フォントユニット**
@@ -243,6 +362,36 @@ TJS_EXP_FUNC_DEF(bool, TVPFontGetGlyphBitmap, (tTVPFontFaceHandle face,
 	tTVPFontGlyphBitmap * out));
 	// グリフをラスタライズする。color=true でカラー絵文字 (BGRA) を要求
 	// (非カラーフォントでは GRAY にフォールバック)。Buffer は次のグリフ取得まで有効
+
+TJS_EXP_FUNC_DEF(bool, TVPFontRenderGlyphMask, (tTVPFontFaceHandle face,
+	tjs_uint32 glyphId, const tTVPFontRenderParams * params, tTVPFontGlyphMask * out));
+	// グリフをラスタライズして 8bit カバレッジマスクを得る。アウトラインを
+	// 持たないグリフ (ビットマップのみのカラー絵文字) では false
+
+TJS_EXP_FUNC_DEF(tjs_int, TVPFontGetColorLayers, (tTVPFontFaceHandle face,
+	tjs_uint32 glyphId, tjs_int pixelSize, iTVPFontColorLayerSink * sink,
+	float * clipBox));
+	// COLR (v0/v1) のペイントグラフをレイヤー列に展開して sink へ通知する。
+	// 戻り値はレイヤー数 (0 = ペイントグラフを持たないグリフ。CBDT/sbix の
+	// ビットマップ絵文字はこちらではなく TVPFontGetGlyphBitmap を使う)。
+	// clipBox が非 nullptr なら {xMin,yMin,xMax,yMax} (ピクセル・y-up) を書く
+	// (クリップボックスを持たないフォントでは 4 要素すべて 0)
+
+//---------------------------------------------------------------------------
+// バリアブルフォント (fvar)
+//---------------------------------------------------------------------------
+
+TJS_EXP_FUNC_DEF(tjs_int, TVPFontGetVarAxes, (tTVPFontFaceHandle face,
+	tTVPFontVarAxis * out, tjs_int maxCount));
+	// face の可変軸を out に最大 maxCount 個書き込み、軸の総数を返す
+	// (out=nullptr / maxCount=0 で個数だけ問い合わせ可能)。可変軸が無ければ 0
+
+TJS_EXP_FUNC_DEF(bool, TVPFontSetVariations, (tTVPFontFaceHandle face,
+	const tTVPFontVarCoord * coords, tjs_int count));
+	// 軸座標を設定する。値は軸の範囲にクランプされ、指定しなかった軸は現状維持。
+	// **軸座標は face の状態**なので、共有 face (TVPFontAcquireFace) に対して
+	// 呼ぶと他の利用者の描画も変わる。専用インスタンスには
+	// TVPFontAcquireFaceInstance を使うこと
 
 //---------------------------------------------------------------------------
 // 1 行レイアウト (BiDi + itemize + HarfBuzz シェイピング、glyphware)
