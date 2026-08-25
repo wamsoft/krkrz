@@ -310,6 +310,37 @@ thorvg 側 (fork) は `名前#tag=val` を独立フォントとして登録す�
 ベースフォントから `LoaderMgr::font()` がインスタンスを派生生成するので、
 同じ JSON がエンジン外 (elements_console 等) でも同一表示になる。
 
+### 言語連動フォント置換 (font_languages — Elements 層) 【2026-08-24 実装】
+
+文字体系ごとの別フォント (Noto Sans JP/TC/SC 等) を持つ多言語 UI で、
+共有コードポイントの漢字が常に authoring 時の family の字形で出てしまう
+問題への対応。**言語コード → {family→family の置換表, fallback チェーン}**
+を宣言しておくと、表示言語に応じてフォント解決時に family を差し替える。
+
+- **実装は elements 側に一元化** (`lib/src/support/font.cpp`:
+  `set_font_language_table` / `set_font_language` / `substitute_font_family`)。
+  `font::font(font_descr)` 内で families の各トークンへ適用するため、widget を
+  作り直さず invalidate だけで言語切替に追従する。`#tag=val` サフィックスは
+  温存 (JP/TC/SC が同軸 VF ならウェイトが揃う)。別名 (registerFont の
+  エイリアス) もトークンとして置換できる
+- **適用言語の優先順**: widget 明示 `"locale"` (`font_descr::_lang` 経由、
+  label/anchored_text/rich text run に配線済) > `set_language()` の現在言語。
+  将来の「run 単位の多言語混在」も `_lang` の拡張で対応できる
+- **宣言の入口は 3 系統**: 画面 JSON / app.jsonc の top-level
+  `"font_languages"` (elements_modal がパース、言語単位マージ) /
+  ホスト直登録 `elements_modal::apply_font_languages_json()` (krkrz の
+  `Dialog.fontLanguages` プロパティはこれを呼ぶ)
+- **fallback**: 表に宣言があれば `set_language` 時に theme の既定
+  families チェーンをその言語用の並びへ swap (無い言語では復元)
+- **既知の制限**: `text_area` はビルド時にフォント確定 (表示中の言語切替に
+  非追従、開き直しで反映)。置換表はプロセスグローバル (異なる表を持つ画面の
+  同時表示は非対応)
+- 詳細: [ElementsDialog.md](ElementsDialog.md) の fontLanguages 節 /
+  elements リポ `external/elements_modal/README.md` / ヘッドレステスト =
+  elements_console `tests/font_language_test.cpp`。**対象は Elements 経路のみ**
+  — `Layer.drawText` / `Font.face` 側の言語別フォールバックは下の
+  「未対応 (計画)」のまま
+
 以下は設計時の記録 (決定事項・データモデルの根拠)。
 
 現状 (2026-08-20) の到達点は「**エンジンとプラグイン公開 API は VF 対応済み、
@@ -463,7 +494,9 @@ GDI ラスタライザ (WINVER 既定) と旧 FreeType ラスタライザ (非 W
 ## 未対応 (計画)
 
 - 収録範囲 (coverage) を使った**言語別フォールバックの自動選択** (現状は連鎖の
-  先頭から glyph を持つ face が勝つ従来動作)。
+  先頭から glyph を持つ face が勝つ従来動作)。Elements 経路は宣言式の
+  言語連動フォント置換 (上記 font_languages) で対応済みだが、
+  `Layer.drawText` / `Font.face` 側は未対応のまま。
 - 圧縮 cmap/bitset による包含判定の最適化。
 - `TVPGetAllFontList` へメタデータ名を合流 (設定UIのフォント一覧反映)。
 - システムフォント全列挙 (`allowSystem`) の検索統合。

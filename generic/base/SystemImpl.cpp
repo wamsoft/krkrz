@@ -12,6 +12,7 @@
 #include "tjsDictionary.h"         // TJSCreateDictionaryObject
 #ifdef _WIN32
 #include <shellapi.h>              // TVPExecuteProgram: ShellExecuteW (App Paths 解決)
+#include "ApplicationSpecialPath.h"   // System.personalPath / appDataPath (WINVER 互換)
 #endif
 
 //#include "GraphicsLoaderImpl.h"
@@ -68,10 +69,19 @@ static bool TVPAppTitleInit = false;
 //---------------------------------------------------------------------------
 static void TVPShowSimpleMessageBox(const ttstr & text, const ttstr & caption)
 {
-	// REPL 駆動中はネイティブのブロッキング message box を出さず、 内容を REPL
-	// コンソール (= ログ) に流す。 System.inform 等がエージェントから見える
-	// ようにするため (応答取得は将来拡張、 現状は既定応答で進む)。
-	if (TVPReplActive) {
+	// エージェント運転 (-replfile = モーダル応答チャネルあり) 中はブロッキング
+	// ダイアログを出さず、 内容をログに流して既定応答で進む (自動運転を止めない)。
+	// チャネルの無い REPL (-replweb / console のみ。 Deck の replweb 運用が典型)
+	// は人が画面を見ている前提なので通常どおり実 UI を出す (SDL は overlay
+	// モーダル。 その pump は REPL を drain するのでエージェントからも
+	// Agent.click / dialogClick で閉じられる)。
+	bool agentSuppress = false;
+#ifdef KRKRZ_USE_REPL_FILECHANNEL
+	agentSuppress = TVPReplModalActive();
+#else
+	agentSuppress = TVPReplActive;   // チャネル機構の無いビルドは従来どおり抑止
+#endif
+	if (agentSuppress) {
 		TVPAddImportantLog(ttstr(TJS_W("[dialog] ")) + caption +
 			ttstr(TJS_W(": ")) + text);
 		return;
@@ -353,21 +363,19 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/confirm)
 	else
 		caption = TJS_W("Confirmation");
 
+	// エージェント運転 (-replfile) 中はモーダル応答チャネルが Yes/No を返す
+	// (ブロックしない自動運転)。 チャネルの無い REPL (-replweb / console のみ)
+	// は人が居る前提で実 UI (SDL は overlay モーダル) を出す。 overlay の pump
+	// は REPL を drain するのでエージェントからも操作できる。
 	bool ret;
-	if (TVPReplActive) {
-		ret = true; // 既定 (Yes)
-		bool handled = false;
+	bool handled = false;
 #ifdef KRKRZ_USE_REPL_FILECHANNEL
-		// REPL ファイルチャネルが応答口を持っていれば、エージェントの応答を待つ。
+	if (TVPReplActive) {
 		bool ans = false;
 		if (TVPReplConfirm(text, caption, ans)) { ret = ans; handled = true; }
+	}
 #endif
-		if (!handled) {
-			// チャネル無し (console のみ等) はブロックせず、内容をログへ流し既定 (Yes)。
-			TVPAddImportantLog(ttstr(TJS_W("[confirm] ")) + caption +
-				ttstr(TJS_W(": ")) + text + ttstr(TJS_W(" -> (REPL: Yes)")));
-		}
-	} else {
+	if (!handled) {
 		ret = Application ? Application->ConfirmYesNo(text.AsStdString(), caption.AsStdString()) : true;
 	}
 
@@ -388,6 +396,9 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/inputString)
 	ttstr def;
 	if(numparams >= 3 && param[2]->Type() != tvtVoid) def = *param[2];
 
+	// エージェント運転 (-replfile) 中はモーダル応答チャネルが入力文字列を返す。
+	// チャネルの無い REPL (-replweb / console のみ) は実 UI へフォールスルー
+	// (confirm と同じ方針。 Deck の replweb 運用で overlay が出るようにする)。
 	ttstr out;
 #ifdef KRKRZ_USE_REPL_FILECHANNEL
 	if(TVPReplActive) {
@@ -396,8 +407,6 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/inputString)
 			if(result) { if(cancelled) result->Clear(); else *result = out; }
 			return TJS_S_OK;
 		}
-		if(result) *result = def; // チャネル無しは既定値
-		return TJS_S_OK;
 	}
 #endif
 	tjs_string r;
@@ -786,6 +795,58 @@ TJS_BEGIN_NATIVE_PROP_DECL(dataPath)
 }
 TJS_END_NATIVE_STATIC_PROP_DECL_OUTER(cls, dataPath)
 //----------------------------------------------------------------------
+// WINVER 互換のユーザーフォルダ参照。 KAG (MainWindow.tjs checkSave) が
+// セーブ場所の書き込みに失敗したときのフォールバック先として参照する。
+// SDL 版に無いと「メンバ "personalPath" が見つかりません」で落ちる。
+// Windows 以外は専用フォルダを提供しないので exePath を返す
+// (スクリプト側は exePath と等しければ「別置き場なし」として扱う)。
+TJS_BEGIN_NATIVE_PROP_DECL(personalPath)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+#ifdef _WIN32
+		// "My Documents" (無ければ RoamingAppData)。 WINVER の
+		// TVPGetPersonalPath と同じ解決順・同じ正規化。
+		tjs_string path = ApplicationSpecialPath::GetPersonalPath();
+		if(!path.empty()) {
+			ttstr p = TVPNormalizeStorageName(ttstr(path.c_str()));
+			if(p.GetLastChar() != TJS_W('/')) p += TJS_W('/');
+			*result = p;
+			return TJS_S_OK;
+		}
+#endif
+		*result = TVPGetAppPath();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_DENY_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_STATIC_PROP_DECL_OUTER(cls, personalPath)
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_PROP_DECL(appDataPath)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+#ifdef _WIN32
+		// RoamingAppData (WINVER の TVPGetAppDataPath と同じ)
+		tjs_string path = ApplicationSpecialPath::GetAppDataPath();
+		if(!path.empty()) {
+			ttstr p = TVPNormalizeStorageName(ttstr(path.c_str()));
+			if(p.GetLastChar() != TJS_W('/')) p += TJS_W('/');
+			*result = p;
+			return TJS_S_OK;
+		}
+#endif
+		*result = TVPGetAppPath();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_DENY_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_STATIC_PROP_DECL_OUTER(cls, appDataPath)
+//----------------------------------------------------------------------
 TJS_BEGIN_NATIVE_PROP_DECL(exeName)
 {
 	TJS_BEGIN_NATIVE_PROP_GETTER
@@ -849,6 +910,60 @@ TJS_BEGIN_NATIVE_PROP_DECL(screenHeight)
 	TJS_DENY_NATIVE_PROP_SETTER
 }
 TJS_END_NATIVE_STATIC_PROP_DECL_OUTER(cls, screenHeight)
+//----------------------------------------------------------------------
+// デスクトップ (作業領域) の矩形。 win32 版 krkrz の System.desktop* 互換。
+// ウィンドウ位置の画面内クランプ等に使う。
+TJS_BEGIN_NATIVE_PROP_DECL(desktopLeft)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		*result = Application->DesktopLeft();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_DENY_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_STATIC_PROP_DECL_OUTER(cls, desktopLeft)
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_PROP_DECL(desktopTop)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		*result = Application->DesktopTop();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_DENY_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_STATIC_PROP_DECL_OUTER(cls, desktopTop)
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_PROP_DECL(desktopWidth)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		*result = Application->DesktopWidth();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_DENY_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_STATIC_PROP_DECL_OUTER(cls, desktopWidth)
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_PROP_DECL(desktopHeight)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		*result = Application->DesktopHeight();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_DENY_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_STATIC_PROP_DECL_OUTER(cls, desktopHeight)
 //----------------------------------------------------------------------
 TJS_BEGIN_NATIVE_PROP_DECL(touchDevice)
 {

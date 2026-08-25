@@ -53,6 +53,16 @@ bool TVPAgentInjectKey(bool down, tjs_int64 vk, tjs_int64 shift)
 	return true;
 }
 
+bool TVPAgentInjectText(const ttstr & text)
+{
+	// 実入力 (SDL_EVENT_TEXT_INPUT) と同じく form の OnTextInput へ流す
+	// (posted input event → Elements intercept → Window.onTextInput → Layer)。
+	TTVPWindowForm* form = AgentMainForm();
+	if (!form) return false;
+	form->OnTextInput(text);
+	return true;
+}
+
 void TVPAgentRequestRedraw()
 {
 	if (Application) Application->RequestUpdate();

@@ -349,7 +349,8 @@ class DemoScene
     function onDemoTest() {}
     function onKeyDown(key, shift) {}
     function onKeyUp(key, shift) {}
-    function onKeyPress(key) {}          // 文字入力 (VK ではなく文字そのもの)
+    function onKeyPress(key) {}          // 旧・文字入力 (WINVER 互換でのみ発火。新規は onTextInput を使う)
+    function onTextInput(text) {}        // 文字入力 (文字列単位。IME 確定文字列はまとまって届く。制御文字は来ない)
     function onMouseDown(x, y, button, shift) {}
     function onMouseUp(x, y, button, shift) {}
     function onMouseMove(x, y, shift) {}
@@ -476,7 +477,12 @@ class MenuScene extends DemoScene
         }
     }
 
-    function onMouseWheel(shift, delta, x, y) { scroll(-(delta / 120) \ 1); }
+    // スクロール後もホイールでハイライトがマウス直下に付くよう追従させる
+    function onMouseWheel(shift, delta, x, y)
+    {
+        scroll(-(delta / 120) \ 1);
+        hoverAt(x, y);
+    }
 
     function onMouseDown(x, y, button, shift)
     {
@@ -485,6 +491,16 @@ class MenuScene extends DemoScene
         var i = topIndex + row;
         if (i >= 0 && i < itemCount()) { cursor = i; draw(); window.switchTo(i + 1); }
     }
+
+    // ホバーで選択行を追従 (クリックと同じ行計算。変化した時だけ再描画)
+    function hoverAt(x, y)
+    {
+        if (y < itemTop || y >= viewBottom) return;
+        var row = (y - itemTop) / itemH \ 1;
+        var i = topIndex + row;
+        if (i >= 0 && i < itemCount() && i != cursor) { cursor = i; draw(); }
+    }
+    function onMouseMove(x, y, shift) { hoverAt(x, y); }
 
     function onDemoTest() { dm(@"@demotest:menu items=${itemCount()}"); }
 }
@@ -819,10 +835,16 @@ class DemoShell extends Window
         if (lk !== void && !scene.rawPadKeys) key = lk;
         scene.onKeyUp(key, shift);
     }
-    // 文字入力 (IME 確定文字を含む)。 VK ではなく文字そのものが届く
+    // 旧・文字入力 (WINVER 互換のみ。SDL では発火しない)
     function onKeyPress(key)
     {
         if (scene !== void) scene.onKeyPress(key);
+    }
+    // 文字入力 (文字列単位)。IME 確定文字列はまとまって届く。制御文字は来ない。
+    // SDL / WINVER の両方で発火する (シーンはこちらを使う)
+    function onTextInput(text)
+    {
+        if (scene !== void) scene.onTextInput(text);
     }
     function onMouseDown(x, y, button, shift)
     {

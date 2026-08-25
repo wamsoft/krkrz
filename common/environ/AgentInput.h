@@ -17,6 +17,11 @@ bool TVPAgentInjectMouseMove(int shift, int x, int y);
 bool TVPAgentInjectMouseButton(bool down, int button, int shift, int x, int y);
 bool TVPAgentInjectWheel(int delta, int shift, int x, int y);
 bool TVPAgentInjectKey(bool down, tjs_int64 vk, tjs_int64 shift);
+//! @brief テキスト入力の注入 (実入力の TEXT_INPUT / WM_CHAR と同じ経路)。
+//!        SDL3 は onTextInput 文字列単位、 WINVER は WM_CHAR 相当の
+//!        UTF-16 分解で注入する。 Elements intercept → Window.onTextInput →
+//!        Layer 互換配送まで実入力と同一に流れる。
+bool TVPAgentInjectText(const ttstr & text);
 
 //! @brief アイドル時でもキャプチャ要求が消化されるよう再描画を促す。
 void TVPAgentRequestRedraw();

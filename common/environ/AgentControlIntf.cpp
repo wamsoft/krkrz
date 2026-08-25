@@ -155,21 +155,16 @@ tTJSNC_Agent::tTJSNC_Agent() : inherited(TJS_W("Agent"))
 	}
 	TJS_END_NATIVE_METHOD_DECL(/*func. name*/keyPress)
 	//---------------------------------------------------------------------------
-	// text(str)  — Elements ダイアログへ UTF-8 テキスト入力を流す (input_box 等)。
-	//              アクティブダイアログが無ければ no-op。
+	// text(str)  — テキスト入力を実入力と同じ経路で注入する (TEXT_INPUT /
+	//              WM_CHAR 相当)。Elements ダイアログのテキスト欄に focus が
+	//              あればそちらが消費し、無ければゲーム側 (Window.onTextInput /
+	//              Layer.onKeyPress 互換配送) へ流れる。
 	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/text)
 	{
 		if (numparams < 1) return TJS_E_BADPARAMCOUNT;
-#ifdef KRKRZ_HAS_ELEMENTS
 		ttstr s(*param[0]);
-		std::string utf8;
-		tjs_string ts(s.c_str());
-		TVPUtf16ToUtf8(utf8, ts);
-		bool ok = tTVPElementsDialogManager::Instance().ForwardText(utf8.c_str());
+		bool ok = TVPAgentInjectText(s);
 		if (result) *result = (tjs_int)(ok ? 1 : 0);
-#else
-		if (result) *result = (tjs_int)0;
-#endif
 		return TJS_S_OK;
 	}
 	TJS_END_NATIVE_METHOD_DECL(/*func. name*/text)

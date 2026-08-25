@@ -48,19 +48,67 @@
 // 物理キーボードがある場合は SDL 側の自動判定 (AutoShowingScreenKeyboard) が
 // キーボード UI の表示を抑止するので、 有効化してよい。 キーボードは実行中に
 // 抜き差しされるので SDL_EVENT_KEYBOARD_ADDED / REMOVED で追従する。
-static void TVPUpdateBaselineTextInput(SDL_Window* window)
+//
+// ただし Steam Deck (gamescope) はこの前提が両方崩れる (実機確認 2026-08-24):
+//  - Xwayland が常にコアキーボードを提供するため SDL_HasKeyboard() は物理
+//    キーボード無しでも true を返し、 接続判定に使えない。
+//  - SDL の AutoShowingScreenKeyboard() は SteamDeck=1 (Steam が設定する
+//    環境変数) のとき物理キーボードの有無に関係なく無条件 true で、
+//    SDL_StartTextInput が即 steam://open/keyboard deeplink で OSK を出す。
+// そのため Deck は「スクリーンキーボード環境・物理キーボード無し」として扱い、
+// ベースラインは止めて Elements のフォーカス駆動側に載せる。
+
+// Steam Deck (gamescope) 検出。 Steam が Deck 上で環境変数 SteamDeck=1 を
+// 設定し、 SDL 自身も同じ値で X11 の screen keyboard 対応 (is_steam_deck) を
+// 判定している (hint は未設定なら環境変数へフォールバックする)。
+static bool TVPIsSteamDeck()
+{
+	return SDL_GetHintBoolean("SteamDeck", false);
+}
+
+// ベースライン (常時有効) にしてよい環境か。 デスクトップ = true。
+// スクリーンキーボード環境は物理キーボードがあるときだけ true。
+// Steam Deck は上記の通り SDL_HasKeyboard() が当てにならないので常に false。
+static bool TVPBaselineTextInputWanted()
+{
+	if (!SDL_HasScreenKeyboardSupport()) return true;
+	return SDL_HasKeyboard() && !TVPIsSteamDeck();
+}
+
+// OS のスクリーンキーボードが「非ブロッキングの浮動オーバレイ」か。
+// Steam Deck の OSK (steam://open/keyboard) がこれで、 StartTextInput で出して
+// StopTextInput で閉じられる。 NX の swkbd / PS5 の SceImeDialog はブロッキング
+// アプレットなので false (focus 程度で勝手に開いてはいけない)。
+// Elements 側の HostScreenKeyboardIsFloating (ElementsDialogManager.cpp) と
+// 対になる判定。
+static bool TVPScreenKeyboardIsFloating()
+{
+	return TVPIsSteamDeck();
+}
+
+// imeMode = focus レイヤの imeMode (focus 無し・起動直後は imDisable)。
+// 浮動スクリーンキーボード環境 (Deck) では、 ベースライン無効でも
+// テキストを受けたいレイヤ (imeMode != imDisable) に focus がある間は
+// StartTextInput する。 このタイミングで Steam OSK が出て、 focus が外れる
+// (imDisable に戻る) と閉じる。 ブロッキングアプレットの環境 (NX/PS5) では
+// 従来どおり開始しない (入力手段はゲーム側ソフトキーボード / Elements の VK)。
+// Elements ダイアログのテキスト欄は別経路
+// (ElementsDialogManager::UpdateFocusDrivenTextInput) が同じ考え方で制御する。
+static void TVPUpdateBaselineTextInput(SDL_Window* window, tTVPImeMode imeMode)
 {
 	if (!window) return;
-	if (!SDL_HasScreenKeyboardSupport()) {
-		SDL_StartTextInput(window);
-		return;
-	}
-	if (SDL_HasKeyboard()) {
+	const bool want = TVPBaselineTextInputWanted() ||
+	                  (imeMode != ::imDisable && TVPScreenKeyboardIsFloating());
+	TVPLOG_INFO("BaselineTextInput: driver={} screenKB={} hasKB={} steamdeck={} imeMode={} -> {}",
+		SDL_GetCurrentVideoDriver() ? SDL_GetCurrentVideoDriver() : "(null)",
+		SDL_HasScreenKeyboardSupport(), SDL_HasKeyboard(), TVPIsSteamDeck(),
+		(int)imeMode, want ? "start" : "stop");
+	if (want) {
 		SDL_StartTextInput(window);
 	} else {
-		// 物理キーボード無し。 ここで有効のままにすると OS のキーボード UI が
-		// 出るので止める。 入力手段はゲーム側のソフトキーボードか、 Elements の
-		// フォーカス駆動 (UpdateFocusDrivenTextInput) が担当する。
+		// テキストを受けたいレイヤも無し。 有効のままにすると OS のキーボード
+		// UI が出るので止める。 入力手段はゲーム側のソフトキーボードか、
+		// Elements のフォーカス駆動が担当する。
 		SDL_StopTextInput(window);
 	}
 }
@@ -69,10 +117,12 @@ SDL3WindowForm::SDL3WindowForm(class tTJSNI_Window* win)
  : TTVPWindowForm(win)
  , mWindow(nullptr)
  , mVisible(false)
+ , mImeMode(::imDisable)
  , mBorderStyle(bsSizeable)
  , mMinWidth(0), mMinHeight(0), mMaxWidth(0), mMaxHeight(0)
  , mStartupDisplayApplied(false)
  , mFixedSurfaceWidth(0), mFixedSurfaceHeight(0)
+ , mWheelAccum(0.0f)
 {
 	SDL_WindowFlags flags = SDL_WINDOW_HIDDEN;
 #if defined(TVP_USE_OPENGL)
@@ -119,12 +169,28 @@ SDL3WindowForm::SDL3WindowForm(class tTJSNI_Window* win)
 		// なお NX では起動直後 (キーボードのポーリング前) はまだ
 		// SDL_HasKeyboard() が false なので、 実際の有効化は後述の
 		// SDL_EVENT_KEYBOARD_ADDED 受信時に行われる。
-		TVPUpdateBaselineTextInput(mWindow);
+		TVPUpdateBaselineTextInput(mWindow, mImeMode);
 	} else {
 		const char *error = SDL_GetError();
 		TVPLOG_ERROR("SDL3WindowForm: Failed to create SDL Window: {}", error);
 	}
 	mEnableTouch = checkTouchDevice();
+}
+
+// focus レイヤの imeMode 変更 (フォーカス変更ごとに LayerManager から届く)。
+// スクリーンキーボード環境では「テキストを受けたいレイヤに focus がある」の
+// 意思表示としてテキスト入力の開始/停止に使う (詳細は
+// TVPUpdateBaselineTextInput のコメント参照)。
+void SDL3WindowForm::SetImeMode(tTVPImeMode mode)
+{
+	if (mImeMode == mode) return;
+	mImeMode = mode;
+	TVPUpdateBaselineTextInput(mWindow, mImeMode);
+}
+
+void SDL3WindowForm::ResetImeMode()
+{
+	SetImeMode(::imDisable);
 }
 
 bool 
@@ -767,7 +833,7 @@ SDL3WindowForm::AppEvent(const SDL_Event& event)
 		case SDL_EVENT_KEYBOARD_REMOVED: {
 			// 物理キーボードの抜き差しでベースラインのテキスト入力を切り替える。
 			// (NX/PS5 は起動後に初めてキーボードが登録されるのでここが本番)
-			TVPUpdateBaselineTextInput(mWindow);
+			TVPUpdateBaselineTextInput(mWindow, mImeMode);
 			break;
 		}
 		case SDL_EVENT_KEY_DOWN:
@@ -803,29 +869,20 @@ SDL3WindowForm::AppEvent(const SDL_Event& event)
 			break;
 		}
 		case SDL_EVENT_TEXT_INPUT: {
-#ifdef KRKRZ_HAS_ELEMENTS
-			// Elements ダイアログ (modal / 常駐 HUD 問わず) が表示中の場合、
-			// キーボードフォーカスを持つインスタンスがあればそこへ文字入力を
-			// 流し消費する。 フォーカスが無い (grabFocus=false の常駐 HUD 等) と
-			// ForwardText は false を返すので、 その場合は下のゲーム配送へ流す。
-			// (IsModalActive は実際には「いずれかのダイアログがアクティブ」の意)
-			if (tTVPElementsDialogManager::Instance().IsModalActive()) {
-				if (tTVPElementsDialogManager::Instance().ForwardText(event.text.text))
-					return true;
-			}
-#endif
-			// modal 非表示中は KAG(ゲーム) へ文字入力を配送する。
-			// SDL の UTF-8 テキストを UTF-16(tjs_char) に変換し、1文字ずつ
-			// onKeyPress として送る (win32 の WM_CHAR 相当)。
+			// 文字列単位のテキスト入力 (IME 確定文字列はまとまって 1 イベントで
+			// 届く)。 UTF-16 へ変換して onTextInput へ流す。 Elements への転送
+			// (テキスト欄 focus 時の消費) と Layer 系への互換分解配送は
+			// tTJSNI_BaseWindow::OnTextInput が一括で行う (キーイベントと同じ
+			// 「posted input event → dialog intercept」の経路に統一)。
+			// SDL 経路では Window.onKeyPress は発火しない (onTextInput へ一斉移行)。
 			const char* u8 = event.text.text;
 			if (u8 && *u8) {
 				tjs_int n = TVPUtf8ToWideCharString(u8, NULL);
 				if (n > 0) {
 					tjs_char* buf = new tjs_char[n + 1];
 					TVPUtf8ToWideCharString(u8, buf);
-					for (tjs_int i = 0; i < n; i++) {
-						if (buf[i]) OnKeyPress((tjs_int)buf[i], 0, false, false);
-					}
+					buf[n] = 0;
+					OnTextInput(ttstr(buf));
 					delete[] buf;
 				}
 			}
@@ -867,7 +924,16 @@ SDL3WindowForm::AppEvent(const SDL_Event& event)
 			if (mod & SDL_KMOD_ALT) shift |= TVP_SS_ALT;
 			float x, y;
 			SDL_GetMouseState(&x, &y);
-			SendMouseMessage(AM_MOUSE_WHEEL, (int)event.wheel.y, shift, (int)x, (int)y);
+			// SDL3 の wheel.y はノッチ単位 (±1.0、 精密ホイールは小数)。
+			// TJS の onMouseWheel delta は win32 WHEEL_DELTA (±120) 単位
+			// なので換算する。 小数分は残差として持ち越し、 精密ホイールの
+			// 微小デルタも積もれば届くようにする。
+			mWheelAccum += event.wheel.y * 120.0f;
+			int delta = (int)mWheelAccum;
+			if (delta != 0) {
+				mWheelAccum -= delta;
+				SendMouseMessage(AM_MOUSE_WHEEL, delta, shift, (int)x, (int)y);
+			}
 			break;
 		}
 		case SDL_EVENT_FINGER_DOWN:

@@ -79,18 +79,16 @@ static void TVPShowSimpleMessageBox(const ttstr & text, const ttstr & caption)
 //---------------------------------------------------------------------------
 static bool TVPConfirmYesNo(const ttstr & text, const ttstr & caption, HWND parent)
 {
-	if( TVPReplActive ) {
+	// エージェント運転 (-replfile = モーダル応答チャネルあり) はチャネルの
+	// Yes/No 応答を使う (ブロックしない)。 チャネルの無い REPL (-replweb /
+	// console のみ) は人が居る前提で通常のダイアログへフォールスルーする
+	// (SDL 版 generic/base/SystemImpl.cpp と同じ方針)。
 #ifdef KRKRZ_USE_REPL_FILECHANNEL
-		// REPL ファイルチャネルが応答口を持っていれば、エージェントの応答を待つ。
+	if( TVPReplActive ) {
 		bool ans = false;
 		if( TVPReplConfirm(text, caption, ans) ) return ans;
-#endif
-		// チャネル無し (console のみ等) はブロッキングダイアログを出さず、内容を
-		// ログへ流し既定応答 (Yes) を返す (inform と同じ方針)。
-		TVPAddImportantLog( ttstr(TJS_W("[confirm] ")) + caption + ttstr(TJS_W(": ")) + text +
-			ttstr(TJS_W(" -> (REPL: Yes)")) );
-		return true;
 	}
+#endif
 	if( parent == INVALID_HANDLE_VALUE ) parent = NULL;
 	if( parent == NULL ) {
 		parent = TVPGetModalWindowOwnerHandle();
@@ -911,6 +909,9 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/inputString)
 	ttstr def;
 	if(numparams >= 3 && param[2]->Type() != tvtVoid) def = *param[2];
 
+	// エージェント運転 (-replfile) はモーダル応答チャネルの入力を使う。
+	// チャネルの無い REPL (-replweb / console のみ) は通常のダイアログへ
+	// フォールスルー (confirm と同じ方針)。
 	ttstr out;
 #ifdef KRKRZ_USE_REPL_FILECHANNEL
 	if(TVPReplActive) {
@@ -919,9 +920,6 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/inputString)
 			if(result) { if(cancelled) result->Clear(); else *result = out; }
 			return TJS_S_OK;
 		}
-		// チャネル無し (console のみ等) はブロックせず既定値を返す。
-		if(result) *result = def;
-		return TJS_S_OK;
 	}
 #endif
 	bool ok = TVPInputString(caption, prompt, def, out);

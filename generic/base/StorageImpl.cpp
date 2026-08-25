@@ -430,7 +430,11 @@ static bool _TVPCreateFolders(const ttstr &folder)
 
 	if(!_TVPCreateFolders(parent)) return false;
 
-	return 0 == LocalFileSystem->MakeDirectory(folder.c_str());
+	// LocalFileSystem (SDL3FileSystem) の MakeDirectory は SDL_CreateDirectory
+	// 準拠で「成功 = true」。 旧実装は mkdir(2) の「成功 = 0」を仮定した
+	// 0 == 比較になっており、 成功を失敗と判定して親までしか作られなかった
+	// (2 階層以上の新規フォルダへの書き込みが常に失敗していた)
+	return LocalFileSystem->MakeDirectory(folder.c_str());
 }
 
 bool TVPCreateFolders(const ttstr &folder)

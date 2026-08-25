@@ -26,6 +26,7 @@
 #ifndef __WINVER__
 #include "WindowForm.h"     // TTVPWindowForm::NativeWindowHandle() (SDL/generic host)
 #endif
+#include "EventIntf.h"      // TVPAdd/RemoveContinuousEventHook (paint 中 OnAction の遅延配送)
 #include "StoragesResourceLoader.h"   // TVPInstallElementsResourceLoader / Fonts
 #include "GraphicsLoaderIntf.h"       // TVPLoadGraphic (universal rule 画像)
 #include "LayerBitmapIntf.h"          // tTVPBaseBitmap (rule 画像の 8bpp 展開)
@@ -42,6 +43,7 @@
 
 #include <chrono>   // renderStats 区間計測 (steady_clock)
 #include <elements/base_view.hpp>        // cycfi 中立入力型 (mouse_button / key_code / mod_*)
+#include <elements/support/theme.hpp>    // get_theme / set_theme (フォーカスリング設定)
 #include <elements/element/gamepad.hpp>  // cycfi 中立入力型 (pad_button)
 
 // テキスト入力の開始/停止 (ソフトキーボード制御) は host 依存。 WINVER は Win32 の
@@ -53,7 +55,9 @@
 #include <algorithm>         // std::remove_if (ホストホットキー解除)
 #include <cstdlib>           // std::strtol
 #include <cstring>           // std::memcpy (部分更新時の last_frame 複製)
+#include <deque>             // pending_actions (paint 中 OnAction の遅延配送)
 #include <map>
+#include <set>
 #include <memory>
 #include <string>
 #include <type_traits>
@@ -107,6 +111,11 @@ tTJSVariant ValueToVariant(const elements_modal::value_t& v)
 
 // iTVPDialogEventHandler に転送する event_callback を作る。
 // button click は payload=void、 state widget は実値を渡す krkrz 慣習を維持。
+// 直接 handler->OnAction は呼ばず manager の DispatchAction を経由する:
+// PaintOverlay (session->update()) の最中に発火した action は、 その場で
+// 配送するとコールバック内のブロッキングモーダル (System.inputString 等) が
+// window update の再入禁止に阻まれて描画不能になるため、 paint の外
+// (continuous イベントフック) へ遅延させる必要がある。
 elements_modal::event_callback MakeBridgeCallback(iTVPDialogEventHandler* handler)
 {
 	if (!handler) return {};
@@ -116,10 +125,10 @@ elements_modal::event_callback MakeBridgeCallback(iTVPDialogEventHandler* handle
 		ttstr id_tt = Utf8ToTtstr(id);
 		if (is_button_click) {
 			tTJSVariant empty;
-			handler->OnAction(id_tt, empty);
+			tTVPElementsDialogManager::Instance().DispatchAction(handler, id_tt, empty);
 		} else {
 			tTJSVariant v = ValueToVariant(payload);
-			handler->OnAction(id_tt, v);
+			tTVPElementsDialogManager::Instance().DispatchAction(handler, id_tt, v);
 		}
 	};
 }
@@ -176,11 +185,32 @@ inline void HostStopTextInput()  { if (auto* w = HostMainWindow()) SDL_StopTextI
 #ifdef __WINVER__
 
 inline bool HostHasPhysicalKeyboard() { return true; }
+inline bool HostScreenKeyboardIsFloating() { return false; }
 inline const char* HostGetEnv(const char* name) { return getenv(name); }
 
 #else
 
-inline bool HostHasPhysicalKeyboard() { return SDL_HasKeyboard(); }
+inline bool HostHasPhysicalKeyboard()
+{
+	// Steam Deck (gamescope) では Xwayland が常にコアキーボードを提供するため
+	// SDL_HasKeyboard() では物理キーボードを検出できない (無条件 true)。 SDL 自身も
+	// SteamDeck=1 のときは AutoShowingScreenKeyboard を無条件 true にしており、
+	// StartTextInput が即 Steam OSK を出す。 Deck は常に「物理キーボード無し」
+	// として focus 駆動に載せる。
+	if (SDL_GetHintBoolean("SteamDeck", false)) return false;
+	return SDL_HasKeyboard();
+}
+
+// OS のスクリーンキーボードが focus 駆動でそのまま使える「非ブロッキングの
+// 浮動オーバレイ」か。 Steam Deck の OSK (steam://open/keyboard) がこれで、
+// StartTextInput で出て StopTextInput で閉じる。 NX の swkbd / PS5 の
+// SceImeDialog のようなブロッキングアプレットの環境は false = 内蔵仮想
+// キーボードを使う。
+inline bool HostScreenKeyboardIsFloating()
+{
+	return SDL_GetHintBoolean("SteamDeck", false);
+}
+
 inline const char* HostGetEnv(const char* name) { return SDL_getenv(name); }
 
 #endif
@@ -277,6 +307,16 @@ struct tTVPElementsDialogManager::Impl
 	//        (1.0 = 原寸レンダ→縮小表示、 2.0 = 旧 supersampling 相当)。
 	float render_scale_mode = 0.0f;
 
+	// UI の author 基準面サイズ (Dialog.baseSize)。 提示拡縮率 (fit) の分母。
+	// 0 (既定) はゲームの基準面 (primary layer サイズ) を使う。 UI をゲーム
+	// 画面と別の解像度で author しているタイトル (ゲーム画面 640x400 に対し
+	// UI は 1920x1080 等) では primary layer 基準だと fit が過大になり、 部分
+	// パネルが拡大されてしまうため、 こちらで author 基準を明示する。
+	// primary layer に依存しなくなるので、 ゲーム側が primary layer サイズを
+	// 変える演出 (低解像度機種エミュレーション等) にも巻き込まれない。
+	int base_size_w = 0;
+	int base_size_h = 0;
+
 	// 再ラスタライズ抑止 (Dialog.renderCache)。 true (既定) なら変化の無い
 	// フレームは overlay_session の再ラスタライズ + アップロードを省略し、
 	// レンダラ保持の前回テクスチャをそのまま提示する。
@@ -316,10 +356,22 @@ struct tTVPElementsDialogManager::Impl
 		bool active = false;
 		bool ever_active = false;     // 一度でも active になったか (OnClosed 発火条件)
 		bool close_requested = false; // 次フレーム PaintOverlay で teardown
+		// session->update() が呼び出しスタック上にあるか。 update 中の OnAction
+		// からネストモーダル (System.inputString 等) の pump が回ると PaintOverlay
+		// が再入するため、 このインスタンスの再 update と teardown を抑止する
+		// (teardown は close_requested を持ち越して update 完了後のフレームで行う)。
+		bool in_update = false;
 
 		// close_on_click / Esc で finish したときの action id (Close() 等の
 		// 外部要因 close は空のまま)。 teardown 時の OnClosed に渡す。
 		ttstr close_action;
+
+		// このダイアログ表示後に「新規押下 (非リピート)」を観測した VK の集合。
+		// 表示前から押しっぱなしのキー/パッドボタンはリピート (TVP_SS_REPEAT)
+		// しか届かないため、 集合に無い VK のリピートは配送しない = 一度離す
+		// までダイアログに効かない (長押しスキップ中に開いたソフトキーボードへ
+		// 決定ボタンが即入力される誤爆の防止)。
+		std::set<tjs_uint> armed_vks;
 
 		// dialog 論理サイズ (JSON "size" → content フィット後)。
 		int dialog_w = 400;
@@ -653,12 +705,18 @@ struct tTVPElementsDialogManager::Impl
 		            owner->session->focus_consumes_text();
 
 		if (want && !ime_focus_active) {
-			// 仮想キーボードを使うか (auto = 物理キーボードが無いときだけ)
+			// 仮想キーボードを使うか (auto = 物理キーボードが無く、 かつ OS の
+			// 浮動スクリーンキーボードも使えないときだけ。 Steam Deck は
+			// HostScreenKeyboardIsFloating() = true なので OS 側 = Steam OSK を使う)
 			const bool use_vk = (vk_mode == VKMode::Always) ||
-			                    (vk_mode == VKMode::Auto && !HostHasPhysicalKeyboard());
+			                    (vk_mode == VKMode::Auto && !HostHasPhysicalKeyboard() &&
+			                     !HostScreenKeyboardIsFloating());
 			if (!use_vk) {
-				// 物理キーボードあり / "never": そのまま打てるので text 入力を
-				// 有効化するだけ (OS のソフトキーボードは SDL の auto 判定で出ない)。
+				// 物理キーボードあり / 浮動 OS キーボードあり / "never":
+				// text 入力を有効化するだけ。 物理キーボード環境では SDL の
+				// auto 判定によりソフトキーボードは出ず、 Steam Deck では
+				// このタイミングで Steam OSK が出る (focus が外れると
+				// HostStopTextInput で閉じる)。
 				HostStartTextInput();
 				ime_focus_active = true;
 			} else if (owner != vk_dismissed_for) {
@@ -884,10 +942,73 @@ struct tTVPElementsDialogManager::Impl
 		pending_results[inst.handler] = std::move(snap);
 	}
 
+	// === paint 中に発火した OnAction の遅延配送 ===
+	// PaintOverlay → RenderInstance → session->update() の最中に button click
+	// 等の action が発火することがある (touch 経由の click 等)。 その場で
+	// handler->OnAction を呼ぶと、 コールバック内で開かれるブロッキング
+	// モーダル (System.inputString 等) の nested pump が window update の
+	// 再入禁止 (TVPDeliverWindowUpdateEvents) に阻まれ、 一切描画されない
+	// まま固まる (Steam Deck 実機で発生、 2026-08-24)。 paint 中の action は
+	// キューに積み、 continuous イベントフック (window update の外で毎フレーム
+	// 呼ばれる) から配送する。 入力経路 (ForwardMouse* 等) から発火した action
+	// は paint_depth==0 なので従来どおり即時配送される。
+	int paint_depth = 0;
+	struct PendingAction {
+		iTVPDialogEventHandler* handler;
+		ttstr id;
+		tTJSVariant payload;
+	};
+	std::deque<PendingAction> pending_actions;
+	struct ActionDrainHook : public tTVPContinuousEventCallbackIntf {
+		Impl* owner = nullptr;
+		bool registered = false;
+		void TJS_INTF_METHOD OnContinuousCallback(tjs_uint64 tick) override;
+	} action_hook;
+
+	void QueueOrDispatchAction(iTVPDialogEventHandler* handler,
+	                           const ttstr& id, const tTJSVariant& payload)
+	{
+		if (paint_depth <= 0) {
+			handler->OnAction(id, payload);
+			return;
+		}
+		pending_actions.push_back({handler, id, payload});
+		if (!action_hook.registered) {
+			action_hook.owner = this;
+			TVPAddContinuousEventHook(&action_hook);
+			action_hook.registered = true;
+		}
+	}
+
+	void DrainPendingActions()
+	{
+		if (action_hook.registered) {
+			TVPRemoveContinuousEventHook(&action_hook);
+			action_hook.registered = false;
+		}
+		std::deque<PendingAction> q;
+		q.swap(pending_actions);
+		for (auto& a : q) {
+			// 配送前に handler のインスタンスが生きているか確認する
+			// (close_on_click で閉じたダイアログの action は、 handler が
+			//  短命 (スタック上の no-op handler 等) の可能性があるため捨てる)
+			if (!FindByHandler(a.handler)) continue;
+			a.handler->OnAction(a.id, a.payload);
+		}
+	}
+
 	// 1 インスタンス分の描画 (close/finish 処理は呼出側で済ませる)。
 	void RenderInstance(Instance& inst, iTVPDrawDevice* device,
 	                    iTVPDialogRenderer* renderer);
 };
+
+//---------------------------------------------------------------------------
+void TJS_INTF_METHOD
+tTVPElementsDialogManager::Impl::ActionDrainHook::OnContinuousCallback(tjs_uint64)
+{
+	// TVPDeliverContinuousEvent から呼ばれる = window update の外 (安全な文脈)。
+	if (owner) owner->DrainPendingActions();
+}
 
 //---------------------------------------------------------------------------
 // Impl: フロー / 描画メソッド (out-of-line)
@@ -972,6 +1093,7 @@ bool tTVPElementsDialogManager::Impl::BeginScreen(
 	inst.session = std::move(sess);
 	inst.current_resource_base = resource_base_utf8;
 	inst.has_rect = false;
+	inst.armed_vks.clear();   // 押しっぱなしキーの誤爆防止状態をリセット
 
 	// テキスト入力受信を開始 (input_box の IME / 物理キー入力用)。
 	StartTextInputIfNeeded();
@@ -1296,8 +1418,12 @@ void tTVPElementsDialogManager::Impl::RenderInstance(
 
 	float fit = 1.0f;
 	if (area_w > 0 && area_h > 0 && w_logical > 0 && h_logical > 0) {
-		tjs_int src_w = 0, src_h = 0;
-		if (device) device->GetSrcSize(src_w, src_h);
+		// Dialog.baseSize が設定されていればそれを基準面とする (UI を
+		// ゲーム画面と別解像度で author するタイトル向け)。 未設定なら
+		// 従来どおりゲームの基準面 (primary layer サイズ)。
+		tjs_int src_w = base_size_w, src_h = base_size_h;
+		if ((src_w <= 0 || src_h <= 0) && device)
+			device->GetSrcSize(src_w, src_h);
 		if (src_w > 0 && src_h > 0) {
 			fit = std::min(static_cast<float>(area_w) / src_w,
 			               static_cast<float>(area_h) / src_h);
@@ -1322,11 +1448,28 @@ void tTVPElementsDialogManager::Impl::RenderInstance(
 
 	const void* layer = inst.LayerKey();
 
+	// 再入ガード: このインスタンスの session->update() が呼び出しスタック上に
+	// ある (update 中の OnAction からネストモーダルの pump が回り、 PaintOverlay
+	// が再入した) 場合は、 update を再入させず前回描画のキャッシュ提示のみ行う
+	// (elements session の update は再入不可)。 ネストモーダルの下で背景として
+	// 静止表示され続ける。
+	if (inst.in_update) {
+		if (inst.cache_valid && inst.cache_device == device) {
+			renderer->PresentOverlay(layer, inst.cache_px, inst.cache_py,
+			                         inst.cache_pw, inst.cache_ph);
+			stats.presents++;
+			stats.cachedPresents++;
+		}
+		return;
+	}
+
 	// 状態更新 (変数/hover poll・演出 tick・view 遅延タスク・ダーティ蓄積)。
 	// 描画をスキップするフレームでも毎フレーム必要 (キャレット点滅・遅延
 	// focus 適用・退場演出の完了検出が止まるため)。 戻り値 = 再描画が必要か。
 	const auto t_update = std::chrono::steady_clock::now();
+	inst.in_update = true;
 	const bool dirty = inst.session->update();
+	inst.in_update = false;
 	stats.updates++;
 	stats.updateUs += ElapsedUs(t_update);
 
@@ -1393,13 +1536,22 @@ void tTVPElementsDialogManager::Impl::RenderInstance(
 	elements_modal::overlay_session::render_rect rect{};
 	elements_modal::overlay_session::render_rect updated{};
 	bool ok;
+	// surface には 0,0 を渡して session 内部のアンカー配置を無効化する
+	// (out_rect = (0,0,コンテンツ実寸))。 session はコンテンツを buffer
+	// (canvas) 原点に描き、 on_mouse は last_rect を引いて view 座標へ戻す。
+	// ここで非 0 の surface (旧: dialog 論理サイズ) を渡すと last_rect に
+	// アンカーオフセットが乗り、 「描画は canvas 原点 / ヒット判定はアンカー
+	// 位置」の不一致でマウス反応位置がずれていた (authored "size" > 内容実寸
+	// かつ非中央 "align" の画面で顕在化。 自動フィット中央の画面は canvas =
+	// 内容実寸でオフセット 0 のため露見しなかった)。 配置は下の manager 側
+	// placement が行う。
 	if (allow_partial) {
 		ok = inst.session->render_to_buffer_partial(buf, w_pixels, h_pixels,
-		                                            render_sw, render_sh,
+		                                            0, 0,
 		                                            rect, updated);
 	} else {
 		ok = inst.session->render_to_buffer(buf, w_pixels, h_pixels,
-		                                    render_sw, render_sh, rect);
+		                                    0, 0, rect);
 		updated = { 0, 0, w_pixels, h_pixels };
 	}
 	stats.rasterUs += ElapsedUs(t_raster);
@@ -1454,15 +1606,21 @@ void tTVPElementsDialogManager::Impl::RenderInstance(
 	// fit の倍率とオフセットは Instance に保存し、 ToSurfaceX/Y がマウス座標を
 	// dialog 論理座標へ逆変換する (マウス操作対応)。
 	// 配置は画面 JSON の top-level "align" / "margin" に従う (既定は中央)。
-	// session 側も同じ式で placement を計算するので、 拡縮提示でも揃う
-	// (字幕窓のように下端へ寄せたいケース)。
+	// 配置の基準は canvas (authored サイズ) ではなく**コンテンツ実寸**
+	// (rect = render の実描画 bbox。 canvas 原点起点)。 canvas 原点 =
+	// コンテンツ原点なので、 px,py にはコンテンツを置きたい位置をそのまま
+	// 入れればよい。 authored サイズ基準にすると、 内容が authored より
+	// 小さい画面 (size 明示の部分パネル等) で bottom/right 寄せが内容ぶん
+	// だけ手前へずれて見えていた。
 	const int pw = static_cast<int>(w_logical * fit + 0.5f);
 	const int ph = static_cast<int>(h_logical * fit + 0.5f);
+	const int content_w = static_cast<int>(rect.w * fit + 0.5f);
+	const int content_h = static_cast<int>(rect.h * fit + 0.5f);
 	float ax = 0.5f, ay = 0.5f;
 	int amargin = 0;
 	inst.session->placement(ax, ay, amargin);
-	const int free_x = area_w - pw;
-	const int free_y = area_h - ph;
+	const int free_x = area_w - content_w;
+	const int free_y = area_h - content_h;
 	int px = area_x + amargin + static_cast<int>((free_x - 2 * amargin) * ax);
 	int py = area_y + amargin + static_cast<int>((free_y - 2 * amargin) * ay);
 	if (px < area_x) px = area_x;
@@ -1521,7 +1679,21 @@ tTVPElementsDialogManager::tTVPElementsDialogManager()
 		});
 }
 
-tTVPElementsDialogManager::~tTVPElementsDialogManager() = default;
+tTVPElementsDialogManager::~tTVPElementsDialogManager()
+{
+	// 遅延 action 配送フックの解除 (登録したまま破棄すると dangling)
+	if (_impl && _impl->action_hook.registered) {
+		TVPRemoveContinuousEventHook(&_impl->action_hook);
+		_impl->action_hook.registered = false;
+	}
+}
+
+void tTVPElementsDialogManager::DispatchAction(iTVPDialogEventHandler* handler,
+	const ttstr& id, const tTJSVariant& payload)
+{
+	if (!handler) return;
+	_impl->QueueOrDispatchAction(handler, id, payload);
+}
 
 bool tTVPElementsDialogManager::IsModalActive() const
 {
@@ -1575,6 +1747,23 @@ void tTVPElementsDialogManager::SetRenderScale(float scale)
 float tTVPElementsDialogManager::GetRenderScale() const
 {
 	return _impl->render_scale_mode;
+}
+
+void tTVPElementsDialogManager::SetBaseSize(int w, int h)
+{
+	if (w > 0 && h > 0) {
+		_impl->base_size_w = w;
+		_impl->base_size_h = h;
+	} else {
+		_impl->base_size_w = 0;
+		_impl->base_size_h = 0;
+	}
+}
+
+void tTVPElementsDialogManager::GetBaseSize(int& w, int& h) const
+{
+	w = _impl->base_size_w;
+	h = _impl->base_size_h;
 }
 
 void tTVPElementsDialogManager::SetRenderCache(bool enable)
@@ -1668,6 +1857,21 @@ void tTVPElementsDialogManager::EnsureRuntimeInitialized()
 	TVPInstallElementsBlockTextBackend();
 
 	elements_modal::init("", /*load_default_fonts=*/false);
+
+	// authored 画面は自前のフォーカス表示 (focused frame / focus_link 装飾)
+	// を持つため、 elements テーマの既定フォーカスリング (青枠) は全面 OFF に
+	// する (theme.focus_ring_enabled が用意する application-wide スイッチ)。
+	// ただし Dialog.focusRing がスクリプトから明示設定済みならそれを尊重する
+	// (初回画面表示でここが後から走っても上書きしない)。
+	static bool s_theme_tuned = false;
+	if (!s_theme_tuned) {
+		if (!FocusRingUserSet) {
+			auto thm = cycfi::elements::get_theme();
+			thm.focus_ring_enabled = false;
+			cycfi::elements::set_theme(thm);
+		}
+		s_theme_tuned = true;
+	}
 
 	static bool s_fonts_loaded = false;
 	if (!s_fonts_loaded) {
@@ -2090,6 +2294,27 @@ bool tTVPElementsDialogManager::TakeLastModalResult(
 	return true;
 }
 
+void tTVPElementsDialogManager::FlushPendingTeardowns()
+{
+	// PaintOverlay 冒頭の close_requested 処理の即時版 (ヘッダのコメント参照)。
+	// update() がスタック上にあるものは触らない (通常フレームに任せる)。
+	std::vector<Impl::Instance*> to_teardown;
+	for (size_t i = 0; i < _impl->instances.size(); ++i) {
+		Impl::Instance* inst = _impl->instances[i].get();
+		if (inst->in_update) continue;
+		if (!inst->close_requested) continue;
+		inst->close_requested = false;
+		to_teardown.push_back(inst);
+	}
+	for (auto* inst : to_teardown) {
+		bool alive = false;
+		for (auto& up : _impl->instances) {
+			if (up.get() == inst) { alive = true; break; }
+		}
+		if (alive) _impl->TeardownInstance(inst);
+	}
+}
+
 void tTVPElementsDialogManager::ForceClose()
 {
 	// window 破棄経路でも呼ばれるので、 記録済み入力 window は失効させる
@@ -2189,13 +2414,37 @@ void tTVPElementsDialogManager::PaintOverlay(iTVPDrawDevice* device)
 		_impl->active_device = device;
 	}
 
+	// !! この関数は再入する !!
+	// RenderInstance → session->update() がボタン click 等の OnAction を発火し、
+	// その中でゲーム/ホストが System.inputString 等の「ブロッキング overlay
+	// モーダル + ネスト pump」を開くと、 ネストしたフレームでこの関数が再帰的に
+	// 呼ばれ、 その間に instances が増減する (ネスト側モーダルの表示と teardown)。
+	// range-for のイテレータは erase で無効化されるため、 全フェーズを index
+	// ベース + 都度 size() 再検証で回し、 集めたポインタは生存確認してから使う。
+	// (実クラッシュ: パネルのボタンから System.inputString → モーダルを閉じた
+	//  瞬間に外側の range-for が無効イテレータを踏んで AV。 2026-08-24)
+	//
+	// paint 深度: この間に発火した OnAction は QueueOrDispatchAction が
+	// キューへ積み、 continuous フックが paint の外で配送する (Impl の
+	// pending_actions のコメント参照)。
+	struct PaintDepthScope {
+		int& d;
+		PaintDepthScope(int& x) : d(x) { ++d; }
+		~PaintDepthScope() { --d; }
+	} paint_depth_scope(_impl->paint_depth);
+
 	// 1) close 予約 / 自動 finish の処理 (この device のインスタンスのみ)。
 	//    teardown でリスト要素が消えるので、 ポインタを集めてから処理する。
 	{
 		std::vector<Impl::Instance*> to_teardown;
-		for (auto& up : _impl->instances) {
-			Impl::Instance* inst = up.get();
+		for (size_t i = 0; i < _impl->instances.size(); ++i) {
+			Impl::Instance* inst = _impl->instances[i].get();
 			if (inst->host_device != device) continue;
+
+			// update() がスタック上にある (ネストモーダル pump からの再入) 間は
+			// このインスタンスを破棄も finish 処理もしない。 close_requested は
+			// 立てたまま持ち越し、 update 完了後のフレームで teardown する。
+			if (inst->in_update) continue;
 
 			if (inst->close_requested) {
 				inst->close_requested = false;
@@ -2206,6 +2455,8 @@ void tTVPElementsDialogManager::PaintOverlay(iTVPDrawDevice* device)
 
 			// "close_on_click" / Esc 等で session が自動 finish したとき。
 			// (exit 演出がある画面は、 その再生完了後にここへ来る。)
+			// AdvanceFlow は OnScreenLeave/Enter コールバックを発火するので
+			// ここも再入しうる → index ループ。
 			if (inst->session->finished()) {
 				if (inst->close_after_exit) {
 					// Dialog.close() 等の外部 close: transitions を解決せず終了。
@@ -2219,14 +2470,23 @@ void tTVPElementsDialogManager::PaintOverlay(iTVPDrawDevice* device)
 				// 次フレームで teardown される (再入安全のため今は破棄しない)。
 			}
 		}
-		for (auto* inst : to_teardown) _impl->TeardownInstance(inst);
+		for (auto* inst : to_teardown) {
+			// ネスト実行中に既に破棄されたインスタンスはスキップ (生存確認)
+			bool alive = false;
+			for (auto& up : _impl->instances) {
+				if (up.get() == inst) { alive = true; break; }
+			}
+			if (alive) _impl->TeardownInstance(inst);
+		}
 	}
 
 	// 2) 描画 (z-order 奥→手前 = instances 先頭→末尾)。
+	//    RenderInstance 内の session->update() が OnAction → ネストモーダルを
+	//    起こしうるので index ベース (上のコメント参照)。
 	iTVPDialogRenderer* renderer = _impl->FindRenderer(device);
 	if (!renderer) return;
-	for (auto& up : _impl->instances) {
-		Impl::Instance* inst = up.get();
+	for (size_t i = 0; i < _impl->instances.size(); ++i) {
+		Impl::Instance* inst = _impl->instances[i].get();
 		if (inst->host_device != device) continue;
 		if (!inst->active || !inst->session) continue;
 		_impl->RenderInstance(*inst, device, renderer);
@@ -2551,6 +2811,15 @@ bool tTVPElementsDialogManager::ForwardKeyDown(tjs_uint key, tjs_uint32 shift)
 	if (_impl->HostHotkeyBypass(key, shift, /*isUp=*/false)) return false;
 	Impl::Instance* f = _impl->TopmostKeyboardFocus();
 	if (!f || !f->session) return false;
+	// ダイアログ表示前から押しっぱなしのキーはリピートしか届かない。 新規
+	// 押下を見ていない VK のリピートは配送しない (一度離すまで効かない)。
+	// 長押しスキップ中に自動で開くソフトキーボードへ決定ボタンが即入力される
+	// 誤爆 (SGOCT-152) の防止。 非モーダルは素通し (ゲーム側の長押し継続)。
+	if (shift & TVP_SS_REPEAT) {
+		if (!f->armed_vks.count(key)) return f->modal ? true : false;
+	} else {
+		f->armed_vks.insert(key);
+	}
 	auto r = RouteVk(key);
 	bool handled = false;
 	switch (r.k) {
@@ -2601,6 +2870,15 @@ bool tTVPElementsDialogManager::ForwardKeyPress(tjs_char key)
 		_impl->pending_high_surrogate = 0;   // フォーカス喪失時は保持もクリア
 		return false;
 	}
+	// 非モーダルパネル (grabFocus=true 含む) は、 実際にテキストを消費する
+	// ウィジェット (input_box 等) に focus が入っていなければ素通しする。
+	// ここで無条件に消費すると、 パネルを開いたままゲーム側 (KAG Edit レイヤや
+	// window.onKeyPress) へ文字が一切届かなくなる。 未処理キーの pass-through
+	// (ForwardKeyDown の handled 素通し) と同じ契約。 modal はゲームへ漏らさない。
+	if (!f->modal && !f->session->focus_consumes_text()) {
+		_impl->pending_high_surrogate = 0;
+		return false;
+	}
 
 	// key は UTF-16 code unit (tjs_char = 16bit)。 サロゲートペアを合成して
 	// 1 コードポイント (cp) にしてから UTF-8 化する。 WINVER の WM_CHAR は BMP 外を
@@ -2626,6 +2904,13 @@ bool tTVPElementsDialogManager::ForwardKeyPress(tjs_char key)
 		_impl->pending_high_surrogate = 0;
 		cp = unit;
 	}
+
+	// 制御文字 (WINVER の WM_CHAR は BS=0x08 / Enter=0x0D / Tab / Esc も文字と
+	// して配信する) はテキストとして入力欄へ流さない。 編集キーとしての処理は
+	// ForwardKeyDown (キーイベント) 側が済ませており、 ここで on_text_input へ
+	// 通すと入力欄に制御文字が挿入されて「BS で消えない」ように見える。
+	// テキスト focus 中なのでゲームへも漏らさない (消費して捨てる)。
+	if (cp < 0x20 || cp == 0x7F) return true;
 
 	// cp → UTF-8 (最大 4 byte)。
 	char buf[8] = {0};
@@ -2654,6 +2939,10 @@ bool tTVPElementsDialogManager::ForwardText(const char* utf8_text)
 	// フォーカスが無ければ素通し。 あれば消費 (文字入力は意図的操作)。
 	Impl::Instance* f = _impl->TopmostKeyboardFocus();
 	if (!f || !f->session || !utf8_text) return false;
+	// 非モーダルパネルは input_box 等に実際に focus が無ければ素通し
+	// (ForwardKeyPress と同じ契約。 無条件消費するとパネル表示中に
+	// ゲーム側へ文字が届かなくなる)。 modal はゲームへ漏らさない。
+	if (!f->modal && !f->session->focus_consumes_text()) return false;
 	f->session->on_text_input(utf8_text);
 	return true;
 }

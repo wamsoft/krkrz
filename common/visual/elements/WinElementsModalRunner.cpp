@@ -68,6 +68,11 @@ void PumpModalLoop(tTVPElementsDialogManager& mgr,
 		::Sleep(4);   // CPU を明け渡す (描画は VSyncTimingThread 側)
 	}
 
+	// finish → teardown は次フレームへ遅延されるが pump はその前に抜けるため、
+	// 呼出側の handler が解放される前にここで同期破棄する (OnClosed 発火まで
+	// 済ませる。 放置すると次フレームに use-after-free)。
+	mgr.FlushPendingTeardowns();
+
 	// close_on_click / フロー <exit> で finish した場合は mgr が結果をスナップ済み。
 	// Esc / 外部 Close 等で結果が無い場合は空のまま返る。
 	mgr.TakeLastModalResult(handler, out_result.Action, out_result.Values);

@@ -192,6 +192,28 @@ var r = dlg.showModalFile("ui/launcher.jsonc",
   "elements_basic" と一致させるため名前加工せず登録し、 本文フォントの
   fallback 連結 (自動並び) には混ぜない。 **これが無いとチェックマーク等の
   アイコンだけ描画されない** (枠は出るが ✓ が出ない) ので注意。
+- `Dialog.fontLanguages = %[lang => %["map" => %[...], "fallback" => "..."]]` —
+  **言語連動フォント置換表**。 文字体系ごとの別フォント (Noto Sans JP/TC/SC 等)
+  を持つ多言語 UI で、 表示言語に応じてフォント解決時に family を差し替える
+  (共有コードポイントの漢字を正しい地域字形で出すため)。
+  - `map` = family (または registerFont の別名) → 置換先 family。 widget の
+    `"font"` 指定と theme 既定チェーンの各 family トークンへ適用され、
+    `"#tag=val"` 軸サフィックスは温存 (JP/SC/TC の同軸 VF ならウェイトが揃う)
+  - `fallback` (任意) = その言語のときに theme 既定 families チェーンを
+    置き換える並び (エントリの無い言語では swap 前の並びへ戻る)
+  - 適用言語は widget 明示 `"locale"` > `Dialog.language`。 エントリの無い
+    言語は置換なし
+  - 画面 JSON / app.jsonc top-level の `"font_languages"` と同じ表で、
+    言語単位にマージ登録される (後から入れた方が上書き)。 getter は最後に
+    setter へ渡した表を JSON 文字列で返す (画面 JSON 側の宣言は含まない)
+  - ⚠ `text_area` はビルド時にフォントを固定するため、 表示中の言語切替には
+    追従しない (画面の開き直しで反映)
+  ```tjs
+  Dialog.fontLanguages = %[
+    "tc" => %["map" => %["Noto Sans JP" => "Noto Sans TC"]],
+    "sc" => %["map" => %["Noto Sans JP" => "Noto Sans SC"]]];
+  Dialog.language = "sc";   // 以降 "Noto Sans JP" 指定の label は SC で描かれる
+  ```
 - `Dialog.setPadIconBase(dir)` — pad_icon (Kenney input prompts) のベース
   ディレクトリ (storage パス、 配下に xbox/ps/switch/keyboard + vector/*.svg)。
   未設定だと pad_icon は灰色プレースホルダになる。
@@ -220,18 +242,23 @@ var r = dlg.showModalFile("ui/launcher.jsonc",
 
 ### フォーカスリング (static、 `Dialog.focusRing`)
 
-フォーカス中の要素に elements が描く汎用の枠 (青い角丸)。 既定 `true`。
+フォーカス中の要素に elements が描く汎用の枠 (青い角丸)。 **krkrz では既定
+OFF** — authored 画面は focused frame / focus_link 装飾で自前のフォーカス表示を
+持つため、 ホスト初期化 (最初の画面表示) 時にアプリ全体で無効化される。
+elements の汎用枠を使いたい場合に `true` を設定する (起動スクリプトで先に
+設定しても、 後から走る初期化に上書きされず尊重される)。
 
 ```tjs
-Dialog.focusRing = false;    // アプリ全体で消す
+Dialog.focusRing = true;     // elements の汎用フォーカス枠を有効化
 ```
 
 **画面単位ではなくアプリ全体設定** (グローバルテーマの
 `focus_ring_enabled` = `elements_modal::set_focus_ring_enabled`)。
-button / slider / dial / thumbwheel の枠がまとめて消える。 状態別の絵
+button / slider / dial / thumbwheel の枠がまとめて付く/消える。 状態別の絵
 (通常 / オーバー / 押し下げ / 無効) を素材として持つ画像 UI では、 枠が絵に
-重なって邪魔になるので切る。 **フォーカス自体は生きている**ので、
-キー/パッドのナビゲーションと `hilite` frame への切替は従来どおり動く。
+重なって邪魔になるので既定の OFF のままにする。 **OFF でもフォーカス自体は
+生きている**ので、 キー/パッドのナビゲーションと `hilite` frame への切替は
+従来どおり動く。
 
 > クラス内から触るときは `global.Dialog.focusRing`。 `Dialog` を継承した
 > クラスのメソッド内で素の `Dialog` と書くと親クラス参照になり、 static
@@ -266,6 +293,28 @@ overlay の ThorVG ラスタライズ密度を切り替える。 表示中の画
 基準面が取れない構成 (primary layer 無し) ではダイアログ自身の authored
 サイズが基準になり、 パネルが基準領域へ収まらない場合は収まるまで縮小
 される。
+
+### UI の author 基準面 (static、 `Dialog.baseSize`)
+
+**UI をゲーム画面と別の解像度で author しているタイトルは必ず設定する。**
+上記の拡縮率の分母 (基準面) を primary layer サイズから明示値へ差し替える。
+
+```tjs
+Dialog.baseSize = [1920, 1080];  // UI は 1920x1080 基準で author
+Dialog.baseSize = void;          // 既定へ戻す (基準面 = primary layer)
+```
+
+- 未設定 (既定) は従来どおり **primary layer サイズ** が基準。 ゲーム画面
+  いっぱいに UI を author する構成 (基準面 = authored) はそのままでよい。
+- ゲーム画面が低解像度 (例 640x400) で UI だけ高解像度 (例 1920x1080) の
+  構成では、 primary layer 基準だと fit が UI author 基準の数倍になり、
+  **全画面 UI 以外の部分パネル (ソフトキーボード等) が拡大されてしまう**。
+  `baseSize` を author 解像度に合わせれば authored どおりの相対サイズになる。
+- 設定すると fit が primary layer サイズに依存しなくなるので、 ゲーム側が
+  primary layer サイズを動かす演出 (低解像度機種エミュレーションでの
+  `setImageSize` 等) に overlay の表示倍率/密度が巻き込まれなくなる。
+- 表示中の画面にも次フレームから反映される。 getter は未設定なら void、
+  設定済みなら `[w, h]` を返す。
 
 マウス座標は manager が fit 倍率とセンタリング、 および入力イベントに
 掛かっている DestRect 原点シフト (TranslateWindowToDrawArea) の逆変換を
@@ -889,6 +938,7 @@ JSON / JSONC (コメント + 末尾カンマ) 対応。 要素タイプ・属性
 - **`"size": [w, h]`** (top-level) — ダイアログの希望論理サイズ (上限)。 実際は content の自然サイズにフィット縮小される (上側余白対策、 [project_elements_dialog_size] 系)。
 - **`"align"`** + **`"margin"`** (top-level) — overlay 上での配置。 `align` は `"center"` (既定) / `"top"` / `"bottom"` / `"left"` / `"right"` と、 それらの組合せ `"top_left"` / `"top_right"` / `"bottom_left"` / `"bottom_right"` (文字列に `top`/`bottom`/`left`/`right` が含まれるかで縦横独立に判定)。 `margin` は非中央側のサーフェス端からの余白 px (既定 0)。 入力座標の補正 (overlay_session の last_rect) も同じ配置で行われるのでクリック判定はズレない。 全 overlay 経路 (showJson / showFlow / startFlow) で有効。 例: ゲーム画面左上にメニューを出す → `"align": "top_left", "margin": 24`。
 - **`"base"`** (top-level) — 配置 / 拡縮の基準領域。 `"window"` (既定) = ウィンドウ全面 / `"content"` = ゲーム画像の表示領域 (DestRect)。 字幕窓のようにゲーム画像へ追従させたいパネルは `"base": "content"` を指定する (上の「renderScale / 配置」節参照)。 widget 内の `base` (text_area の文字方向) とは別物。
+- **`"font_languages"`** (top-level) — 言語連動フォント置換表 (言語コード → `{map, fallback}`)。 表示言語に応じて widget の `"font"` 指定・theme 既定チェーンの family を差し替える。 `Dialog.fontLanguages` プロパティと同じ表 (上の「フォント / pad アイコンのセットアップ」節参照)。 widget 明示 `"locale"` でパーツ単位の言語固定も可。 設計 = [FontEngine.md](FontEngine.md) 「言語連動フォント置換」節。
 - **`"initial_focus": true`** (focusable widget) — 起動時にフォーカスを当てる候補。 複数あった場合 build 順で先勝ち。
 - **`text_area` ウィジェット** — 矩形に流し込む静的テキスト。 **本体 `Layer.drawShapedTextArea` と改行位置が一致する** (どちらも `glyphware::layoutBlock` を通るため。 行頭行末禁則つき) のが `text_box` との違いで、 加えて `"align"` / `"line_spacing"` / `"count_var"` (文字送り) を持つ。 字幕 / セリフ窓向け。 詳細は下の「矩形テキスト (`text_area`)」節。
 - **`"close_on_click": true`** (button) — click で modal を閉じ、 `result.action = id` で確定する。 **デフォルト false** で、 click は `Dialog.onAction` を発火させるだけで終了させない。 OK / Cancel など「閉じるボタン」だけに付ける運用。 navigator フローでは、 画面遷移する button (transitions と組) と、 その場で動作させる button (close_on_click 無し → onAction のみ) を使い分ける。 なお TJS Dictionary 経由 (`showDict` 等) では true が int 1 で届くが、 bool 属性は number 0/非0 も真偽として受容する (elements_modal 2026-07-20 対応済。 古い pin では効かないので注意)。

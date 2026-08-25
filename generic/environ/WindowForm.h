@@ -161,6 +161,9 @@ public:
 	void OnKeyUp( tjs_int vk, int shift );
 	void InternalKeyUp( tjs_uint16 key, tjs_uint32 shift );
 	void OnKeyPress( tjs_int vk, int repeat, bool prevkeystate, bool convertkey );
+	//! 文字列単位のテキスト入力 (SDL_EVENT_TEXT_INPUT → Window.onTextInput)。
+	//! SDL 経路の文字入力はすべてこちら (onKeyPress は WINVER 互換専用)。
+	void OnTextInput( const ttstr & text );
 
 	// マウス操作
 	void OnMouseDown( int button, int shift, int x, int y );
@@ -192,9 +195,13 @@ public:
 	// 入力タイトルを指定して、入力受付、確定文字が返ってくるスタイルの方がいいか、モーダルにはならないから、確定後イベント通知かな
 	void SetAttentionPoint(tjs_int left, tjs_int top, const struct tTVPFont * font ) {}
 	void DisableAttentionPoint() {}
-	void SetImeMode(tTVPImeMode mode) {}
+	// focus されたレイヤの imeMode がフォーカス変更のたびに届く (focus 喪失時は
+	// ResetImeMode)。 スクリーンキーボード環境 (SDL3) では「テキストを受けたい
+	// レイヤに focus がある」の意思表示としてテキスト入力の開始/停止に使うため
+	// virtual (既定は no-op。WINVER は win32 Form 側で IME を制御)。
+	virtual void SetImeMode(tTVPImeMode mode) {}
 	tTVPImeMode GetDefaultImeMode() const { return imDisable; }
-	void ResetImeMode() {}
+	virtual void ResetImeMode() {}
 
 	// 表示/非表示
 	virtual bool GetVisible() const { return true; };

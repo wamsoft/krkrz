@@ -23,6 +23,7 @@
 #include "LayerManager.h"
 #include "VideoOvlIntf.h"
 #include "DrawDevice.h"
+#include "CharacterSet.h"   // TVPUtf16ToUtf8 (OnTextInput の Elements 転送)
 
 #ifdef TVP_USE_OPENGL
 #include "OpenGLContext.h"   // iTVPGLContext / InitGLES
@@ -146,6 +147,7 @@ tTVPUniqueTagForInputEvent tTVPOnMouseLeaveInputEvent         ::Tag;
 tTVPUniqueTagForInputEvent tTVPOnKeyDownInputEvent            ::Tag;
 tTVPUniqueTagForInputEvent tTVPOnKeyUpInputEvent              ::Tag;
 tTVPUniqueTagForInputEvent tTVPOnKeyPressInputEvent           ::Tag;
+tTVPUniqueTagForInputEvent tTVPOnTextInputInputEvent          ::Tag;
 tTVPUniqueTagForInputEvent tTVPOnFileDropInputEvent           ::Tag;
 tTVPUniqueTagForInputEvent tTVPOnMouseWheelInputEvent         ::Tag;
 tTVPUniqueTagForInputEvent tTVPOnPopupHideInputEvent          ::Tag;
@@ -658,6 +660,9 @@ void tTJSNI_BaseWindow::OnKeyUp(tjs_uint key, tjs_uint32 shift)
 //---------------------------------------------------------------------------
 void tTJSNI_BaseWindow::OnKeyPress(tjs_char key)
 {
+	// WINVER (WM_CHAR) 互換経路。 Elements intercept と Layer 配送はここが行い、
+	// 加えてサロゲート合成した文字列で onTextInput も併発する (新イベント系)。
+	// SDL 経路はこの関数を通らず OnTextInput のみが呼ばれる (一斉移行済み)。
 	if(!CanDeliverEvents()) return;
 	TVP_DIALOG_INTERCEPT(ForwardKeyPress(key));
 	if(Owner)
@@ -669,8 +674,69 @@ void tTJSNI_BaseWindow::OnKeyPress(tjs_char key)
 		static ttstr eventname(TJS_W("onKeyPress"));
 		TVPPostEvent(Owner, Owner, eventname, 0, TVP_EPT_IMMEDIATE, 1, arg);
 	}
+	// onTextInput 合成: WM_CHAR は BMP 外を high/low サロゲート 2 回で配信する
+	// ので、 high は保持して low と合成し 1 コードポイント文字列にして発火する。
+	// SDL の TEXT_INPUT は制御文字 (BS/Enter/Tab/Esc 等) を配信しないため、
+	// パリティのため制御文字は onTextInput へは流さない (onKeyPress / onKeyDown
+	// 側で従来どおり受けられる)。 Elements intercept 済み・Layer 配送は下の
+	// FireKeyPress が行うため、 ここでは Window イベントの発火のみ。
+	{
+		tjs_uint32 unit = (tjs_uint16)key;
+		if(unit >= 0xD800 && unit <= 0xDBFF) {
+			KeyPressHighSurrogate = (tjs_uint16)unit;
+		} else if(unit >= 0xDC00 && unit <= 0xDFFF) {
+			if(KeyPressHighSurrogate) {
+				tjs_char buf[3] = { (tjs_char)KeyPressHighSurrogate, (tjs_char)unit, 0 };
+				KeyPressHighSurrogate = 0;
+				PostTextInputEvent(ttstr(buf));
+			}
+			// 孤立 low は無視
+		} else {
+			KeyPressHighSurrogate = 0;
+			if(unit >= 0x20 && unit != 0x7F) {
+				tjs_char buf[2] = { (tjs_char)key, 0 };
+				PostTextInputEvent(ttstr(buf));
+			}
+		}
+	}
 	if(LayerEventTarget) LayerEventTarget->FireKeyPress(key);
 	else if(DrawDevice) DrawDevice->OnKeyPress(key);
+}
+//---------------------------------------------------------------------------
+// Window.onTextInput イベントの発火のみ (intercept / Layer 配送は行わない)。
+// OnKeyPress (WINVER 合成) と OnTextInput (SDL) の共通下請け。
+void tTJSNI_BaseWindow::PostTextInputEvent(const ttstr & text)
+{
+	if(!Owner || text.IsEmpty()) return;
+	tTJSVariant arg[1] = { text };
+	static ttstr eventname(TJS_W("onTextInput"));
+	TVPPostEvent(Owner, Owner, eventname, 0, TVP_EPT_IMMEDIATE, 1, arg);
+}
+//---------------------------------------------------------------------------
+void tTJSNI_BaseWindow::OnTextInput(const ttstr & text)
+{
+	// 文字列単位のテキスト入力 (SDL の SDL_EVENT_TEXT_INPUT 由来)。 IME の
+	// 確定文字列はまとまって 1 回で届く。 Elements ダイアログのテキスト欄が
+	// focus を持っていれば ForwardText が消費する (非モーダルで text focus が
+	// 無ければ素通し)。 Layer 系へは UTF-16 分解して従来の FireKeyPress
+	// (Layer.onKeyPress) 経路で互換配送する (iTVPDrawDevice / LayerTreeOwner の
+	// vtable を変えないため。 Layer.onTextInput の新設は DrawDevice ABI 拡張時)。
+	if(!CanDeliverEvents()) return;
+	if(text.IsEmpty()) return;
+#ifdef KRKRZ_HAS_ELEMENTS
+	{
+		std::string u8;
+		tjs_string ts(text.c_str());
+		TVPUtf16ToUtf8(u8, ts);
+		TVP_DIALOG_INTERCEPT(ForwardText(u8.c_str()));
+	}
+#endif
+	PostTextInputEvent(text);
+	const tjs_char* p = text.c_str();
+	for(tjs_int i = 0; p[i]; i++) {
+		if(LayerEventTarget) LayerEventTarget->FireKeyPress(p[i]);
+		else if(DrawDevice) DrawDevice->OnKeyPress(p[i]);
+	}
 }
 //---------------------------------------------------------------------------
 void tTJSNI_BaseWindow::OnFileDrop(const tTJSVariant &array)

@@ -42,7 +42,7 @@
        desc : "論理番号 0=最後に操作したパッド、getPadAxis のスティック/トリガ可視化、VK_PAD* とホストホットキー、rumblePad、パッドオーバレイ" ],
     %[ path : "softkey_ime",
        title : "文字入力 / 仮想キーボード / IME",
-       desc : "onKeyPress で文字を受ける、Layer.imeMode、内蔵仮想キーボード (Dialog.virtualKeyboard)、System.inputString、Clipboard" ],
+       desc : "onTextInput で文字列を受ける、Layer.imeMode、内蔵仮想キーボード (Dialog.virtualKeyboard)、System.inputString、Clipboard" ],
     %[ path : "webui",
        title : "ブラウザ UI (WebServer)",
        desc : "内蔵 HTTP + SSE サーバでブラウザにツール UI を置く。静的配信 / 動的エンドポイント / ゲーム→ブラウザ push" ],

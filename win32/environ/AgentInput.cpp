@@ -65,6 +65,19 @@ bool TVPAgentInjectKey(bool down, tjs_int64 vk, tjs_int64 shift)
 	return true;
 }
 
+bool TVPAgentInjectText(const ttstr & text)
+{
+	// WM_CHAR 相当: UTF-16 code unit ごとに OnKeyPress へ流す (サロゲートは
+	// tTJSNI_BaseWindow 側が合成して onTextInput を発火する)。
+	TTVPWindowForm* form = AgentMainForm();
+	if (!form) return false;
+	const tjs_char* p = text.c_str();
+	for (tjs_int i = 0; p && p[i]; i++) {
+		form->OnKeyPress((WORD)p[i], 0, false, false);
+	}
+	return true;
+}
+
 void TVPAgentRequestRedraw()
 {
 	// WINVER は VSyncTimingThread が Show() を継続的に駆動するのでキャプチャ要求は

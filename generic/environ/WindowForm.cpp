@@ -335,11 +335,22 @@ void TTVPWindowForm::InternalKeyUp( tjs_uint16 key, tjs_uint32 shift ) {
 	}
 }
 void TTVPWindowForm::OnKeyPress( tjs_int vk, int repeat, bool prevkeystate, bool convertkey ) {
-	// 文字入力 (win32 の WM_CHAR 相当)。SDL3 では form の SDL_EVENT_TEXT_INPUT
-	// から UTF-16 コード単位ごとに呼ばれる。KAG の Edit レイヤ等へ配送する。
+	// 文字入力 (win32 の WM_CHAR 相当) の互換経路。SDL3 の TEXT_INPUT は
+	// OnTextInput (文字列単位) を使い、こちらは通らない。
 	if( TJSNativeInstance && vk ) {
 		if( GetUseMouseKey() && (vk == 0x1b || vk == 13 || vk == 32) ) return;
 		TVPPostInputEvent(new tTVPOnKeyPressInputEvent(TJSNativeInstance, (tjs_char)vk));
+	}
+}
+
+void TTVPWindowForm::OnTextInput( const ttstr & text ) {
+	// 文字列単位のテキスト入力 (SDL_EVENT_TEXT_INPUT 1 回分。IME 確定文字列は
+	// まとまって届く)。Window.onTextInput の発火・Elements 転送・Layer 系への
+	// 互換分解配送は tTJSNI_BaseWindow::OnTextInput が行う。
+	if( TJSNativeInstance && !text.IsEmpty() ) {
+		// UseMouseKey 時のスペース抑止 (OnKeyPress と同じ規約)
+		if( GetUseMouseKey() && text.GetLen() == 1 && text[0] == 32 ) return;
+		TVPPostInputEvent(new tTVPOnTextInputInputEvent(TJSNativeInstance, text));
 	}
 }
 

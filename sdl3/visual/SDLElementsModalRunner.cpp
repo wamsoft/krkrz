@@ -8,6 +8,7 @@
 #include "DialogEventHandler.h"
 #include "ElementsDialogManager.h"
 #include "DebugIntf.h"
+#include "LogIntf.h"       // TVPLOG_INFO (pump 診断ログ)
 #include "CharacterSet.h"
 #include "Application.h"
 #include "WindowForm.h"
@@ -163,6 +164,12 @@ void PumpModalLoop(SDL3Application* app, tTVPElementsDialogManager& mgr,
 		SDL_Delay(8);
 #endif
 	}
+
+	// finish → teardown は次フレームの PaintOverlay へ遅延されるが、 pump は
+	// その前に抜ける。 呼出側の handler (スタック上の短命オブジェクト等) が
+	// 解放される前に、 ここで遅延分を同期破棄して OnClosed まで済ませる
+	// (放置すると次フレームに use-after-free)。
+	mgr.FlushPendingTeardowns();
 
 	// "close_on_click" / フロー <exit> で finish した場合は mgr が結果を
 	// スナップ済み。 Esc/外部 Close 等で結果が無い場合は空のまま返る。

@@ -11,6 +11,7 @@
 #include "DebugIntf.h"
 #include "CharacterSet.h"
 #include "tjsDictionary.h"   // TJSCreateDictionaryObject
+#include "tjsArray.h"        // TJSCreateArrayObject (Dialog.baseSize getter)
 #include "StoragesResourceLoader.h"   // TVPRegisterElementsFont(Dir)
 #include "VariantJsonUtil.h" // TVPVariantToJsonUtf8 (showDict / showModalDict)
 
@@ -22,12 +23,25 @@
 #include "MsgIntf.h"         // TVPThrowExceptionMessage (例外への文脈付加)
 #include "tjsError.h"        // eTJS (TJS 例外の透過判定)
 
+#include <vector>
 #include <elements/element/pad_icon.hpp>   // set_pad_icon_base_dir / set_pad_theme
 #include <elements_modal/modal.h>          // set_focus_ring_enabled (Dialog.focusRing)
 
 #include <string>
 
 namespace {
+
+//---------------------------------------------------------------------------
+// ElementsDialog.fontLanguages の保持 (getter 用)。 setter へ渡した表の
+// JSON 文字列表現を覚えておくだけで、 実体の登録は elements_modal 側
+// (apply_font_languages_json) が行う。 TJS オブジェクトを static に抱えない
+// (終了順の解放事故を避ける) ため文字列で持つ。
+//---------------------------------------------------------------------------
+std::string& TVPElementsFontLanguagesJson()
+{
+	static std::string json;
+	return json;
+}
 
 //---------------------------------------------------------------------------
 // 例外への文脈付加
@@ -284,31 +298,89 @@ static std::string InputJsonEscape(const std::string& s)
 	return out;
 }
 
-bool TVPInputStringElements(const ttstr& caption, const ttstr& prompt,
-	const ttstr& def, ttstr& result)
-{
-	std::string p8, d8;
-	{ tjs_string t(prompt.c_str()); TVPUtf16ToUtf8(p8, t); }
-	{ tjs_string t(def.c_str());    TVPUtf16ToUtf8(d8, t); }
+// メッセージ系 overlay 用の no-op handler。 handler=nullptr で
+// TVPRunElementsModalOverlay を呼ぶと FindByHandler(nullptr)=nullptr →
+// IsHandlerActive(nullptr)=false で PumpModalLoop が一周も回らず即返して
+// しまう (ダイアログは出るが待たない)。 スタック上のこのオブジェクトを
+// インスタンス識別子として渡す (呼出しごとに別アドレスなのでネストも可)。
+namespace {
+struct tTVPNoopDialogHandler : public iTVPDialogEventHandler {
+	void OnAction(const ttstr&, const tTJSVariant&) override {}
+};
+} // anonymous
 
+// 本文 (UTF-8) を label 行の配列へ分割する。 \n で分割し、 長い行は
+// コードポイント単位で max_cp ごとにチャンクする (text_box / text_area の
+// 折返しは vtile との高さ折衝で末尾行が切れるため使わない。 label の縦積みは
+// デモパネル等で実績のある構成)。
+static std::vector<std::string> SplitBodyLines(const std::string& body_utf8,
+	size_t max_cp = 48)
+{
+	std::vector<std::string> lines;
+	std::string cur;
+	size_t cp = 0;
+	for (size_t i = 0; i < body_utf8.size(); ) {
+		unsigned char c = (unsigned char)body_utf8[i];
+		if (c == '\r') { i++; continue; }
+		if (c == '\n') { lines.push_back(cur); cur.clear(); cp = 0; i++; continue; }
+		size_t len = (c < 0x80) ? 1 : (c < 0xE0) ? 2 : (c < 0xF0) ? 3 : 4;
+		if (i + len > body_utf8.size()) len = 1;   // 不正 UTF-8 は 1 byte ずつ
+		cur.append(body_utf8, i, len);
+		i += len;
+		if (++cp >= max_cp) { lines.push_back(cur); cur.clear(); cp = 0; }
+	}
+	if (!cur.empty() || lines.empty()) lines.push_back(cur);
+	return lines;
+}
+
+// メッセージ系 overlay ダイアログの共通骨格。 caption は見出し label、 本文は
+// label 行の縦積み (例外メッセージ等の長文・複数行に対応)。 extra_children に
+// ボタン行等の JSON 断片を渡す。
+static std::string MessageDialogJson(const std::string& caption_utf8,
+	const std::string& body_utf8, const std::string& extra_children)
+{
 	std::string json =
 		"{\"background\":[40,40,40,245],\"content\":{"
 		"\"type\":\"margin\",\"padding\":16,\"child\":{"
-		"\"type\":\"vtile\",\"children\":["
-		"{\"type\":\"label\",\"text\":\"" + InputJsonEscape(p8) + "\"},"
-		"{\"type\":\"vspacer\",\"height\":8},"
+		"\"type\":\"vtile\",\"children\":[";
+	if (!caption_utf8.empty()) {
+		json += "{\"type\":\"label\",\"text\":\"" + InputJsonEscape(caption_utf8) + "\"},"
+		        "{\"type\":\"vspacer\",\"height\":8},";
+	}
+	for (const auto& line : SplitBodyLines(body_utf8)) {
+		json += "{\"type\":\"label\",\"text\":\"" + InputJsonEscape(line) + "\"},";
+	}
+	json += "{\"type\":\"vspacer\",\"height\":12},";
+	json += extra_children;
+	json += "]}}}";
+	return json;
+}
+
+bool TVPInputStringElements(const ttstr& caption, const ttstr& prompt,
+	const ttstr& def, ttstr& result)
+{
+	std::string c8, p8, d8;
+	{ tjs_string t(caption.c_str()); TVPUtf16ToUtf8(c8, t); }
+	{ tjs_string t(prompt.c_str()); TVPUtf16ToUtf8(p8, t); }
+	{ tjs_string t(def.c_str());    TVPUtf16ToUtf8(d8, t); }
+
+	// overlay モーダル (ゲームウィンドウ上)。 独立ウィンドウは gamescope
+	// (Steam Deck) が表示できないため使わない。 input_box の initial_focus で
+	// スクリーンキーボード環境では OSK が focus 駆動で出る。
+	std::string extra =
 		"{\"type\":\"input_box\",\"id\":\"value\",\"text\":\"" + InputJsonEscape(d8) + "\",\"initial_focus\":true},"
 		"{\"type\":\"vspacer\",\"height\":12},"
 		"{\"type\":\"htile\",\"children\":["
 		"{\"type\":\"button\",\"id\":\"ok\",\"text\":\"OK\",\"close_on_click\":true},"
 		"{\"type\":\"hspacer\",\"width\":8},"
 		"{\"type\":\"button\",\"id\":\"cancel\",\"text\":\"\xE3\x82\xAD\xE3\x83\xA3\xE3\x83\xB3\xE3\x82\xBB\xE3\x83\xAB\",\"close_on_click\":true}"
-		"]}"
-		"]}}}";
+		"]}";
+	std::string json = MessageDialogJson(c8, p8, extra);
 
+	tTVPNoopDialogHandler h;   // nullptr だと PumpModalLoop が回らない (定義箇所参照)
 	tTVPElementsModalResult mr;
-	if (!TVPRunElementsModalWindow(json, caption, 380, 150, nullptr, mr))
-		return false; // 起動失敗 (WINVER 独立 window modal 未対応など)
+	if (!TVPRunElementsModalOverlay(json, &h, mr))
+		return false; // 起動失敗 (window/DrawDevice 未初期化等) → 呼出側フォールバック
 
 	if (mr.Action == ttstr(TJS_W("ok"))) {
 		auto it = mr.Values.find(ttstr(TJS_W("value")));
@@ -319,6 +391,53 @@ bool TVPInputStringElements(const ttstr& caption, const ttstr& prompt,
 		return true;
 	}
 	return false; // cancel / Esc
+}
+
+//---------------------------------------------------------------------------
+// System.inform / System.confirm の overlay 実装 (SDL host)。
+// ゲームウィンドウ上の Elements overlay モーダルで表示し、 独立ウィンドウを
+// 作らない (gamescope はセカンダリウィンドウを表示できない)。 起動失敗
+// (window/DrawDevice 未初期化・他 handler-less modal が active 等) は false を
+// 返し、 呼出側がネイティブ messagebox へフォールバックする。
+//---------------------------------------------------------------------------
+bool TVPInformElements(const ttstr& caption, const ttstr& text)
+{
+	std::string c8, t8;
+	{ tjs_string t(caption.c_str()); TVPUtf16ToUtf8(c8, t); }
+	{ tjs_string t(text.c_str());    TVPUtf16ToUtf8(t8, t); }
+
+	std::string extra =
+		"{\"type\":\"align_center\",\"child\":"
+		"{\"type\":\"button\",\"id\":\"ok\",\"text\":\"OK\",\"close_on_click\":true}}";
+	std::string json = MessageDialogJson(c8, t8, extra);
+
+	tTVPNoopDialogHandler h;
+	tTVPElementsModalResult mr;
+	return TVPRunElementsModalOverlay(json, &h, mr);
+}
+
+bool TVPConfirmElements(const ttstr& caption, const ttstr& text, bool& yes)
+{
+	std::string c8, t8;
+	{ tjs_string t(caption.c_str()); TVPUtf16ToUtf8(c8, t); }
+	{ tjs_string t(text.c_str());    TVPUtf16ToUtf8(t8, t); }
+
+	std::string extra =
+		"{\"type\":\"align_center\",\"child\":"
+		"{\"type\":\"htile\",\"children\":["
+		"{\"type\":\"button\",\"id\":\"yes\",\"text\":\"\xE3\x81\xAF\xE3\x81\x84\",\"close_on_click\":true},"
+		"{\"type\":\"hspacer\",\"width\":8},"
+		"{\"type\":\"button\",\"id\":\"no\",\"text\":\"\xE3\x81\x84\xE3\x81\x84\xE3\x81\x88\",\"close_on_click\":true}"
+		"]}}";
+	std::string json = MessageDialogJson(c8, t8, extra);
+
+	tTVPNoopDialogHandler h;
+	tTVPElementsModalResult mr;
+	if (!TVPRunElementsModalOverlay(json, &h, mr))
+		return false;
+	// Esc / close は action 空 = いいえ扱い
+	yes = (mr.Action == ttstr(TJS_W("yes")));
+	return true;
 }
 //---------------------------------------------------------------------------
 iTJSDispatch2* tTJSNI_Dialog::ShowModalJson(const ttstr& json_utf16,
@@ -977,6 +1096,48 @@ tTJSNC_Dialog::tTJSNC_Dialog() : inherited(TJS_W("Dialog"))
 	}
 	TJS_END_NATIVE_PROP_DECL(language)
 	//---------------------------------------------------------------------------
+	// fontLanguages プロパティ (static 相当):
+	//   言語連動フォント置換表。 言語コード → { map: %[family(または
+	//   registerFont の別名) => 置換先 family], fallback: "families 並び" (任意) }
+	//   の辞書 (または同形の JSON 文字列)。 map は widget の "font" 指定と
+	//   theme 既定チェーンの各 family トークンへ適用され、 "#tag=val" 軸
+	//   サフィックスは温存される (JP/SC/TC の同軸 VF ならウェイトが揃う)。
+	//   適用言語は widget 明示 "locale" > ElementsDialog.language。
+	//     ElementsDialog.fontLanguages = %[
+	//       "sc" => %[ "map" => %[ "Noto Sans JP" => "Noto Sans SC" ] ],
+	//       "tc" => %[ "map" => %[ "Noto Sans JP" => "Noto Sans TC" ] ] ];
+	//   画面 JSON / app.jsonc top-level の "font_languages" と同じ表で、
+	//   言語単位にマージ登録される (後から入れた方が上書き)。 getter は
+	//   最後に setter へ渡した表を **JSON 文字列**で返す (未設定なら空文字。
+	//   画面 JSON 側の宣言は含まない)。
+	TJS_BEGIN_NATIVE_PROP_DECL(fontLanguages)
+	{
+		TJS_BEGIN_NATIVE_PROP_GETTER
+		{
+			tjs_string ws;
+			TVPUtf8ToUtf16(ws, TVPElementsFontLanguagesJson());
+			*result = ttstr(ws.c_str());
+			return TJS_S_OK;
+		}
+		TJS_END_NATIVE_PROP_GETTER
+
+		TJS_BEGIN_NATIVE_PROP_SETTER
+		{
+			std::string utf8;
+			if (param->Type() == tvtString)
+				TVPUtf16ToUtf8(utf8, param->GetString());
+			else
+				TVPVariantToJsonUtf8(*param, utf8);
+			if (!elements_modal::apply_font_languages_json(utf8))
+				TVPThrowExceptionMessage(
+					TJS_W("ElementsDialog.fontLanguages: invalid table"));
+			TVPElementsFontLanguagesJson() = utf8;
+			return TJS_S_OK;
+		}
+		TJS_END_NATIVE_PROP_SETTER
+	}
+	TJS_END_NATIVE_PROP_DECL(fontLanguages)
+	//---------------------------------------------------------------------------
 	// virtualKeyboard プロパティ (static 相当):
 	//   テキスト欄に focus が入ったとき、 OS のソフトキーボード (NX の swkbd
 	//   アプレット / PS5 の IME ダイアログ) の代わりに Elements 内蔵の英数
@@ -1046,6 +1207,59 @@ tTJSNC_Dialog::tTJSNC_Dialog() : inherited(TJS_W("Dialog"))
 	}
 	TJS_END_NATIVE_PROP_DECL(renderScale)
 	//---------------------------------------------------------------------------
+	// baseSize プロパティ (static 相当):
+	//   UI の author 基準面サイズ = overlay 提示拡縮率 (fit) の分母。
+	//   [w, h] の配列で設定、 void または 0 要素で既定 (ゲームの基準面 =
+	//   primaryLayer サイズ) へ戻す。 getter は未設定なら void。
+	//   UI をゲーム画面と別解像度で author しているタイトル (ゲーム画面
+	//   640x400 / UI 1920x1080 等) はこれを設定すると、 部分パネルの拡縮が
+	//   author 基準どおりになり、 ゲーム側の primaryLayer サイズ変更
+	//   (低解像度機種エミュレーション等) にも巻き込まれない。
+	//   表示中の画面にも次フレームから反映される。
+	TJS_BEGIN_NATIVE_PROP_DECL(baseSize)
+	{
+		TJS_BEGIN_NATIVE_PROP_GETTER
+		{
+			int w = 0, h = 0;
+			tTVPElementsDialogManager::Instance().GetBaseSize(w, h);
+			if (w > 0 && h > 0) {
+				iTJSDispatch2* arr = TJSCreateArrayObject();
+				if (!arr) return TJS_E_FAIL;
+				tTJSVariant vw((tjs_int)w), vh((tjs_int)h);
+				arr->PropSetByNum(TJS_MEMBERENSURE, 0, &vw, arr);
+				arr->PropSetByNum(TJS_MEMBERENSURE, 1, &vh, arr);
+				*result = tTJSVariant(arr, arr);
+				arr->Release();
+			} else {
+				result->Clear();
+			}
+			return TJS_S_OK;
+		}
+		TJS_END_NATIVE_PROP_GETTER
+
+		TJS_BEGIN_NATIVE_PROP_SETTER
+		{
+			tjs_int w = 0, h = 0;
+			if (param->Type() == tvtObject) {
+				tTJSVariantClosure clo = param->AsObjectClosureNoAddRef();
+				if (clo.Object) {
+					tTJSVariant tmp;
+					if (TJS_SUCCEEDED(clo.Object->PropGetByNum(
+							TJS_MEMBERMUSTEXIST, 0, &tmp, clo.ObjThis)))
+						w = (tjs_int)tmp;
+					if (TJS_SUCCEEDED(clo.Object->PropGetByNum(
+							TJS_MEMBERMUSTEXIST, 1, &tmp, clo.ObjThis)))
+						h = (tjs_int)tmp;
+				}
+			}
+			// 配列以外 (void / 0 等) や不正値は既定へ戻す扱い
+			tTVPElementsDialogManager::Instance().SetBaseSize((int)w, (int)h);
+			return TJS_S_OK;
+		}
+		TJS_END_NATIVE_PROP_SETTER
+	}
+	TJS_END_NATIVE_PROP_DECL(baseSize)
+	//---------------------------------------------------------------------------
 	// renderCache プロパティ (static 相当):
 	//   overlay の再ラスタライズ抑止。 true (既定) なら変化の無いフレームは
 	//   ThorVG (CPU) の再ラスタライズとテクスチャ再アップロードを省略し、
@@ -1071,11 +1285,12 @@ tTJSNC_Dialog::tTJSNC_Dialog() : inherited(TJS_W("Dialog"))
 	TJS_END_NATIVE_PROP_DECL(renderCache)
 	//---------------------------------------------------------------------------
 	// focusRing プロパティ (static 相当・アプリ全体設定):
-	//   フォーカス中の要素に elements が描く汎用の枠。 既定 true。
-	//   状態別の絵を自前で持つ画像 UI (PSD 由来の atlas_button / atlas_toggle 等)
-	//   では枠が素材に重なって邪魔なので false にする。 画面単位ではなく
-	//   タイトル全体の見た目方針なのでグローバルテーマのフラグ。
-	//   フォーカス自体は生きているのでキー/パッド操作の挙動は変わらない。
+	//   フォーカス中の要素に elements が描く汎用の枠。 krkrz ホストは初期化時に
+	//   OFF を既定にする (authored 画面は focused frame / focus_link 装飾で表現
+	//   する方針。 EnsureRuntimeInitialized 参照)。 有効にしたい場合に true を
+	//   設定する。 画面単位ではなくタイトル全体の見た目方針なのでグローバル
+	//   テーマのフラグ。 フォーカス自体は生きているのでキー/パッド操作の挙動は
+	//   変わらない。
 	TJS_BEGIN_NATIVE_PROP_DECL(focusRing)
 	{
 		TJS_BEGIN_NATIVE_PROP_GETTER
@@ -1087,6 +1302,8 @@ tTJSNC_Dialog::tTJSNC_Dialog() : inherited(TJS_W("Dialog"))
 
 		TJS_BEGIN_NATIVE_PROP_SETTER
 		{
+			// 明示設定を記録 (初回画面表示のテーマ既定 OFF に上書きさせない)
+			tTVPElementsDialogManager::Instance().NoteFocusRingUserSet();
 			elements_modal::set_focus_ring_enabled((bool)(tjs_int)*param);
 			// テーマ変更はセッションから観測できないので明示的に再描画させる
 			tTVPElementsDialogManager::Instance().InvalidateOverlays();

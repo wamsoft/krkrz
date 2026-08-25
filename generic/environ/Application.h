@@ -327,6 +327,15 @@ public:
 	virtual tjs_int ScreenWidth() const = 0;
 	virtual tjs_int ScreenHeight() const = 0;
 
+	// デスクトップ (作業領域) の矩形を返す (TJS: System.desktop*)。
+	// win32 版 krkrz の System.desktopLeft/Top/Width/Height 互換で、
+	// ウィンドウ位置の画面内クランプ等に使う。 既定はスクリーン全体
+	// (原点 0,0)。 タスクバー等を除いた作業領域を返せるホストは override。
+	virtual tjs_int DesktopLeft() const { return 0; }
+	virtual tjs_int DesktopTop() const { return 0; }
+	virtual tjs_int DesktopWidth() const { return ScreenWidth(); }
+	virtual tjs_int DesktopHeight() const { return ScreenHeight(); }
+
 	// アクティブかどうか
 	virtual bool GetActivating() const = 0;
 	virtual bool GetNotMinimizing() const = 0;

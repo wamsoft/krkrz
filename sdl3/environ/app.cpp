@@ -390,6 +390,46 @@ SDL3Application::ScreenHeight() const
 	return 0;
 }
 
+// デスクトップ (作業領域) の矩形 (System.desktop*)。 win32 版互換。
+// SDL_GetDisplayUsableBounds はタスクバー等を除いた作業領域をグローバル座標で
+// 返す。 取得できない環境 (フルスクリーン専用機等) はスクリーン全体へ
+// フォールバックする。
+static bool TVPGetDesktopRect(const SDL3Application* app, SDL_Rect& rect)
+{
+	SDL_DisplayID display = app->BaseDisplayID();
+	if (!display) return false;
+	if (SDL_GetDisplayUsableBounds(display, &rect)) return true;
+	return SDL_GetDisplayBounds(display, &rect) ? true : false;
+}
+
+tjs_int
+SDL3Application::DesktopLeft() const
+{
+	SDL_Rect rect;
+	return TVPGetDesktopRect(this, rect) ? rect.x : 0;
+}
+
+tjs_int
+SDL3Application::DesktopTop() const
+{
+	SDL_Rect rect;
+	return TVPGetDesktopRect(this, rect) ? rect.y : 0;
+}
+
+tjs_int
+SDL3Application::DesktopWidth() const
+{
+	SDL_Rect rect;
+	return TVPGetDesktopRect(this, rect) ? rect.w : ScreenWidth();
+}
+
+tjs_int
+SDL3Application::DesktopHeight() const
+{
+	SDL_Rect rect;
+	return TVPGetDesktopRect(this, rect) ? rect.h : ScreenHeight();
+}
+
 // アクティブかどうか
 bool
 SDL3Application::GetActivating() const 
@@ -417,6 +457,15 @@ SDL3Application::GetNotMinimizing() const
 void
 SDL3Application::MessageDlg(const tjs_string& string, const tjs_string& caption, int type, int button)
 {
+#ifdef KRKRZ_HAS_ELEMENTS
+	// まずゲームウィンドウ上の Elements overlay モーダルで表示する (独立
+	// ウィンドウを作らない)。 gamescope (Steam Deck) はセカンダリウィンドウを
+	// 表示できないため、 ネイティブ messagebox は Deck では見えない。
+	// window/DrawDevice 未初期化 (起動前エラー等) や overlay 起動失敗時のみ
+	// 下のネイティブ messagebox にフォールバックする。
+	if (TVPInformElements(ttstr(caption.c_str()), ttstr(string.c_str())))
+		return;
+#endif
 	SDL_MessageBoxFlags flags;
 	switch (type) {
 	case mtWarning:
@@ -460,6 +509,14 @@ SDL3Application::MessageDlg(const tjs_string& string, const tjs_string& caption,
 bool
 SDL3Application::ConfirmYesNo(const tjs_string& string, const tjs_string& caption)
 {
+#ifdef KRKRZ_HAS_ELEMENTS
+	// MessageDlg と同じ理由で overlay を優先し、 失敗時のみネイティブへ。
+	{
+		bool yes = false;
+		if (TVPConfirmElements(ttstr(caption.c_str()), ttstr(string.c_str()), yes))
+			return yes;
+	}
+#endif
 	std::string str_utf8, cap_utf8;
 	TVPUtf16ToUtf8(str_utf8, string);
 	TVPUtf16ToUtf8(cap_utf8, caption);

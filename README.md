@@ -41,8 +41,12 @@ TJS2 スクリプトエンジン + ノベルゲームランタイム「吉里吉
 
 ### Windows
 
-Visual Studio (2022 以降) を入れて C++ コンパイラを使える状態にします。
+Visual Studio 2022 を入れて C++ コンパイラを使える状態にします。
 付属の CMake / Ninja を利用します。
+
+> ビルド確認は **Visual Studio 2022 v17.14 とその同梱 CMake / Ninja** の
+> 組み合わせで行っています。他のバージョンや別途導入した CMake 等では
+> テストされていません。
 
 `make` を使いたい場合は msys2 を入れて基礎開発ツールを導入します。
 
@@ -54,7 +58,19 @@ pacman -S base-devel
 > 32bit ビルド (`x86-windows`) は x86 用の Developer Command Prompt が必要です
 > (アーキテクチャが食い違うと vcpkg が誤動作します)。
 
-### Linux / macOS
+### Linux
+
+ビルド確認の基準環境は
+[steamdev](https://github.com/wamsoft/steamdev) リポジトリの `deckbuild/` で
+構築する Docker ビルド環境 (Valve 公式 Steam Linux Runtime 3.0 "sniper" SDK =
+Debian 11 / glibc 2.31 ベース) です。互換性の考え方・使い方・バイナリの合格基準
+は [doc/LinuxBuild.md](doc/LinuxBuild.md) を参照してください。
+
+任意のディストリビューションでの直ビルド (`x64-linux` プリセット) も可能ですが、
+新しい glibc でビルドしたバイナリは古い環境で動かないため、配布物の確認は
+上記基準環境で行います。
+
+### macOS
 
 整備中。
 

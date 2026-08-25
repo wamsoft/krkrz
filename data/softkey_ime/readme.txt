@@ -8,16 +8,21 @@ softkey_ime — 文字入力 / 仮想キーボード / IME
   krkrz64.exe <このフォルダ>
   まとめて切り替える版は ../gallery (コアデモギャラリー) を参照。
 
-■ 1. 文字入力は onKeyPress で受ける
+■ 1. 文字入力は onTextInput で受ける
 
   onKeyDown / onKeyUp は**仮想キーコード** (VK_*) を扱うイベント。
-  実際に入力された**文字**は `onKeyPress(key)` で届く (IME の確定文字もここ)。
-  ファンクションキーのように文字と無関係なキーでは発生しない。
+  実際に入力された**文字**は `onTextInput(text)` で**文字列単位**に届く
+  (IME の確定文字列はまとまって 1 回で届く)。制御文字 (BS/Enter 等) や
+  ファンクションキーでは発生しない。編集キーは onKeyDown の VK_BACK /
+  VK_RETURN で受ける。
 
-  このデモは自前描画の入力欄を用意し、onKeyPress で 1 文字ずつ受けて
-  表示・ログ化している (BackSpace = 0x08、Enter = 0x0D も文字として届く)。
+  このデモは自前描画の入力欄を用意し、onTextInput で受けて表示・ログ化し、
+  BackSpace / Enter は onKeyDown で処理している。
 
-  ※ demolib の DemoScene に `onKeyPress(key)` フックを追加した
+  旧 `onKeyPress(key)` (WM_CHAR 相当・1 文字ずつ) は WINVER でのみ互換の
+  ため発火し続ける。SDL 系では発火しない (onTextInput へ一斉移行)。
+
+  ※ demolib の DemoScene に `onTextInput(text)` フックを追加した
     (DemoShell → シーンへ中継)。
 
 ■ 2. IME (Layer.imeMode / setAttentionPoint)
@@ -73,7 +78,7 @@ softkey_ime — 文字入力 / 仮想キーボード / IME
 
 ■ 関連リファレンス
 
-  doc/reference/Window.md     onKeyPress / onKeyDown / imeMode
+  doc/reference/Window.md     onTextInput / onKeyDown / imeMode
   doc/reference/Layer.md      imeMode / setAttentionPoint / focusable / focus
   doc/reference/Clipboard.md  asText / hasFormat
   doc/reference/System.md     inputString
@@ -83,7 +88,9 @@ softkey_ime — 文字入力 / 仮想キーボード / IME
 
 ■ メモ
 
-  - `Agent.keyPress(VK_A)` はキーイベントだけを注入するので **onKeyPress は
+  - `Agent.keyPress(VK_A)` はキーイベントだけを注入するので **onTextInput は
     発生しない** (文字入力は OS のテキスト入力経路を通るため)。自動テストで
-    文字を入れたい場合は Elements 欄 + `Agent.text` を使う。
+    文字を入れたい場合は `Agent.text("...")` を使う (実入力と同じ経路で
+    注入され、Elements のテキスト欄 focus があればそちらが消費し、無ければ
+    ゲーム側の onTextInput へ届く)。
   - 仮想キーボードは画面中央に出るため、入力欄を覆うことがある (既知の制限)。

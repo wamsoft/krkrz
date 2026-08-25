@@ -236,6 +236,24 @@ public:
 	                         ttstr& out_action,
 	                         std::map<ttstr, tTJSVariant>& out_values);
 
+	//! @brief handler への OnAction 配送口 (bridge callback が使用)。
+	//!        paint (PaintOverlay → session update) の最中に発火した action は
+	//!        直接配送せずキューに積み、 continuous イベントフック (window
+	//!        update の外) から配送する。 コールバック内で開かれるブロッキング
+	//!        モーダルが window update の再入禁止で描画不能になるのを防ぐ。
+	//!        paint 外 (入力経路等) から呼ばれた場合は従来どおり即時配送。
+	void DispatchAction(iTVPDialogEventHandler* handler,
+	                    const ttstr& id, const tTJSVariant& payload);
+
+	//! @brief close 予約済み (close_requested) のインスタンスを直ちに破棄する
+	//!        (OnClosed 発火まで含む)。 ブロッキングモーダルの pump 脱出直後に
+	//!        呼ぶこと。 finish → teardown は通常次フレームの PaintOverlay へ
+	//!        遅延されるが、 pump はその前に抜けるため、 呼出側の (スタック上の
+	//!        短命な) handler が解放された後に OnClosed が飛んで use-after-free
+	//!        になる。 pump 脱出時にここで同期的に破棄して防ぐ。
+	//!        update() が呼び出しスタック上にあるインスタンスには触らない。
+	void FlushPendingTeardowns();
+
 	// === 描画アダプタ提供口の登録 (DrawDevice が自身を host として登録) ===
 	// DrawDevice は iTVPDialogRendererHost を実装し (renderer は DrawDevice が所有)、
 	// 自身を host として登録する。 manager は具象 renderer 型を知らず、host 経由で
@@ -288,6 +306,12 @@ public:
 	//!        ケース。 [[feedback_elements_font_init_order]] 参照。
 	void EnsureRuntimeInitialized();
 
+	//! @brief Dialog.focusRing がスクリプトから明示設定されたことを記録する。
+	//!        EnsureRuntimeInitialized が適用するテーマ既定 (フォーカスリング OFF)
+	//!        が、 初回画面表示より前の明示設定を上書きしないようにするための
+	//!        フラグ (setter 側から呼ぶ)。
+	void NoteFocusRingUserSet() { FocusRingUserSet = true; }
+
 	//! @brief handler (TJS native インスタンス等) の破棄時に呼び、 該当 handler を
 	//!        参照する全インスタンスから参照を切って teardown を予約する。
 	//!        モーダル終了後の遅延 teardown が解放済み handler へ OnClosed を
@@ -302,6 +326,14 @@ public:
 	//!        次回の RenderInstance から反映される (表示中の画面にも効く)。
 	void SetRenderScale(float scale);
 	float GetRenderScale() const;
+
+	//! @brief UI の author 基準面サイズ (TJS: Dialog.baseSize)。
+	//!        overlay の提示拡縮率 (fit) の分母。 0,0 (既定) はゲームの基準面
+	//!        (primary layer サイズ) を使う。 UI をゲーム画面と別の解像度で
+	//!        author しているタイトルはこれを設定する (例: 1920,1080)。
+	//!        次回の RenderInstance から反映される (表示中の画面にも効く)。
+	void SetBaseSize(int w, int h);
+	void GetBaseSize(int& w, int& h) const;
 
 	//! @brief overlay の再ラスタライズ抑止 (TJS: Dialog.renderCache)。
 	//!        true (既定): 変化が無いフレームは ThorVG の再ラスタライズ +
@@ -354,6 +386,9 @@ private:
 
 	struct Impl;
 	std::unique_ptr<Impl> _impl;
+
+	// Dialog.focusRing の明示設定済みフラグ (NoteFocusRingUserSet 参照)
+	bool FocusRingUserSet = false;
 };
 
 //! @brief 登録済み DrawDevice のいずれかでテストダイアログを表示する補助関数。

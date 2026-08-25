@@ -221,6 +221,10 @@ public:
 public:
 	virtual bool CanDeliverEvents() const = 0; // implement this in each platform
 
+protected:
+	//! WINVER 互換経路 (OnKeyPress) から onTextInput を合成するための
+	//! high surrogate 保持 (WM_CHAR は BMP 外を high/low 2 回で配信する)。0 = 無し
+	tjs_uint16 KeyPressHighSurrogate = 0;
 
 public:
 
@@ -238,6 +242,16 @@ public:
 	void OnKeyDown(tjs_uint key, tjs_uint32 shift);
 	void OnKeyUp(tjs_uint key, tjs_uint32 shift);
 	void OnKeyPress(tjs_char key);
+	//! 文字列単位のテキスト入力 (SDL の TEXT_INPUT に対応する新イベント系)。
+	//! Window.onTextInput(text) を発火し、 レイヤ系へは UTF-16 分解して従来の
+	//! FireKeyPress (Layer.onKeyPress) 経路で互換配送する (プラグイン ABI 不変)。
+	//! WINVER の WM_CHAR 経路は OnKeyPress がサロゲート合成して onTextInput を
+	//! 併発する (SDL は OnTextInput のみで Window.onKeyPress は発火しない)。
+	void OnTextInput(const ttstr & text);
+protected:
+	//! Window.onTextInput の発火のみ (intercept / Layer 配送なし)。共通下請け
+	void PostTextInputEvent(const ttstr & text);
+public:
 	void OnFileDrop(const tTJSVariant &array);
 	void OnMouseWheel(tjs_uint32 shift, tjs_int delta, tjs_int x, tjs_int y);
 	void OnPopupHide();
@@ -536,6 +550,17 @@ public:
 		tTVPBaseInputEvent(win, Tag), Key(key) {};
 	void Deliver() const
 	{ ((tTJSNI_BaseWindow*)GetSource())->OnKeyPress(Key); }
+};
+//---------------------------------------------------------------------------
+class tTVPOnTextInputInputEvent : public tTVPBaseInputEvent
+{
+	static tTVPUniqueTagForInputEvent Tag;
+	ttstr Text;
+public:
+	tTVPOnTextInputInputEvent(tTJSNI_BaseWindow *win, const ttstr & text) :
+		tTVPBaseInputEvent(win, Tag), Text(text) {};
+	void Deliver() const
+	{ ((tTJSNI_BaseWindow*)GetSource())->OnTextInput(Text); }
 };
 //---------------------------------------------------------------------------
 class tTVPOnFileDropInputEvent : public tTVPBaseInputEvent

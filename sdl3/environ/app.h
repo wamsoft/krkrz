@@ -19,6 +19,7 @@ protected:
 	SDL_Window *mWindow;
 	bool mVisible;
 	bool mEnableTouch;
+	tTVPImeMode mImeMode;	//< focus レイヤの imeMode (focus 無しは imDisable)
 	enum tTVPBorderStyle mBorderStyle;	//< SDL には枠スタイルの概念が無いので値を保持する
 	int mMinWidth, mMinHeight, mMaxWidth, mMaxHeight;
 	bool mStartupDisplayApplied;		//< -display= 指定ディスプレイへの初回配置が済んだか
@@ -28,6 +29,8 @@ protected:
 	//! 生成時に要求した論理サイズに固定する。 実サイズへの引き伸ばしは
 	//! SDL_SetRenderLogicalPresentation が行う。
 	int mFixedSurfaceWidth, mFixedSurfaceHeight;
+	//! ホイールの WHEEL_DELTA(=120) 換算残差 (SDL3 はノッチ単位の float)
+	float mWheelAccum;
 
 	bool checkTouchDevice();
 
@@ -57,6 +60,12 @@ public:
 
 	// モーダル表示 (Window.showModal)。ネストしたイベントループを回す。
 	virtual void ShowWindowAsModal() override;
+
+	// focus レイヤの imeMode 変更 (フォーカス変更ごとに届く)。 スクリーン
+	// キーボード環境では imDisable 以外 = テキスト入力を受けたいレイヤに
+	// focus がある間だけ SDL_StartTextInput する (Deck では Steam OSK が出る)。
+	virtual void SetImeMode(tTVPImeMode mode) override;
+	virtual void ResetImeMode() override;
 
 	// --- ウィンドウの位置 / サイズ / 装飾 -------------------------------
 	// generic の既定は「位置もサイズも取れない空実装」なので、ウィンドウ装飾を
@@ -190,6 +199,13 @@ public:
 	// スクリーンサイズを返す
 	virtual tjs_int ScreenWidth() const override;
 	virtual tjs_int ScreenHeight() const override;
+
+	// デスクトップ (作業領域) の矩形 (System.desktop*)。 BaseDisplayID の
+	// SDL_GetDisplayUsableBounds (タスクバー等を除いた領域、 グローバル座標)。
+	virtual tjs_int DesktopLeft() const override;
+	virtual tjs_int DesktopTop() const override;
+	virtual tjs_int DesktopWidth() const override;
+	virtual tjs_int DesktopHeight() const override;
 
 	// アクティブかどうか
 	virtual bool GetActivating() const override;

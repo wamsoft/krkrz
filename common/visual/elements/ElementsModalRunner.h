@@ -40,13 +40,29 @@ struct tTVPElementsModalResult
 class iTVPDialogEventHandler;
 
 //! @brief 1 行テキスト入力モーダル (System.inputString の Elements 実装)。
-//!        独立ウィンドウで prompt ラベル + input_box + OK/キャンセルを表示する。
+//!        ゲームウィンドウ上の overlay モーダルで caption 見出し + prompt +
+//!        input_box + OK/キャンセルを表示する (独立ウィンドウは作らない。
+//!        gamescope = Steam Deck がセカンダリウィンドウを表示できないため)。
 //!        OK なら true (result に入力文字列。未入力時は def)、キャンセル/Esc なら
-//!        false。SDL host 専用 (WINVER は独立 window modal 未対応)。
+//!        false。起動失敗 (window/DrawDevice 未初期化等) も false。SDL host 専用
+//!        (WINVER はネイティブ TVPInputString を使う)。
 //! @note  input_box は初期値設定に未対応のため、def は placeholder 表示 + 未入力
 //!        時のフォールバックで扱う (初期値の編集可能化は将来 elements_modal 拡張)。
 bool TVPInputStringElements(const ttstr& caption, const ttstr& prompt,
 	const ttstr& def, ttstr& result);
+
+//! @brief System.inform の overlay 実装 (SDL host)。 ゲームウィンドウ上の
+//!        Elements overlay モーダルで caption 見出し + 本文 (折返し) + OK を
+//!        表示し、 閉じるまでブロックする。
+//! @return true = 表示して閉じた / false = 起動失敗 (window/DrawDevice
+//!         未初期化等)。 false の場合は呼出側がネイティブ messagebox へ
+//!         フォールバックすること。
+bool TVPInformElements(const ttstr& caption, const ttstr& text);
+
+//! @brief System.confirm の overlay 実装 (SDL host)。 はい/いいえの 2 択。
+//! @param yes  [out] はい = true / いいえ・Esc = false (戻り値 true のときのみ有効)
+//! @return true = 表示して閉じた / false = 起動失敗 (ネイティブへフォールバック)
+bool TVPConfirmElements(const ttstr& caption, const ttstr& text, bool& yes);
 
 //! @brief 独立ウィンドウを立ててモーダルダイアログを実行する。
 //!        ダイアログが閉じるまでブロックする。
