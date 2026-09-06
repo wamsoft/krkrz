@@ -8,6 +8,8 @@
 #ifndef WIN_CONSOLE_H
 #define WIN_CONSOLE_H
 
+#include "tjsConfig.h"   // tjs_char
+
 // 親プロセスのコンソールに attach する。既に自プロセスがコンソールを持っている
 // 場合は何もしない。attach に成功したら内部フラグを立てる。
 // 戻り値: attach 済み (または最初からコンソールを持っていた) なら true。
@@ -19,5 +21,12 @@ void TVPDetachWindowsConsole();
 
 // 現在、本ヘルパ経由で親コンソールに attach 済みか。
 bool TVPIsAttachedWindowsConsole();
+
+// 標準出力へテキストを書き出す (改行は呼び出し側が含める)。
+// Windows では GUI サブシステムでも CRT の stdout が親シェルに繋がらないため、
+// STD_OUTPUT_HANDLE へ直接書く。真のコンソールなら WriteConsoleW (UTF-16)、
+// パイプ/ファイルへのリダイレクトなら UTF-8 で WriteFile。
+// 非 Windows では UTF-8 に変換して stdout へ書く。
+void TVPWriteStdOutText(const tjs_char *text);
 
 #endif

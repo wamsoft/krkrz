@@ -1064,6 +1064,24 @@
 				"value": ""
 			},
 			{
+				"caption": "Window maximize button",
+				"description": "Controls whether the title bar shows the maximize button.\n\nWhen disabled, the maximize button disappears and maximizing by double-clicking the title bar or pressing Win+Up also becomes unavailable. Resizing by dragging the window frame and toggling full screen with Alt+Enter keep working as before.\n\nEffective only on Windows in the SDL3 build (a no-op on other platforms).",
+				"name": "maximizebox",
+				"type": "select",
+				"user": false,
+				"values": [
+					{
+						"value": "yes",
+						"desc": "Enabled",
+						"default": true
+					},
+					{
+						"value": "no",
+						"desc": "Disabled"
+					}
+				]
+			},
+			{
 				"caption": "Hardware video decoding",
 				"description": "Defines whether overlay video playback (VideoOverlay) uses hardware decoding (IMFMediaEngine) for Media Foundation formats such as mp4 / wmv.\n\nSelect 'disabled' to decode all formats in software; use this to isolate video playback problems. webm / mpeg are always decoded in software regardless of this setting.\n\nEffective only on the Windows native (WINVER) build.",
 				"name": "mediaengine",

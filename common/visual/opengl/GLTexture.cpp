@@ -566,7 +566,7 @@ GLTextureDrawer::Done()
 
 // 描画範囲にべた書き処理
 void
-GLTextureDrawer::DrawTexture(GLTexture *tex, int scr_w, int scr_h, float position[], int tex_w, int tex_h, bool blend)
+GLTextureDrawer::DrawTexture(GLTexture *tex, int scr_w, int scr_h, float position[], int tex_w, int tex_h, bool blend, bool premultiplied)
 {
 	if (_shader_program && tex) {
 
@@ -592,9 +592,17 @@ GLTextureDrawer::DrawTexture(GLTexture *tex, int scr_w, int scr_h, float positio
 		glDisable( GL_SCISSOR_TEST );
 		glDisable( GL_CULL_FACE );
 		if (blend) {
-			// straight-alpha 合成 (Elements ダイアログ overlay 等で使用)
 			glEnable( GL_BLEND );
-			glBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
+			if (premultiplied) {
+				// premultiplied-alpha 合成。 src の RGB に既にアルファが
+				// 掛かっているので、 src 係数は GL_ONE。 ThorVG (Elements の
+				// canvas) の出力がこれ。 GL_SRC_ALPHA を使うとアルファが
+				// 二重に掛かり、 半透明部分が薄くなる。
+				glBlendFunc( GL_ONE, GL_ONE_MINUS_SRC_ALPHA );
+			} else {
+				// straight-alpha 合成 (動画ミキサ等)
+				glBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
+			}
 		} else {
 			glDisable( GL_BLEND );
 		}

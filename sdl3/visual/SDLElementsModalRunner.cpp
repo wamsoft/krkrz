@@ -21,6 +21,9 @@
 
 #include <string>
 
+// sdl3/environ/main.cpp。 接続機器の抜き差しの後始末。
+extern void TVPProcessDeviceSDLEvent(const SDL_Event *event);
+
 #ifdef __EMSCRIPTEN__
 // wasm メインループ (sdl3/environ/main.cpp) が定義する JSPI import。
 // requestAnimationFrame を await して次フレームまでメインスタックを suspend する。
@@ -135,6 +138,10 @@ void PumpModalLoop(SDL3Application* app, tTVPElementsDialogManager& mgr,
 				SDL_PushEvent(&ev);
 				break;
 			}
+			// 接続機器の抜き差しは通常ループ (SDL_AppEvent) と同じ順で
+			// 追従させる。 これを飛ばすと、 モーダル中に抜いたパッドの
+			// ハンドルが残り、 接続数も古いままで操作不能になる。
+			TVPProcessDeviceSDLEvent(&ev);
 			app->AppEvent(ev);
 			if (!mgr.IsHandlerActive(handler)) break;
 		}

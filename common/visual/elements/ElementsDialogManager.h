@@ -21,7 +21,7 @@ class iTVPDialogEventHandler;
 class iTVPDialogRenderer;
 class iTVPDialogRendererHost;
 
-//! @brief overlay 描画パイプラインの区間計測 (TJS: Dialog.renderStats)。
+//! @brief overlay 描画パイプラインの区間計測 (TJS: ElementsDialog.renderStats)。
 //!        すべて累積値 (renderStatsReset() で 0 クリア)。 時間は microsecond。
 //!        呼出側は 2 回読んで差分を取り、 経過実時間に対する割合や
 //!        1 フレームあたりの平均を計算する (負荷比較・NX 実測用)。
@@ -108,7 +108,7 @@ public:
 	void Close();
 
 	//! @brief 指定 handler が所有するインスタンスを閉じる。 複数共存時に
-	//!        他人のインスタンスを巻き込まないために、 TJS Dialog の close()
+	//!        他人のインスタンスを巻き込まないために、 TJS ElementsDialog の close()
 	//!        等はこちらを使う。
 	void Close(iTVPDialogEventHandler* handler);
 
@@ -118,9 +118,18 @@ public:
 	//!        view callback 内から呼ぶと use-after-free になるので注意。
 	void ForceClose();
 
-	//! @brief 何らかのインスタンスがアクティブか (DrawDevice 入力インターセプトの
-	//!        ゲート用)。 非モーダルを含めて 1 つでも表示中なら true。
+	//! @brief 何らかのインスタンスがアクティブか。 非モーダルを含めて 1 つでも
+	//!        表示中なら true。 「どこかに UI が出ているか」の全体判定用
+	//!        (毎フレームの present 要否など)。 入力インターセプトのゲートには
+	//!        ウィンドウを跨いで入力を奪ってしまうので使わない
+	//!        (→ IsActiveOnDevice)。
 	bool IsModalActive() const;
+
+	//! @brief 指定 DrawDevice (= そのウィンドウ) 上にアクティブなインスタンスが
+	//!        あるか。 入力インターセプトのゲート用。 overlay を載せていない
+	//!        別ウィンドウ (サブウィンドウのダイアログ等) の入力まで奪わない
+	//!        ように、 ゲートは device 単位で判定する。
+	bool IsActiveOnDevice(iTVPDrawDevice* device) const;
 
 	//! @brief modal=true なインスタンスが 1 つでもアクティブか。 ウィンドウ
 	//!        クローズ抑止 (modal 中は閉じさせない) の判定に使う。 非モーダルの
@@ -143,7 +152,7 @@ public:
 	void UnregisterHostHotkey(tjs_uint vk, tjs_uint32 mods);
 	void ClearHostHotkeys();
 
-	//! @brief 指定 handler が所有するインスタンスが今アクティブか。 TJS Dialog の
+	//! @brief 指定 handler が所有するインスタンスが今アクティブか。 TJS ElementsDialog の
 	//!        active / close / Invalidate 判定、 ブロッキングモーダルの pump ループ
 	//!        終了判定 (自分のインスタンスが閉じたか) に使う。
 	bool IsHandlerActive(iTVPDialogEventHandler* handler) const;
@@ -182,6 +191,47 @@ public:
 	//!        動的反映に使う。 handler のインスタンスが非アクティブなら false。
 	bool SetVar(iTVPDialogEventHandler* handler,
 	            const ttstr& name, const ttstr& value);
+
+	//! @brief 指定 handler のインスタンスの変数 store から 1 件読む。
+	//!        SetVar で書いた値だけでなく、 hover / focus 連動 (vars_on_hover /
+	//!        vars_on_focus)、 スライダの value_var、 ドラッグの drag_at_var など
+	//!        画面内で書かれた値も同じ store から読める。
+	//!        未知の変数名 / 非アクティブなら false (out は触らない)。
+	bool GetVar(iTVPDialogEventHandler* handler,
+	            const ttstr& name, ttstr& out) const;
+
+	//! @brief 指定 handler のインスタンスで id の widget へフォーカスを移す
+	//!        (FocusWidgetById の handler 版 = ElementsDialog.focus(id))。
+	//!        非アクティブ / インスタンス無しなら false。
+	bool FocusWidget(iTVPDialogEventHandler* handler, const ttstr& id);
+
+	//! @brief 指定 handler のインスタンスで id の widget を実行する (focus +
+	//!        Enter 相当。 ActivateWidgetById の handler 版 =
+	//!        ElementsDialog.activate(id))。 非アクティブ / インスタンス無し /
+	//!        id 不明なら false。
+	bool ActivateWidget(iTVPDialogEventHandler* handler, const ttstr& id);
+
+	//! @brief 画面が使っている変数 1 件の記述 (DescribeVars の要素)。
+	struct VarInfo
+	{
+		ttstr name;    //!< 変数名
+		ttstr value;   //!< 現在値 (一度も書かれていなければ空)
+		//! この変数を参照している {要素 id, 参照の種類 ("text_var" 等)}。
+		//! id は「いちばん近い祖先の id」。 空 = どこからも参照されていない
+		//! (ホストが SetVar で作っただけの変数)。
+		std::vector<std::pair<ttstr, ttstr>> used_by;
+	};
+
+	//! @brief 指定 handler のインスタンスが使っている変数の一覧 (名前順)。
+	//!        参照だけあって未書込のもの、 参照は無いがホストが書いたもの、
+	//!        どちらも載る。 デバッグパネル / 検証ツール向け。
+	std::vector<VarInfo> DescribeVars(iTVPDialogEventHandler* handler) const;
+
+	//! @brief 変数観測の有効/無効を張り直す (ElementsDialog.watchVars の変更時)。
+	//!        handler の WantsVarNotify() を問い直し、 現在表示中のインスタンス
+	//!        へ即座に反映する。 画面開始時は BeginScreen が自動で行うので、
+	//!        表示中に観測対象を変えたときだけ呼べばよい。
+	void RefreshVarWatch(iTVPDialogEventHandler* handler);
 
 	//! @brief i18n の表示言語を設定する (画面 JSON の "strings" を引く言語)。
 	//!        表示中の全インスタンスへ即時適用し、 以後に開く画面の既定にもなる。
@@ -222,7 +272,7 @@ public:
 	//!        button に JSON で "close_on_click": true を付けた要素が click
 	//!        されたとき、 overlay_session が自動 finish + result を確定する。
 	//!        その内容を保存して、 modal 呼出側 (SDLElementsModalRunner overlay
-	//!        経路 / Dialog.showModalJson の overlay モード) が後で取得できる。
+	//!        経路 / ElementsDialog.showModalJson の overlay モード) が後で取得できる。
 	//!
 	//!        action は閉じた button の id (Esc / × は空)。 values は
 	//!        checkbox / toggle / slide_switch / input_box 等の最終値マップ。
@@ -244,6 +294,19 @@ public:
 	//!        paint 外 (入力経路等) から呼ばれた場合は従来どおり即時配送。
 	void DispatchAction(iTVPDialogEventHandler* handler,
 	                    const ttstr& id, const tTJSVariant& payload);
+
+	//! @brief ドラッグ通知を handler へ配送する (DispatchAction と同じ経路)。
+	//!        coalesce=true (move) のとき、 キュー末尾が同じ handler の move なら
+	//!        差し替える (paint 中に溜まった移動を最新 1 件へ畳む)。
+	void DispatchDrag(iTVPDialogEventHandler* handler,
+	                  const tTJSVariant& payload, bool coalesce);
+
+	//! @brief 変数変化通知を handler へ配送する (DispatchAction と同じキュー)。
+	//!        変数は «状態» なので必ずキューへ積み (即時配送しない)、 同じ
+	//!        handler + 同じ変数名が既に積まれていれば値を差し替える
+	//!        (1 フレームぶんの連続変化は最新値だけ配れば足りる)。
+	void DispatchVar(iTVPDialogEventHandler* handler,
+	                 const ttstr& name, const ttstr& value);
 
 	//! @brief close 予約済み (close_requested) のインスタンスを直ちに破棄する
 	//!        (OnClosed 発火まで含む)。 ブロッキングモーダルの pump 脱出直後に
@@ -306,7 +369,7 @@ public:
 	//!        ケース。 [[feedback_elements_font_init_order]] 参照。
 	void EnsureRuntimeInitialized();
 
-	//! @brief Dialog.focusRing がスクリプトから明示設定されたことを記録する。
+	//! @brief ElementsDialog.focusRing がスクリプトから明示設定されたことを記録する。
 	//!        EnsureRuntimeInitialized が適用するテーマ既定 (フォーカスリング OFF)
 	//!        が、 初回画面表示より前の明示設定を上書きしないようにするための
 	//!        フラグ (setter 側から呼ぶ)。
@@ -319,7 +382,7 @@ public:
 	//!        使う (active でないインスタンスにも効く)。
 	void DetachHandler(iTVPDialogEventHandler* handler);
 
-	//! @brief overlay の描画密度モード (TJS: Dialog.renderScale)。
+	//! @brief overlay の描画密度モード (TJS: ElementsDialog.renderScale)。
 	//!        0 = auto (既定): 最終 present サイズで直接ラスタライズする。
 	//!        >0 = authored 論理サイズ×倍率で描き、 present 時に拡縮する
 	//!        (1.0 = 原寸レンダ→拡縮表示、 2.0 = 旧 supersampling 相当)。
@@ -327,7 +390,7 @@ public:
 	void SetRenderScale(float scale);
 	float GetRenderScale() const;
 
-	//! @brief UI の author 基準面サイズ (TJS: Dialog.baseSize)。
+	//! @brief UI の author 基準面サイズ (TJS: ElementsDialog.baseSize)。
 	//!        overlay の提示拡縮率 (fit) の分母。 0,0 (既定) はゲームの基準面
 	//!        (primary layer サイズ) を使う。 UI をゲーム画面と別の解像度で
 	//!        author しているタイトルはこれを設定する (例: 1920,1080)。
@@ -335,7 +398,7 @@ public:
 	void SetBaseSize(int w, int h);
 	void GetBaseSize(int& w, int& h) const;
 
-	//! @brief overlay の再ラスタライズ抑止 (TJS: Dialog.renderCache)。
+	//! @brief overlay の再ラスタライズ抑止 (TJS: ElementsDialog.renderCache)。
 	//!        true (既定): 変化が無いフレームは ThorVG の再ラスタライズ +
 	//!        テクスチャ再アップロードを省略し、 レンダラが保持する前回の
 	//!        描画結果をそのまま提示する (アイドル時 CPU 負荷の削減)。
@@ -343,7 +406,7 @@ public:
 	void SetRenderCache(bool enable);
 	bool GetRenderCache() const;
 
-	//! @brief overlay の部分再描画 (TJS: Dialog.partialRedraw)。
+	//! @brief overlay の部分再描画 (TJS: ElementsDialog.partialRedraw)。
 	//!        true (既定): ダーティが矩形で特定できる変化 (テキスト欄キャレット
 	//!        点滅等) は、 その矩形だけをクリア + クリップ付き再ラスタライズし、
 	//!        テクスチャへも部分転送する。 renderCache 有効時のみ機能する
@@ -361,19 +424,48 @@ public:
 	bool GetPartialRedraw() const;
 
 	//! @brief 実際にラスタライズ (render_to_buffer) した累計回数。 アイドル時に
-	//!        増えないことの確認・負荷比較用 (TJS: Dialog.renderCount 読取専用)。
+	//!        増えないことの確認・負荷比較用 (TJS: ElementsDialog.renderCount 読取専用)。
 	tjs_uint64 GetRenderCount() const;
 
 	//! @brief overlay 描画パイプラインの区間計測を取得する
-	//!        (TJS: Dialog.renderStats 読取専用。 累積値)。
+	//!        (TJS: ElementsDialog.renderStats 読取専用。 累積値)。
 	void GetRenderStats(tTVPElementsRenderStats& out) const;
-	//! @brief 計測カウンタを 0 クリアする (TJS: Dialog.renderStatsReset())。
+	//! @brief 計測カウンタを 0 クリアする (TJS: ElementsDialog.renderStatsReset())。
 	void ResetRenderStats();
 
 	//! @brief 全インスタンスへ明示的な再描画を要求する。 セッションから観測
 	//!        できない外部変化 (registerImage による mem:// 画像バイト差替等)
 	//!        の反映に使う。
 	void InvalidateOverlays();
+
+	// === 別枠の出力先 (ホストのレイヤへ描くパネル) との共用 ===
+	// 通知キュー (pending_actions) は **overlay ダイアログとパネルで 1 本**に
+	// する。 別々のキューにすると、 同じフレームに両方から出た通知の相対順序
+	// が入れ替わりうるため。 パネルは自身の handler をここへ登録して、
+	// 配送前の生存確認を通るようにする。
+
+	//! @brief 「overlay インスタンスを持たないが生きている handler」を登録する。
+	//!        配送直前の生存確認 (インスタンスが消えた handler の通知は捨てる)
+	//!        で、 パネルの handler が巻き添えにならないようにするため。
+	void RegisterExternalHandler(iTVPDialogEventHandler* handler);
+	//! @brief 上の登録解除。 キューに残っている通知も捨てる。
+	void UnregisterExternalHandler(iTVPDialogEventHandler* handler);
+
+	//! @brief 「いま session を触っている最中なので通知を即時配送しないでほしい」
+	//!        区間の開始 / 終了。 overlay の PaintOverlay が内部で使っている
+	//!        paint 深度と同じもので、 パネルは自分の update() の周りで挟む。
+	//!        入れ子可。
+	void PushDeferScope();
+	void PopDeferScope();
+
+	//! @brief エンジン終了時の後始末 (ThorVG を畳む)。 表示中のインスタンスを
+	//!        全て閉じてから elements_modal::shutdown() を呼ぶ。 呼ばないと
+	//!        ThorVG のフォントローダが静的リストに残り、 CRT の atexit で
+	//!        «先に死んだフォントマネージャ» を触って間欠クラッシュになる
+	//!        (詳細は実装側のコメント / doc/ElementsDialog.md)。
+	//!        TVPSystemUninit の AtExit (PRI_SHUTDOWN) から自動で呼ばれるので、
+	//!        通常ホストが直接呼ぶ必要は無い。 二度目以降は no-op。
+	void ShutdownRuntime();
 
 private:
 	tTVPElementsDialogManager();
@@ -387,7 +479,7 @@ private:
 	struct Impl;
 	std::unique_ptr<Impl> _impl;
 
-	// Dialog.focusRing の明示設定済みフラグ (NoteFocusRingUserSet 参照)
+	// ElementsDialog.focusRing の明示設定済みフラグ (NoteFocusRingUserSet 参照)
 	bool FocusRingUserSet = false;
 };
 

@@ -18,6 +18,7 @@
 
 #include "MsgIntf.h"
 #include "DebugIntf.h"
+#include "LicenseIntf.h"   // TVPGetLicenseListText
 
 //---------------------------------------------------------------------------
 // TVPFormatMessage
@@ -153,34 +154,22 @@ const tjs_char* TVPCompileTime = WIDEN(__TIME__);
 //---------------------------------------------------------------------------
 // version information related functions
 //---------------------------------------------------------------------------
-extern ttstr TVPReadAboutStringFromResource();
-ttstr TVPGetAboutString(void)
-{
-	TVPGetVersion();
-	tjs_char verstr[100];
-	TJS_snprintf(verstr, sizeof(verstr)/sizeof(tjs_char), TJS_W("%d.%d.%d.%d"),
-		TVPVersionMajor, TVPVersionMinor,
-		TVPVersionRelease, TVPVersionBuild);
-
-	tjs_char tjsverstr[100];
-	TJS_snprintf(tjsverstr, sizeof(tjsverstr)/sizeof(tjs_char), TJS_W("%d.%d.%d"),
-		TJSVersionMajor, TJSVersionMinor, TJSVersionRelease);
-
-	return TVPFormatMessage(TVPReadAboutStringFromResource().c_str(), verstr, tjsverstr) + TVPGetImportantLog();
-}
-//---------------------------------------------------------------------------
+// ライセンス表示文字列。 かつては本体条項の合本 (license.txt) を実行ファイルの
+// リソースへ埋めて読んでいたが、 その内容は LICENSE = 内蔵ライセンステーブルの
+// "Kirikiri Z" エントリと重複していたため廃止した。 現在は
+//   バージョン行 (メッセージ) + LICENSE 本文 + 収録コンポーネント一覧
+// を組み立てる。 個々のライセンス全文は -license=<名前> で取り出せる。
 ttstr TVPGetLicenseString(void)
 {
-	TVPGetVersion();
-	tjs_char verstr[100];
-	TJS_snprintf(verstr, sizeof(verstr)/sizeof(tjs_char), TJS_W("%d.%d.%d.%d"),
-		TVPVersionMajor, TVPVersionMinor,
-		TVPVersionRelease, TVPVersionBuild);
-
-	tjs_char tjsverstr[100];
-	TJS_snprintf(tjsverstr, sizeof(tjsverstr)/sizeof(tjs_char), TJS_W("%d.%d.%d"),
-		TJSVersionMajor, TJSVersionMinor, TJSVersionRelease);
-	return TVPFormatMessage( TVPReadAboutStringFromResource().c_str(), verstr, tjsverstr );
+	return TVPGetVersionInformation() + TVP_TEXT_EOL + TVP_TEXT_EOL
+		+ TVPGetEngineLicenseText()
+		+ TVPGetLicenseListText();
+}
+//---------------------------------------------------------------------------
+ttstr TVPGetAboutString(void)
+{
+	// バージョン情報ダイアログ用。 ライセンス表示に環境情報 (重要ログ) を続ける。
+	return TVPGetLicenseString() + TVPGetImportantLog();
 }
 //---------------------------------------------------------------------------
 ttstr TVPGetVersionInformation(void)

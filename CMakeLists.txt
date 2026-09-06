@@ -11,7 +11,7 @@ add_link_options("$<$<AND:$<C_COMPILER_ID:MSVC>,$<COMPILE_LANGUAGE:C,CXX>>:/DEBU
 
 
 set(PROJECT_NAME krkrz)
-set(PROJECT_VERSION 2.2.0)
+set(PROJECT_VERSION 2.3.0)
 
 # ----------------------------------------------------
 # vcpkg マニフェスト統合
@@ -310,6 +310,14 @@ if(WIN32 AND (CMAKE_SIZEOF_VOID_P EQUAL 8))
 set(WIN64 1)
 endif()
 
+# 32-bit ビルドは /LARGEADDRESSAWARE を必ず付ける。
+# 既定 (2GB) のままだと、プール先取り + 大型資材 (E-mote psb 等) の読み込みで
+# アドレス空間が枯渇し、OOM 経由の即死に直結する (旧 krkrZ.exe は LAA 付きで、
+# 同一データでも 64-bit OS 上では 4GB 使えていた)。
+if(WIN32 AND NOT WIN64 AND MSVC)
+	add_link_options(/LARGEADDRESSAWARE)
+endif()
+
 if(WIN32)
 if(WIN64)
 set(EXENAME ${PROJECT_NAME}64)
@@ -518,6 +526,13 @@ foreach(PLUGIN ${TVP_PLUGINS})
 
     if(NOT PLUGIN_SOURCE_DIR)
         message(FATAL_ERROR "Plugin '${PLUGIN}' not found in any of: ${PLUGIN_FOLDERS}")
+    endif()
+
+    # プラグインが同梱する第三者ライセンス文の収録リスト。 実際にビルドする
+    # プラグインぶんだけ集め、 配布物では本体と分けて licenses/plugins/ へ出す
+    # (実行時一覧へは各プラグインの LicensesGen.cpp が自分で登録する)。
+    if(EXISTS "${PLUGIN_SOURCE_DIR}/licenses/manifest.json")
+        list(APPEND KRKRZ_PLUGIN_LICENSE_MANIFESTS "${PLUGIN_SOURCE_DIR}/licenses/manifest.json")
     endif()
 
     # krkrz_plugin() (tp_stub/krkrz.cmake) は生成ターゲットを GLOBAL プロパティ
@@ -741,6 +756,13 @@ if (KRKRZ_USE_ELEMENTS AND NOT KRKRZ_VARIANT STREQUAL "LIB")
 	# Elements 機構が組み込まれていることを示すマクロ。 DrawDevice / Window / TJS の
 	# 共通コードは #ifdef KRKRZ_HAS_ELEMENTS でガードする。
 	list(APPEND KRKRZ_DEFINES KRKRZ_HAS_ELEMENTS)
+
+	# ThorVG の Lottie ローダは JerryScript (式評価) と RapidJSON を道連れにする。
+	# OFF のときはそれらのソースが 1 本もコンパイルされないので、 内蔵ライセンス
+	# 一覧にも載せない (licenses/manifest.json の "when" と対応)。
+	if (TVG_LOADER_LOTTIE)
+		list(APPEND KRKRZ_DEFINES TVP_LICENSE_WITH_LOTTIE)
+	endif()
 endif()
 
 if (KRKRZ_VARIANT STREQUAL "LIB")
@@ -1263,6 +1285,11 @@ if(NOT TARGET movieplayer)
 	add_subdirectory(external/movie-player)
 endif()
 
+# WIN バリアントは d3dcompiler へ直接リンクする (BasicDrawDevice / VideoPresenterD3D /
+# D3D11OverlayWindow)。 配布物が d3dcompiler_47.dll に依存するのはこの構成だけなので、
+# 内蔵ライセンス一覧にもここでだけ載せる (licenses/manifest.json の "when" と対応)。
+list(APPEND KRKRZ_DEFINES TVP_LICENSE_WITH_D3DCOMPILER)
+
 # krkrz executable
 
 # for LogImp.cpp
@@ -1357,22 +1384,64 @@ endif() # KRKRZ_VARIANT
 #      仕組みは doc/LicenseSystem.md 参照)
 # ----------------------------------------------------
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/LICENSE DESTINATION . RENAME license.txt)
-file(READ ${CMAKE_CURRENT_SOURCE_DIR}/licenses/manifest.json _LIC_JSON)
-string(JSON _LIC_COUNT LENGTH ${_LIC_JSON} entries)
-math(EXPR _LIC_LAST "${_LIC_COUNT} - 1")
-foreach(_LIC_I RANGE ${_LIC_LAST})
-	string(JSON _LIC_NAME GET ${_LIC_JSON} entries ${_LIC_I} name)
-	string(JSON _LIC_FILE GET ${_LIC_JSON} entries ${_LIC_I} file)
-	string(TOLOWER "${_LIC_NAME}" _LIC_SLUG)
-	string(REGEX REPLACE "[^a-z0-9.+_]+" "-" _LIC_SLUG "${_LIC_SLUG}")
-	string(REGEX REPLACE "^-+" "" _LIC_SLUG "${_LIC_SLUG}")
-	string(REGEX REPLACE "-+$" "" _LIC_SLUG "${_LIC_SLUG}")
-	get_filename_component(_LIC_ABS "${CMAKE_CURRENT_SOURCE_DIR}/licenses/${_LIC_FILE}" ABSOLUTE)
-	if(EXISTS "${_LIC_ABS}")
-		install(FILES "${_LIC_ABS}" DESTINATION licenses RENAME "${_LIC_SLUG}.txt")
-	else()
-		message(WARNING "license text not found: ${_LIC_NAME} (${_LIC_ABS})")
+
+# manifest 1 本ぶんのライセンス文を配布物へ書き出す。
+#   _manifest  収録リスト (licenses/manifest.json)
+#   _dest      DESTINATION (本体 = licenses / プラグイン = licenses/plugins)
+#   _seen_var  既出 slug を溜める変数名。 同じ資材を複数の manifest が
+#              挙げている場合 (ThorVG / minizip-ng 等) の重複同梱を防ぐ
+function(krkrz_install_license_manifest _manifest _dest _seen_var)
+	get_filename_component(_base "${_manifest}" DIRECTORY)
+	file(READ "${_manifest}" _json)
+	string(JSON _count LENGTH ${_json} entries)
+	if(_count EQUAL 0)
+		return()
 	endif()
+	# "when" 付き = 構成依存の同梱物 (例: Lottie ローダ有効時のみ入る JerryScript /
+	# RapidJSON)。 対応マクロが実際に定義される構成でだけ書き出す。 生成物側
+	# (BuiltinLicenses.cpp / LicensesGen.cpp) の #if defined(...) と同じ判定。
+	# 本体は KRKRZ_DEFINES、 プラグインは自分で GLOBAL プロパティへ足す。
+	get_property(_active GLOBAL PROPERTY KRKRZ_LICENSE_ACTIVE_MACROS)
+	list(APPEND _active ${KRKRZ_DEFINES})
+	set(_seen ${${_seen_var}})
+	math(EXPR _last "${_count} - 1")
+	foreach(_i RANGE ${_last})
+		string(JSON _name GET ${_json} entries ${_i} name)
+		string(JSON _file GET ${_json} entries ${_i} file)
+		string(JSON _when ERROR_VARIABLE _when_err GET ${_json} entries ${_i} when)
+		if(_when_err STREQUAL "NOTFOUND" AND NOT "${_when}" IN_LIST _active)
+			continue()
+		endif()
+		string(TOLOWER "${_name}" _slug)
+		string(REGEX REPLACE "[^a-z0-9.+_]+" "-" _slug "${_slug}")
+		string(REGEX REPLACE "^-+" "" _slug "${_slug}")
+		string(REGEX REPLACE "-+$" "" _slug "${_slug}")
+		if("${_slug}" IN_LIST _seen)
+			continue()
+		endif()
+		get_filename_component(_abs "${_base}/${_file}" ABSOLUTE)
+		if(EXISTS "${_abs}")
+			install(FILES "${_abs}" DESTINATION ${_dest} RENAME "${_slug}.txt")
+			list(APPEND _seen "${_slug}")
+		else()
+			message(WARNING "license text not found: ${_name} (${_abs})")
+		endif()
+	endforeach()
+	set(${_seen_var} "${_seen}" PARENT_SCOPE)
+endfunction()
+
+# 本体分 → licenses/
+set(_KRKRZ_LIC_SEEN "")
+krkrz_install_license_manifest(
+	"${CMAKE_CURRENT_SOURCE_DIR}/licenses/manifest.json" licenses _KRKRZ_LIC_SEEN)
+
+# プラグイン分 → licenses/plugins/ (プラグインごとには分けず一括)。
+# 本体と同じ資材でも各プラグインの収録として別に出す (本体無しでプラグインだけ
+# 配る構成でも成立させるため)。
+set(_KRKRZ_LIC_SEEN_PLUGIN "")
+foreach(_LIC_MANIFEST ${KRKRZ_PLUGIN_LICENSE_MANIFESTS})
+	krkrz_install_license_manifest(
+		"${_LIC_MANIFEST}" licenses/plugins _KRKRZ_LIC_SEEN_PLUGIN)
 endforeach()
 
 # ----------------------------------------------------

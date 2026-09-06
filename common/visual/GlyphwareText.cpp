@@ -29,6 +29,36 @@ void TVPShapedTextStyleFromFont(tTVPShapedTextStyle& out, const tTVPFont& font)
 	out.variations = font.Variations;
 }
 //---------------------------------------------------------------------------
+bool TVPGlyphwareResolveChain(tTVPShapedFontChain& out, const tTVPShapedTextStyle& style)
+{
+	out.chain.clear();
+	if (style.size <= 0) return false;
+	std::string keyU8;
+	TVPUtf16ToUtf8(keyU8, tjs_string(style.fontKey.c_str()));
+	keyU8 = TVPGlyphwareEffectiveKey(keyU8);
+	if (keyU8.empty()) return false;
+
+	// fontKey may list several font paths/names, comma-separated: the fallback
+	// chain (first covering face per codepoint wins). e.g. "meiryo.ttc,seguiemj.ttf".
+	TVPGlyphwareBuildChain(keyU8, out.chain);
+	if (out.chain.empty()) return false;
+
+	// 可変軸 (style.weight / style.variations) を連鎖の各 face が持つ同名軸へ
+	// 適用する (private face の LRU 経由)。defaultUseVarStyle 有効時は
+	// bold/italic を軸へ自動マッピングし、合成スタイルを落とす。
+	out.bold = style.bold;
+	out.italic = style.italic;
+	{
+		std::vector<tTVPFontAxisCoord> coords;
+		TVPFontGetEffectiveVarCoords(style.weight, style.variations, coords);
+		TVPGlyphwareAutoStyleCoords(out.chain[0], coords, out.bold, out.italic);
+		TVPGlyphwareApplyVariationsToChain(out.chain, coords);
+	}
+
+	for (auto& f : out.chain) if (f) f->setPixelSize(style.size);
+	return true;
+}
+//---------------------------------------------------------------------------
 
 namespace {
 
@@ -48,28 +78,11 @@ struct ShapeContext {
 bool PrepareContext(ShapeContext& ctx, const tTVPShapedTextStyle& style,
                     tjs_int base)
 {
-	if (style.size <= 0) return false;
-	std::string keyU8;
-	TVPUtf16ToUtf8(keyU8, tjs_string(style.fontKey.c_str()));
-	keyU8 = TVPGlyphwareEffectiveKey(keyU8);
-	if (keyU8.empty()) return false;
-
-	// fontKey may list several font paths/names, comma-separated: the fallback
-	// chain (first covering face per codepoint wins). e.g. "meiryo.ttc,seguiemj.ttf".
-	TVPGlyphwareBuildChain(keyU8, ctx.chain);
-	if (ctx.chain.empty()) return false;
-
-	// 可変軸 (style.weight / style.variations) を連鎖の各 face が持つ同名軸へ
-	// 適用する (private face の LRU 経由)。defaultUseVarStyle 有効時は
-	// bold/italic を軸へ自動マッピングし、合成スタイルを落とす。
-	ctx.bold = style.bold;
-	ctx.italic = style.italic;
-	{
-		std::vector<tTVPFontAxisCoord> coords;
-		TVPFontGetEffectiveVarCoords(style.weight, style.variations, coords);
-		TVPGlyphwareAutoStyleCoords(ctx.chain[0], coords, ctx.bold, ctx.italic);
-		TVPGlyphwareApplyVariationsToChain(ctx.chain, coords);
-	}
+	tTVPShapedFontChain resolved;
+	if (!TVPGlyphwareResolveChain(resolved, style)) return false;
+	ctx.chain = std::move(resolved.chain);
+	ctx.bold = resolved.bold;
+	ctx.italic = resolved.italic;
 
 	ctx.dir = base == 1 ? glyphware::BaseDirection::LTR
 	        : base == 2 ? glyphware::BaseDirection::RTL

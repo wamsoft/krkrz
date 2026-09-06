@@ -20,10 +20,12 @@
 
 namespace {
 
-// ファイルをそのまま読む (<= 1MB 想定)
+// ファイルをそのまま読む (<= 1MB 想定)。不在は空返し
+// (TVPReadStream は不在ファイルで例外を投げるため、先に存在確認する)
 std::vector<char> ReadFileBytes(const tjs_string& path)
 {
 	std::vector<char> ret;
+	if (!TVPIsExistentStorage(ttstr(path.c_str()))) return ret;
 	tjs_uint64 flen = 0;
 	auto buf = TVPReadStream(path.c_str(), &flen);
 	if (!buf || flen == 0) return ret;

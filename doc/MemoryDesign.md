@@ -126,22 +126,47 @@ SIZE_MAX を返す (不明マーカー)。Sized mode (BasicFileAllocator のよ�
 
 ### 3.2 接続先
 
-| caller | pool | デフォルト容量 |
+| caller | pool | デフォルト容量 (64-bit / 32-bit) |
 |---|---|---|
-| BasicFileAllocator | 専用 pool | `-filepoolsize` (512MB) |
-| tTVPBitmapBitsAlloc | 専用 pool | `-bitmapheapsize` (512MB) |
-| TVPSoundAllocator | 専用 pool | `-soundpoolsize` (128MB) |
-| GlobalAlloc[Krkrz] | 専用 pool | `-krkrzpoolsize` (256MB) |
+| BasicFileAllocator | 専用 pool | `-filepoolsize` (256MB / 64MB) |
+| tTVPBitmapBitsAlloc | 専用 pool | `-bitmappoolsize` (512MB / 128MB) |
+| TVPSoundAllocator | 専用 pool | `-soundpoolsize` (16MB) |
+| GlobalAlloc[Krkrz] | 専用 pool | `-krkrzpoolsize` (256MB / 64MB) |
 | GlobalAlloc[SDL] | 専用 pool | `-sdlpoolsize` (64MB、KRKRZ_SDLMEMORY_STAT=ON 時のみ) |
 
 各 pool は独立。pool に紐付けない設定 (`-krkrzpoolsize=none`) では
 `std::malloc` 直行 + stats 計上のみ (header + magic を付けるので overhead 小)。
+
+**32-bit プロセスのデフォルト縮小**: 32-bit はユーザアドレス空間が 2GB
+(LAA + 64-bit OS 上で最大 4GB) しかなく、全 pool 合計 ~1GB を起動時に
+先取りすると、汎用ヒープ (TJS / GL / 画像デコード / プラグイン) が細って
+負荷時に OOM 即死する。そのため 32-bit では bitmap/file/krkrz の各デフォルトを
+1/4 に落としてある (`sizeof(void*)` で分岐)。足りない案件は個別に
+`-bitmappoolsize=N` 等で増やす。**32-bit ビルドは `/LARGEADDRESSAWARE` を
+必ず付ける** (CMakeLists.txt、WIN32 かつ非 WIN64 かつ MSVC)。付けないと
+2GB 制限のまま同じ枯渇を起こす (旧 32-bit ビルドは LAA 付きだった)。
 
 ### 3.3 fallback
 
 pool 容量を超えると system `std::malloc` に fallback、`fallbackAllocCount` を
 インクリメント、初回は WARNING ログを出す。fallback 経由のポインタも header magic
 で識別 (`kMagicRaw`)、free 時に正しい経路を選ぶ。
+
+### 3.3.1 破損検知と縮退 (fail-safe)
+
+`allocate` / `free` の pool 経路の入口で `validateBlock()` によりヘッダを
+安価に検査する (範囲・16-align・payload 末尾が pool 内・FREE flag と free
+リンクの整合)。破損を検知したら `markCorrupted()` で CRITICAL ログを出して
+`pool_corrupted_` を立て、以降は **pool 経路を使わず fallback (system malloc)
+へ縮退**、pool 内ポインタの free はリークさせる (プロセスは落とさない)。
+merge 相手 (prev/next 隣接ブロック) も merge 前に検査する。
+
+この防御を入れた背景: メモリ枯渇の局面でヘッダが壊れたまま `removeFree` /
+`nextPhys` に進むと 0 番地近傍への書き込み (即死 AV) になり、しかも
+**その AV が「例外メッセージをログ出力するための確保」の中で起きる**ため、
+エラー表示もログも残さずプロセスが即死する (デバッガ無しでは原因不明の
+「フリーズして落ちる」に見える)。縮退により、枯渇時でも fallback で確保が
+続き、原因が CRITICAL ログに残る。
 
 ### 3.4 起動ログ
 

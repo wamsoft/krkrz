@@ -30,6 +30,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <deque>
 #include <vector>
 
 namespace {
@@ -528,10 +529,28 @@ ttstr TVPRegisterElementsFont(const ttstr& family, const ttstr& path,
 // は theme と同じ寿命を持つ必要がある (一時オブジェクトに作ると dangling)。
 // プロセス寿命の static で保持する。
 //---------------------------------------------------------------------------
-static std::string& ThemeFamiliesStorage()
+// theme の font_descr は families を string_view で «所有せずに» 持つ。
+// 一度テーマへ渡した実体を作り直すと、 それを見ている font_descr のコピー
+// (widget が持っている分など) が宙を指し、 フォントが引けなくなって文字が
+// 描かれなくなる。 渡した文字列は解放せず貯めておく。 増えるのは差し替えた
+// 回数ぶんの数十バイトだけ。
+static std::deque<std::string>& ThemeFamiliesPool()
 {
-	static std::string s;
-	return s;
+	static std::deque<std::string> pool;
+	if (pool.empty()) pool.emplace_back();
+	return pool;
+}
+
+// いまテーマへ渡してある文字列。
+static const std::string& ThemeFamiliesStorage()
+{
+	return ThemeFamiliesPool().back();
+}
+
+// 新しい実体を確保する (古いものは残したまま)。
+static std::string& ThemeFamiliesNew()
+{
+	return ThemeFamiliesPool().emplace_back();
 }
 
 // TVPSetElementsDefaultFontFamily (TJS: ElementsDialog.defaultFontFamily) で
@@ -586,8 +605,7 @@ void TVPApplyRegisteredFontsToElementsTheme()
 		(IsCJKFamilyName(f) ? cjk : latin).push_back(&f);
 	}
 
-	std::string& joined = ThemeFamiliesStorage();
-	joined.clear();
+	std::string& joined = ThemeFamiliesNew();
 	bool first = true;
 	auto append = [&](const std::string* s) {
 		if (!first) joined += ", ";
@@ -608,7 +626,7 @@ void TVPSetElementsDefaultFontFamily(const ttstr& families)
 {
 	if (families.IsEmpty()) return;
 	ThemeFamiliesExplicit() = true;
-	ThemeFamiliesStorage() = TtstrToUtf8(families);
+	ThemeFamiliesNew() = TtstrToUtf8(families);
 	ApplyThemeFromStoredFamilies();
 
 	TVPAddLog(ttstr(TJS_W("ElementsResourceLoader: theme fonts set to: ")) + families);

@@ -319,7 +319,12 @@ public:
 
 	//! @param blend  true なら GL_BLEND を有効にし (SRC_ALPHA, ONE_MINUS_SRC_ALPHA)
 	//!               で straight-alpha 合成。false (default) なら GL_BLEND を無効化。
-	void DrawTexture(GLTexture *tex, int scr_w, int scr_h, float position[], int tex_w=0, int tex_h=0, bool blend=false);
+	//! @param blend         アルファ合成するか
+	//! @param premultiplied  src が **premultiplied** か。 ThorVG (Elements) の
+	//!        出力は premultiplied なので true。 straight-alpha のデータ
+	//!        (動画ミキサ等) は false のまま。 これを間違えるとアルファが
+	//!        二重に掛かり、 半透明部分 (文字のアンチエイリアス等) が薄くなる。
+	void DrawTexture(GLTexture *tex, int scr_w, int scr_h, float position[], int tex_w=0, int tex_h=0, bool blend=false, bool premultiplied=false);
 
 private:
 	GLuint _shader_program;

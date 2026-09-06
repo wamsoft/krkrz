@@ -480,6 +480,9 @@ enum {
 	NUM_TVP_CANNOT_RETRIVE_INSTANCE,
 	NUM_TVP_PARAMETER_REQUIRE_CLASS_INSTANCE,
 	NUM_TVP_UNIMPLEMENTED_CHARACTER_DATA_FOR_FULL_COLORED,
+	NUM_TVP_LICENSE_LIST_HEADER,
+	NUM_TVP_LICENSE_LIST_FOOTER,
+	NUM_TVP_LICENSE_NOT_FOUND,
 	NUM_MESSAGE_MAX
 };
 void TVPLoadMessage( picojson::array &array ) {
@@ -957,5 +960,8 @@ void TVPLoadMessage( picojson::array &array ) {
 	TVPCannotRetriveInstance.AssignMessage( conv(array[NUM_TVP_CANNOT_RETRIVE_INSTANCE].get<std::string>()).c_str() );
 	TVPParameterRequireClassInstance.AssignMessage( conv(array[NUM_TVP_PARAMETER_REQUIRE_CLASS_INSTANCE].get<std::string>()).c_str() );
 	TVPUnimplementedCharacterDataForFullColored.AssignMessage( conv(array[NUM_TVP_UNIMPLEMENTED_CHARACTER_DATA_FOR_FULL_COLORED].get<std::string>()).c_str() );
+	TVPLicenseListHeader.AssignMessage( conv(array[NUM_TVP_LICENSE_LIST_HEADER].get<std::string>()).c_str() );
+	TVPLicenseListFooter.AssignMessage( conv(array[NUM_TVP_LICENSE_LIST_FOOTER].get<std::string>()).c_str() );
+	TVPLicenseNotFound.AssignMessage( conv(array[NUM_TVP_LICENSE_NOT_FOUND].get<std::string>()).c_str() );
 
 }

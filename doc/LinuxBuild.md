@@ -70,6 +70,9 @@ umbrella ルートには `deckproject.toml` があり、steamdev CLI から
 ビルド→資材構築→Steam Deck への転送・起動まで一括で回せる
 (`steamdev -d <deck> project -p . ship linux`)。
 
+**リリース前の実機確認手順** (転送・起動・観測・後片付けとハマりどころ) は
+umbrella の `doc/topics/core/steamdeck.md` にチェックリスト化してある。
+
 ## バイナリの合格基準
 
 ビルドが通るだけでなく、生成バイナリが以下を満たすこと
@@ -87,7 +90,7 @@ objdump -T <exe> | grep -o "GLIBCXX_[0-9.]*" | sort -Vu | tail -1
 readelf -d <exe> | grep -E "NEEDED|RPATH"
 ```
 
-実測 (2026-08 時点の krkrz x64-linux): GLIBC ≤ 2.30、GLIBCXX 依存なし。
+実測 (2026-09-06 時点の krkrz x64-linux): GLIBC ≤ 2.30、GLIBCXX 依存なし。
 Steam Deck 実機のネイティブ実行 / sniper コンテナ実行の両方で動作確認済み。
 
 ### 既知の注意点

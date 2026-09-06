@@ -37,6 +37,11 @@ protected:
 	//! ウィンドウ移動 (クライアントの物理ピクセルサイズを維持する)
 	void MoveWindowTo(int l, int t);
 
+	//! -maximizebox=no のとき Windows の最大化ボタンを外す (他環境は no-op)。
+	//! SDL は resizable/bordered/フルスクリーン切替のたびにスタイルを組み
+	//! 直して WS_MAXIMIZEBOX を復活させるので、該当箇所から都度呼び直す。
+	void ApplyMaximizeBoxOption();
+
 public:
 	virtual void *NativeWindowHandle() const {
 		return mWindow;
@@ -144,6 +149,13 @@ public:
 
 	// システムパス初期化
 	virtual bool InitPath() = 0;
+
+	// user:// (セーブデータ) のストレージメディアをプラットフォーム側で
+	// 差し替えるためのフック。nullptr を返すと従来どおり SDL user storage を使う。
+	// PS5 はセーブデータのマウント寿命/トランザクション管理のため専用実装を返す
+	// (ps5/doc/SaveData.md)。
+	virtual class iTVPStorageMedia2 * CreateUserStorageMedia(
+		const char *orgname, const char *appname) { return nullptr; }
 
 	// 起動スクリプト実行完了通知 (tTVPApplication)。wasm ではページ側フック
 	// (krkrzOnStartupScriptDone) を呼ぶ。プラットフォーム側で splash 等を閉じる用途

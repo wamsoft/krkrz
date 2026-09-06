@@ -214,11 +214,15 @@ void tTVPOGLDialogRenderer::PresentOverlay(const void* layer, int x, int y, int 
 	position[4] = right; position[5] = -bottom; // right top
 	position[6] = right; position[7] = -top;    // right bottom
 
-	// straight-alpha 合成で描画 (Elements の canvas は ThorVG の Sw raster で
-	// 出力された ARGB8888 = メモリ上 BGRA byte order、 GLTexture の BGRA_EXT
-	// / swizzle 経路で krkrz 本体と同じ色順で取り扱われる)。
+	// **premultiplied-alpha 合成**で描画する。 Elements の canvas は ThorVG の
+	// Sw raster が `ColorSpace::ARGB8888` (= alpha-premultiplied) で出力した
+	// もの (メモリ上 BGRA byte order。 GLTexture の BGRA_EXT / swizzle 経路で
+	// krkrz 本体と同じ色順で取り扱われる)。 straight-alpha で合成すると
+	// アルファが二重に掛かり、 文字のアンチエイリアスや半透明の下地が
+	// 薄く出る (白い文字が authored の 4 割ほどの濃さになる)。
 	drawer->DrawTexture(texture, sw, sh, position,
-	                    it->second.w, it->second.h, /*blend=*/true);
+	                    it->second.w, it->second.h, /*blend=*/true,
+	                    /*premultiplied=*/true);
 }
 
 //---------------------------------------------------------------------------

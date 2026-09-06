@@ -584,3 +584,217 @@ class TextRasterizerScene extends DemoScene
         dm(@"@demotest:text_rasterizer count=${rasters.count} avail=${names}");
     }
 }
+
+
+// ======================================================================
+//  text_vertical シーン (TextVerticalScene) — 縦組み (日本語縦書き)
+//  Layer.drawVerticalTextArea: 横組み (drawShapedTextArea) とは別経路の
+//  縦書き描画。和文は正立・欧文は横倒しに組み分け、約物の詰め・行頭行末
+//  禁則・追い込み/追い出し・ぶら下げを日本語組版規則 (JLReq) のアキ量で
+//  処理する。第 10 引数の options 辞書をキー操作で切り替えて差を目視する。
+//  未対応: ルビ・縦中横・圏点・割注・字取り、段組、下線/打ち消し線、angle。
+// ======================================================================
+class TextVerticalScene extends DemoScene
+{
+    var chain = "";      // フォールバック連鎖 (Font.face)
+    var body = "";       // 流し込む本文
+
+    // options 辞書の内容 (キー操作で切り替える)
+    var ori = 0;                 // orientation: 0=和文正立/欧文横倒し 1=全正立 2=全横倒し
+    var hanging = false;         // 行末の句読点を版面外へ出す
+    var justify = true;          // 行末を揃える
+    var punctuation = true;      // 約物の詰め (偽ならベタ組み)
+    var vlr = false;             // 列送り: 偽=右から左 / 真=左から右
+    var lsList = [ 0.0, 0.05, 0.1, 0.25 ], lsIdx = 0;   // letterSpacing (em)
+
+    // タイプライタ (count 制限) アニメ状態 — onDemoFrame で 1 クラスタずつ進める
+    var twText = "", twFont;
+    var twTotal = 0, twCount = 0, twNextTick = 0;
+    var twX = 0, twY = 0, twW = 0, twH = 0;
+
+    function TextVerticalScene() { super.DemoScene("縦組み (drawVerticalTextArea)"); }
+
+    function create()
+    {
+        // 埋め込み日本語フォント。縦字形 (vert/vrt2) と縦アドバンス (vmtx) を
+        // 持つので、括弧や長音符が縦向きの字形になる
+        chain = "Noto Sans JP Regular";
+        body = "縦組みは、和文を正立させ、欧文や数字を横倒しにして組みます。"
+             + "行頭に句読点や閉じ括弧が来ないよう禁則処理を行い、"
+             + "「約物」の詰めや和欧間のアキも日本語組版規則に従います。\n"
+             + "改行は段落の区切りです。追い込み・追い出し・行末揃えは、"
+             + "行ごとのアキの伸縮 1 つで表現されます。Kirikiri Z 2.2 の"
+             + "ような英数字は横倒しのままで、縦中横にはなりません。";
+        twText = "count 指定で縦組みもタイプライタ表示になります。\n"
+               + "行分割は全文で確定してから制限を掛けるので、"
+               + "途中で列が組み替わりません。";
+        twFont = new Font();
+        twFont.face = chain; twFont.height = 20;
+        draw();
+        setInfo("1:ぶら下げ 2:行末揃え 3:約物の詰め 4:列送り 5:正立/横倒し ←/→:字間");
+    }
+
+    // 現在の設定を options 辞書 (drawVerticalTextArea の第 10 引数) にする
+    function currentOptions()
+    {
+        return %[ "orientation"   => ori,
+                  "verticalLr"    => vlr,
+                  "punctuation"   => punctuation,
+                  "hanging"       => hanging,
+                  "justify"       => justify,
+                  "letterSpacing" => lsList[lsIdx] ];
+    }
+
+    function oriName(v)
+    {
+        if (v == 1) return "1=全て正立";
+        if (v == 2) return "2=全て横倒し";
+        return "0=和文正立/欧文横倒し";
+    }
+
+    function optionsLabel()
+    {
+        return "orientation " + oriName(ori)
+             + " / verticalLr " + (vlr ? "true (左→右)" : "false (右→左)")
+             + " / punctuation " + (punctuation ? "true" : "false")
+             + " / hanging " + (hanging ? "true" : "false")
+             + " / justify " + (justify ? "true" : "false")
+             + " / letterSpacing " + "%.2f".sprintf(lsList[lsIdx]);
+    }
+
+    function head(x, y, text)
+    {
+        resetFont(); stage.font.height = 18;
+        stage.drawText(x, y, "■ " + text, 0x8fb8e8, 255);
+    }
+
+    function resetFont()
+    {
+        var f = stage.font;
+        f.face = ""; f.bold = false; f.italic = false; f.underline = false;
+        f.strikeout = false; f.angle = 0; f.emojiMode = 0;
+    }
+
+    function draw()
+    {
+        var s = stage;
+        s.fillRect(0, 0, 1280, 720, 0xff181c24);
+
+        if (typeof global.Layer.drawVerticalTextArea == "undefined") {
+            resetFont(); s.font.height = 24;
+            s.drawText(40, 40, "この環境では drawVerticalTextArea が使えません (glyphware 無効ビルド)", 0xf0a0a0, 255);
+            s.update();
+            return;
+        }
+
+        resetFont();
+        s.font.height = 34;
+        s.drawText(40, 22, "縦組み描画 (Layer.drawVerticalTextArea)", 0xffffff, 255, true);
+        s.font.height = 18;
+        s.drawText(48, 64, "・和文は正立 / 欧文・数字は横倒し。約物の詰め・行頭行末禁則・追い込み/追い出しを JLReq のアキ量で処理", 0xc4ccda, 255);
+        s.drawText(48, 88, "・未対応: ルビ / 縦中横 / 圏点 / 割注 / 字取り / 段組 / 下線・打ち消し線 / Font.angle", 0xc4ccda, 255);
+        s.font.height = 16;
+        s.drawText(48, 114, "options = " + optionsLabel(), 0x8fb8e8, 255);
+
+        var o = currentOptions();
+        var f = new Font();
+        f.face = chain; f.height = 20;
+
+        // ---- 本文の流し込み (縦組み) ---------------------------------
+        var bx = 48, by = 178, bw = 264, bh = 460;
+        head(bx - 8, by - 34, "縦組み — 列は右から左へ");
+        s.fillRect(bx - 8, by - 8, bw + 16, bh + 16, 0xff20283a);
+        var r = s.drawVerticalTextArea(bx, by, bw, bh, body, 0xe8ecf4, f, -1, 6, o);
+        resetFont(); s.font.height = 16;
+        if (r !== void)
+            s.drawText(bx - 8, by + bh + 14,
+                       "lines=" + r.lines + " width=" + r.width
+                       + " count=" + r.count + "/" + r.totalCount, 0x8fb8e8, 255);
+
+        // ---- 同じ本文を横組みで (対比) -------------------------------
+        // 折り返しも禁則も別実装 (drawShapedTextArea) なので、同じ本文でも
+        // 行の切れ方・約物の詰まり方が違う。count の数え方も別 (縦組みは
+        // 描画される文字だけを数え、欧文の単語間空白は数えない)
+        var hx = 356, hy = 178, hw = 292, hh = 460;
+        head(hx - 8, hy - 34, "同じ本文の横組み");
+        s.fillRect(hx - 8, hy - 8, hw + 16, hh + 16, 0xff20283a);
+        var hr = s.drawShapedTextArea(hx, hy, hw, hh, body, 0xc8d4e8, f, 0, -1, 6);
+        resetFont(); s.font.height = 16;
+        if (hr !== void)
+            s.drawText(hx - 8, hy + hh + 14,
+                       "lines=" + hr.lines + " height=" + hr.height
+                       + " count=" + hr.count, 0x8fb8e8, 255);
+
+        // ---- 正立 / 横倒しの組み分け ---------------------------------
+        var mx = 700, my = 178, mw = 152, mh = 196;
+        head(mx - 8, my - 34, "orientation — 和欧の組み分け");
+        var msample = "縦組み ABC 123 の例";
+        var mf = new Font();
+        mf.face = chain; mf.height = 18;
+        for (var i = 0; i <= 2; i++) {
+            var px = mx + i * 176;
+            s.fillRect(px - 8, my - 8, mw + 16, mh + 16, 0xff20283a);
+            var mo = currentOptions();
+            mo["orientation"] = i;
+            s.drawVerticalTextArea(px, my, mw, mh, msample, 0xe8ecf4, mf, -1, 6, mo);
+            resetFont(); s.font.height = 16;
+            s.drawText(px - 8, my + mh + 12, oriName(i), (i == ori) ? 0xffe0a0 : 0x8fb8e8, 255);
+        }
+
+        // ---- タイプライタ (count 制限) -------------------------------
+        twX = 700; twY = 448; twW = 520; twH = 190;
+        head(twX - 8, twY - 30, "count 制限 = タイプライタ (自動再生)");
+        var m = s.measureVerticalTextArea(twW, twH, twText, twFont, -1, 6, o);
+        twTotal = (m !== void) ? m.totalCount : 0;
+        twCount = 0; twNextTick = 0;
+        drawTypewriter();
+
+        s.update();
+    }
+
+    // タイプライタ枠 + 現在の count を描画する
+    function drawTypewriter()
+    {
+        var s = stage;
+        s.fillRect(twX - 8, twY - 8, twW + 16, twH + 16, 0xff20283a);
+        s.drawVerticalTextArea(twX, twY, twW, twH, twText, 0xffe0a0, twFont,
+                               twCount, 6, currentOptions());
+        // クリアはセル高より広めに取る (実グリフはセル高 16px を数 px はみ出す)
+        s.fillRect(twX - 8, twY + twH + 8, twW + 16, 26, 0xff181c24);
+        resetFont(); s.font.height = 16;
+        s.drawText(twX - 8, twY + twH + 12, "count = " + twCount + " / " + twTotal, 0x8fb8e8, 255);
+    }
+
+    function onDemoFrame(tick)
+    {
+        if (twTotal <= 0) return;             // glyphware 無効ビルド等
+        if (tick < twNextTick) return;
+        if (twCount >= twTotal) {
+            twCount = 0;                      // 全文表示後は空に戻して繰り返し
+            twNextTick = tick + 500;
+        } else {
+            twCount++;
+            twNextTick = tick + (twCount >= twTotal ? 1500 : 60);
+        }
+        drawTypewriter();
+    }
+
+    function onKeyDown(key, shift)
+    {
+        switch (key) {
+        case VK_1: hanging = !hanging; draw(); break;
+        case VK_2: justify = !justify; draw(); break;
+        case VK_3: punctuation = !punctuation; draw(); break;
+        case VK_4: vlr = !vlr; draw(); break;
+        case VK_5: case VK_SPACE: ori = (ori + 1) % 3; draw(); break;
+        case VK_LEFT:  lsIdx = (lsIdx + lsList.count - 1) % lsList.count; draw(); break;
+        case VK_RIGHT: lsIdx = (lsIdx + 1) % lsList.count; draw(); break;
+        }
+    }
+
+    function onDemoTest()
+    {
+        var ok = (typeof global.Layer.drawVerticalTextArea != "undefined") ? 1 : 0;
+        dm(@"@demotest:text_vertical avail=${ok} tw=${twCount}/${twTotal}");
+    }
+}

@@ -88,4 +88,33 @@ TJS_EXP_FUNC_DEF(bool, TVPGetLicenseText, (const ttstr & name, ttstr & text));
 TJS_EXP_FUNC_DEF(tjs_int, TVPEnumLicenses, (iTVPLicenseListSink * sink));
 	// 全ライセンスを列挙して sink へ通知する。戻り値は件数
 
+//---------------------------------------------------------------------------
+// 表示・出力のための整形と起動オプション処理 (本体内部専用。tp_stub 非公開)
+//---------------------------------------------------------------------------
+
+// 表示テキストの改行コード。 重要ログや about 文字列と同じ規約に合わせる
+// (Windows は CRLF。 about ダイアログの EDIT コントロールは LF 単独では改行しない)
+#ifdef TJS_TEXT_OUT_CRLF
+	#define TVP_TEXT_EOL TJS_W("\r\n")
+#else
+	#define TVP_TEXT_EOL TJS_W("\n")
+#endif
+
+// 本体内蔵テーブルの「エンジン自身」のエントリ名 (= LICENSE の収録名)。
+// -about / System.licenseText はこのエントリを本体条項として表示するので、
+// manifest.json 側の表示名を変えるときはここも合わせること。
+#define TVP_ENGINE_LICENSE_NAME TJS_W("Kirikiri Z")
+
+// 本体自身のライセンス文 (内蔵テーブルの TVP_ENGINE_LICENSE_NAME エントリ)。
+// 収録されていなければ空文字列。改行は TVP_TEXT_EOL へ正規化して返す。
+ttstr TVPGetEngineLicenseText();
+
+// 収集済みライセンスを人が読める一覧テキストに整形する
+// (-about のダイアログと -license の標準出力で共用)。改行は TVP_TEXT_EOL。
+ttstr TVPGetLicenseListText();
+
+// -license / -license=<名前> / -license=all を処理して標準出力へ書き出す。
+// 処理した (= 起動を打ち切ってよい) なら true。
+bool TVPCheckPrintLicense();
+
 #endif // __LICENSE_INTF_H__

@@ -171,9 +171,12 @@ bool tTVPApplication::InitializeApplication()
 		try {
 			// 候補 suffix (例: en-US → "-en" → "") を順に試し、最初に存在した
 			// ファイルを読む。存在するのに壊れている場合はエラー (握り潰さない)。
+			// 存在確認を挟むのは、TVPReadStream (TVPCreateStream) が不在ファイルで
+			// 例外を投げるとフォールバックが続行できず起動全体が失敗するため。
 			for (const std::string &sfx : TVPGetMessageResourceSuffixesForTag(langTag)) {
 				tjs_string wsfx(sfx.begin(), sfx.end());
 				tjs_string path = Application->ResourcePath() + TJS_W("messages") + wsfx + TJS_W(".json");
+				if (!TVPIsExistentStorage(ttstr(path.c_str()))) continue;
 				tjs_uint64 flen;
 				auto buf = TVPReadStream(path.c_str(), &flen);
 				if (buf.get() == nullptr) continue;
@@ -586,10 +589,20 @@ size_t TVPGetBitmapAllocatorPoolSize()
 		tjs_int64 mb = (tjs_int64)val;
 		if(mb > 0) return (size_t)mb * 1024 * 1024;
 	}
-	// 既定: 1024 MB (= 1 GB)。1080p RGBA = ~8 MB ・ 多数同時保持 + Bitmap.loadAsync
-	// preload + 拡大画像等を見越して大きめに確保。32-bit ビルドや小型機は
-	// 起動時に -bitmappoolsize=N で絞ること。
-	return (size_t)1024 * 1024 * 1024;
+	// 既定: 512 MB。 1080p RGBA = ~8 MB で、 立ち絵/背景を多数同時保持する
+	// タイトルは数百 MB 使うのでこのくらい。
+	// ⚠ pool は TVPPooledAllocator のコンストラクタで malloc により
+	//   「丸ごと」確保される。 既定を大きくすると、 アプリに割り当てられる
+	//   メモリが固定の環境 (CS 機) ではそのぶん汎用ヒープ (Elements / GL /
+	//   TJS / SDL / 画像デコード) が細り、 負荷が乗ったところで
+	//   std::bad_alloc になる。 pool が足りないときは素の malloc へ
+	//   フォールバックするだけなので、 小さめの既定で始めて足りない案件が
+	//   -bitmappoolsize=N で増やす、 の向きにしておく。
+	//   なお ImageCache の上限はこの容量に追従する (SysInitImpl.cpp)。
+	// 32-bit プロセスはアドレス空間が 2-4GB しかなく、全プール合計 ~1GB の
+	// 先取りは枯渇即死に直結するため既定を 1/4 に抑える (実案件で確認)。
+	return (sizeof(void *) >= 8) ? (size_t)512 * 1024 * 1024
+	                             : (size_t)128 * 1024 * 1024;
 }
 
 // Bitmap用のAllocatorを返す

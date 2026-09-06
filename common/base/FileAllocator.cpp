@@ -74,8 +74,10 @@ public:
 };
 } // namespace
 
-// FileAllocator のプールサイズ既定値 (バイト)。実 app 平均で 200 MB 程度の
-// キャッシュ上限なので、プールはそれを少し上回るぶん用意する。
+// FileAllocator のプールサイズ既定値 (バイト)。
+// ⚠ pool は起動時に malloc で丸ごと確保されるので、 既定を大きくすると
+//   汎用ヒープを圧迫する (詳細は TVPGetBitmapAllocatorPoolSize のコメント)。
+//   StorageCache の予算はこの容量に追従する (StorageCache.cpp)。
 // CLI `-filepoolsize=N` (MB 指定、none/0 で pool 無効化 → 従来 raw malloc)。
 size_t TVPGetFileAllocatorPoolSize()
 {
@@ -88,8 +90,10 @@ size_t TVPGetFileAllocatorPoolSize()
 		tjs_int64 mb = (tjs_int64)val;
 		if(mb > 0) return (size_t)mb * 1024 * 1024;
 	}
-	// 既定: 512 MB (StorageCache 既定 200 MB + α)
-	return (size_t)512 * 1024 * 1024;
+	// 既定: 64 ビットは 256 MB (足りない案件は -filepoolsize=N で増やす)。
+	// 32 ビットはアドレス空間 (2-4GB) を先取りで潰さないよう 64 MB に抑える。
+	return (sizeof(void *) >= 8) ? (size_t)256 * 1024 * 1024
+	                             : (size_t)64 * 1024 * 1024;
 }
 
 iTVPMemoryAllocator *

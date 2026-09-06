@@ -42,6 +42,7 @@
 #include "FontServiceIntf.h"
 #ifdef KRKRZ_USE_GLYPHWARE
 #include "GlyphwareText.h"
+#include "VerticalText.h"
 #endif
 #include "tjsDictionary.h"
 
@@ -6857,6 +6858,48 @@ static void TVPShapedTextStyleFromParam(tTJSNI_BaseLayer* lay,
 		TVPShapedTextStyleFromFont(style, font->GetFont());
 	}
 }
+//---------------------------------------------------------------------------
+// 縦組みメソッドの options 引数 (辞書 / void) を解決する
+static void TVPVerticalTextOptionsFromParam(tTJSVariant* p, tTVPVerticalTextOptions& o)
+{
+	if(!p || p->Type() != tvtObject) return;
+	iTJSDispatch2* dic = p->AsObjectNoAddRef();
+	if(!dic) return;
+	tTJSVariant v;
+	auto getInt = [&](const tjs_char* name, tjs_int& dst) {
+		if(TJS_SUCCEEDED(dic->PropGet(TJS_MEMBERMUSTEXIST, name, nullptr, &v, dic)) &&
+			v.Type() != tvtVoid) dst = (tjs_int)v;
+	};
+	auto getBool = [&](const tjs_char* name, bool& dst) {
+		if(TJS_SUCCEEDED(dic->PropGet(TJS_MEMBERMUSTEXIST, name, nullptr, &v, dic)) &&
+			v.Type() != tvtVoid) dst = (tjs_int)v != 0;
+	};
+	auto getReal = [&](const tjs_char* name, float& dst) {
+		if(TJS_SUCCEEDED(dic->PropGet(TJS_MEMBERMUSTEXIST, name, nullptr, &v, dic)) &&
+			v.Type() != tvtVoid) dst = (float)(tjs_real)v;
+	};
+	getInt(TJS_W("orientation"), o.orientation);
+	getBool(TJS_W("verticalLr"), o.verticalLr);
+	getBool(TJS_W("punctuation"), o.punctuation);
+	getBool(TJS_W("latinGap"), o.latinGap);
+	getBool(TJS_W("hanging"), o.hanging);
+	getBool(TJS_W("justify"), o.justify);
+	getReal(TJS_W("letterSpacing"), o.letterSpacing);
+}
+//---------------------------------------------------------------------------
+// 縦組みメソッドの戻り値辞書
+static void TVPVerticalTextResultToDic(tTJSVariant* result, const tTVPVerticalTextResult& r)
+{
+	if(!result) return;
+	iTJSDispatch2 *dic = TJSCreateDictionaryObject();
+	tTJSVariant tv;
+	tv = (tjs_int)r.width;      dic->PropSet(TJS_MEMBERENSURE, TJS_W("width"),      nullptr, &tv, dic);
+	tv = (tjs_int)r.lines;      dic->PropSet(TJS_MEMBERENSURE, TJS_W("lines"),      nullptr, &tv, dic);
+	tv = (tjs_int)r.count;      dic->PropSet(TJS_MEMBERENSURE, TJS_W("count"),      nullptr, &tv, dic);
+	tv = (tjs_int)r.totalCount; dic->PropSet(TJS_MEMBERENSURE, TJS_W("totalCount"), nullptr, &tv, dic);
+	*result = tTJSVariant(dic, dic);
+	dic->Release();
+}
 #endif
 //---------------------------------------------------------------------------
 // tTJSNC_Layer : TJS Layer class
@@ -7346,6 +7389,76 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/shapedTextCount)
 	return TJS_S_OK;
 }
 TJS_END_NATIVE_METHOD_DECL(/*func. name*/shapedTextCount)
+//----------------------------------------------------------------------
+// drawVerticalTextArea(x, y, width, height, text, color
+//                      [, font, count, lineSpacing, options])
+// 矩形 (x, y, width, height) へ縦組みで描画する。列の長さは height、列の送りは
+// (フォントサイズ + lineSpacing)。既定 (vertical-rl) では 1 列目が矩形の右端に
+// 来て左へ進む。矩形に入りきらない列は描画しない。約物の詰め・禁則・追い込み/
+// 追い出しは JLReq のアキ量表に従う。和文は正立、欧文は横倒しで組む
+// (options.orientation で変えられる)。count >= 0 で先頭 count クラスタのみ描画
+// (行分割は全文で確定するので typewriter 表示でリフローしない)。font の angle
+// と下線/打ち消し線は無視。options は辞書で %[ orientation:0..2 (0=和文正立・
+// 欧文横倒し / 1=すべて正立 / 2=すべて横倒し), verticalLr:bool (列を左から右へ),
+// punctuation:bool (約物の詰め), latinGap:bool (和欧間アキ), hanging:bool
+// (句読点のぶら下げ), justify:bool (行末を揃える), letterSpacing:real (字間 em) ]。
+// 戻り値は %[width, lines, count, totalCount]、失敗時は void。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/drawVerticalTextArea)
+{
+	TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_BaseLayer);
+	if(numparams < 6) return TJS_E_BADPARAMCOUNT;
+	tjs_int x = (tjs_int)*param[0];
+	tjs_int y = (tjs_int)*param[1];
+	tjs_int width  = (tjs_int)*param[2];
+	tjs_int height = (tjs_int)*param[3];
+	ttstr text = *param[4];
+	tjs_uint32 color = static_cast<tjs_uint32>((tjs_int64)*param[5]);
+	tTVPShapedTextStyle style;
+	TVPShapedTextStyleFromParam(_this, numparams >= 7 ? param[6] : NULL, style);
+	tjs_int count = (numparams >= 8 && param[7]->Type() != tvtVoid) ? (tjs_int)*param[7] : -1;
+	tTVPVerticalTextOptions opts;
+	opts.lineSpacing = (numparams >= 9 && param[8]->Type() != tvtVoid) ? (tjs_int)*param[8] : 0;
+	TVPVerticalTextOptionsFromParam(numparams >= 10 ? param[9] : NULL, opts);
+
+	tTVPVerticalTextResult r;
+	if(!TVPGlyphwareDrawVerticalTextArea(_this->GetMainImage(), x, y, width, height,
+			text, color, style, count, opts, r)) {
+		if(result) result->Clear();
+		return TJS_S_OK;
+	}
+	_this->SetImageModified(true);
+	_this->UpdateByScript();
+	TVPVerticalTextResultToDic(result, r);
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_METHOD_DECL(/*func. name*/drawVerticalTextArea)
+//----------------------------------------------------------------------
+// measureVerticalTextArea(width, height, text [, font, count, lineSpacing, options])
+// drawVerticalTextArea と同じ組版を描画せずに行い、%[width, lines, count,
+// totalCount] を返す。失敗時は void。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/measureVerticalTextArea)
+{
+	TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_BaseLayer);
+	if(numparams < 3) return TJS_E_BADPARAMCOUNT;
+	tjs_int width  = (tjs_int)*param[0];
+	tjs_int height = (tjs_int)*param[1];
+	ttstr text = *param[2];
+	tTVPShapedTextStyle style;
+	TVPShapedTextStyleFromParam(_this, numparams >= 4 ? param[3] : NULL, style);
+	tjs_int count = (numparams >= 5 && param[4]->Type() != tvtVoid) ? (tjs_int)*param[4] : -1;
+	tTVPVerticalTextOptions opts;
+	opts.lineSpacing = (numparams >= 6 && param[5]->Type() != tvtVoid) ? (tjs_int)*param[5] : 0;
+	TVPVerticalTextOptionsFromParam(numparams >= 7 ? param[6] : NULL, opts);
+
+	tTVPVerticalTextResult r;
+	if(!TVPGlyphwareMeasureVerticalTextArea(width, height, text, style, count, opts, r)) {
+		if(result) result->Clear();
+		return TJS_S_OK;
+	}
+	TVPVerticalTextResultToDic(result, r);
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_METHOD_DECL(/*func. name*/measureVerticalTextArea)
 #endif
 //----------------------------------------------------------------------
 TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/drawGlyph)

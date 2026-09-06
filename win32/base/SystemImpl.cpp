@@ -68,6 +68,21 @@ extern ttstr TVPGetLicenseString();
 //---------------------------------------------------------------------------
 static void TVPShowSimpleMessageBox(const ttstr & text, const ttstr & caption)
 {
+	// エージェント運転 (-replfile = モーダル応答チャネルあり) 中はブロッキング
+	// ダイアログを出さず、 内容をログに流して既定応答で進む (自動運転を止めない)。
+	// チャネルの無い REPL (-replweb / console のみ) は人が画面を見ている前提なので
+	// 通常どおり実 UI を出す (generic/base/SystemImpl.cpp と同じ方針)。
+	bool agentSuppress = false;
+#ifdef KRKRZ_USE_REPL_FILECHANNEL
+	agentSuppress = TVPReplModalActive();
+#else
+	agentSuppress = TVPReplActive;   // チャネル機構の無いビルドは従来どおり抑止
+#endif
+	if( agentSuppress ) {
+		TVPAddImportantLog(ttstr(TJS_W("[dialog] ")) + caption +
+			ttstr(TJS_W(": ")) + text);
+		return;
+	}
 	HWND hWnd = TVPGetModalWindowOwnerHandle();
 	if( hWnd == INVALID_HANDLE_VALUE ) {
 		hWnd = NULL;

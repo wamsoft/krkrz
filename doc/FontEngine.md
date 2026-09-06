@@ -17,6 +17,8 @@
 | ラスタライザ (drawText) | `common/visual/{FreeTypeFontRasterizer,GlyphwareFontRasterizer}.cpp` / `win32/visual/GDIFontRasterizer.cpp`、切替 = `common/visual/LayerBitmapImpl.cpp` |
 | シェイピング描画 | `common/visual/GlyphwareText.{h,cpp}` (`Layer.drawShapedText` / `drawShapedTextArea` / `measureShapedText` / `shapedTextCount`) |
 | 矩形テキストレイアウト (折返し/禁則/count) | `external/glyphware` `include/glyphware/Layout.h` + `src/Block.cpp` (`layoutBlock` / `countClusters` / `limitClusters`) |
+| 縦組みシェイピング | `external/glyphware` `src/Vertical.cpp` (`layoutVerticalLine`、UAX #50 の正立/横倒し判定と TTB シェイプ) |
+| 縦組みの組版 (アキ量/行分割/描画) | `common/visual/Vertical{CharClass,LineBreak,Paragraph,Text}.{h,cpp}` (`Layer.drawVerticalTextArea` / `measureVerticalTextArea`) |
 | GDI システムフォント抽出 (WINVER) | `win32/visual/GlyphwareGDIFont.cpp` (`GetFontData` スナップショット / `@gdi:` キー) |
 | プラグイン公開 (tp_stub) | `common/visual/FontServiceIntf.{h,cpp}` |
 | TJS 検索/登録 API | `common/visual/LayerIntf.cpp` (`Font.queryFonts` / `getFontInfo` / `registerFontFile`) |
@@ -123,6 +125,85 @@ glyphware 側 (`glyphware::layoutBlock`) にある**。core (`GlyphwareText.cpp`
   `text_area` (JSON) が消費する。既存 `label` / `text_box` は従来の cycfi wrap の
   まま (差し替えると既存画面の改行位置が変わるため)。詳細は
   `doc/ElementsDialog.md` の「矩形テキスト (`text_area`)」。
+
+## 縦組み (drawVerticalTextArea)
+
+日本語の縦書きを JLReq 水準で組む経路。**横組み (`layoutBlock`) とは別系統**で、
+`Layer.drawVerticalTextArea` / `Layer.measureVerticalTextArea` から使う。
+TJS 側の引数と `options` キーの仕様は umbrella の `doc/manual/Layer.manual.tjs`
+が SSOT (生成物が `doc/reference/Layer.md`)、利用者向けの解説は
+`doc/guide/FontSystem.md` の「縦組み (日本語縦書き)」節。
+対応範囲は本文のみ (ルビ・縦中横・圏点・割注・字取り、段組、下線/打ち消し線、
+`Font.angle` は未対応)。
+
+### なぜ別経路か
+
+**glyphware の `Shaper` は LTR / RTL しか扱えず、`layoutLine` / `layoutBlock` に
+縦の概念が無い**。正立ランは `HB_DIRECTION_TTB` で組まないと `vert` / `vrt2` の
+縦字形置換も `vmtx` / `VORG` の縦アドバンスも効かない。横倒しラン (欧文) は逆に
+LTR で組んでから列へ 90 度倒す必要がある。1 本のレイアウト関数に畳めないので
+`glyphware::layoutVerticalLine()` を別に置いた。
+
+さらに和文組版は「1 文字 = 1em の箱を並べる」問題ではなく、**文字クラス間のアキ
+(グルー) とペナルティの列を解く**問題になる。箱を並べる方式では約物の詰め・
+禁則・追い込み/追い出しが原理的に表現できない。
+
+### 層の分かれ方
+
+| 層 | 置き場所 | 役割 |
+|---|---|---|
+| 縦のシェイピング | `external/glyphware` `src/Vertical.cpp` | UAX #50 の正立/横倒し判定、face + 向きでのアイテム化、TTB / LTR シェイプ、列座標 (u, v) への配置 |
+| 文字クラスとアキ量 | `common/visual/VerticalCharClass.*` | JLReq 附属書 A の文字クラス、表 3 のアキ量 (自然値・伸び・縮み)、禁則の可否、仮想ボディ幅と字面の寄り |
+| 組版アイテムと行分割 | `common/visual/VerticalLineBreak.*` | Box / Glue / Penalty 列への変換と Greedy 行分割 |
+| 段落 | `common/visual/VerticalParagraph.*` | 改行での段落分割、行ごとのグリフ配置 |
+| 描画 | `common/visual/VerticalText.*` | 矩形への流し込みと合成 |
+
+シェイピングだけ glyphware に置いてあるのは、HarfBuzz を叩く実装をスタック全体で
+1 本に保つため。JLReq のアキと禁則は組版ポリシーなので core 側。
+
+### 座標系
+
+`VerticalGlyph` / `PlacedGlyph` は列ローカルの 2 軸で持つ。
+
+- `u` … 行に直交する方向。0 = 縦ベースライン (列の中心線)、右が正
+- `v` … 行が進む方向。0 = 行頭 (上端)、下が正
+
+描画時に列の中心 X と行頭 Y を足せばそのままピクセル座標になる。列そのものの
+送り (vertical-rl なら右から左) は `TVPVerticalLinePosition()` の担当。
+
+### 組版アイテム (TeX と同じ 3 種)
+
+合法なブレーク点は TeX と同じ規則: `Penalty` で penalty が ∞ 未満のところ、
+`Glue` で直前が `Box` のところ。
+
+- **禁則** = Glue の直前に `Penalty(∞)` を挟む。2 番目の条件 (直前が Box) が
+  崩れてその位置では切れなくなる
+- **ぶら下げ** = 幅が負の `Penalty`。ブレークするとその幅が行長から引かれる
+  (= 版面外へ出る)。Penalty を挟むと直後の Glue はブレーク点でなくなるので、
+  切り方がぶら下げに一本化される
+- **約物の詰め** = 仮想ボディを半角にし、字面の寄り (`BodyAlign`) の分だけ
+  `LineItem::glyphOffset` でグリフをずらす
+- **追い込み / 追い出し / 両端揃え** = 行が確定したときのグルー調整比 `ratio`
+  1 つで全部表現される。`justify:false` でも「縮み」は掛ける — ブレーク候補は
+  縮めれば入るところまで許しているので、伸ばさないだけにすると行が溢れる
+
+### 描画
+
+**1 行の中で正立と横倒しが混ざる**ので、`Font.angle` の回転のように
+`Face::setTransform()` で face 状態を張り替える方式は使えない。
+
+- 正立グリフ … 変形が無いので `glyphBitmap()` (drawShapedText と同じ経路。
+  カラー絵文字もそのまま出る)
+- 横倒しグリフ … `Face::renderGlyphMask()` に回転を畳んだアフィンを渡し、
+  アウトラインへ焼き込んでラスタライズする
+
+**将来課題**: 横倒しグリフのマスクキャッシュ。`renderGlyphMask` は変形込みなので
+FreeType 側のキャッシュが効かない。欧文が長い版面では効く。
+
+### count リビール
+
+`count` が数える単位は **Box** (描画単位)。欧文間隔は Glue なので数えない。
+行分割は全文で確定してから制限を掛けるので、逐次表示でリフローしない。
 
 ## フォントサービス (プラグイン向け tp_stub API)
 
@@ -329,7 +410,7 @@ thorvg 側 (fork) は `名前#tag=val` を独立フォントとして登録す�
 - **宣言の入口は 3 系統**: 画面 JSON / app.jsonc の top-level
   `"font_languages"` (elements_modal がパース、言語単位マージ) /
   ホスト直登録 `elements_modal::apply_font_languages_json()` (krkrz の
-  `Dialog.fontLanguages` プロパティはこれを呼ぶ)
+  `ElementsDialog.fontLanguages` プロパティはこれを呼ぶ)
 - **fallback**: 表に宣言があれば `set_language` 時に theme の既定
   families チェーンをその言語用の並びへ swap (無い言語では復元)
 - **既知の制限**: `text_area` はビルド時にフォント確定 (表示中の言語切替に
@@ -500,3 +581,21 @@ GDI ラスタライザ (WINVER 既定) と旧 FreeType ラスタライザ (非 W
 - 圧縮 cmap/bitset による包含判定の最適化。
 - `TVPGetAllFontList` へメタデータ名を合流 (設定UIのフォント一覧反映)。
 - システムフォント全列挙 (`allowSystem`) の検索統合。
+
+### 縦組み (drawVerticalTextArea) の未対応
+
+対応範囲は本文の組版のみ。以下は**意図的に未着手**で、必要になった時点で
+「どの層に入れるか」から決める。
+
+- **ルビ・縦中横・圏点・割注・字取り** — いずれも本文とは別の組版オブジェクトを
+  行の中に埋める話で、`LineItem` を「1 グリフ列」から**入れ子の組版ボックス**へ
+  拡張する必要がある。TJS の API 側も本文文字列 1 本では表現できないため、
+  入力マークアップ (richtext 的な構造) の設計とセットになる。
+- **段組** — `VerticalText` は矩形 1 つへの流し込みが前提で、入りきらない列は
+  捨てている (`lines` に数えない)。次の段・次のページへ続きを渡す口 (継続位置)
+  が要る。
+- **下線 / 打ち消し線** — 横組みは Font の属性でそのまま引けるが、縦組みでは
+  傍線 (行の左右) になるので位置決めが別物。
+- **`Font.angle`** — 縦組みは正立と横倒しをグリフ単位で切り替えるため、face 全体へ
+  変形を掛ける angle とは両立しない (指定は無視する)。
+- 横倒しグリフのマスクキャッシュ (上記「描画」節の将来課題)。

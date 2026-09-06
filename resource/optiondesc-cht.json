@@ -1064,6 +1064,24 @@
 				"value": ""
 			},
 			{
+				"caption": "視窗最大化按鈕",
+				"description": "設定標題列是否顯示最大化按鈕。\n\n設為「停用」後最大化按鈕會消失，雙擊標題列或按 Win+↑ 也無法最大化。拖曳視窗邊框調整大小以及 Alt+Enter 切換全螢幕仍然可以使用。\n\n僅在 SDL3 版本的 Windows 上有效（其他平台不執行任何動作）。",
+				"name": "maximizebox",
+				"type": "select",
+				"user": false,
+				"values": [
+					{
+						"value": "yes",
+						"desc": "啟用",
+						"default": true
+					},
+					{
+						"value": "no",
+						"desc": "停用"
+					}
+				]
+			},
+			{
 				"caption": "影片硬體解碼",
 				"description": "設定疊加影片播放 (VideoOverlay) 時，是否對 mp4 / wmv 等 Media Foundation 支援的格式使用硬體解碼 (IMFMediaEngine)。\n\n指定「不進行」則所有格式都使用軟體解碼。請在影片播放有問題的環境中用於排查。webm / mpeg 無論此設定如何始終使用軟體解碼。\n\n僅在 Windows 原生 (WINVER) 版本有效。",
 				"name": "mediaengine",

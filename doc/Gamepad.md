@@ -183,7 +183,7 @@ ID は `tTVPApplication::TVP_PAD_AXIS_LEFTX` 等の enum を使用。
 **Elements ダイアログとの関係**: Elements ダイアログ (パネル) がフォーカスを
 持っていると VK_PAD* はダイアログのウィジェット操作 (十字=ナビ / A=決定 /
 B=cancel) に消費されます。「このパッドボタンだけは必ずゲーム側で受けたい」
-場合は `Dialog.registerHotKey(VK_PAD2)` 等でホストホットキー登録するとダイアログを
+場合は `ElementsDialog.registerHotKey(VK_PAD2)` 等でホストホットキー登録するとダイアログを
 バイパスして `onKeyDown` へ直行します (配送優先順位と詳細は
 [ElementsDialog.md](ElementsDialog.md) の「入力ルーティング」を参照)。
 

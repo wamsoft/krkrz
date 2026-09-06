@@ -91,7 +91,11 @@ uint32_t * tTVPSDLDialogRenderer::AcquireBuffer(const void* layer, int w, int h)
 				+ ttstr(SDL_GetError()));
 			return nullptr;
 		}
-		SDL_SetTextureBlendMode(L.texture, SDL_BLENDMODE_BLEND);
+		// Elements の canvas は ThorVG が premultiplied (ColorSpace::ARGB8888)
+		// で出力するので premultiplied 合成にする。 SDL_BLENDMODE_BLEND
+		// (straight) だとアルファが二重に掛かり、 文字のアンチエイリアスや
+		// 半透明の下地が薄く出る。
+		SDL_SetTextureBlendMode(L.texture, SDL_BLENDMODE_BLEND_PREMULTIPLIED);
 		L.staging.assign(static_cast<size_t>(w) * static_cast<size_t>(h), 0u);
 		L.w = w;
 		L.h = h;

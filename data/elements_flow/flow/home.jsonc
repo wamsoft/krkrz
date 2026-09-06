@@ -1,7 +1,7 @@
 // ホーム画面 — 各遷移エフェクトの入口。
 // transitions の object 形式で effect (fade / universal) を宣言する。
 // タイトルには exit 演出 ("on":"exit") が付いており、Esc でフローを閉じる
-// ときも演出完了を待ってから閉じる (Dialog.close() でも同様)。
+// ときも演出完了を待ってから閉じる (ElementsDialog.close() でも同様)。
 {
     "size": [960, 600],
     "background": [24, 32, 56, 255],

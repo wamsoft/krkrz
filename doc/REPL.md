@@ -1,5 +1,10 @@
 # REPL (Read-Eval-Print Loop)
 
+> 吉里吉里2 が本体に持っていたデバッグ窓 (監視式 / コントローラ /
+> スクリプトエディタ) は **REPL コマンドとブラウザ UI として復活済み**
+> (`.watch` / `.event` / Watch・Pad タブ / コントローラ)。
+> 設計と決定理由は [DebugToolsRevival.md](DebugToolsRevival.md)。
+
 `KRKRZ_REPL=ON` でビルドされたバイナリに、コマンドライン引数 `-repl`
 (または `-repl=yes`) を付けて起動すると、対話型 TJS シェルが有効になります。
 Win / Mac / Linux 対応。行編集は [icline](https://github.com/deths74r/icline)
@@ -20,6 +25,26 @@ krkrz64 -repl data/
 
 WIN (windowed subsystem) 版では REPL 起動時に `AttachConsole` で親プロセス
 のコンソールを捕まえ、それも無ければ `AllocConsole` で新規確保します。
+
+### 起動オプション一覧
+
+REPL 関連のオプションはここに集約しておく (詳細は各節)。 いずれも独立で、
+同時指定できる。
+
+| オプション | 既定 | 内容 |
+|---|---|---|
+| `-repl[=yes\|no\|new]` | 無効 | コンソール REPL。`new` は新規コンソールを強制 |
+| `-replfile=<dir>` | 無効 | ファイルチャネル (**エージェント駆動の本命**) |
+| `-replsocket=<name>` | 無効 | abstract unix socket チャネル (Linux 系) |
+| `-replweb[=[host:]port]` | 無効 | HTTP + SSE サーバ + ブラウザ UI (既定 127.0.0.1:8899) |
+| `-replwebopen=app\|tab\|no` | 条件付き自動 | ブラウザの自動オープン。**端末起動では既定で開かない** |
+| `-replwebidle=<秒>\|no` | **5 秒** | ブラウザが居なくなってから終了するまで |
+| `-replwebpad=<dir>` | 書込禁止 | Pad タブの [保存] を許すストレージ接頭辞 |
+| `-replwatchfile=<path>\|no` | `.krkrz_watch` | 監視式リストの保存先 |
+| `-replmodaltimeout=<秒>` | 30 | モーダル応答待ちのタイムアウト (0 = 無限) |
+
+`-nostartup` (startup.tjs を実行しない) と `-loglevel=` は REPL 専用では
+ないが、 エージェント駆動でよく併用する。
 
 ## コマンド・操作
 
@@ -55,9 +80,72 @@ REPL 特殊コマンド:
 | `.dlg` | アクティブな Elements ダイアログ一覧 (`Agent.dialogs`) |
 | `.dlgclose` | 全 Elements ダイアログを強制クローズ (`Agent.closeAllDialogs`) |
 | `.click X Y` | (X,Y) にマウスクリックを注入 (`Agent.click`) |
+| `.watch` | 監視式の一覧を `id: 式 = 値` で表示 (表示前に全件評価する = 吉里吉里2 の Update ボタン相当) |
+| `.watch add EXPR` | 監視式を追加して即評価。 式は空白を含んでよい |
+| `.watch rm ID` / `.watch rm all` | 監視式の削除 / 全消し |
+| `.watch edit ID EXPR` | 監視式の差し替え (値は «未評価» に戻る) |
+| `.watch auto [ms\|on\|off]` | 自動更新の間隔を表示 / 設定。 `on` = 既定 500ms、 `0` = 毎フレーム、 下限 100ms (それ未満は切り上げ) |
+| `.event [on\|off\|toggle]` | `System.eventDisabled` の表示 / 切替 (吉里吉里2 コントローラの Event ボタン相当) |
 
 メモリ系コマンドの詳細は `doc/MemoryGuide.md`、パッドオーバレイの詳細は
 `doc/PadOverlay.md`、エージェント駆動 API の詳細は後述「エージェント駆動」参照。
+
+### 監視式 (`.watch`)
+
+吉里吉里2 が本体に持っていたデバッグ窓「監視式」の復活
+(設計 = `doc/DebugToolsRevival.md`)。 **式のリストを保持して、 まとめて評価し、
+式と値を並べて見せる**だけの機能で、 コアは `common/utils/ReplWatch.{h,cpp}`。
+REPL コマンドも Web API もブラウザの Watch パネルも**同じコアを共有する**ので、
+どのフロントから足しても他のフロントから見える。
+
+- **評価コンテキストは global 固定** (原典どおり)。
+- **式の例外は捕まえて `(error) <メッセージ>` を «値» として並べる**。 監視式が
+  1 本壊れても REPL もアプリも死なない (原典と同じ)。 コマンド自体の失敗
+  (usage / 未知の id) だけがエラー扱いになる。
+- 評価は**必ずメインスレッド**。 worker (console / file channel) から来た
+  `.watch` は `ReplMainQueue::SubmitTask` でメインへ運んで待つ。 自動更新は
+  `TVPDrainREPL()` から毎フレーム見る。
+- 値の表示は深さ 2 / compact 固定 (1 行に収める用途なので `.depth` /
+  `.compact` とは独立)。
+- **式リストと間隔はカレントディレクトリの `.krkrz_watch` に保存**され、
+  次回起動で読み戻る (REPL 履歴 `.krkrz_history` と同じ流儀)。
+  `-replwatchfile=<path>` で保存先を変更、 `-replwatchfile=no` で無効。
+- 自動更新で値が変わったときだけ、 `-replweb` の `watch` チャネルへ
+  SSE push する (`GET /sub/watch`)。 無駄な配信を避けるため、 変化が無い
+  フレームは何も出さない。
+
+```
+krkrz> .watch add System.getTickCount()
+1: System.getTickCount() = 24283
+krkrz> .watch auto 500
+watch auto = 500 ms
+krkrz> .watch
+1: System.getTickCount() = 25871
+```
+
+`0` (毎フレーム) は原典の「リアルタイム」相当。 重い式を入れると描画に効くので、
+常用は既定の 500ms を推奨する。
+
+#### 保存ファイル (`.krkrz_watch`)
+
+書式は UTF-8 の行指向テキスト。 `#` で始まる行はコメントで、
+`# interval=<ms>` だけが意味を持つ。 それ以外の非空行が式 1 本。
+
+```
+# krkrz watch expressions
+# interval=500
+System.getTickCount()
+1+2*3
+```
+
+- 書き戻すのは**式の追加 / 削除 / 編集 / 間隔変更のとき**。 評価では書かない。
+- 式に改行は入らない (`Add` / `Edit` で空白へ潰している) ので行指向で足りる。
+  JSON にしないのは、 読む側にパーサが要るのを避けるため。
+- 書けない場所 (読取専用など) では**黙って諦める**。 開発用の付加機能なので、
+  保存できないことでアプリを止めない。
+- 原典 (吉里吉里2) は environ profile の `[watch]` に式一覧と間隔に加えて
+  窓位置・サイズ・列幅・stayontop を持っていた。 窓まわりはブラウザ側の話
+  なので持たない。
 
 ## エージェント駆動 (Agent API + ファイルチャネル)
 
@@ -119,6 +207,12 @@ native / 既定へフォールバックする。 web REPL 用の modal はブラ
 結果 JSON: `{ "ok": bool, "result": "<pretty-printed>", "error": "<msg>" }`。
 未読の `resp` が残る間は次コマンドを処理しない (取りこぼし防止)。
 
+**先頭が `.` の行はドットコマンド**として console / web と同じ `ProcessLine` を
+通り、 出力行を改行で連結したものが `result` に入る (`.watch` / `.mem` /
+`.cap` 等をエージェントからそのまま叩ける)。 コマンド自体が失敗したときだけ
+`ok:false` + `error` になる。 通常の TJS はこれまでどおり共有キューへ直接出す
+(`result` = 評価結果 1 個の pretty print という契約を変えないため)。
+
 ```bash
 krkrz64 data/ -replfile=/tmp/krkrzchan
 ```
@@ -175,6 +269,92 @@ krkrz64 data/ -replfile=/tmp/krkrzchan
 GUI (コンソール無し) 起動で `-replweb` 指定時のみ、 loopback バインドなら
 起動後に自動でブラウザを開く (アプリモード優先 → 不可なら既定ブラウザ)。
 
+### ブラウザ UI (タブ構成)
+
+`GET /` が返す埋め込みページは **Console / Watch のタブ構成**
+(`common/utils/replweb_ui.inc`。 肥大するので `ReplWebServer.cpp` から分離して
+`#include` している。 ビルド構成は変更なし)。
+
+| タブ | 中身 |
+|---|---|
+| Console | 従来のページ (上=ログ / 下=入力)。 `/events` の SSE + `POST /cmd` |
+| Watch | 監視式の表 (式 / 値) + 追加・削除・インライン編集 + 自動更新間隔。 `/watch` + `/sub/watch` |
+| Pad | スクリプトエディタ。 `POST /pad/exec` + `GET\|POST /pad/file` |
+
+- **本体埋め込みを基本**とし、 `-replweb` だけで完結させる (プラグインもスクリプトも
+  要らない)。 案件が自前 UI に差し替える道は `WebServer.serveStatic` で維持。
+- Watch の表は **id をキーにその場で更新する** (`innerHTML` の組み直しにすると、
+  自動更新のたびにインライン編集中のキャレットと選択が飛ぶ)。
+- 式のインライン編集は原典と同じくダブルクリック → Enter 確定 / Esc 取り消し。
+- 上のバーはコントローラ相当 (イベント停止 / 終了)。
+
+### ブラウザ UI とアプリの寿命をそろえる
+
+ブラウザを UI にした構成では、 **片方だけ残る**のが実用上いちばん困る
+(ウィンドウを閉じたのに本体が残る / 本体が終わったのに «disconnected» の
+ページが残る)。 両方向を閉じる。
+
+#### 本体側 — ブラウザが居なくなったら終了 (`-replwebidle`)
+
+| 状態 | 動作 |
+|---|---|
+| 起動〜**最初の SSE 購読が来るまで** | **待機** (いつまでも終了しない) |
+| 購読が 1 本以上ある | 動き続ける |
+| 購読が全部消えた | **`<秒>` 後に終了** (`TVPTerminateAsync(0)`) |
+| 閉じる合図 (`POST /bye`) を受けた | 猶予を約 2 秒へ前倒し |
+
+- **既定は有効 (5 秒)**。`-replwebidle=<秒>` で秒数指定、
+  `-replwebidle=no` / `off` / `0` で無効。
+- **武装するのは `-replweb` で起動したときだけ**。 TJS の `WebServer.start()`
+  (= `StartOn()`) で立てたサーバは武装しない — アプリが自分で管理している
+  サーバを、 ブラウザが閉じたからといって勝手に落とさないため。
+- **一度でも購読が来てから武装する**のが肝。 ブラウザを開かないエージェント
+  駆動や、 `-replweb` を単なる API 面として使う構成は購読ゼロのままなので、
+  既定が有効でも影響を受けない。
+- 判定と終了要求はメインスレッド (`TVPDrainREPL` → `TVPReplWeb::CheckIdleShutdown`)。
+  HTTP スレッドから終了を叩くより安全。
+- 複数タブは購読数で自然に扱える (1 枚閉じても残りが生きていれば畳まない)。
+
+#### 閉じる合図 (`POST /bye`)
+
+切断は **SSE のハートビート送信が失敗して初めて分かる**ので、 黙って閉じられると
+気付くまで待たされる。 ページは `pagehide` / `beforeunload` で
+`navigator.sendBeacon('/bye')` を投げ、 猶予を前倒しさせる。 届かなくても
+`<秒>` 経てば畳まれるので、 **速くなるだけの経路**。
+
+合図は **socket が閉じるより先に届く** (beacon は pagehide 中に飛び、 TCP は
+その後で落ちる)。 そのため合図を受けたら 3 秒間 200ms ごとに全 SSE クライアントを
+叩き起こし、 `:ping` を失敗させて死んだ socket を落とす。 探り切っても購読が
+残るなら «別タブが閉じただけ» なので合図を取り下げる。 武装中はハートビート
+間隔も `<秒>` まで詰める (合図が届かなかったときの検知を早めるため)。
+
+#### ブラウザ側 — 本体が居なくなったら閉じる
+
+| 状態 | 動作 |
+|---|---|
+| 本体が終了を通知 (`/sub/state` の `"exiting": true`) | **即座に** `window.close()` |
+| SSE が切れて 5 秒復帰しない (クラッシュ / 強制終了) | `window.close()` |
+| `window.close()` が効かない (通常タブ) | 「吉里吉里Z が終了しました」を全面表示 |
+
+終了の通知は `TVPReplWeb::Stop()` が **`g_running` を落とす前に**流す
+(落とすと SSE スレッドが送らずに抜けてしまう)。 送り切る時間として 150ms だけ
+待ってから畳む。
+
+#### ブラウザの自動オープン (`-replwebopen`)
+
+既定は «ループバック束縛 かつ コンソール無し (= GUI 起動)» のときだけアプリ
+モードで開く。 端末から起動したときに勝手に開かないのは、 端末があるなら自分で
+開けるし、 CI / エージェント駆動を邪魔しないため。
+
+| 値 | 動作 |
+|---|---|
+| `-replwebopen=app` (値省略も同じ) | アプリモード (Edge / Chrome の `--app`。 枠なしウィンドウ) |
+| `-replwebopen=tab` / `yes` | 既定ブラウザの通常ウィンドウ |
+| `-replwebopen=no` / `off` | 開かない (上の自動オープンも抑止) |
+
+**端末から起動しつつブラウザも開きたい**ときはこれを使う。 TJS からは
+`WebServer.openBrowser(url, appMode)`。
+
 ### 組み込みルート
 
 | パス | 説明 |
@@ -183,6 +363,81 @@ GUI (コンソール無し) 起動で `-replweb` 指定時のみ、 loopback バ
 | `GET /events` | エンジンログの SSE ストリーム (直近 2000 行のバックログ付き) |
 | `POST /cmd` | body の 1 行を REPL として評価 (ドットコマンド/複数行継続対応)。応答 body は継続入力中なら `"1"` |
 | `GET /sub/<channel>` | 汎用 SSE チャネル購読 (`WebServer.broadcast` の配信先。バックログ無し) |
+| `GET /watch` | 監視式の一覧 + 現在値 (JSON)。**評価しない**のでポーリングしても安全。`?eval=1` で評価してから返す |
+| `POST /watch` | 監視式の操作 (form-urlencoded)。成功なら GET と同じ JSON を返す |
+| `GET /sub/watch` | 監視式の push 先 (上の汎用 SSE を使う。自動更新で値が変わったときと、評価を伴わない変更のとき) |
+| `POST /pad/exec` | body の TJS スクリプトを**まるごと 1 回**実行 (複数行可)。`{"ok","result","error"}` |
+| `GET /pad/file?path=` | ストレージから読む (text/plain) |
+| `POST /pad/file?path=` | ストレージへ書く。**`-replwebpad=<dir>` 配下のみ**。未指定なら 403 |
+| `GET` / `POST /state` / `GET /sub/state` | コントローラ (`eventDisabled` の取得/設定、終了要求) |
+| `POST /bye` | ページを閉じる合図 (`-replwebidle` の猶予を前倒し) |
+
+**組み込みルートは `WebServer.register` / `serveStatic` より先に判定される**
+(`HandleConnection` の分岐順)。 上のパスはスクリプト側から上書きできないので、
+案件のエンドポイントは別の接頭辞を使うこと (`/api/` `/ui/` など)。
+
+#### `POST /watch` のパラメータ
+
+パラメータは **`application/x-www-form-urlencoded`** で受ける (クエリでも body
+でも可、 body 優先)。 本体に JSON パーサを増やさないための選択で、 curl から
+`-d 'op=add&expr=...'` で叩けて、 ブラウザからは `URLSearchParams` がそのまま
+使える (計画 `doc/DebugToolsRevival.md` §4.3 の JSON body から変更)。
+
+| `op` | 追加パラメータ | 動作 |
+|---|---|---|
+| `add` | `expr` | 式を追加して評価 |
+| `rm` | `id` | 削除 (未知の id は 404) |
+| `edit` | `id` `expr` | 差し替えて評価 (未知の id は 404) |
+| `clear` | — | 全消し |
+| `interval` | `ms` | 自動更新の間隔 (`0` = 毎フレーム / 負値 = オフ / 下限 100ms) |
+| `eval` | — | 全件評価のみ |
+
+引数不正は 400 + `{"error":"..."}`、 未知の id は 404、 シャットダウン中は 503。
+
+⚠ form-urlencoded なので **`+` は空白として解釈される**。 式に `+` を含める
+ときは `%2B` へエスケープすること (`curl -d 'op=add&expr=1%2B2'`)。
+`--data-urlencode` を使うのが確実。
+
+```bash
+curl -s localhost:8899/watch
+curl -s -X POST -d 'op=add&expr=System.getTickCount()' localhost:8899/watch
+curl -s -X POST -d 'op=interval&ms=500'                localhost:8899/watch
+curl -N localhost:8899/sub/watch      # 自動更新の push を受ける
+```
+
+応答 / push の JSON はどちらも同じ形:
+
+```json
+{"interval":500,"entries":[{"id":1,"expr":"System.getTickCount()","value":"32470","error":false}]}
+```
+
+`interval` は `-1` = オフ / `0` = 毎フレーム / 正値 = ms。 `error` が true の
+エントリは `value` が `"(error) ..."` になる (式が壊れていても一覧は返る)。
+
+### Pad (スクリプトエディタ)
+
+吉里吉里2 の「スクリプトエディタ」窓の相当物。 原典
+(`utils/win32/PadFormUnit.cpp`) の機能は **Execute (テキストを実行)** と
+**Save** で、 編集操作 (Undo / Cut / Copy / Paste) はブラウザの `textarea` が
+持っているので、 サーバに要るのはこの 2 つだけ。
+
+- `POST /pad/exec` は `/cmd` (1 行 + ドットコマンド) と違い、 **本文をまるごと
+  1 回**実行する。 複数行の関数定義やループをそのまま流せる。 式なら値が、
+  文なら `(void)` が返る (共有キューの «式か文か» 判定に従う)。
+- 本文はブラウザの `localStorage` に自動保存する。 Pad は「書いて実行」を
+  繰り返す場所なので、 リロードで消えると使い物にならない。 ストレージへの
+  書き出しは `[保存]` と役割を分けてある。
+
+#### 書込許可 (`-replwebpad=<dir>`)
+
+**既定は書込禁止 (403)**。 `-replwebpad=<dir>` を指定したときだけ、 その
+ストレージ接頭辞の配下へ書ける。 接頭辞比較なので末尾 `/` を内部で補う
+(`-replwebpad=work` が `work_other/...` に当たらないように)。
+
+⚠ **これはセキュリティ境界ではない**。 `/cmd` や `/pad/exec` で任意の TJS が
+実行できる時点でプロセスの全権限が開いている。 «UI の [保存] をうっかり押して
+資材を上書きしない» ための柵として理解すること。 ネットワークへ開く
+(`-replweb=0.0.0.0:...`) 場合は、 そもそも信頼できる環境でのみ使う。
 
 ### `WebServer` TJS クラス (拡張登録口)
 

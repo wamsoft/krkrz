@@ -25,6 +25,17 @@ webui — ブラウザ UI (内蔵 HTTP + SSE サーバ)
   ※ `KRKRZ_REPL_WEB=OFF` ビルドには WebServer クラス自体が無い。
     デモは `typeof global.WebServer` で存在を見てから使う。
 
+  ※ **組み込みルートは register / serveStatic より先に判定される**ので、
+    次のパスは自前ハンドラで上書きできない。別の接頭辞を使うこと。
+
+      /  /events  /cmd  /sub/<ch>  /watch  /state  /pad/exec  /pad/file  /bye
+
+    (このデモは /ui/ と /api/ なので衝突しない)
+
+  ※ `-replweb` で起動したサーバは **ブラウザが全部閉じると本体も終了する**
+    (`-replwebidle`、既定 5 秒)。一方 **`WebServer.start()` で立てた場合は
+    武装しない** — アプリが自分で管理しているサーバを勝手に落とさないため。
+
 ■ 2. ページの配信 (静的)
 
   WebServer.serveStatic("/ui/", <dir>)
@@ -88,7 +99,8 @@ webui — ブラウザ UI (内蔵 HTTP + SSE サーバ)
   doc/reference/WebServer.md   register / serveStatic / broadcast /
                                start / stop / openBrowser / active / url
   src/core/doc/REPL.md         「ブラウザ REPL / Web サーバ」節
-                               (-replweb / /cmd / /events の組込ルート)
+                               (組込ルート一覧、ブラウザ UI のタブ構成、
+                                ブラウザとアプリの寿命、起動オプション一覧)
 
 ■ メモ
 

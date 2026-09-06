@@ -6,6 +6,8 @@
 #include "SysInitIntf.h"
 #include "DebugIntf.h"
 #include "DisplaySelect.h"
+#include "HotKeyIntf.h"
+#include "tvpinputdefs.h"
 #include "app.h"
 
 #include <vector>
@@ -1010,11 +1012,51 @@ SDL3Application::AppEvent(const SDL_Event& event)
 		return SDL_APP_CONTINUE;
 	}
 
+	// デバイスの抜き差し (キーボード/マウス) は window に紐付かない。
+	// SDL_KeyboardDeviceEvent 等は windowID を持たず、 共用体の同じ位置には
+	// which (デバイス ID) が載っているので、 下の SDL_GetWindowFromID へ
+	// そのまま渡すと «たまたま同じ番号の window があれば配られる» という
+	// 不安定な配り方になる。 これらは全 form へ配る (抜き差しはベースライン
+	// テキスト入力の切り替え契機なので取りこぼすと文字が入らなくなる)。
+	switch (event.type) {
+	case SDL_EVENT_KEYBOARD_ADDED:
+	case SDL_EVENT_KEYBOARD_REMOVED:
+	case SDL_EVENT_MOUSE_ADDED:
+	case SDL_EVENT_MOUSE_REMOVED: {
+		int count = 0;
+		if (SDL_Window** windows = SDL_GetWindows(&count)) {
+			for (int i = 0; i < count; ++i) {
+				auto* f = (SDL3WindowForm*)SDL_GetPointerProperty(
+					SDL_GetWindowProperties(windows[i]), "form", nullptr);
+				if (f) f->AppEvent(event);
+			}
+			SDL_free(windows);
+		}
+		return SDL_APP_CONTINUE;
+	}
+	default: break;
+	}
+
 	SDL_Window* window = SDL_GetWindowFromID(event.window.windowID);
 	if (!window) return SDL_APP_CONTINUE;
 
 	SDL3WindowForm* form = (SDL3WindowForm*)SDL_GetPointerProperty(SDL_GetWindowProperties(window), "form", nullptr);
 	if (form) {
+		// 最上位ホットキーフック (System.registerHotKey)。 フォーカス中の
+		// レイヤ / テキスト入力 / Elements モーダルへ dispatch する前に照合し、
+		// 登録キーはここで消費する。 モーダルポンプ (PumpModalLoop) も
+		// AppEvent を通るので、 起動ランチャーや画面遷移の合間を含む
+		// 全タイミングで効く。
+		if (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) {
+			extern tjs_uint16 TVPTransSDLKeyToVirtualKey(tjs_int sdlKey);
+			tjs_uint32 ss = 0;
+			if (event.key.mod & SDL_KMOD_SHIFT) ss |= TVP_SS_SHIFT;
+			if (event.key.mod & SDL_KMOD_CTRL)  ss |= TVP_SS_CTRL;
+			if (event.key.mod & SDL_KMOD_ALT)   ss |= TVP_SS_ALT;
+			if (TVPProcessHotKey(TVPTransSDLKeyToVirtualKey(event.key.key), ss,
+			                     event.type == SDL_EVENT_KEY_DOWN, event.key.repeat))
+				return SDL_APP_CONTINUE;
+		}
 		// モーダルウィンドウ表示中は、そのウィンドウ以外へのユーザ入力を捨てる。
 		// SDL_SetWindowModal が効く環境では OS 側でも弾かれるが、未対応環境
 		// (と、既にキューに積まれていたイベント) のためにここでも排他する。
@@ -1044,7 +1086,8 @@ SDL3Application::GetKirikiriStorage()
 	return mKirikiriStorage;
 }
 
-extern void InitStorageSystem(const char *orgname, const char *appname);
+extern void InitStorageSystem(const char *orgname, const char *appname,
+                              iTVPStorageMedia2 *platform_media);
 
 #if defined(SDL_PLATFORM_WINDOWS)
 
@@ -1087,7 +1130,9 @@ SDL3Application::InitDataPath()
 		tjs_string appname_str = val.GetString();
 		TVPUtf16ToUtf8(appname, appname_str.c_str());
 	}
-    InitStorageSystem(orgname.c_str(), appname.c_str());
+	// プラットフォーム専用の user:// 実装があればそれを使う (無ければ SDL storage)
+	InitStorageSystem(orgname.c_str(), appname.c_str(),
+	                  CreateUserStorageMedia(orgname.c_str(), appname.c_str()));
 
 #if defined(SDL_PLATFORM_WINDOWS) || defined(SDL_PLATFORM_LINUX)
 	// -datapth オプションで保存先を差し替え・未定義時は実行ファイルの場所にある savedata

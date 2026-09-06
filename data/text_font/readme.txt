@@ -3,7 +3,7 @@ text_font — フォントと文字描画
 
 ■ 概要
 
-フォントと文字描画のデモ 4 シーンを束ねたもの (PgUp/PgDn で切替)。
+フォントと文字描画のデモ 5 シーンを束ねたもの (PgUp/PgDn で切替)。
 
 1. text_font — Layer.font (Font クラス) と drawText の機能一覧
 
@@ -28,7 +28,17 @@ text_font — フォントと文字描画
   タイプライタ   … shapedTextCount + count 制限の自動再生。RTL 混在文が
                    論理順 (読み順) で 1 クラスタずつ現れる様子を観察できる
 
-4. text_rasterizer — 同一内容の FreeType / GDI / glyphware 描画比較
+4. text_vertical — 縦組み (drawVerticalTextArea)
+
+  本文の流し込み … 矩形へ縦組みで流し込む。約物の詰め・行頭行末禁則・
+                   追い込み/追い出しを日本語組版規則 (JLReq) のアキ量で処理
+  options 切替   … 1:ぶら下げ 2:行末揃え 3:約物の詰め 4:列送りの向き
+                   5/Space:orientation ←/→:字間 (letterSpacing)
+  組み分け       … orientation 0/1/2 (和文正立+欧文横倒し / 全正立 / 全横倒し)
+                   を並べて比較
+  タイプライタ   … measureVerticalTextArea の totalCount + count 制限の自動再生
+
+5. text_rasterizer — 同一内容の FreeType / GDI / glyphware 描画比較
 
 ■ 実装メモ
 
@@ -39,6 +49,8 @@ text_font — フォントと文字描画
   から設定する (前の描画の設定が残らないように resetFont を用意)。
 - Font.getList はプラットフォームによっては列挙数が少ない / 0 のことがある
   (その場合は「列挙が使えません」と表示)。
+- text_vertical は本文の組版のみ。ルビ・縦中横・圏点・割注・字取り、段組、
+  下線/打ち消し線、Font.angle は未対応 (指定しても無視される)。
 - text_glyphware の RTL/絵文字フォント (Noto Sans Arabic / Hebrew /
   Color Emoji) は data/fonts.json の宣言前提。単体起動 (datadir=text_font)
   では解決されず代替字形になる — フル表示はトップ data/ ギャラリーから。
@@ -60,5 +72,6 @@ text_font — フォントと文字描画
 
   doc/reference/Font.md / doc/reference/Layer.md
     (drawText / getTextWidth / drawShapedText / drawShapedTextArea /
-     measureShapedText / shapedTextCount)
+     measureShapedText / shapedTextCount / drawVerticalTextArea /
+     measureVerticalTextArea)
   doc/guide/FontSystem.md (フォントシステム全体のガイド)

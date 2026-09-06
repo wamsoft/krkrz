@@ -1,5 +1,5 @@
 //---------------------------------------------------------------------------
-// TJS Dialog クラス実装 (Phase 6b)
+// TJS ElementsDialog クラス実装 (Phase 6b)
 //
 // `iTVPDialogEventHandler` を直接 implement して、manager から OnAction が
 // 呼ばれたら TVPPostEvent で TJS の `onAction` メソッドを起動する。
@@ -11,7 +11,7 @@
 #include "DebugIntf.h"
 #include "CharacterSet.h"
 #include "tjsDictionary.h"   // TJSCreateDictionaryObject
-#include "tjsArray.h"        // TJSCreateArrayObject (Dialog.baseSize getter)
+#include "tjsArray.h"        // TJSCreateArrayObject (ElementsDialog.baseSize getter)
 #include "StoragesResourceLoader.h"   // TVPRegisterElementsFont(Dir)
 #include "VariantJsonUtil.h" // TVPVariantToJsonUtf8 (showDict / showModalDict)
 
@@ -25,7 +25,7 @@
 
 #include <vector>
 #include <elements/element/pad_icon.hpp>   // set_pad_icon_base_dir / set_pad_theme
-#include <elements_modal/modal.h>          // set_focus_ring_enabled (Dialog.focusRing)
+#include <elements_modal/modal.h>          // set_focus_ring_enabled (ElementsDialog.focusRing)
 
 #include <string>
 
@@ -113,6 +113,14 @@ void tTJSNI_Dialog::OnAction(const ttstr& id, const tTJSVariant& payload)
 	TVPPostEvent(Owner, Owner, eventname, 0, TVP_EPT_IMMEDIATE, 2, args);
 }
 
+void tTJSNI_Dialog::OnDrag(const tTJSVariant& payload)
+{
+	if (!Owner) return;
+	tTJSVariant args[1] = { payload };
+	static ttstr eventname(TJS_W("onDrag"));
+	TVPPostEvent(Owner, Owner, eventname, 0, TVP_EPT_IMMEDIATE, 1, args);
+}
+
 void tTJSNI_Dialog::OnScreenEnter(const ttstr& name)
 {
 	if (!Owner) return;
@@ -137,6 +145,41 @@ void tTJSNI_Dialog::OnClosed(const ttstr& action)
 	TVPPostEvent(Owner, Owner, eventname, 0, TVP_EPT_IMMEDIATE, 1, args);
 }
 
+void tTJSNI_Dialog::OnVar(const ttstr& name, const ttstr& value)
+{
+	if (!Owner) return;
+	tTJSVariant args[2] = { name, value };
+	static ttstr eventname(TJS_W("onVar"));
+	TVPPostEvent(Owner, Owner, eventname, 0, TVP_EPT_IMMEDIATE, 2, args);
+}
+
+bool tTJSNI_Dialog::WantsVarNotify(std::vector<ttstr>& out_names)
+{
+	switch (WatchMode) {
+	case VarWatch::Off:
+		return false;
+	case VarWatch::All:
+		out_names.clear();
+		return true;
+	case VarWatch::Names:
+		out_names = WatchNames;
+		return !out_names.empty();
+	case VarWatch::Auto:
+	default:
+		break;
+	}
+	// 既定 (watchVars 未指定): onVar を実装しているときだけ全変数を観測する。
+	// «onVar を書いたのに来ない» を避けつつ、 書いていないホストには hover 連動
+	// 変数のような高頻度書込のコストを一切掛けない。
+	if (!Owner) return false;
+	tTJSVariant v;
+	if (TJS_FAILED(Owner->PropGet(0, TJS_W("onVar"), nullptr, &v, Owner)))
+		return false;
+	if (v.Type() == tvtVoid) return false;
+	out_names.clear();
+	return true;
+}
+
 // modal 引数の解決: -1 (省略) は後方互換で grabFocus に追従。 grabFocus=true +
 // modal=0 が「非モーダル+フォーカスあり」= キー/パッドはダイアログへ届き、
 // 未処理分はホストへ素通し (handled pass-through) の中間状態になる。
@@ -147,7 +190,7 @@ static bool ResolveShowModal(bool grabFocus, int modal)
 
 bool tTJSNI_Dialog::ShowFile(const ttstr& path, bool grabFocus, int modal)
 {
-	return WithDialogExceptionContext(TJS_W("Dialog.showFile"), path, [&]() -> bool {
+	return WithDialogExceptionContext(TJS_W("ElementsDialog.showFile"), path, [&]() -> bool {
 		auto& mgr = tTVPElementsDialogManager::Instance();
 		return mgr.ShowFromJsonFile(path, this, nullptr,
 			ResolveShowModal(grabFocus, modal), grabFocus);
@@ -156,7 +199,7 @@ bool tTJSNI_Dialog::ShowFile(const ttstr& path, bool grabFocus, int modal)
 
 bool tTJSNI_Dialog::ShowJson(const ttstr& json_utf16, bool grabFocus, int modal)
 {
-	return WithDialogExceptionContext(TJS_W("Dialog.showJson"), ttstr(), [&]() -> bool {
+	return WithDialogExceptionContext(TJS_W("ElementsDialog.showJson"), ttstr(), [&]() -> bool {
 		std::string utf8;
 		tjs_string ts(json_utf16.c_str());
 		TVPUtf16ToUtf8(utf8, ts);
@@ -169,7 +212,7 @@ bool tTJSNI_Dialog::ShowJson(const ttstr& json_utf16, bool grabFocus, int modal)
 bool tTJSNI_Dialog::ShowDict(iTJSDispatch2* dict, bool grabFocus, int modal)
 {
 	if (!dict) return false;
-	return WithDialogExceptionContext(TJS_W("Dialog.showDict"), ttstr(), [&]() -> bool {
+	return WithDialogExceptionContext(TJS_W("ElementsDialog.showDict"), ttstr(), [&]() -> bool {
 		std::string utf8;
 		tTJSVariant v(dict, dict);
 		TVPVariantToJsonUtf8(v, utf8);
@@ -191,6 +234,21 @@ void tTJSNI_Dialog::Close()
 bool tTJSNI_Dialog::SetVar(const ttstr& name, const ttstr& value)
 {
 	return tTVPElementsDialogManager::Instance().SetVar(this, name, value);
+}
+
+bool tTJSNI_Dialog::GetVar(const ttstr& name, ttstr& out)
+{
+	return tTVPElementsDialogManager::Instance().GetVar(this, name, out);
+}
+
+bool tTJSNI_Dialog::FocusWidget(const ttstr& id)
+{
+	return tTVPElementsDialogManager::Instance().FocusWidget(this, id);
+}
+
+bool tTJSNI_Dialog::ActivateWidget(const ttstr& id)
+{
+	return tTVPElementsDialogManager::Instance().ActivateWidget(this, id);
 }
 
 //---------------------------------------------------------------------------
@@ -443,7 +501,7 @@ bool TVPConfirmElements(const ttstr& caption, const ttstr& text, bool& yes)
 iTJSDispatch2* tTJSNI_Dialog::ShowModalJson(const ttstr& json_utf16,
 	const ttstr& title, int width, int height)
 {
-	return WithDialogExceptionContext(TJS_W("Dialog.showModalJson"), ttstr(),
+	return WithDialogExceptionContext(TJS_W("ElementsDialog.showModalJson"), ttstr(),
 		[&]() -> iTJSDispatch2* {
 		std::string utf8;
 		tjs_string ts(json_utf16.c_str());
@@ -462,12 +520,12 @@ iTJSDispatch2* tTJSNI_Dialog::ShowModalJson(const ttstr& json_utf16,
 iTJSDispatch2* tTJSNI_Dialog::ShowModalFile(const ttstr& path,
 	const ttstr& title, int width, int height)
 {
-	return WithDialogExceptionContext(TJS_W("Dialog.showModalFile"), path,
+	return WithDialogExceptionContext(TJS_W("ElementsDialog.showModalFile"), path,
 		[&]() -> iTJSDispatch2* {
 		tjs_uint64 flen = 0;
 		auto buf = TVPReadStream(path.c_str(), &flen);
 		if (!buf || flen == 0) {
-			TVPAddImportantLog(ttstr(TJS_W("Dialog.showModalFile: cannot read: "))
+			TVPAddImportantLog(ttstr(TJS_W("ElementsDialog.showModalFile: cannot read: "))
 				+ path);
 			return nullptr;
 		}
@@ -485,7 +543,7 @@ iTJSDispatch2* tTJSNI_Dialog::ShowModalFile(const ttstr& path,
 iTJSDispatch2* tTJSNI_Dialog::ShowModalOverlayJson(const ttstr& json_utf16,
 	const std::map<ttstr, ttstr>* initialVars)
 {
-	return WithDialogExceptionContext(TJS_W("Dialog.showModalOverlayJson"), ttstr(),
+	return WithDialogExceptionContext(TJS_W("ElementsDialog.showModalOverlayJson"), ttstr(),
 		[&]() -> iTJSDispatch2* {
 		std::string utf8;
 		tjs_string ts(json_utf16.c_str());
@@ -502,12 +560,12 @@ iTJSDispatch2* tTJSNI_Dialog::ShowModalOverlayJson(const ttstr& json_utf16,
 iTJSDispatch2* tTJSNI_Dialog::ShowModalOverlayFile(const ttstr& path,
 	const std::map<ttstr, ttstr>* initialVars)
 {
-	return WithDialogExceptionContext(TJS_W("Dialog.showModalOverlayFile"), path,
+	return WithDialogExceptionContext(TJS_W("ElementsDialog.showModalOverlayFile"), path,
 		[&]() -> iTJSDispatch2* {
 		tjs_uint64 flen = 0;
 		auto buf = TVPReadStream(path.c_str(), &flen);
 		if (!buf || flen == 0) {
-			TVPAddImportantLog(ttstr(TJS_W("Dialog.showModalOverlayFile: cannot read: "))
+			TVPAddImportantLog(ttstr(TJS_W("ElementsDialog.showModalOverlayFile: cannot read: "))
 				+ path);
 			return nullptr;
 		}
@@ -526,7 +584,7 @@ iTJSDispatch2* tTJSNI_Dialog::ShowModalDict(iTJSDispatch2* dict,
 	const ttstr& title, int width, int height)
 {
 	if (!dict) return nullptr;
-	return WithDialogExceptionContext(TJS_W("Dialog.showModalDict"), ttstr(),
+	return WithDialogExceptionContext(TJS_W("ElementsDialog.showModalDict"), ttstr(),
 		[&]() -> iTJSDispatch2* {
 		std::string utf8;
 		tTJSVariant v(dict, dict);
@@ -544,7 +602,7 @@ iTJSDispatch2* tTJSNI_Dialog::ShowModalOverlayDict(iTJSDispatch2* dict,
 	const std::map<ttstr, ttstr>* initialVars)
 {
 	if (!dict) return nullptr;
-	return WithDialogExceptionContext(TJS_W("Dialog.showModalOverlayDict"), ttstr(),
+	return WithDialogExceptionContext(TJS_W("ElementsDialog.showModalOverlayDict"), ttstr(),
 		[&]() -> iTJSDispatch2* {
 		std::string utf8;
 		tTJSVariant v(dict, dict);
@@ -563,7 +621,7 @@ iTJSDispatch2* tTJSNI_Dialog::ShowModalOverlayDict(iTJSDispatch2* dict,
 //---------------------------------------------------------------------------
 iTJSDispatch2* tTJSNI_Dialog::ShowFlow(const ttstr& manifest_path)
 {
-	return WithDialogExceptionContext(TJS_W("Dialog.showFlow"), manifest_path,
+	return WithDialogExceptionContext(TJS_W("ElementsDialog.showFlow"), manifest_path,
 		[&]() -> iTJSDispatch2* {
 		tTVPElementsModalResult mr;
 		if (!TVPRunElementsFlowOverlayManifest(manifest_path, this, mr)) {
@@ -620,11 +678,11 @@ iTJSDispatch2* tTJSNI_Dialog::ShowFlowScreens(iTJSDispatch2* screens_dict,
 	tTJSVariantClosure clo(&caller, nullptr);
 	screens_dict->EnumMembers(TJS_IGNOREPROP, &clo, screens_dict);
 	if (caller.screens.empty()) {
-		TVPAddImportantLog(TJS_W("Dialog.showFlowScreens: no string screens in dict"));
+		TVPAddImportantLog(TJS_W("ElementsDialog.showFlowScreens: no string screens in dict"));
 		return nullptr;
 	}
 
-	return WithDialogExceptionContext(TJS_W("Dialog.showFlowScreens"), entry,
+	return WithDialogExceptionContext(TJS_W("ElementsDialog.showFlowScreens"), entry,
 		[&]() -> iTJSDispatch2* {
 		std::string entry_utf8;
 		{ tjs_string ts(entry.c_str()); TVPUtf16ToUtf8(entry_utf8, ts); }
@@ -644,7 +702,7 @@ bool tTJSNI_Dialog::StartFlow(const ttstr& manifest_path, bool grabFocus)
 {
 	// 即 return。 以降の画面遷移 / イベントは DrawDevice の PaintOverlay が駆動し、
 	// onScreen / onScreenLeave / onAction で通知される。 close() で閉じる。
-	return WithDialogExceptionContext(TJS_W("Dialog.startFlow"), manifest_path,
+	return WithDialogExceptionContext(TJS_W("ElementsDialog.startFlow"), manifest_path,
 		[&]() -> bool {
 		return tTVPElementsDialogManager::Instance()
 			.StartFlowFromManifest(manifest_path, this, nullptr, /*modal=*/false, grabFocus);
@@ -659,10 +717,10 @@ bool tTJSNI_Dialog::StartFlowScreens(iTJSDispatch2* screens_dict, const ttstr& e
 	tTJSVariantClosure clo(&caller, nullptr);
 	screens_dict->EnumMembers(TJS_IGNOREPROP, &clo, screens_dict);
 	if (caller.screens.empty()) {
-		TVPAddImportantLog(TJS_W("Dialog.startFlowScreens: no string screens in dict"));
+		TVPAddImportantLog(TJS_W("ElementsDialog.startFlowScreens: no string screens in dict"));
 		return false;
 	}
-	return WithDialogExceptionContext(TJS_W("Dialog.startFlowScreens"), entry,
+	return WithDialogExceptionContext(TJS_W("ElementsDialog.startFlowScreens"), entry,
 		[&]() -> bool {
 		std::string entry_utf8;
 		{ tjs_string ts(entry.c_str()); TVPUtf16ToUtf8(entry_utf8, ts); }
@@ -677,16 +735,16 @@ bool tTJSNI_Dialog::StartFlowScreens(iTJSDispatch2* screens_dict, const ttstr& e
 //---------------------------------------------------------------------------
 tjs_uint32 tTJSNC_Dialog::ClassID = (tjs_uint32)-1;
 
-tTJSNC_Dialog::tTJSNC_Dialog() : inherited(TJS_W("Dialog"))
+tTJSNC_Dialog::tTJSNC_Dialog() : inherited(TJS_W("ElementsDialog"))
 {
-	TJS_BEGIN_NATIVE_MEMBERS(Dialog)
+	TJS_BEGIN_NATIVE_MEMBERS(ElementsDialog)
 	TJS_DECL_EMPTY_FINALIZE_METHOD
 	//---------------------------------------------------------------------------
-	TJS_BEGIN_NATIVE_CONSTRUCTOR_DECL(/*var.name*/_this, /*var.type*/tTJSNI_Dialog, /*TJS class name*/Dialog)
+	TJS_BEGIN_NATIVE_CONSTRUCTOR_DECL(/*var.name*/_this, /*var.type*/tTJSNI_Dialog, /*TJS class name*/ElementsDialog)
 	{
 		return TJS_S_OK;
 	}
-	TJS_END_NATIVE_CONSTRUCTOR_DECL(/*TJS class name*/Dialog)
+	TJS_END_NATIVE_CONSTRUCTOR_DECL(/*TJS class name*/ElementsDialog)
 	//---------------------------------------------------------------------------
 	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/showFile)
 	{
@@ -962,6 +1020,112 @@ tTJSNC_Dialog::tTJSNC_Dialog() : inherited(TJS_W("Dialog"))
 	}
 	TJS_END_NATIVE_METHOD_DECL(/*func. name*/setVar)
 	//---------------------------------------------------------------------------
+	// getVar(name) — 表示中ダイアログの変数 store から読出。 setVar で書いた値
+	// だけでなく、 画面側が書いた値 (vars_on_hover / vars_on_focus / スライダの
+	// value_var / drag_at_var / 一覧の index_offset_var 等) も同じ store から
+	// 読める。 «絵はホスト側のレイヤ、 当たり判定だけダイアログ» の構成で、
+	// いまカーソルが乗っている行を知る、 といった用途に使う。
+	// 未知の変数 / 非アクティブなら void を返す (空文字と区別できる)。
+	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/getVar)
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Dialog);
+		if (numparams < 1) return TJS_E_BADPARAMCOUNT;
+		ttstr name(*param[0]);
+		ttstr value;
+		if (!_this->GetVar(name, value)) {
+			if (result) result->Clear();
+			return TJS_S_OK;
+		}
+		if (result) *result = value;
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_METHOD_DECL(/*func. name*/getVar)
+	//---------------------------------------------------------------------------
+	// focus(id) — id 指定の widget へフォーカスを移す (Agent.dialogFocus の
+	// instance 版)。 input_box は編集フォーカス (キャレット + text 受理) になる。
+	// 画面の組み替え (at_var の park/unpark) の後に呼んで入力先を移す用途。
+	// 非アクティブ / インスタンス無しなら false。
+	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/focus)
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Dialog);
+		if (numparams < 1) return TJS_E_BADPARAMCOUNT;
+		ttstr id(*param[0]);
+		bool ok = _this->FocusWidget(id);
+		if (result) *result = (tjs_int)(ok ? 1 : 0);
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_METHOD_DECL(/*func. name*/focus)
+	//---------------------------------------------------------------------------
+	// activate(id) — id 指定の widget を実行する (focus + Enter 相当。
+	// Agent.dialogClick の instance 版 / ElementsPanel.activate と同形)。
+	// 非アクティブ / インスタンス無し / id 不明なら false。
+	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/activate)
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Dialog);
+		if (numparams < 1) return TJS_E_BADPARAMCOUNT;
+		ttstr id(*param[0]);
+		bool ok = _this->ActivateWidget(id);
+		if (result) *result = (tjs_int)(ok ? 1 : 0);
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_METHOD_DECL(/*func. name*/activate)
+	//---------------------------------------------------------------------------
+	// listVars() — 表示中ダイアログが使っている変数の一覧 (名前順)。
+	// 要素は %[ name, value, usedBy ] の Dictionary で、 usedBy は
+	// %[ id, kind ] の配列 (kind は JSON のキーそのもの: "text_var" /
+	// "visible_var" / "vars_on_hover" 等、 id は «いちばん近い祖先の id»)。
+	// 参照だけあって未書込の変数、 参照は無いがホストが setVar で作った変数、
+	// どちらも載る。 デバッグパネルや画面 JSON の検証に使う。
+	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/listVars)
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Dialog);
+		auto vars = tTVPElementsDialogManager::Instance().DescribeVars(_this);
+		iTJSDispatch2* arr = TJSCreateArrayObject();
+		if (!arr) return TJS_E_FAIL;
+		tjs_int n = 0;
+		for (auto const& v : vars) {
+			iTJSDispatch2* dic = TJSCreateDictionaryObject();
+			if (!dic) { arr->Release(); return TJS_E_FAIL; }
+			auto put = [dic](const tjs_char* key, const tTJSVariant& val) {
+				tTJSVariant tmp = val;
+				dic->PropSet(TJS_MEMBERENSURE, key, nullptr, &tmp, dic);
+			};
+			put(TJS_W("name"),  tTJSVariant(v.name));
+			put(TJS_W("value"), tTJSVariant(v.value));
+			iTJSDispatch2* used = TJSCreateArrayObject();
+			if (used) {
+				tjs_int un = 0;
+				for (auto const& u : v.used_by) {
+					iTJSDispatch2* ud = TJSCreateDictionaryObject();
+					if (!ud) continue;
+					tTJSVariant vid(u.first), vkind(u.second);
+					ud->PropSet(TJS_MEMBERENSURE, TJS_W("id"), nullptr, &vid, ud);
+					ud->PropSet(TJS_MEMBERENSURE, TJS_W("kind"), nullptr,
+					            &vkind, ud);
+					tTJSVariant uv(ud, ud);
+					used->PropSetByNum(TJS_MEMBERENSURE, un++, &uv, used);
+					ud->Release();
+				}
+				put(TJS_W("usedBy"), tTJSVariant(used, used));
+				used->Release();
+			}
+			tTJSVariant dv(dic, dic);
+			arr->PropSetByNum(TJS_MEMBERENSURE, n++, &dv, arr);
+			dic->Release();
+		}
+		if (result) *result = tTJSVariant(arr, arr);
+		arr->Release();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_METHOD_DECL(/*func. name*/listVars)
+	//---------------------------------------------------------------------------
+	// onVar(name, value) — 変数 store の値が変わったときの通知 (ホストが実装)。
+	//
+	// **native 側に既定実装を置かない** (onDrag と同じ扱い)。 «onVar を実装して
+	// いるか» を Dialog オブジェクトのメンバ有無で判定して観測の有無を決めて
+	// おり、 no-op 既定を置くと全ダイアログが «実装済み» になってしまうため。
+	// 観測対象を明示したい / 表示中に切り替えたい場合は watchVars を使う。
+	//---------------------------------------------------------------------------
 	// registerFont(family, path [, weight [, slant [, stretch]]])
 	//
 	// Elements 用のフォントを krkrz Storages 経由でメモリ登録する。
@@ -1182,6 +1346,25 @@ tTJSNC_Dialog::tTJSNC_Dialog() : inherited(TJS_W("Dialog"))
 	}
 	TJS_END_NATIVE_PROP_DECL(hasPhysicalKeyboard)
 	//---------------------------------------------------------------------------
+	// modalActive プロパティ (読取専用):
+	//   modal=true なインスタンス (showModal* / モーダルフロー) が 1 つでも
+	//   アクティブなら true。 非モーダルの常駐オーバレイ (字幕等) は含まない。
+	//   最上位ホットキー (System.registerHotKey) のコールバックが 「モーダル
+	//   表示中は素通しする」 判定に使う想定。
+	TJS_BEGIN_NATIVE_PROP_DECL(modalActive)
+	{
+		TJS_BEGIN_NATIVE_PROP_GETTER
+		{
+			*result = (tjs_int)(tTVPElementsDialogManager::Instance()
+				.HasModalInstance() ? 1 : 0);
+			return TJS_S_OK;
+		}
+		TJS_END_NATIVE_PROP_GETTER
+
+		TJS_DENY_NATIVE_PROP_SETTER
+	}
+	TJS_END_NATIVE_PROP_DECL(modalActive)
+	//---------------------------------------------------------------------------
 	// renderScale プロパティ (static 相当):
 	//   overlay の描画密度モード。
 	//     0 (既定) = auto: 最終 present サイズで直接ラスタライズ (authored が
@@ -1291,6 +1474,89 @@ tTJSNC_Dialog::tTJSNC_Dialog() : inherited(TJS_W("Dialog"))
 	//   設定する。 画面単位ではなくタイトル全体の見た目方針なのでグローバル
 	//   テーマのフラグ。 フォーカス自体は生きているのでキー/パッド操作の挙動は
 	//   変わらない。
+	//---------------------------------------------------------------------------
+	// watchVars — onVar で受け取る変数を絞る / 明示指定する。
+	//
+	//   dlg.watchVars = ["row_hover", "sel"];  // この 2 本だけ通知
+	//   dlg.watchVars = "*";                   // 全変数を通知
+	//   dlg.watchVars = [];                    // 通知しない (明示 OFF)
+	//   dlg.watchVars = void;                  // 既定へ戻す
+	//
+	// 既定 (未指定) は «onVar を実装していれば全変数» = 実装したのに来ない、が
+	// 起きない。 hover 連動変数やドラッグ座標は毎フレーム書かれるので、 特定の
+	// 変数だけ要るなら名前を並べたほうが軽い。 表示中に設定しても即座に効く。
+	TJS_BEGIN_NATIVE_PROP_DECL(watchVars)
+	{
+		TJS_BEGIN_NATIVE_PROP_GETTER
+		{
+			TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Dialog);
+			switch (_this->WatchMode) {
+			case tTJSNI_Dialog::VarWatch::All:
+				*result = ttstr(TJS_W("*"));
+				return TJS_S_OK;
+			case tTJSNI_Dialog::VarWatch::Auto:
+				result->Clear();
+				return TJS_S_OK;
+			default:
+				break;
+			}
+			iTJSDispatch2* arr = TJSCreateArrayObject();
+			if (!arr) return TJS_E_FAIL;
+			tjs_int n = 0;
+			for (auto const& name : _this->WatchNames) {
+				tTJSVariant v(name);
+				arr->PropSetByNum(TJS_MEMBERENSURE, n++, &v, arr);
+			}
+			*result = tTJSVariant(arr, arr);
+			arr->Release();
+			return TJS_S_OK;
+		}
+		TJS_END_NATIVE_PROP_GETTER
+
+		TJS_BEGIN_NATIVE_PROP_SETTER
+		{
+			TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Dialog);
+			_this->WatchNames.clear();
+			if (param->Type() == tvtVoid) {
+				_this->WatchMode = tTJSNI_Dialog::VarWatch::Auto;
+			} else if (param->Type() == tvtObject) {
+				// Array を想定。 count を読んで 0..count-1 を文字列で拾う。
+				iTJSDispatch2* arr = param->AsObjectNoAddRef();
+				tTJSVariant vcount;
+				tjs_int count = 0;
+				if (arr && TJS_SUCCEEDED(arr->PropGet(0, TJS_W("count"), nullptr,
+				                                      &vcount, arr))) {
+					count = (tjs_int)vcount;
+				}
+				for (tjs_int i = 0; i < count; ++i) {
+					tTJSVariant v;
+					if (TJS_FAILED(arr->PropGetByNum(0, i, &v, arr))) continue;
+					if (v.Type() == tvtVoid) continue;
+					ttstr name(v);
+					if (!name.IsEmpty()) _this->WatchNames.push_back(name);
+				}
+				_this->WatchMode = _this->WatchNames.empty()
+					? tTJSNI_Dialog::VarWatch::Off
+					: tTJSNI_Dialog::VarWatch::Names;
+			} else {
+				ttstr sv(*param);
+				if (sv == ttstr(TJS_W("*"))) {
+					_this->WatchMode = tTJSNI_Dialog::VarWatch::All;
+				} else if (sv.IsEmpty()) {
+					_this->WatchMode = tTJSNI_Dialog::VarWatch::Off;
+				} else {
+					_this->WatchNames.push_back(sv);
+					_this->WatchMode = tTJSNI_Dialog::VarWatch::Names;
+				}
+			}
+			// 表示中なら即座に張り直す (次の画面遷移を待たない)。
+			tTVPElementsDialogManager::Instance().RefreshVarWatch(_this);
+			return TJS_S_OK;
+		}
+		TJS_END_NATIVE_PROP_SETTER
+	}
+	TJS_END_NATIVE_PROP_DECL(watchVars)
+	//---------------------------------------------------------------------------
 	TJS_BEGIN_NATIVE_PROP_DECL(focusRing)
 	{
 		TJS_BEGIN_NATIVE_PROP_GETTER
@@ -1489,6 +1755,96 @@ tTJSNC_Dialog::tTJSNC_Dialog() : inherited(TJS_W("Dialog"))
 		return TJS_S_OK;
 	}
 	TJS_END_NATIVE_METHOD_DECL(/*func. name*/clearImages)
+	//---------------------------------------------------------------------------
+	// === セッション共有変数 (画面 JSON の "shared_vars") ===
+	//
+	// 画面 JSON が `"shared_vars": ["cfg_*"]` と宣言すると、 一致する変数は
+	// 画面をまたいで保たれる (画面ごとに作り直される変数 store とは別の、
+	// セッション共有ストアと双方向になる)。 「どの値を持ち回るか」は画面が
+	// 決めるのでホスト側の実装は要らないが、 **ゲームのセーブデータへ落とす /
+	// ロード後に流し込む**のはホストの仕事なので、 その口をここで開ける。
+	//
+	// いずれも画面の有無に依存しないクラスメソッド (インスタンス不要)。
+	//---------------------------------------------------------------------------
+	// setSharedVar(name, value) — 共有変数を書く (画面が未構築でも可)。
+	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/setSharedVar)
+	{
+		if (numparams < 2) return TJS_E_BADPARAMCOUNT;
+		std::string name8, value8;
+		{ tjs_string t(ttstr(*param[0]).c_str()); TVPUtf16ToUtf8(name8, t); }
+		{ tjs_string t(ttstr(*param[1]).c_str()); TVPUtf16ToUtf8(value8, t); }
+		elements_modal::set_shared_var(name8, value8);
+		if (result) *result = true;
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_METHOD_DECL(/*func. name*/setSharedVar)
+	//---------------------------------------------------------------------------
+	// getSharedVars() — 共有変数の現在値を辞書 (name => value) で返す。 セーブ用。
+	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/getSharedVars)
+	{
+		iTJSDispatch2* dic = TJSCreateDictionaryObject();
+		if (!dic) return TJS_E_FAIL;
+		for (auto const& kv : elements_modal::shared_vars()) {
+			tjs_string kw, vw;
+			TVPUtf8ToUtf16(kw, kv.first);
+			TVPUtf8ToUtf16(vw, kv.second);
+			tTJSVariant val(vw.c_str());
+			dic->PropSet(TJS_MEMBERENSURE, kw.c_str(), nullptr, &val, dic);
+		}
+		if (result) *result = tTJSVariant(dic, dic);
+		dic->Release();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_METHOD_DECL(/*func. name*/getSharedVars)
+	//---------------------------------------------------------------------------
+	// clearSharedVars() — 共有変数を捨てる (タイトルへ戻る / ロード直前など)。
+	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/clearSharedVars)
+	{
+		elements_modal::clear_shared_vars();
+		if (result) *result = true;
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_METHOD_DECL(/*func. name*/clearSharedVars)
+	//---------------------------------------------------------------------------
+	// === 差し替え可能アトラス (画面 JSON の "atlases" 内 "swappable": true) ===
+	//
+	// 画面はそのままで «絵の束» だけ入れ替える (CG 鑑賞のグループタブ等)。
+	// widget は作り直さないのでレイアウトもフォーカスも保たれる。 **差し替え先は
+	// 同じ矩形割りであること** (widget が持つ frames / rect は変わらないので、
+	// 絵の位置がずれると別の絵が出る)。
+	//---------------------------------------------------------------------------
+	// setAtlasImage(name, path) — 名前付きアトラスの絵を差し替える。
+	// path は画面の resource_base 起点。 戻り値 = 差し替えられたか
+	// (未宣言 / 読込失敗なら false で、 表示は変わらない)。
+	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/setAtlasImage)
+	{
+		if (numparams < 2) return TJS_E_BADPARAMCOUNT;
+		std::string name8, path8;
+		{ tjs_string t(ttstr(*param[0]).c_str()); TVPUtf16ToUtf8(name8, t); }
+		{ tjs_string t(ttstr(*param[1]).c_str()); TVPUtf16ToUtf8(path8, t); }
+		bool ok = elements_modal::set_atlas_image(name8, path8);
+		if (result) *result = ok;
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_METHOD_DECL(/*func. name*/setAtlasImage)
+	//---------------------------------------------------------------------------
+	// swappableAtlases() — いま差し替えられるアトラス名の配列 (検証 / REPL 用)。
+	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/swappableAtlases)
+	{
+		iTJSDispatch2* arr = TJSCreateArrayObject();
+		if (!arr) return TJS_E_FAIL;
+		tjs_int n = 0;
+		for (auto const& name : elements_modal::swappable_atlases()) {
+			tjs_string nw;
+			TVPUtf8ToUtf16(nw, name);
+			tTJSVariant v(nw.c_str());
+			arr->PropSetByNum(TJS_MEMBERENSURE, n++, &v, arr);
+		}
+		if (result) *result = tTJSVariant(arr, arr);
+		arr->Release();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_METHOD_DECL(/*func. name*/swappableAtlases)
 	//---------------------------------------------------------------------------
 	// active プロパティ (getter のみ):
 	//   この Dialog インスタンスが今アクティブなダイアログ / フローのオーナーか。

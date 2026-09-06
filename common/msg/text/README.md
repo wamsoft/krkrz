@@ -33,7 +33,7 @@ Python 標準ライブラリのみ。**Excel / Win32::OLE / Perl は不要**。�
 | `common/tjs2/tjsErrorInc.h` | TJS エラーの `TJS_MSG_DECL_NULL` (section=tjs) |
 | `common/msg/MsgIntfInc.h` | TVP 共通の `TVP_MSG_DECL_NULL` (section=tvp) |
 | `win32/msg/MsgImpl.h` | TVP Win32 の `TVP_MSG_DECL_NULL` (section=tvp_win32) |
-| `resource/messages{,-en,-chs}.json` | SDL/generic 用。位置配列 JSON。実行時 `generic/msg/MsgLoad.cpp` が index で読む |
+| `resource/messages{,-en,-chs,-cht}.json` | SDL/generic 用。位置配列 JSON。実行時 `generic/msg/MsgLoad.cpp` が index で読む。**cht 列が空の行は chs へフォールバック** |
 | `win32/vcproj/string_table_{jp,en,chs}.rc` + `string_table_resource.h` | WINVER 用 Win32 STRINGTABLE (UTF-16LE+BOM+CRLF)。`win32/msg/MsgLoad.cpp` が `LoadString` で読む |
 | `generic/msg/MsgLoad.cpp` / `win32/msg/MsgLoad.cpp` | enum + ロード関数 |
 

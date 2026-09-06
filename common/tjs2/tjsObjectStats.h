@@ -21,6 +21,7 @@
 namespace TJS {
 class tTJSDictionaryObject;
 class tTJSArrayObject;
+class tTJSCustomObject;
 }
 
 #ifdef KRKRZ_ENABLE_MEMSTAT_DETAIL
@@ -30,10 +31,11 @@ void TVPUnregisterTJSDictionary(TJS::tTJSDictionaryObject *obj) noexcept;
 void TVPRegisterTJSArray(TJS::tTJSArrayObject *obj) noexcept;
 void TVPUnregisterTJSArray(TJS::tTJSArrayObject *obj) noexcept;
 
-// tTJSCustomObject 全体 (Dictionary/Array/カスタムクラス含む) の総数。
-// atomic counter なので thread 安全 + 軽量。
-void TVPIncrementTJSCustomObjectCount() noexcept;
-void TVPDecrementTJSCustomObjectCount() noexcept;
+// tTJSCustomObject 全体 (Dictionary/Array/カスタムクラス含む) の総数 +
+// 生存インスタンスの登録。 dump 時にクラス名別の内訳を出すために
+// ポインタも覚える (どのクラスが増え続けているかを名指しするため)。
+void TVPIncrementTJSCustomObjectCount(TJS::tTJSCustomObject *obj) noexcept;
+void TVPDecrementTJSCustomObjectCount(TJS::tTJSCustomObject *obj) noexcept;
 
 // 統計 dump (TVPHeapDump / System.dumpTJSObjectStats / REPL .tjsstats から呼ぶ)。
 // INFO レベルで 1 行サマリ + 上位 N 件詳細を出力する。
@@ -45,8 +47,8 @@ inline void TVPRegisterTJSDictionary(TJS::tTJSDictionaryObject *) noexcept {}
 inline void TVPUnregisterTJSDictionary(TJS::tTJSDictionaryObject *) noexcept {}
 inline void TVPRegisterTJSArray(TJS::tTJSArrayObject *) noexcept {}
 inline void TVPUnregisterTJSArray(TJS::tTJSArrayObject *) noexcept {}
-inline void TVPIncrementTJSCustomObjectCount() noexcept {}
-inline void TVPDecrementTJSCustomObjectCount() noexcept {}
+inline void TVPIncrementTJSCustomObjectCount(TJS::tTJSCustomObject *) noexcept {}
+inline void TVPDecrementTJSCustomObjectCount(TJS::tTJSCustomObject *) noexcept {}
 inline void TVPDumpTJSObjectStats() noexcept {}
 
 #endif // KRKRZ_ENABLE_MEMSTAT_DETAIL

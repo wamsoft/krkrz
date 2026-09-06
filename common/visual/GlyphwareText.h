@@ -7,8 +7,12 @@
 
 #include "tjsCommHead.h"
 
+#include <memory>
+#include <vector>
+
 class tTVPBaseBitmap;
 struct tTVPFont;
+namespace glyphware { class Face; }
 
 // Text style for the shaped-text entries, resolved from an engine font
 // (Layer.font or a standalone Font object): `fontKey` comes from Font.face
@@ -33,6 +37,19 @@ struct tTVPShapedTextStyle
 
 // Fill `out` from an engine font descriptor.
 void TVPShapedTextStyleFromFont(tTVPShapedTextStyle& out, const tTVPFont& font);
+
+// Font resolution shared by every glyphware text entry: `fontKey` -> fallback
+// chain (first covering face per codepoint wins), with the variable-font axes
+// applied to each face that has them. `bold`/`italic` come back as the
+// SYNTHETIC styling still to be applied — defaultUseVarStyle maps them onto the
+// axes instead, and drops them here when it does. All faces are left at
+// `style.size` pixels. false when the style names no usable font.
+struct tTVPShapedFontChain {
+	std::vector<std::shared_ptr<glyphware::Face>> chain;
+	bool bold = false;
+	bool italic = false;
+};
+bool TVPGlyphwareResolveChain(tTVPShapedFontChain& out, const tTVPShapedTextStyle& style);
 
 // Draw `text` (UTF-16, single line) into `dest` (32bpp BGRA) with its baseline
 // origin at (x, y) and color 0xAARRGGBB (alpha 0 is treated as opaque).

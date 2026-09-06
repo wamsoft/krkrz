@@ -199,4 +199,7 @@ TVP_MSG_DECL_NULL(TVPNotFoundInShader)
 TVP_MSG_DECL_NULL(TVPCannotRetriveInstance)
 TVP_MSG_DECL_NULL(TVPParameterRequireClassInstance)
 TVP_MSG_DECL_NULL(TVPUnimplementedCharacterDataForFullColored)
+TVP_MSG_DECL_NULL(TVPLicenseListHeader)
+TVP_MSG_DECL_NULL(TVPLicenseListFooter)
+TVP_MSG_DECL_NULL(TVPLicenseNotFound)
 #endif

@@ -496,6 +496,12 @@ protected:
 	//---------------------------------------------------------------------
 public:
 
+	// 生存オブジェクトの内訳集計用 (tjsObjectStats)。
+	// ClassNames[0] が最派生クラス名 (登録は派生→基底の順。 ClassInstanceInfo の
+	// TJS_CII_ADD のコメント参照)。 クラスを適用していないもの (Dictionary /
+	// Array / 素の Object) は空。
+	const std::vector<ttstr> & GetClassNames() const { return ClassNames; }
+
 	tTJSCustomObject(tjs_int hashbits = TJS_NAMESPACE_DEFAULT_HASH_BITS);
 	virtual ~tTJSCustomObject();
 

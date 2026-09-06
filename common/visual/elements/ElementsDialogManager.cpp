@@ -16,9 +16,13 @@
 #include "ElementsDialogManager.h"
 #include "DialogEventHandler.h"
 #include "DialogRenderer.h"
+#include "ElementsInputMap.h"   // VK / マウス → cycfi 中立入力型 (パネルと共用)
+#include "ElementsSessionBuild.h" // 画面 JSON → overlay_session の組み立て (パネルと共用)
+#include "ElementsLayerPanel.h"    // ホストのレイヤに描くパネル (言語 / 再描画の fan-out)
 #include "DebugIntf.h"
 #include "MsgIntf.h"
 #include "CharacterSet.h"   // TVPUtf8ToUtf16
+#include "SysInitIntf.h"    // tTVPAtExit (終了時の ThorVG 後始末)
 #include "StorageIntf.h"    // TVPReadStream
 #include "Application.h"    // Application, MainWindowForm() / ResourcePath()
 #include "WindowIntf.h"     // iTVPWindow (cursor-warp: SetCursorPos) / mcs enum
@@ -27,6 +31,7 @@
 #include "WindowForm.h"     // TTVPWindowForm::NativeWindowHandle() (SDL/generic host)
 #endif
 #include "EventIntf.h"      // TVPAdd/RemoveContinuousEventHook (paint 中 OnAction の遅延配送)
+#include "tjsDictionary.h"  // TJSCreateDictionaryObject (OnDrag の payload)
 #include "StoragesResourceLoader.h"   // TVPInstallElementsResourceLoader / Fonts
 #include "GraphicsLoaderIntf.h"       // TVPLoadGraphic (universal rule 画像)
 #include "LayerBitmapIntf.h"          // tTVPBaseBitmap (rule 画像の 8bpp 展開)
@@ -68,6 +73,8 @@
 //---------------------------------------------------------------------------
 namespace {
 
+using namespace tvp_elements;
+
 // renderStats 用: t0 からの経過 microsecond
 tjs_uint64 ElapsedUs(std::chrono::steady_clock::time_point t0)
 {
@@ -76,62 +83,9 @@ tjs_uint64 ElapsedUs(std::chrono::steady_clock::time_point t0)
 			std::chrono::steady_clock::now() - t0).count());
 }
 
-ttstr Utf8ToTtstr(const std::string& utf8)
-{
-	tjs_string ts;
-	TVPUtf8ToUtf16(ts, utf8);
-	return ttstr(ts.c_str());
-}
-
-std::string TtstrToUtf8(const ttstr& s)
-{
-	std::string out;
-	tjs_string ts(s.c_str());
-	TVPUtf16ToUtf8(out, ts);
-	return out;
-}
-
-tTJSVariant ValueToVariant(const elements_modal::value_t& v)
-{
-	tTJSVariant out;
-	std::visit([&](auto&& val) {
-		using T = std::decay_t<decltype(val)>;
-		if constexpr (std::is_same_v<T, bool>) {
-			out = val;
-		} else if constexpr (std::is_same_v<T, std::int64_t>) {
-			out = static_cast<tjs_int64>(val);
-		} else if constexpr (std::is_same_v<T, double>) {
-			out = static_cast<tjs_real>(val);
-		} else if constexpr (std::is_same_v<T, std::string>) {
-			out = Utf8ToTtstr(val);
-		}
-	}, v);
-	return out;
-}
-
-// iTVPDialogEventHandler に転送する event_callback を作る。
-// button click は payload=void、 state widget は実値を渡す krkrz 慣習を維持。
-// 直接 handler->OnAction は呼ばず manager の DispatchAction を経由する:
-// PaintOverlay (session->update()) の最中に発火した action は、 その場で
-// 配送するとコールバック内のブロッキングモーダル (System.inputString 等) が
-// window update の再入禁止に阻まれて描画不能になるため、 paint の外
-// (continuous イベントフック) へ遅延させる必要がある。
-elements_modal::event_callback MakeBridgeCallback(iTVPDialogEventHandler* handler)
-{
-	if (!handler) return {};
-	return [handler](const std::string& id, bool is_button_click,
-	                 const elements_modal::value_t& payload) {
-		if (!handler) return;
-		ttstr id_tt = Utf8ToTtstr(id);
-		if (is_button_click) {
-			tTJSVariant empty;
-			tTVPElementsDialogManager::Instance().DispatchAction(handler, id_tt, empty);
-		} else {
-			tTJSVariant v = ValueToVariant(payload);
-			tTVPElementsDialogManager::Instance().DispatchAction(handler, id_tt, v);
-		}
-	};
-}
+// 文字列 / 値の変換 (Utf8ToTtstr / TtstrToUtf8 / ValueToVariant /
+// DragEventToDict) と event_callback の橋渡しは ElementsSessionBuild.h へ
+// 移した (ホストのレイヤに描くパネルと共用するため)。 名前はそのまま使える。
 
 // krkrz storage パスのディレクトリ部 (末尾 '/' 込み) を返す。 区切りが無ければ
 // 空文字 (= カレント相当)。 '/' と '\\' の両方を見る。
@@ -307,7 +261,7 @@ struct tTVPElementsDialogManager::Impl
 	//        (1.0 = 原寸レンダ→縮小表示、 2.0 = 旧 supersampling 相当)。
 	float render_scale_mode = 0.0f;
 
-	// UI の author 基準面サイズ (Dialog.baseSize)。 提示拡縮率 (fit) の分母。
+	// UI の author 基準面サイズ (ElementsDialog.baseSize)。 提示拡縮率 (fit) の分母。
 	// 0 (既定) はゲームの基準面 (primary layer サイズ) を使う。 UI をゲーム
 	// 画面と別の解像度で author しているタイトル (ゲーム画面 640x400 に対し
 	// UI は 1920x1080 等) では primary layer 基準だと fit が過大になり、 部分
@@ -317,21 +271,21 @@ struct tTVPElementsDialogManager::Impl
 	int base_size_w = 0;
 	int base_size_h = 0;
 
-	// 再ラスタライズ抑止 (Dialog.renderCache)。 true (既定) なら変化の無い
+	// 再ラスタライズ抑止 (ElementsDialog.renderCache)。 true (既定) なら変化の無い
 	// フレームは overlay_session の再ラスタライズ + アップロードを省略し、
 	// レンダラ保持の前回テクスチャをそのまま提示する。
 	bool render_cache = true;
 
-	// 部分再描画 (Dialog.partialRedraw)。 true (既定) なら、 ダーティが矩形で
+	// 部分再描画 (ElementsDialog.partialRedraw)。 true (既定) なら、 ダーティが矩形で
 	// 特定できる変化 (キャレット点滅等) はその矩形だけを再ラスタ + 部分転送
 	// する。 renderCache 有効時のみ機能 (staging に前回フレームが残る前提)。
 	bool partial_redraw = true;
 
-	// 実際にラスタライズした累計回数 (Dialog.renderCount)。 アイドル時に
+	// 実際にラスタライズした累計回数 (ElementsDialog.renderCount)。 アイドル時に
 	// 増えないことの確認・負荷比較用。
 	tjs_uint64 raster_count = 0;
 
-	// 区間計測 (Dialog.renderStats)。 累積値、 ResetRenderStats で 0 クリア。
+	// 区間計測 (ElementsDialog.renderStats)。 累積値、 ResetRenderStats で 0 クリア。
 	// steady_clock 呼出はフレームあたり数回なのでオーバーヘッドは無視できる。
 	tTVPElementsRenderStats stats;
 
@@ -341,7 +295,7 @@ struct tTVPElementsDialogManager::Impl
 	{
 		std::unique_ptr<elements_modal::overlay_session> session;
 
-		// このインスタンスに紐付く event handler (TJS Dialog 等)。 layer キーと
+		// このインスタンスに紐付く event handler (TJS ElementsDialog 等)。 layer キーと
 		// しても使う (renderer のテクスチャ識別)。 ただし複数の異なる layer 用に
 		// Instance 自身のアドレスを layer キーにする (handler は共有され得ない
 		// 前提だが、 安全のため Instance ポインタで一意化)。
@@ -449,7 +403,7 @@ struct tTVPElementsDialogManager::Impl
 		std::vector<tjs_uint8> trans_rule;       // universal の rule (trans_from と同画素数)
 		int trans_vague = 64;
 
-		// Dialog.close() 等の外部 close 要求で exit 演出を再生中。 finished() 後は
+		// ElementsDialog.close() 等の外部 close 要求で exit 演出を再生中。 finished() 後は
 		// transitions を解決せず (フローを進めず) FinishSingle で終了する。
 		bool close_after_exit = false;
 
@@ -519,6 +473,16 @@ struct tTVPElementsDialogManager::Impl
 	bool AnyModalActive() const
 	{
 		for (auto const& inst : instances) if (inst->active && inst->modal) return true;
+		return false;
+	}
+
+	// 指定 device (= そのウィンドウ) にアクティブなインスタンスが載っているか。
+	// 入力インターセプトのゲートに使う (ウィンドウ跨ぎの横取り防止)。
+	bool AnyActiveOn(const iTVPDrawDevice* device) const
+	{
+		if (!device) return false;
+		for (auto const& inst : instances)
+			if (inst->active && inst->host_device == device) return true;
 		return false;
 	}
 
@@ -918,7 +882,7 @@ struct tTVPElementsDialogManager::Impl
 	void ApplyScreenTransition(Instance& inst, tjs_uint32* buf,
 	                           int w_pixels, int h_pixels);
 
-	// 外部 close 要求 (Dialog.close / QUIT)。 session 生存中は session->close()
+	// 外部 close 要求 (ElementsDialog.close / QUIT)。 session 生存中は session->close()
 	// 経由で exit 演出と協調し、 finished() 後に FinishSingle で終了する。
 	void RequestClose(Instance& inst)
 	{
@@ -953,10 +917,26 @@ struct tTVPElementsDialogManager::Impl
 	// 呼ばれる) から配送する。 入力経路 (ForwardMouse* 等) から発火した action
 	// は paint_depth==0 なので従来どおり即時配送される。
 	int paint_depth = 0;
+
+	// overlay インスタンスを持たないが生きている handler (ホストのレイヤへ描く
+	// パネル)。 通知キューは 1 本を共用するので、 配送前の生存確認をここにも
+	// 通す (詳細は ElementsDialogManager.h の RegisterExternalHandler)。
+	std::set<iTVPDialogEventHandler*> external_handlers;
+
+	//! @brief 通知を配送してよい handler か (どちらかに生きていれば true)。
+	bool IsHandlerLive(iTVPDialogEventHandler* h)
+	{
+		if (!h) return false;
+		if (FindByHandler(h)) return true;
+		return external_handlers.count(h) != 0;
+	}
+
 	struct PendingAction {
+		enum class Kind { Action, Drag, Var };
 		iTVPDialogEventHandler* handler;
-		ttstr id;
-		tTJSVariant payload;
+		ttstr id;               // Action: widget id / Var: 変数名
+		tTJSVariant payload;    // Var: 値 (文字列)
+		Kind kind = Kind::Action;
 	};
 	std::deque<PendingAction> pending_actions;
 	struct ActionDrainHook : public tTVPContinuousEventCallbackIntf {
@@ -980,6 +960,70 @@ struct tTVPElementsDialogManager::Impl
 		}
 	}
 
+	// ドラッグ通知。 action と同じキューに積んで **順序を保つ**
+	// (「離した」の後に「押した」が届くと状態機械が壊れるため)。
+	// move だけは、 キュー末尾が同じ handler の move なら差し替える
+	// (paint 中に溜まった移動は最新の位置だけ配れば足りる)。
+	void QueueOrDispatchDrag(iTVPDialogEventHandler* handler,
+	                         const tTJSVariant& payload, bool coalesce)
+	{
+		if (paint_depth <= 0 && pending_actions.empty()) {
+			handler->OnDrag(payload);
+			return;
+		}
+		if (coalesce && !pending_actions.empty()) {
+			PendingAction& back = pending_actions.back();
+			if (back.kind == PendingAction::Kind::Drag &&
+			    back.handler == handler) {
+				back.payload = payload;
+				return;
+			}
+		}
+		pending_actions.push_back(
+			{handler, ttstr(), payload, PendingAction::Kind::Drag});
+		ArmActionHook();
+	}
+
+	// 変数変化通知。 変数は «状態» なので即時配送はせず必ずキューへ積む
+	// (elements の入力処理 / 描画の最中に TJS を走らせない)。 同じ handler +
+	// 同じ変数名が既に積まれていれば値だけ差し替える (1 フレームぶんの連続
+	// 変化 — hover 移動・ドラッグ中の座標書込など — は最新値だけ配れば足りる)。
+	// 差し替えは «その場» で行うので、 action との相対順序は崩れない。
+	void QueueVar(iTVPDialogEventHandler* handler,
+	              const ttstr& name, const ttstr& value)
+	{
+		for (auto& a : pending_actions) {
+			if (a.kind == PendingAction::Kind::Var &&
+			    a.handler == handler && a.id == name) {
+				a.payload = value;
+				return;
+			}
+		}
+		pending_actions.push_back(
+			{handler, name, tTJSVariant(value), PendingAction::Kind::Var});
+		ArmActionHook();
+	}
+
+	// キュー配送用の continuous フックを (未登録なら) 登録する。
+	void ArmActionHook()
+	{
+		if (action_hook.registered) return;
+		action_hook.owner = this;
+		TVPAddContinuousEventHook(&action_hook);
+		action_hook.registered = true;
+	}
+
+	// 変数観測 (OnVar) の張り直し。 handler が WantsVarNotify で観測を望んだ
+	// ときだけ watcher を張る — hover 連動 (vars_on_hover) やドラッグ座標は
+	// 毎フレーム書かれるので、 観測しないホストには一切コストを掛けない。
+	// 名前リストが空なら全変数、 非空ならその名前だけ通知する。
+	// 画面 (session) は遷移のたびに作り直されるので開始時に毎回呼ぶこと。
+	void ApplyVarWatch(Instance& inst)
+	{
+		if (!inst.session) return;
+		tvp_elements::ApplyVarWatch(*inst.session, inst.handler);
+	}
+
 	void DrainPendingActions()
 	{
 		if (action_hook.registered) {
@@ -989,11 +1033,23 @@ struct tTVPElementsDialogManager::Impl
 		std::deque<PendingAction> q;
 		q.swap(pending_actions);
 		for (auto& a : q) {
-			// 配送前に handler のインスタンスが生きているか確認する
-			// (close_on_click で閉じたダイアログの action は、 handler が
-			//  短命 (スタック上の no-op handler 等) の可能性があるため捨てる)
-			if (!FindByHandler(a.handler)) continue;
-			a.handler->OnAction(a.id, a.payload);
+			// 配送前に handler が生きているか確認する (close_on_click で
+			// 閉じたダイアログの action は、 handler が短命 (スタック上の
+			// no-op handler 等) の可能性があるため捨てる)。 レイヤパネルの
+			// handler は overlay インスタンスを持たないので external_handlers
+			// も見る。
+			if (!IsHandlerLive(a.handler)) continue;
+			switch (a.kind) {
+			case PendingAction::Kind::Drag:
+				a.handler->OnDrag(a.payload);
+				break;
+			case PendingAction::Kind::Var:
+				a.handler->OnVar(a.id, ttstr(a.payload));
+				break;
+			default:
+				a.handler->OnAction(a.id, a.payload);
+				break;
+			}
 		}
 	}
 
@@ -1013,46 +1069,87 @@ tTVPElementsDialogManager::Impl::ActionDrainHook::OnContinuousCallback(tjs_uint6
 //---------------------------------------------------------------------------
 // Impl: フロー / 描画メソッド (out-of-line)
 //---------------------------------------------------------------------------
+//---------------------------------------------------------------------------
+// 画面 JSON の **top-level** "size": [w, h] だけを拾う (上限サイズの peek)。
+//
+// widget 側にも配列値の "size" を取るものがある (spacer の "size": [w,h]、
+// atlas_slider の 9-slice thumb の "size": [w,h] など) ので、 単純な文字列
+// 検索では入れ子の値を先に掴んでしまい、 ダイアログがその大きさに縮む。
+// 文字列と JSONC コメントを飛ばしつつ括弧の深さを数え、 **深さ 1 のキー**
+// だけを見る。 フォントサイズのような数値の "size" は値が配列でないので
+// 従来どおり無視される。
+//---------------------------------------------------------------------------
+static bool PeekTopLevelSize(const std::string& js, int& out_w, int& out_h)
+{
+	auto is_ws = [](char c) {
+		return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+	};
+	int depth = 0;
+	for (size_t i = 0; i < js.size(); ++i) {
+		const char c = js[i];
+		// JSONC コメント (画面 JSON は JSONC を許す) を飛ばす
+		if (c == '/' && i + 1 < js.size()) {
+			if (js[i + 1] == '/') {
+				i = js.find('\n', i);
+				if (i == std::string::npos) break;
+				continue;
+			}
+			if (js[i + 1] == '*') {
+				i = js.find("*/", i + 2);
+				if (i == std::string::npos) break;
+				++i;   // "*/" の 2 文字目 (ループの ++i と合わせて読み飛ばす)
+				continue;
+			}
+		}
+		if (c == '"') {
+			// 文字列 (キーまたは値)。 終端まで飛ばす。
+			size_t j = i + 1;
+			for (; j < js.size(); ++j) {
+				if (js[j] == 0x5C) { ++j; continue; }   // escape
+				if (js[j] == '"') break;
+			}
+			const size_t len = (j <= js.size() ? j : js.size()) - (i + 1);
+			const bool is_size_key =
+				(depth == 1 && len == 4 && js.compare(i + 1, 4, "size") == 0);
+			i = (j < js.size()) ? j : js.size() - 1;
+			if (!is_size_key) continue;
+
+			size_t k = i + 1;
+			while (k < js.size() && is_ws(js[k])) ++k;
+			if (k >= js.size() || js[k] != ':') continue;
+			++k;
+			while (k < js.size() && is_ws(js[k])) ++k;
+			if (k >= js.size() || js[k] != '[') continue;   // 数値 size は無視
+			const char* p = js.c_str() + k + 1;
+			char* endp = nullptr;
+			const long w = std::strtol(p, &endp, 10);
+			long h = 0;
+			if (endp && *endp == ',') h = std::strtol(endp + 1, nullptr, 10);
+			if (w > 0 && h > 0) {
+				out_w = static_cast<int>(w);
+				out_h = static_cast<int>(h);
+				return true;
+			}
+			continue;
+		}
+		if (c == '{' || c == '[')      ++depth;
+		else if (c == '}' || c == ']') --depth;
+	}
+	return false;
+}
+
+//---------------------------------------------------------------------------
 bool tTVPElementsDialogManager::Impl::BeginScreen(
 	Instance& inst, const std::string& json_utf8,
 	const std::string& resource_base_utf8)
 {
 	// JSON の top-level "size":[w,h] を peek (上限サイズ)。
-	// 注意: widget の "size": N (フォントサイズ等) と衝突しないよう、値が配列
-	// ([ で始まる) の "size" だけを採用する (従来は最初の "size" の後の '[' を
-	// 拾っていて font size と衝突していた)。
 	// "size" が無ければ overlay の既定を surface (ゲーム画面) 全面にする
 	// (従来は 400x220 きめうちで、content が大きいとクリップされていた)。
 	inst.dialog_w = 0;
 	inst.dialog_h = 0;
-	bool has_explicit_size = false;
-	{
-		size_t search = 0;
-		while (true) {
-			auto pos = json_utf8.find("\"size\"", search);
-			if (pos == std::string::npos) break;
-			auto colon = json_utf8.find(':', pos);
-			size_t vs = (colon != std::string::npos) ? colon + 1
-			                                         : std::string::npos;
-			while (vs != std::string::npos && vs < json_utf8.size() &&
-			       (json_utf8[vs] == ' '  || json_utf8[vs] == '\t' ||
-			        json_utf8[vs] == '\n' || json_utf8[vs] == '\r')) vs++;
-			if (vs != std::string::npos && vs < json_utf8.size() &&
-			    json_utf8[vs] == '[') {
-				const char* p = json_utf8.c_str() + vs + 1;
-				char* endp = nullptr;
-				int w = (int)std::strtol(p, &endp, 10);
-				int h = (endp && *endp == ',')
-				            ? (int)std::strtol(endp + 1, nullptr, 10) : 0;
-				if (w > 0 && h > 0) {
-					inst.dialog_w = w; inst.dialog_h = h;
-					has_explicit_size = true;
-				}
-				break;   // 値が配列の "size" を最初に見つけた時点で確定
-			}
-			search = pos + 6;   // strlen("\"size\"")
-		}
-	}
+	bool has_explicit_size = PeekTopLevelSize(json_utf8,
+	                                          inst.dialog_w, inst.dialog_h);
 	if (!has_explicit_size) {
 		int sw = 0, sh = 0;
 		if (auto* r = FindRenderer(inst.host_device)) r->GetSurfaceSize(sw, sh);
@@ -1060,18 +1157,16 @@ bool tTVPElementsDialogManager::Impl::BeginScreen(
 		else                  { inst.dialog_w = 400; inst.dialog_h = 220; }
 	}
 
-	auto sess = std::make_unique<elements_modal::overlay_session>();
-	auto bridge = MakeBridgeCallback(inst.handler);
-	// pixel_scale は 1.0 固定 — 実際の描画密度は render_to_buffer に渡す buffer
-	// サイズから毎回導出される (render_scale_mode 参照)。
-	if (!sess->start(json_utf8, inst.dialog_w, inst.dialog_h, 1.0f,
-	                 std::move(bridge), resource_base_utf8)) {
-		return false;
-	}
-
-	// i18n: ホストが SetLanguage 済みなら、 新しく開く画面もその言語で始める
-	// (画面 JSON の "lang" 既定より優先)。 "strings" を持たない画面では no-op。
-	if (!language.empty()) sess->set_language(language);
+	// session の組み立ては出力先 (overlay / ホストのレイヤ) で共通なので
+	// ElementsSessionBuild へ寄せてある (action / drag の橋渡し、 言語の適用、
+	// 変数観測の張り直しまで済む)。
+	tvp_elements::SessionOptions sopt;
+	sopt.width         = inst.dialog_w;
+	sopt.height        = inst.dialog_h;
+	sopt.resource_base = resource_base_utf8;
+	sopt.language      = language;
+	auto sess = tvp_elements::BuildSession(json_utf8, sopt, inst.handler);
+	if (!sess) return false;
 
 	// run_modal と同じく content の自然サイズへフィット (上側空欄対策)。
 	// ただし top-level "size" が明示された画面は作者が寸法を指定しているので
@@ -1091,6 +1186,8 @@ bool tTVPElementsDialogManager::Impl::BeginScreen(
 	}
 
 	inst.session = std::move(sess);
+	// 変数観測 (OnVar) は BuildSession が張っている (画面ごとに session が
+	// 作り直されるので、 遷移先の画面でも張り直される)。
 	inst.current_resource_base = resource_base_utf8;
 	inst.has_rect = false;
 	inst.armed_vks.clear();   // 押しっぱなしキーの誤爆防止状態をリセット
@@ -1418,7 +1515,7 @@ void tTVPElementsDialogManager::Impl::RenderInstance(
 
 	float fit = 1.0f;
 	if (area_w > 0 && area_h > 0 && w_logical > 0 && h_logical > 0) {
-		// Dialog.baseSize が設定されていればそれを基準面とする (UI を
+		// ElementsDialog.baseSize が設定されていればそれを基準面とする (UI を
 		// ゲーム画面と別解像度で author するタイトル向け)。 未設定なら
 		// 従来どおりゲームの基準面 (primary layer サイズ)。
 		tjs_int src_w = base_size_w, src_h = base_size_h;
@@ -1490,7 +1587,7 @@ void tTVPElementsDialogManager::Impl::RenderInstance(
 		return;
 	}
 
-	// 再ラスタライズ抑止 (Dialog.renderCache): session が dirty でなく、 描画
+	// 再ラスタライズ抑止 (ElementsDialog.renderCache): session が dirty でなく、 描画
 	// 条件 (デバイス / buffer ピクセルサイズ / 配置基準 surface) も前回と同じ
 	// なら、 レンダラが layer キーで保持しているテクスチャを同じ位置に提示する
 	// だけで済む (ThorVG ラスタ + 全クリア + アップロードを省略)。 画面遷移
@@ -1519,7 +1616,7 @@ void tTVPElementsDialogManager::Impl::RenderInstance(
 	stats.acquireUs += ElapsedUs(t_acquire);
 	if (!buf) return;
 
-	// 部分再描画 (Dialog.partialRedraw): renderCache 有効時のみ (staging に
+	// 部分再描画 (ElementsDialog.partialRedraw): renderCache 有効時のみ (staging に
 	// 前回フレームが残っている前提)。 描画条件 (デバイス / buffer サイズ /
 	// 配置基準 surface) が前回と一致し、 遷移混色中でない場合に限る。
 	const bool allow_partial = render_cache && partial_redraw
@@ -1655,6 +1752,16 @@ void tTVPElementsDialogManager::Impl::RenderInstance(
 }
 
 //---------------------------------------------------------------------------
+// elements ランタイム (ThorVG) を一度でも初期化したか。 終了時の後始末を
+// «使ったときだけ» 走らせるための記録で、 EnsureRuntimeInitialized が立てる。
+//---------------------------------------------------------------------------
+static bool& TVPElementsRuntimeInited()
+{
+	static bool inited = false;
+	return inited;
+}
+
+//---------------------------------------------------------------------------
 // シングルトン
 //---------------------------------------------------------------------------
 tTVPElementsDialogManager& tTVPElementsDialogManager::Instance()
@@ -1675,7 +1782,13 @@ tTVPElementsDialogManager::tTVPElementsDialogManager()
 {
 	elements_modal::em_set_log_sink(
 		[](const char* line) {
-			TVPAddLog(ttstr("elements_modal: ") + ttstr(line));
+			// em_logf の行は **UTF-8**。 ttstr(const char*) に渡すと SJIS
+			// ビルド (TVP_TEXT_READ_ANSI_MBCS) では CP932 として解釈され、
+			// 日本語まじりの診断が «UNICODE 文字列に変換できません» 例外に
+			// 化ける (elements 側の新しいメッセージで顕在化)。 明示変換する。
+			tjs_string w;
+			TVPUtf8ToUtf16(w, std::string(line ? line : ""));
+			TVPAddLog(ttstr(TJS_W("elements_modal: ")) + ttstr(w.c_str()));
 		});
 }
 
@@ -1688,6 +1801,53 @@ tTVPElementsDialogManager::~tTVPElementsDialogManager()
 	}
 }
 
+//---------------------------------------------------------------------------
+// 終了時の後始末 — ThorVG を畳む
+//
+// elements_modal::init() で立てた ThorVG は、 対になる shutdown() を呼ばないと
+// tvg::Initializer::term() に到達せず、 その先の LoaderMgr::term() (「グローバル
+// に使われているフォントローダを掃除する」処理) が飛ぶ。 掃除されなかった
+// ローダは ThorVG の名前空間スコープ static (_activeLoaders) に載ったまま
+// プロセス終了を迎え、 CRT の atexit がそれを破棄するときに
+// 「関数内 static なので先に死んでいるフォントマネージャ」(gw ビルドなら
+// GwFontManager、 ft ビルドなら FtFontManager) を触る。 順序は決定的で、
+// 確率的なのは «そのアドレスがまだ読めるか» だけ — つまり間欠クラッシュになる。
+// 吉里吉里は WINVER / SDL とも CRT の atexit を通って終了する (WINVER は
+// ExitProcess をコメントアウト済み、 SDL は std::exit) ので、 顕在化しうる。
+//
+// **畳む順序が肝**で、 view / canvas が 1 つでも生きていると
+// SwRenderer::term() が «まだ canvas がある» と弾き、 Initializer::term() は
+// LoaderMgr::term() の手前で早期 return する (戻り値 InsufficientCondition)。
+// そのため先に ForceClose() で全インスタンスを畳んでから shutdown() を呼ぶ。
+// elements 側の測定用 scratch canvas とアトラスの pixmap キャッシュは
+// shutdown() が内部で手放す (elements `47871878` 以降)。
+//---------------------------------------------------------------------------
+void tTVPElementsDialogManager::ShutdownRuntime()
+{
+	if (!TVPElementsRuntimeInited()) return;
+	TVPElementsRuntimeInited() = false;
+	ForceClose();
+	elements_modal::shutdown();
+	// 「畳んだ」ことをログに残す。 終了時クラッシュを追うとき、 この行が
+	// 出ているかどうかが最初の切り分けになる。
+	TVPAddLog(TJS_W("ElementsDialog: runtime shut down (ThorVG terminated)"));
+}
+
+static void TVPShutdownElementsRuntime()
+{
+	// Elements を一度も使っていないプロセスでは何もしない。 Instance() は
+	// 呼べば manager を作ってしまうので、 フラグを先に見る。
+	if (!TVPElementsRuntimeInited()) return;
+	tTVPElementsDialogManager::Instance().ShutdownRuntime();
+}
+
+// TVPSystemUninit → TVPCauseAtExit から呼ばれる。 優先度は昇順に実行されるので
+// SHUTDOWN(100) はフォントラスタライザ等の解放 (RELEASE=1000) より前になる。
+// このとき TJS エンジンは既に落ちている (TVPUninitScriptEngine が先) ので、
+// ElementsDialog / ElementsPanel の TJS オブジェクトは解放済み。
+static tTVPAtExit TVPShutdownElementsRuntimeAtExit(
+	TVP_ATEXIT_PRI_SHUTDOWN, TVPShutdownElementsRuntime);
+
 void tTVPElementsDialogManager::DispatchAction(iTVPDialogEventHandler* handler,
 	const ttstr& id, const tTJSVariant& payload)
 {
@@ -1695,9 +1855,65 @@ void tTVPElementsDialogManager::DispatchAction(iTVPDialogEventHandler* handler,
 	_impl->QueueOrDispatchAction(handler, id, payload);
 }
 
+void tTVPElementsDialogManager::DispatchDrag(iTVPDialogEventHandler* handler,
+	const tTJSVariant& payload, bool coalesce)
+{
+	if (!handler) return;
+	_impl->QueueOrDispatchDrag(handler, payload, coalesce);
+}
+
+void tTVPElementsDialogManager::DispatchVar(iTVPDialogEventHandler* handler,
+	const ttstr& name, const ttstr& value)
+{
+	if (!handler) return;
+	_impl->QueueVar(handler, name, value);
+}
+
+bool tTVPElementsDialogManager::GetVar(iTVPDialogEventHandler* handler,
+                                       const ttstr& name, ttstr& out) const
+{
+	Impl::Instance* inst = _impl->FindByHandler(handler);
+	if (!inst || !inst->active || !inst->session) return false;
+	std::string v;
+	if (!inst->session->get_var(TtstrToUtf8(name), v)) return false;
+	out = Utf8ToTtstr(v);
+	return true;
+}
+
+std::vector<tTVPElementsDialogManager::VarInfo>
+tTVPElementsDialogManager::DescribeVars(iTVPDialogEventHandler* handler) const
+{
+	std::vector<VarInfo> out;
+	Impl::Instance* inst = _impl->FindByHandler(handler);
+	if (!inst || !inst->session) return out;
+	for (auto const& d : inst->session->list_vars()) {
+		VarInfo info;
+		info.name  = Utf8ToTtstr(d.name);
+		info.value = Utf8ToTtstr(d.value);
+		info.used_by.reserve(d.used_by.size());
+		for (auto const& u : d.used_by) {
+			info.used_by.emplace_back(Utf8ToTtstr(u.first),
+			                          Utf8ToTtstr(u.second));
+		}
+		out.push_back(std::move(info));
+	}
+	return out;
+}
+
+void tTVPElementsDialogManager::RefreshVarWatch(iTVPDialogEventHandler* handler)
+{
+	Impl::Instance* inst = _impl->FindByHandler(handler);
+	if (inst) _impl->ApplyVarWatch(*inst);
+}
+
 bool tTVPElementsDialogManager::IsModalActive() const
 {
 	return _impl->AnyActive();
+}
+
+bool tTVPElementsDialogManager::IsActiveOnDevice(iTVPDrawDevice* device) const
+{
+	return _impl->AnyActiveOn(device);
 }
 
 bool tTVPElementsDialogManager::HasModalInstance() const
@@ -1844,6 +2060,36 @@ void tTVPElementsDialogManager::InvalidateOverlays()
 	for (auto& up : _impl->instances) {
 		if (up->session) up->session->invalidate();
 	}
+	// パネルにも同じ要求を配る (registerImage の mem:// 差替は共有 store なので
+	// overlay もパネルも同じきっかけで描き直す必要がある)。
+	tTVPElementsLayerPanel::InvalidateAll();
+}
+
+//---------------------------------------------------------------------------
+void tTVPElementsDialogManager::RegisterExternalHandler(
+	iTVPDialogEventHandler* handler)
+{
+	if (handler) _impl->external_handlers.insert(handler);
+}
+
+//---------------------------------------------------------------------------
+void tTVPElementsDialogManager::UnregisterExternalHandler(
+	iTVPDialogEventHandler* handler)
+{
+	if (!handler) return;
+	_impl->external_handlers.erase(handler);
+	// キューに残っている通知も捨てる (解放済み handler へ配送しないため)。
+	auto& q = _impl->pending_actions;
+	q.erase(std::remove_if(q.begin(), q.end(),
+		[handler](const Impl::PendingAction& a) { return a.handler == handler; }),
+		q.end());
+}
+
+//---------------------------------------------------------------------------
+void tTVPElementsDialogManager::PushDeferScope() { ++_impl->paint_depth; }
+void tTVPElementsDialogManager::PopDeferScope()
+{
+	if (_impl->paint_depth > 0) --_impl->paint_depth;
 }
 
 void tTVPElementsDialogManager::EnsureRuntimeInitialized()
@@ -1856,12 +2102,13 @@ void tTVPElementsDialogManager::EnsureRuntimeInitialized()
 	// glyphware::layoutBlock に寄せる。
 	TVPInstallElementsBlockTextBackend();
 
-	elements_modal::init("", /*load_default_fonts=*/false);
+	if (elements_modal::init("", /*load_default_fonts=*/false))
+		TVPElementsRuntimeInited() = true;
 
 	// authored 画面は自前のフォーカス表示 (focused frame / focus_link 装飾)
 	// を持つため、 elements テーマの既定フォーカスリング (青枠) は全面 OFF に
 	// する (theme.focus_ring_enabled が用意する application-wide スイッチ)。
-	// ただし Dialog.focusRing がスクリプトから明示設定済みならそれを尊重する
+	// ただし ElementsDialog.focusRing がスクリプトから明示設定済みならそれを尊重する
 	// (初回画面表示でここが後から走っても上書きしない)。
 	static bool s_theme_tuned = false;
 	if (!s_theme_tuned) {
@@ -2191,6 +2438,25 @@ bool tTVPElementsDialogManager::SetVar(iTVPDialogEventHandler* handler,
 	return true;
 }
 
+bool tTVPElementsDialogManager::FocusWidget(iTVPDialogEventHandler* handler,
+                                            const ttstr& id)
+{
+	Impl::Instance* inst = _impl->FindByHandler(handler);
+	if (!inst || !inst->active || !inst->session) return false;
+	inst->session->focus_by_id(TtstrToUtf8(id));
+	return true;
+}
+
+bool tTVPElementsDialogManager::ActivateWidget(iTVPDialogEventHandler* handler,
+                                               const ttstr& id)
+{
+	Impl::Instance* inst = _impl->FindByHandler(handler);
+	if (!inst || !inst->active || !inst->session) return false;
+	// activate_by_id は focus を即時適用してから Enter を送る
+	// (ActivateWidgetById と同じ)。
+	return inst->session->activate_by_id(TtstrToUtf8(id));
+}
+
 void tTVPElementsDialogManager::SetVirtualKeyboardMode(const ttstr& mode)
 {
 	const std::string m = TtstrToUtf8(mode);
@@ -2226,6 +2492,8 @@ void tTVPElementsDialogManager::SetLanguage(const ttstr& lang)
 		up->flow_lang = _impl->language;
 		if (up->nav) up->nav->set_language(_impl->language);
 	}
+	// ホストのレイヤに描くパネルにも同じ言語を配る (プロセス全体の設定)。
+	tTVPElementsLayerPanel::SetLanguageAll(_impl->language);
 }
 
 ttstr tTVPElementsDialogManager::GetLanguage() const
@@ -2459,7 +2727,7 @@ void tTVPElementsDialogManager::PaintOverlay(iTVPDrawDevice* device)
 			// ここも再入しうる → index ループ。
 			if (inst->session->finished()) {
 				if (inst->close_after_exit) {
-					// Dialog.close() 等の外部 close: transitions を解決せず終了。
+					// ElementsDialog.close() 等の外部 close: transitions を解決せず終了。
 					_impl->FinishSingle(*inst);
 				} else if (inst->nav) {
 					_impl->AdvanceFlow(*inst);
@@ -2485,6 +2753,13 @@ void tTVPElementsDialogManager::PaintOverlay(iTVPDrawDevice* device)
 	//    起こしうるので index ベース (上のコメント参照)。
 	iTVPDialogRenderer* renderer = _impl->FindRenderer(device);
 	if (!renderer) return;
+	// パッド軸ナビ (dpad/スティック) は入力対象の最前面セッションだけが行う。
+	// 背面セッションで方向キーを押しっぱなしのまま上に別画面を開くと、 背面が
+	// リピートでフォーカスを動かし続ける (SGOCT-227)。 update() 前に設定する。
+	Impl::Instance* pad_target = _impl->TopmostKeyboardFocus();
+	for (auto& up : _impl->instances) {
+		if (up->session) up->session->set_pad_nav_active(up.get() == pad_target);
+	}
 	for (size_t i = 0; i < _impl->instances.size(); ++i) {
 		Impl::Instance* inst = _impl->instances[i].get();
 		if (inst->host_device != device) continue;
@@ -2543,120 +2818,9 @@ void tTVPElementsDialogManager::PaintOverlay(iTVPDrawDevice* device)
 //---------------------------------------------------------------------------
 // 入力フォワード
 //---------------------------------------------------------------------------
-namespace {
-
-namespace ce = cycfi::elements;
-
-// krkrz ネイティブ入力型 → cycfi 中立入力型への変換。 マネージャは SDL/WIN 両
-// build 共通で Windows VK / tTVPMouseButton / TVP_SS_* を受け取り、 overlay_session
-// の host 非依存 API (mouse_button::what / key_code / pad_button + mod_* の OR) へ
-// 直接マップする。 SDL や Win32 のネイティブ enum は経由しない。
-ce::mouse_button::what MouseButtonToElements(tTVPMouseButton mb)
-{
-	switch (mb) {
-		case mbMiddle: return ce::mouse_button::middle;
-		case mbRight:  return ce::mouse_button::right;
-		default:       return ce::mouse_button::left;   // mbLeft ほか
-	}
-}
-
-int FlagsToElementsMods(tjs_uint32 flags)
-{
-	int mods = 0;
-	if (flags & TVP_SS_SHIFT) mods |= ce::mod_shift;
-	if (flags & TVP_SS_CTRL)  mods |= ce::mod_control;
-	if (flags & TVP_SS_ALT)   mods |= ce::mod_alt;
-	return mods;
-}
-
-// マウスボタン → VK コード (ホストホットキーのテーブル照合用。 キー / パッド /
-// マウスを同じ VK 空間で扱う)。
-tjs_uint MouseButtonToVk(tTVPMouseButton mb)
-{
-	switch (mb) {
-		case mbRight:  return VK_RBUTTON;
-		case mbMiddle: return VK_MBUTTON;
-		case mbX1:     return VK_XBUTTON1;
-		case mbX2:     return VK_XBUTTON2;
-		default:       return VK_LBUTTON;   // mbLeft ほか
-	}
-}
-
-//---------------------------------------------------------------------------
-// Windows VK code → cycfi 中立入力型 (key_code | pad_button) 振り分け。
-//---------------------------------------------------------------------------
-struct vk_routing {
-	enum class kind { none, key, pad_button };
-	kind           k          = kind::none;
-	ce::key_code   key        = ce::key_code::unknown;
-	int            extra_mods = 0;
-	ce::pad_button pad        = ce::pad_button::unknown;
-};
-
-vk_routing RouteVk(tjs_uint vk)
-{
-	using K  = vk_routing::kind;
-	using kc = ce::key_code;
-	using pb = ce::pad_button;
-	auto as_key = [](kc c, int m = 0) { return vk_routing{K::key, c, m, pb::unknown}; };
-	auto as_pad = [](pb b)            { return vk_routing{K::pad_button, kc::unknown, 0, b}; };
-
-	switch (vk) {
-		case VK_RETURN: return as_key(kc::enter);
-		case VK_TAB:    return as_key(kc::tab);
-		case VK_ESCAPE: return as_key(kc::escape);
-		case VK_BACK:   return as_key(kc::backspace);
-		case VK_DELETE: return as_key(kc::_delete);
-		case VK_INSERT: return as_key(kc::insert);
-		case VK_HOME:   return as_key(kc::home);
-		case VK_END:    return as_key(kc::end);
-		case VK_PRIOR:  return as_key(kc::page_up);
-		case VK_NEXT:   return as_key(kc::page_down);
-		case VK_SPACE:  return as_key(kc::space);
-		case VK_LEFT:   return as_key(kc::left);
-		case VK_UP:     return as_key(kc::up);
-		case VK_RIGHT:  return as_key(kc::right);
-		case VK_DOWN:   return as_key(kc::down);
-
-		case 0x1C0: return as_pad(pb::a);          // VK_PAD1  (A)
-		case 0x1C1: return as_pad(pb::b);          // VK_PAD2  (B)
-		case 0x1C2: return as_pad(pb::x);          // VK_PAD3  (X)
-		case 0x1C3: return as_pad(pb::y);          // VK_PAD4  (Y)
-		case 0x1C4: return as_pad(pb::lb);         // VK_PAD5  (LB)
-		case 0x1C5: return as_pad(pb::rb);         // VK_PAD6  (RB)
-		case 0x1C8: return as_pad(pb::back);       // VK_PAD9  (Back)
-		case 0x1C9: return as_pad(pb::start);      // VK_PAD10 (Start)
-		case 0x1CA: return as_pad(pb::l3);         // VK_PAD11 (L3)
-		case 0x1CB: return as_pad(pb::r3);         // VK_PAD12 (R3)
-
-		// 位置基準のフェイスボタン (刻印ではなく配置)。 同じ物理ボタンが
-		// VK_PAD1..4 も一緒に飛ばしてくるので、 割り当てる側で使い分ける。
-		case 0x1D4: return as_pad(pb::face_south); // VK_PAD_FACE_SOUTH (下)
-		case 0x1D5: return as_pad(pb::face_east);  // VK_PAD_FACE_EAST  (右)
-		case 0x1D6: return as_pad(pb::face_west);  // VK_PAD_FACE_WEST  (左)
-		case 0x1D7: return as_pad(pb::face_north); // VK_PAD_FACE_NORTH (上)
-
-		case 0x1B5: case 0x1CC: case 0x1D0:
-			return as_pad(pb::dpad_left);
-		case 0x1B6: case 0x1CD: case 0x1D1:
-			return as_pad(pb::dpad_up);
-		case 0x1B7: case 0x1CE: case 0x1D2:
-			return as_pad(pb::dpad_right);
-		case 0x1B8: case 0x1CF: case 0x1D3:
-			return as_pad(pb::dpad_down);
-
-		case 0x1B9: return as_pad(pb::a);
-
-		default:
-			// 数字 (VK_0..9 = 0x30..0x39) / 英字 (VK_A..Z = 0x41..0x5A) は
-			// cycfi key_code が大文字 ASCII 準拠なのでそのまま通す。
-			if (vk >= '0' && vk <= '9') return as_key(static_cast<kc>(vk));
-			if (vk >= 'A' && vk <= 'Z') return as_key(static_cast<kc>(vk));
-			return vk_routing{};
-	}
-}
-
-} // anonymous
+// 入力変換 (VK / tTVPMouseButton / TVP_SS_* → cycfi 中立型) は
+// ElementsInputMap.h へ移した (ホストのレイヤに描くパネルと共用するため)。
+using namespace tvp_elements_input;
 
 //---------------------------------------------------------------------------
 // 入力ルーティングの中核。

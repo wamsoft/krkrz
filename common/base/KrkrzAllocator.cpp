@@ -54,8 +54,10 @@ size_t TVPGetKrkrzAllocatorPoolSize()
 		tjs_int64 mb = (tjs_int64)val;
 		if(mb > 0) return (size_t)mb * 1024 * 1024;
 	}
-	// 既定: 256 MB
-	return (size_t)256 * 1024 * 1024;
+	// 既定: 64 ビットは 256 MB。32 ビットはアドレス空間 (2-4GB) を先取りで
+	// 潰さないよう 64 MB に抑える (足りない案件は -krkrzpoolsize=N で増やす)。
+	return (sizeof(void *) >= 8) ? (size_t)256 * 1024 * 1024
+	                             : (size_t)64 * 1024 * 1024;
 }
 
 //---------------------------------------------------------------------------

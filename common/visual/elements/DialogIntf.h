@@ -1,10 +1,10 @@
 //---------------------------------------------------------------------------
-//!@file TJS Dialog クラスバインディング (Phase 6b)
+//!@file TJS ElementsDialog クラスバインディング (Phase 6b)
 //
-// TJS スクリプトから `new Dialog()` で生成し、JSON レイアウトを使って
+// TJS スクリプトから `new ElementsDialog()` で生成し、JSON レイアウトを使って
 // Elements ベースの汎用ダイアログを表示するためのネイティブクラス。
 //
-//   var dlg = new Dialog();
+//   var dlg = new ElementsDialog();
 //   dlg.onAction = function(id, payload) {
 //       if (id == "ok") System.inform("OK!");
 //   };
@@ -21,6 +21,7 @@
 #include "DialogEventHandler.h"
 
 #include <map>
+#include <vector>
 
 class tTJSNI_Dialog : public tTJSNativeInstance, public iTVPDialogEventHandler
 {
@@ -40,7 +41,12 @@ public:
 	void OnScreenEnter(const ttstr& name) override;
 	void OnScreenLeave(const ttstr& name, const ttstr& action) override;
 	// teardown 完了時に TJS の onClose(action) を起動 (非ブロッキング経路用)
+	void OnDrag(const tTJSVariant& payload) override;
 	void OnClosed(const ttstr& action) override;
+	// 変数 store の変化で TJS の onVar(name, value) を起動する。 観測するか
+	// どうかは WantsVarNotify が答える (watchVars / onVar 実装の有無で決まる)。
+	void OnVar(const ttstr& name, const ttstr& value) override;
+	bool WantsVarNotify(std::vector<ttstr>& out_names) override;
 
 	// TJS から呼ばれる
 	// modal: -1 = 省略 (後方互換で grabFocus に追従) / 0 = 非モーダル / 1 = モーダル。
@@ -56,6 +62,21 @@ public:
 	void Close();
 	// 変数 store へ書込 ("text_var" label の動的更新)。 非アクティブなら false。
 	bool SetVar(const ttstr& name, const ttstr& value);
+	// 変数 store から読出。 未知の変数 / 非アクティブなら false。
+	bool GetVar(const ttstr& name, ttstr& out);
+	// id 指定の widget へフォーカスを移す (Agent.dialogFocus の instance 版)。
+	// input_box は編集フォーカス (キャレット + text 受理) になる。
+	bool FocusWidget(const ttstr& id);
+	bool ActivateWidget(const ttstr& id);
+
+	//! ElementsDialog.watchVars の状態。 どの変数の変化を onVar で受けるか。
+	//!  - Auto  … 既定。 onVar を実装しているときだけ「全変数」を観測する
+	//!  - Off   … 観測しない (watchVars = [] を明示指定)
+	//!  - All   … 全変数を観測 (watchVars = "*")
+	//!  - Names … WatchNames の変数だけ観測 (watchVars = [名前, ...])
+	enum class VarWatch { Auto, Off, All, Names };
+	VarWatch WatchMode = VarWatch::Auto;
+	std::vector<ttstr> WatchNames;
 
 	// Phase 6c: 独立 SDL_Window 経由のブロッキングモーダル。
 	// 戻り値は Dictionary `%[ action: ttstr, values: %[id: value, ...] ]`。

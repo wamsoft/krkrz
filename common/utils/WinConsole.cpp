@@ -3,6 +3,10 @@
 //---------------------------------------------------------------------------
 #include "tjsCommHead.h"
 #include "WinConsole.h"
+#include "CharacterSet.h"
+
+#include <cstdio>
+#include <string>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -42,6 +46,25 @@ bool TVPAttachWindowsConsole()
 	return true;
 }
 
+void TVPWriteStdOutText(const tjs_char *text)
+{
+	if (!text || !*text) return;
+	HANDLE h = ::GetStdHandle(STD_OUTPUT_HANDLE);
+	if (h == NULL || h == INVALID_HANDLE_VALUE) return;
+
+	DWORD mode;
+	if (::GetConsoleMode(h, &mode)) {
+		// 真の Win32 コンソール: UTF-16 のまま書く (コードページ非依存)
+		size_t len = ::wcslen((const wchar_t*)text);
+		::WriteConsoleW(h, (const wchar_t*)text, (DWORD)len, NULL, NULL);
+	} else {
+		// パイプ / ファイルへのリダイレクト: UTF-8 で書く
+		std::string u8;
+		if (TVPUtf16ToUtf8(u8, text) && !u8.empty())
+			::WriteFile(h, u8.data(), (DWORD)u8.size(), NULL, NULL);
+	}
+}
+
 void TVPDetachWindowsConsole()
 {
 	if (g_tvp_attached_console) {
@@ -56,6 +79,16 @@ bool TVPIsAttachedWindowsConsole()
 }
 
 #else // !_WIN32
+
+void TVPWriteStdOutText(const tjs_char *text)
+{
+	if (!text || !*text) return;
+	std::string u8;
+	if (TVPUtf16ToUtf8(u8, text) && !u8.empty()) {
+		::fwrite(u8.data(), 1, u8.size(), stdout);
+		::fflush(stdout);
+	}
+}
 
 bool TVPAttachWindowsConsole() { return false; }
 void TVPDetachWindowsConsole() {}

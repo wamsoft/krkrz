@@ -76,7 +76,9 @@ public:
 // SoundAllocator のプールサイズ既定値 (バイト)。
 // CLI `-soundpoolsize=N` (MB 指定、none/0 で pool 無効化 → 従来 raw malloc)。
 // PCM/リング/クロスフェード一時 + miniaudio 内部 + libogg/libvorbis decode
-// 作業 (Phase 3 で hook 後) を含めるため余裕を見て 128 MB。
+// 作業 (Phase 3 で hook 後) を含める。
+// ⚠ pool は起動時に malloc で丸ごと確保されるので、 既定を大きくすると
+//   汎用ヒープを圧迫する (詳細は TVPGetBitmapAllocatorPoolSize のコメント)。
 size_t TVPGetSoundAllocatorPoolSize()
 {
 	tTJSVariant val;
@@ -88,7 +90,8 @@ size_t TVPGetSoundAllocatorPoolSize()
 		tjs_int64 mb = (tjs_int64)val;
 		if(mb > 0) return (size_t)mb * 1024 * 1024;
 	}
-	return (size_t)128 * 1024 * 1024;
+	// 既定: 16 MB (足りない案件は -soundpoolsize=N で増やす)
+	return (size_t)16 * 1024 * 1024;
 }
 
 iTVPMemoryAllocator *

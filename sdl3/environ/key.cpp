@@ -205,10 +205,22 @@ tjs_uint16 TVPTransSDLKeyToVirtualKey(tjs_int sdlKey)
     }
     
     // ファンクションキー
-    if (sdlKey >= SDLK_F1 && sdlKey <= SDLK_F24) {
+    //
+    // ※SDL の SDLK_F13..F24 は F1..F12 と連番になっていない。 間には
+    //   PrintScreen / カーソルキー / **テンキー一式** が挟まる:
+    //     F1..F12   = 0x4000003A..0x40000045
+    //     (この間)  = PrintScreen 〜 KP_EQUALS (0x40000046..0x40000067)
+    //     F13..F24  = 0x40000068..0x40000073
+    //   これを F1..F24 の一括範囲で判定すると、 テンキーまで巻き込んだうえ
+    //   24 要素しかない VK_SPECIAL_KEYS を範囲外参照して不定値を返す
+    //   (テンキー Enter が Return にならない等)。 2 つに分けて見る。
+    if (sdlKey >= SDLK_F1 && sdlKey <= SDLK_F12) {
         return VK_SPECIAL_KEYS[sdlKey - SDLK_F1];
     }
-    
+    if (sdlKey >= SDLK_F13 && sdlKey <= SDLK_F24) {
+        return VK_SPECIAL_KEYS[12 + (sdlKey - SDLK_F13)];
+    }
+
     // テンキー
     if (sdlKey >= SDLK_KP_1 && sdlKey <= SDLK_KP_9) {
         return VK_NUMPAD1 + (sdlKey - SDLK_KP_1);
@@ -256,8 +268,10 @@ static void InitKey()
     VK_TRANSLATE_TABLE_REV[VK_SCROLL] = SDLK_SCROLLLOCK;
     
     // ファンクションキーの逆マッピングを設定
-    for (int i = 0; i < 24; i++) {
-        VK_TRANSLATE_TABLE_REV[VK_F1 + i] = SDLK_F1 + i;
+    // (F13..F24 は F1..F12 と連番でない。 TVPTransSDLKeyToVirtualKey 側の注記参照)
+    for (int i = 0; i < 12; i++) {
+        VK_TRANSLATE_TABLE_REV[VK_F1 + i]      = SDLK_F1 + i;
+        VK_TRANSLATE_TABLE_REV[VK_F13 + i]     = SDLK_F13 + i;
     }
     
     // テンキーの逆マッピングを設定
@@ -305,11 +319,21 @@ bool SDL3Application::GetAsyncKeyState(tjs_uint keycode, bool getcurrent)
     if (keycode >= 0 && keycode < 256) {
         int sdlCode = VK_TRANSLATE_TABLE_REV[keycode];
         if (sdlCode) {
-            const bool *state = SDL_GetKeyboardState(NULL);            
+            const bool *state = SDL_GetKeyboardState(NULL);
             SDL_Keymod keymod;
             SDL_Scancode scancode = SDL_GetScancodeFromKey(sdlCode, &keymod);
             if (scancode != SDL_SCANCODE_UNKNOWN) {
-                return state[scancode] && mod == keymod;
+                // keymod は「このキーコードを出すのに要る修飾」。判定は
+                // 「必要な修飾グループが押されているか」だけを見る。
+                // 旧実装の mod == keymod (完全一致) は NumLock/CapsLock が
+                // ON なだけで常に false になり、VK_RETURN 等の押しっぱなし
+                // 判定 (getKeyState) が全滅していた。
+                auto groupOK = [&](SDL_Keymod group) -> bool {
+                    return !(keymod & group) || (mod & group);
+                };
+                return state[scancode]
+                    && groupOK(SDL_KMOD_SHIFT) && groupOK(SDL_KMOD_CTRL)
+                    && groupOK(SDL_KMOD_ALT)   && groupOK(SDL_KMOD_GUI);
             }
         }
     }

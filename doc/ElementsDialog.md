@@ -2,18 +2,24 @@
 
 吉里吉里Z 上で [Elements](https://github.com/wamsoft/elements) (ThorVG ベースの C++ GUI ライブラリ) を埋め込み、 JSON 定義のモーダル/非モーダルダイアログを動作させるための機構の現状記録。 設計の経緯ではなく、 実装済み構造の参照ドキュメント。
 
+> **層構造とドキュメント地図** = umbrella の
+> [doc/topics/core/elements.md](https://github.com/wamsoft/krkrz_dev/blob/develop/doc/topics/core/elements.md)。
+> 「どの層 (elements / elements_modal / krkrz 本体 / ゲーム側) を直せばよいか」の
+> 早見表はそちら。 この文書は **krkrz 本体側の実装 SSOT**。
+
 ## 全体像
 
 3 経路で同じ JSON 定義のダイアログを動かせる:
 
 | TJS API | 呼出例 | 経路 |
 |---|---|---|
-| `Dialog.showJson(json)` / `showFile(path)` | dialogTest (VK_D) | 非モーダル (オーバーレイ) — `Dialog.onAction` が逐次発火、 `close()` で終了 |
-| `Dialog.showModalJson(json, title, w, h)` | modalTest (VK_E) | 独立 SDL_Window + ブロッキング (`OS WINDOW_MODAL`) |
-| `Dialog.showModalJson(json)` | modalOverlayTest (VK_O) | overlay + ブロッキング (ゲーム画面の上に nested ループ) |
-| `Dialog.showFlow(manifest)` / `showFlowScreens(dict, entry)` | — | overlay + ブロッキング 複数画面フロー (navigator)。 `onScreen` / `onScreenLeave` 発火 |
-| `Dialog.startFlow(manifest)` / `startFlowScreens(dict, entry)` | startup.tjs ジャンルメニュー | overlay + **非ブロッキング** 常駐フロー。 出しっぱなしで背景動作と併存。 `dlg.active` / `close()` で制御 |
-| `Dialog.showDict(dict)` / `showModalDict(dict [, title, w, h])` | — | 上記 showJson / showModalJson の **TJS Dictionary 版** (後述「TJS Dictionary レイアウト」) |
+| `ElementsDialog.showJson(json)` / `showFile(path)` | dialogTest (VK_D) | 非モーダル (オーバーレイ) — `ElementsDialog.onAction` が逐次発火、 `close()` で終了 |
+| `ElementsDialog.showModalJson(json, title, w, h)` | modalTest (VK_E) | 独立 SDL_Window + ブロッキング (`OS WINDOW_MODAL`) |
+| `ElementsDialog.showModalJson(json)` | modalOverlayTest (VK_O) | overlay + ブロッキング (ゲーム画面の上に nested ループ) |
+| `ElementsDialog.showFlow(manifest)` / `showFlowScreens(dict, entry)` | — | overlay + ブロッキング 複数画面フロー (navigator)。 `onScreen` / `onScreenLeave` 発火 |
+| `ElementsDialog.startFlow(manifest)` / `startFlowScreens(dict, entry)` | startup.tjs ジャンルメニュー | overlay + **非ブロッキング** 常駐フロー。 出しっぱなしで背景動作と併存。 `dlg.active` / `close()` で制御 |
+| `ElementsDialog.showDict(dict)` / `showModalDict(dict [, title, w, h])` | — | 上記 showJson / showModalJson の **TJS Dictionary 版** (後述「TJS Dictionary レイアウト」) |
+| `new ElementsPanel(layer)` + `showFile(path)` / `showJson(json)` | — | **overlay ではなくホストのレイヤへ描く** 別経路。 z 順・`[trans]`・`piledCopy`・入力の帰属がレイヤの仕組みに従う (後述「ホストのレイヤへ描く」) |
 
 独立 window 経路 (E) は、 SDL ビルドでは krkrz 非依存ライブラリ [`external/elements/external/elements_modal/`](../external/elements/external/elements_modal/README.md) の `run_modal` (SDL_Window/Renderer 内蔵) をそのまま呼び出す。 overlay 経路 (D / O) は krkrz の DrawDevice にぶら下がる `tTVPElementsDialogManager` がライブラリの `overlay_session` を駆動する。
 
@@ -32,6 +38,16 @@ nested ループはゲームウィンドウ上の overlay を Win32 メッセー
 overlay-modal / navigator フロー / テキスト入力 (WM_CHAR / サロゲート) はすべて WINVER で動作する。
 
 ## DrawDevice との接続
+
+> **提示は premultiplied 合成**。 Elements の canvas は ThorVG の Sw raster が
+> `ColorSpace::ARGB8888` (= alpha-premultiplied) で出力するので、 各 renderer は
+> 「src の RGB に既にアルファが掛かっている」前提で合成する
+> (D3D11 = `SrcBlend = ONE` / GL = `GL_ONE` / SDL =
+> `SDL_BLENDMODE_BLEND_PREMULTIPLIED`)。 straight alpha で合成すると
+> アルファが二重に掛かり、 **半透明の画素だけが薄く出る** (文字の
+> アンチエイリアス・袋文字の縁・フェード中の要素・半透明の下地)。
+> 不透明な画素は影響を受けないので気付きにくい。
+
 
 ```
    Window(SDL/Win32) ──イベント──> tTVPDrawDevice 入力ハンドラ
@@ -106,10 +122,41 @@ public:
 };
 ```
 
-TJS の `Dialog` クラスはこれを実装し、 TJS の `onAction` / `onScreen` /
-`onScreenLeave` / `onClose` を `TVPPostEvent` 経由で発火する。
+TJS の `ElementsDialog` クラスはこれを実装し、 TJS の `onAction` / `onScreen` /
+`onScreenLeave` / `onClose` / `onDrag` を `TVPPostEvent` 経由で発火する。
 
-### 変数 store への書込 (`SetVar` / `Dialog.setVar`)
+### ドラッグ通知 (`onDrag`)
+
+画面 JSON で **`"drag_events": true`** を書いた widget の 押下 → 移動 → 離す が
+`onDrag(payload)` で届く。 payload は **TJS Dictionary**:
+
+```tjs
+class D extends ElementsDialog {
+    function onDrag(e) {
+        // e.id / e.phase ("begin"|"move"|"end") / e.x / e.y
+        // e.dx / e.dy (前回からの差分) / e.startX / e.startY / e.modifiers
+        if (e.phase == "end") {
+            // 「どこで離したか」の判断はここで
+        }
+    }
+}
+```
+
+座標は **画面 JSON に書いた座標系** (view logical)。 TJS Dictionary には bool が
+無いので `phase` は文字列にしてある。
+
+> **見た目の追従に onDrag は要らない。** widget に `"drag_at_var": "名前"` を書くと
+> ドラッグ中の位置が `"x,y"` で変数へ書かれ、 canvas 子の `"at_var"` に同じ変数を
+> 挿せば **絵がそのままついてくる** (C++ 内で完結するのでフレーム同期・
+> `TVPPostEvent` の遅延を受けない)。 `"drag_bounds": [x,y,w,h]` で可動域も制限できる。
+> `onDrag` は «どこで離したか» のような **判断**をする用。
+
+配送は `OnAction` と同じキュー (`DispatchDrag`) を通るので、 paint 中に発火しても
+安全で、 押下 / 移動 / 離すの順序も保たれる。 キューに溜まった `move` は
+最新の 1 件へ畳まれる (位置は最新だけ分かればよいため)。 `begin` / `end` は畳まない。
+
+
+### 変数 store への書込 (`SetVar` / `ElementsDialog.setVar`)
 
 elements_modal の VariableStore (`vars` / `text_var`) へホスト側から書き込む
 経路。 `tTVPElementsDialogManager::SetVar(handler, name, value)` が
@@ -128,6 +175,13 @@ elements_modal README「変数 store」節): `text_list` / `rect_list` +
 有効/無効 mask、 `'0'`/`'1'` 文字列)、 `selected_var`+`selected_value`
 (atlas_choice / radio_button のラジオグループ変数、 双方向) も setVar 駆動。
 
+`label` / `text_area` の一覧表示は **«窓» 形式**でも組める: 行ごとに固定の
+`"index"` + 全行で共有する `"index_offset_var"` (先頭位置) を書くと引く位置が
+`index + offset` になり、 **setVar で先頭位置の変数 1 個を動かすだけで一覧が
+送れる** (行ごとに変数を用意して `text_var` / `visible_var` を回す必要がない。
+範囲外は窓モードでは空文字、 `index_var` だけの従来の使い方は clamp のまま)。
+一覧データ自体も `"text_list_var"` で差し替えられる (改行区切り / JSON 配列)。
+
 要素の見た目そのものを駆動するものも同じ経路:  `opacity_var` (要素単位の
 不透明度、 `"0.6"` 形式)、 `visible_var` (表示 / 非表示。 `"0"` / `"false"` /
 空文字で非表示。 **非表示の間はフォーカスも当たり判定も外れる**が、 canvas は
@@ -137,6 +191,71 @@ elements_modal README「変数 store」節): `text_list` / `rect_list` +
 2 回目以降ずっと最終フレームのままになる)、
 トップレベルの `background_opacity_var` (**背景板だけ**の不透明度。 中身の文字や
 ボタンには掛からないので、 下のゲーム画面を透かしても可読性が落ちない)。
+
+### 一覧 widget (`list` / `atlas_scrollbar`) — 2026-08-29 追加
+
+elements_modal 側の追加 (詳細は elements_modal README)。 «窓»
+(`index` + `index_offset_var`) が «文字» までしか持たなかったところを、
+行テンプレート方式の `list` が **位置・当たり・hover・選択・件数不足行の
+後始末**まで引き受ける。 `atlas_scrollbar` は溝 + つまみ (9-slice 可) を
+`index_offset_var` / `value_var` へ直結し、 ドラッグ・ページ送り・ホイールを
+内蔵する。 ホスト (krkrz) 側の変更は不要で、 行クリックは通常の
+`onAction(id, payload)` として届く (payload = 行のデータ index)。
+
+**画面 JSON の top-level `"size"` peek に注意**: manager は JSON を parse せず
+上限サイズを文字列 peek している。 widget 側にも配列値の `"size"` を取るもの
+(`spacer` / atlas_slider の 9-slice thumb) があるため、 深さ 1 のキーだけを見る
+`PeekTopLevelSize` を使う (単純な文字列検索に戻すと、 入れ子の `"size"` を掴んで
+ダイアログがその大きさに縮む)。
+
+### 変数 store の読出と変化通知 (`GetVar` / `DescribeVars` / `OnVar`)
+
+書込 (`SetVar`) の逆向き。 elements_modal 側には元から
+`overlay_session::get_var()` / `list_vars()` / `set_var_watcher()` があり、
+ホスト側のバインドを生やしたもの (2026-08-28)。
+
+| manager | TJS | 中身 |
+|---|---|---|
+| `GetVar(handler, name, out)` | `dlg.getVar(name)` | 1 件読出。 未知 / 非アクティブは false (TJS は void) |
+| `DescribeVars(handler)` | `dlg.listVars()` | 変数一覧 (名前順)。 `name` / `value` / `usedBy` = `{id, kind}` の配列 |
+| `iTVPDialogEventHandler::OnVar` | `dlg.onVar(name, value)` | 変化通知 |
+| `RefreshVarWatch(handler)` | `dlg.watchVars = …` | 観測対象の張り直し |
+
+読める値は setVar で書いたものに限らない。 **画面側が書いた値** —
+`vars_on_hover` / `vars_on_focus`、 slider の `value_var`、 `drag_at_var`、
+一覧の `index_offset_var` — も同じ store なので全部読める。 これで
+«**絵はホスト側のレイヤ、 当たり判定だけ elements**» という構成 (大きすぎて
+atlas に積めない一枚絵を並べる一覧など) でも hover をホスト処理へ繋げる。
+
+配送設計:
+
+- watcher は `overlay_session` の**レンダリング中にも発火する**ので、 通知は
+  即時配送せず必ず `pending_actions` キューへ積み、 continuous フック
+  (window update の外) から配送する。 action / drag と同じキューなので
+  相対順序も保たれる。
+- 同じ handler + 同じ変数名が既に積まれていれば**値だけ差し替える**。 hover 移動や
+  ドラッグ中の座標書込は毎フレーム走るため、 畳まないと通知が溢れる。
+  結果として通知は 1 フレーム遅延する — «いまの値» が要るなら `getVar`。
+- **観測は opt-in**。 `BeginScreen` が `handler->WantsVarNotify(names)` を
+  問い合わせ、 true のときだけ watcher を張る。 `tTJSNI_Dialog` の実装は
+  「`watchVars` が明示されていればそれに従う / 未指定なら **TJS 側に `onVar`
+  メンバがあるときだけ全変数**」。 `onVar` に native の no-op 既定を**置かない**
+  のはこの判定のため (置くと全ダイアログが «実装済み» になる)。
+- 画面 (session) は遷移のたびに作り直されるので、 `BeginScreen` で毎回張り直す。
+
+### フォーカスのプログラム移動 (`FocusWidget` / `ElementsDialog.focus` / `activate`)
+
+`dlg.focus(id)` で表示中画面の widget へフォーカスを移す
+(`FocusWidget(handler, id)` — Agent.dialogFocus = `FocusWidgetById(index, id)` の
+instance 版)。 input_box は編集フォーカス (キャレット + text 受理) になる。
+`at_var` の park / unpark などで画面を組み替えた後に入力先を移す用途。
+中身は `overlay_session::focus_by_id` へ委譲するだけで id の存在確認はせず、
+戻り値は «インスタンスへ依頼できたか» (非アクティブ / インスタンス無しなら false)。
+
+`dlg.activate(id)` は focus + Enter 相当で widget を実行する
+(`ActivateWidget(handler, id)` — Agent.dialogClick の instance 版。
+`ElementsPanel.activate` と同形)。 こちらは `activate_by_id` の戻り値を返すので
+id 不明なら false。
 
 ### モーダルへの初期変数注入 (`showModalFile(path, %[vars])`)
 
@@ -156,8 +275,8 @@ var r = dlg.showModalFile("ui/launcher.jsonc",
 
 ### フォント / pad アイコンのセットアップ (static)
 
-- `Dialog.registerFont(family, path[, weight[, slant[, stretch]]])` /
-  `Dialog.registerFontDir(dir)` — storage パス (XP3 内可) からフォント登録。
+- `ElementsDialog.registerFont(family, path[, weight[, slant[, stretch]]])` /
+  `ElementsDialog.registerFontDir(dir)` — storage パス (XP3 内可) からフォント登録。
 - **可変フォントのインスタンス指定**: 画面 JSON の `"font"` にファミリ名 +
   `#tag=val[,tag=val...]` で軸を指定できる (例 `"MyFont#wght=700"`、
   `"MyFont#wght=700,wdth=75"`)。ベースファミリを登録しておけばインスタンスは
@@ -177,11 +296,11 @@ var r = dlg.showModalFile("ui/launcher.jsonc",
   ```tjs
   // ベース (無指定 = wght=400 正規化)。先に登録する — 埋め込みファミリ名の
   // 解決は先着エントリが勝つため、素の VF を先頭に置く
-  Dialog.registerFont("MyFont", "fonts/MyFont-VF.ttf");
+  ElementsDialog.registerFont("MyFont", "fonts/MyFont-VF.ttf");
   // 画面 JSON が使う名前 = 同じ VF の wght=500 インスタンス
-  Dialog.registerFont("MyFont-Medium", "fonts/MyFont-VF.ttf#wght=500");
+  ElementsDialog.registerFont("MyFont-Medium", "fonts/MyFont-VF.ttf#wght=500");
   ```
-- `Dialog.defaultFontFamily = "Open Sans, Roboto, Noto Sans JP, ..."` —
+- `ElementsDialog.defaultFontFamily = "Open Sans, Roboto, Noto Sans JP, ..."` —
   theme 全スロットの family 列を明示。 **明示設定後は EnsureRuntimeInitialized
   の自動並び (登録済み family から生成) に上書きされない**。 自動並びは
   Latin → CJK → Emoji の順 (Emoji 系が primary になると英数の字間が崩れるため
@@ -192,7 +311,7 @@ var r = dlg.showModalFile("ui/launcher.jsonc",
   "elements_basic" と一致させるため名前加工せず登録し、 本文フォントの
   fallback 連結 (自動並び) には混ぜない。 **これが無いとチェックマーク等の
   アイコンだけ描画されない** (枠は出るが ✓ が出ない) ので注意。
-- `Dialog.fontLanguages = %[lang => %["map" => %[...], "fallback" => "..."]]` —
+- `ElementsDialog.fontLanguages = %[lang => %["map" => %[...], "fallback" => "..."]]` —
   **言語連動フォント置換表**。 文字体系ごとの別フォント (Noto Sans JP/TC/SC 等)
   を持つ多言語 UI で、 表示言語に応じてフォント解決時に family を差し替える
   (共有コードポイントの漢字を正しい地域字形で出すため)。
@@ -201,7 +320,7 @@ var r = dlg.showModalFile("ui/launcher.jsonc",
     `"#tag=val"` 軸サフィックスは温存 (JP/SC/TC の同軸 VF ならウェイトが揃う)
   - `fallback` (任意) = その言語のときに theme 既定 families チェーンを
     置き換える並び (エントリの無い言語では swap 前の並びへ戻る)
-  - 適用言語は widget 明示 `"locale"` > `Dialog.language`。 エントリの無い
+  - 適用言語は widget 明示 `"locale"` > `ElementsDialog.language`。 エントリの無い
     言語は置換なし
   - 画面 JSON / app.jsonc top-level の `"font_languages"` と同じ表で、
     言語単位にマージ登録される (後から入れた方が上書き)。 getter は最後に
@@ -209,15 +328,15 @@ var r = dlg.showModalFile("ui/launcher.jsonc",
   - ⚠ `text_area` はビルド時にフォントを固定するため、 表示中の言語切替には
     追従しない (画面の開き直しで反映)
   ```tjs
-  Dialog.fontLanguages = %[
+  ElementsDialog.fontLanguages = %[
     "tc" => %["map" => %["Noto Sans JP" => "Noto Sans TC"]],
     "sc" => %["map" => %["Noto Sans JP" => "Noto Sans SC"]]];
-  Dialog.language = "sc";   // 以降 "Noto Sans JP" 指定の label は SC で描かれる
+  ElementsDialog.language = "sc";   // 以降 "Noto Sans JP" 指定の label は SC で描かれる
   ```
-- `Dialog.setPadIconBase(dir)` — pad_icon (Kenney input prompts) のベース
+- `ElementsDialog.setPadIconBase(dir)` — pad_icon (Kenney input prompts) のベース
   ディレクトリ (storage パス、 配下に xbox/ps/switch/keyboard + vector/*.svg)。
   未設定だと pad_icon は灰色プレースホルダになる。
-- `Dialog.setPadTheme(name)` — "xbox"/"ps"/"switch"/"keyboard"/"none"/"auto"。
+- `ElementsDialog.setPadTheme(name)` — "xbox"/"ps"/"switch"/"keyboard"/"none"/"auto"。
   "auto" は接続パッドの系統 (`System.padStyle`) から自動選択し、 画面を開く
   たびに決め直す (パッドが無ければ動作プラットフォームで決まる。 途中で
   コントローラを替えても次に開く画面から追従)。
@@ -228,19 +347,65 @@ var r = dlg.showModalFile("ui/launcher.jsonc",
 セーブサムネイルのように**実行時に変わる画像**を Elements ウィジェットへ渡す
 仕組み。 静的な atlas とは別に、 名前→画像バイトの実行時ストアを持つ。
 
-- `Dialog.registerImage(name, path)` — storage パスのファイルを読み `name` で
+- `ElementsDialog.registerImage(name, path)` — storage パスのファイルを読み `name` で
   登録。 jsonc の `image` ウィジェットからは `"image": "mem://<name>"` で参照。
-  戻り値 = 成否。 `Dialog.unregisterImage(name)` / `Dialog.clearImages()`。
+  戻り値 = 成否。 `ElementsDialog.unregisterImage(name)` / `ElementsDialog.clearImages()`。
 - jsonc: `{ "type": "image", "image": "mem://save0", "at": [x,y,w,h] }` で
   bounds にアスペクト維持 fit 描画 (elements_modal README 参照)。
-- pixmap は画面 build 時に一度読むので、 **再登録 → 画面を開き直す**と更新。
-  登録前に build すると空表示なので、 画面 push の前に registerImage する。
+- **再登録すれば表示中の画面にも即時反映される** — registerImage が
+  `elements_modal::refresh_mem_image(name)` を呼び、 構築済みの mem:// image
+  widget を再デコードして差し替える (画面の開き直し不要。 overlay もパネルも
+  invalidate される)。 登録前に build した widget は空表示のままなので、
+  初回だけは画面 push の前に registerImage しておく。
 - ⚠ **Elements の画像デコーダ (ThorVG/stb) は krkrz の BMP を読めない**
   (stb が "bad offset" で拒否)。 セーブサムネイルは BMP 保存 (saveThumbnail)
   なので、 **krkrz Layer に loadImages → saveLayerImage で PNG 化 → その PNG を
   registerImage** する。 PNG/JPEG/WEBP は ThorVG が直接デコードする。
 
-### フォーカスリング (static、 `Dialog.focusRing`)
+### セッション共有変数 (static、 `ElementsDialog.getSharedVars` ほか)
+
+画面 JSON の `"shared_vars"` (上の「JSON 仕様の要点」) が宣言した変数は
+**画面をまたいで保たれる**。 持ち回り自体はホスト実装不要だが、 **ゲームの
+セーブデータへ落とす / ロード後に流し込む**のはホストの仕事なので、
+その口を static メソッドとして開けてある (インスタンス不要)。
+
+| TJS | 対応する elements_modal API | 用途 |
+|---|---|---|
+| `ElementsDialog.setSharedVar(name, value)` | `set_shared_var` | 共有変数を書く (画面が未構築でも可) |
+| `ElementsDialog.getSharedVars()` | `shared_vars` | 現在値を辞書 (name => value) で返す。 セーブ用 |
+| `ElementsDialog.clearSharedVars()` | `clear_shared_vars` | 捨てる (タイトルへ戻る / ロード直前など) |
+
+```tjs
+// セーブ
+var cfg = ElementsDialog.getSharedVars();      // %[ "cfg_bgm" => "70", ... ]
+// ロード
+ElementsDialog.clearSharedVars();
+foreach_dict_of(cfg, function(k, v) { ElementsDialog.setSharedVar(k, v); });
+```
+
+値は**文字列**で出入りする (変数 store の素の型)。 数値として使うなら
+TJS 側で `+v` / `""+v` を挟む。 共有側へ行くのは「変化として書かれた」値だけで、
+widget の初期値 (`initial` / `value`) は出ない — 「誰も触っていない項目」が
+最初に開いた画面の既定で固定されるのを避けるため。
+
+### 差し替え可能アトラス (static、 `ElementsDialog.setAtlasImage`)
+
+画面 JSON の `"atlases"` で `"swappable": true` と宣言したアトラスは、
+実行時に別の 1 枚へ差し替えられる。 **widget は作り直さない**ので
+レイアウトもフォーカスもそのまま保たれる。
+
+- `ElementsDialog.setAtlasImage(name, path)` — 差し替え。 `path` は画面の
+  `resource_base` 起点。 戻り値 = 差し替えられたか (未宣言 / 読込失敗なら
+  false で、 表示は変わらない)。
+- `ElementsDialog.swappableAtlases()` — いま差し替えられるアトラス名の配列
+  (検証パネル / REPL 用)。
+
+⚠ **差し替え先は同じ矩形割りであること**。 widget が持つ frames / rect は
+変わらないので、 絵の位置がずれると別の絵が出る。 swappable なアトラスは
+パス単位のキャッシュに乗らない (中身を書き換えると同じ絵を使う他の画面を
+巻き添えにするため) 代わりに、 画面をまたいだ使い回しは効かない。
+
+### フォーカスリング (static、 `ElementsDialog.focusRing`)
 
 フォーカス中の要素に elements が描く汎用の枠 (青い角丸)。 **krkrz では既定
 OFF** — authored 画面は focused frame / focus_link 装飾で自前のフォーカス表示を
@@ -249,7 +414,7 @@ elements の汎用枠を使いたい場合に `true` を設定する (起動ス�
 設定しても、 後から走る初期化に上書きされず尊重される)。
 
 ```tjs
-Dialog.focusRing = true;     // elements の汎用フォーカス枠を有効化
+ElementsDialog.focusRing = true;     // elements の汎用フォーカス枠を有効化
 ```
 
 **画面単位ではなくアプリ全体設定** (グローバルテーマの
@@ -260,11 +425,11 @@ button / slider / dial / thumbwheel の枠がまとめて付く/消える。 状
 生きている**ので、 キー/パッドのナビゲーションと `hilite` frame への切替は
 従来どおり動く。
 
-> クラス内から触るときは `global.Dialog.focusRing`。 `Dialog` を継承した
-> クラスのメソッド内で素の `Dialog` と書くと親クラス参照になり、 static
+> クラス内から触るときは `global.ElementsDialog.focusRing`。 `ElementsDialog` を継承した
+> クラスのメソッド内で素の `ElementsDialog` と書くと親クラス参照になり、 static
 > プロパティへの代入が「メンバが見つかりません」になる。
 
-### 描画密度 (static、 `Dialog.renderScale`)
+### 描画密度 (static、 `ElementsDialog.renderScale`)
 
 overlay の ThorVG ラスタライズ密度を切り替える。 表示中の画面にも次フレーム
 から反映されるので、 品質/負荷の比較にも使える。
@@ -294,14 +459,14 @@ overlay の ThorVG ラスタライズ密度を切り替える。 表示中の画
 サイズが基準になり、 パネルが基準領域へ収まらない場合は収まるまで縮小
 される。
 
-### UI の author 基準面 (static、 `Dialog.baseSize`)
+### UI の author 基準面 (static、 `ElementsDialog.baseSize`)
 
 **UI をゲーム画面と別の解像度で author しているタイトルは必ず設定する。**
 上記の拡縮率の分母 (基準面) を primary layer サイズから明示値へ差し替える。
 
 ```tjs
-Dialog.baseSize = [1920, 1080];  // UI は 1920x1080 基準で author
-Dialog.baseSize = void;          // 既定へ戻す (基準面 = primary layer)
+ElementsDialog.baseSize = [1920, 1080];  // UI は 1920x1080 基準で author
+ElementsDialog.baseSize = void;          // 既定へ戻す (基準面 = primary layer)
 ```
 
 - 未設定 (既定) は従来どおり **primary layer サイズ** が基準。 ゲーム画面
@@ -322,7 +487,7 @@ Dialog.baseSize = void;          // 既定へ戻す (基準面 = primary layer)
 座標系の hit-test に正しく届く。
 
 > フルスクリーン (4K 等) では auto 密度の全面ラスタが高価になる
-> (実測: 3840x2160 全面 ThorVG ≈ 70ms)。 `Dialog.partialRedraw = true`
+> (実測: 3840x2160 全面 ThorVG ≈ 70ms)。 `ElementsDialog.partialRedraw = true`
 > (既定) なら hover 等の変化は矩形限定 (~12ms) で済むので、 全面描画へ
 > 落とす設定は避けること。
 
@@ -336,7 +501,7 @@ ElementsDialog.defaultFontFamily =
     "Open Sans, Roboto, Noto Sans JP, Noto Sans TC, Noto Sans SC, Noto Emoji";
 ```
 
-### 再ラスタライズ抑止 (static、 `Dialog.renderCache` / `Dialog.renderCount`)
+### 再ラスタライズ抑止 (static、 `ElementsDialog.renderCache` / `ElementsDialog.renderCount`)
 
 overlay は従来、 アクティブな全パネルを**毎フレーム** ThorVG (CPU) で再ラスタ
 ライズしてテクスチャへ再アップロードしていた (720p で約 92 万 px/パネル)。
@@ -354,12 +519,12 @@ overlay は従来、 アクティブな全パネルを**毎フレーム** ThorVG
 - 状態更新 (変数 poll / パーツ演出 tick / 退場演出の完了検出 / 遅延 focus 適用 /
   キャレット点滅タイマ) は描画をスキップするフレームでも毎フレーム実行される
   (`overlay_session::update()`)。 挙動は従来と変わらず、 描画だけが省略される。
-- `Dialog.renderCache = false` で従来どおり毎フレーム再描画 (負荷 A/B 比較・
+- `ElementsDialog.renderCache = false` で従来どおり毎フレーム再描画 (負荷 A/B 比較・
   問題切り分け用のランタイム逃げ道)。
-- `Dialog.renderCount` (読取専用) は実際にラスタライズした累計回数。 アイドル時
+- `ElementsDialog.renderCount` (読取専用) は実際にラスタライズした累計回数。 アイドル時
   に増えていなければキャッシュが効いている (検証・負荷比較用カウンタ)。
 
-### 部分再描画 (static、 `Dialog.partialRedraw`)
+### 部分再描画 (static、 `ElementsDialog.partialRedraw`)
 
 `renderCache` はパネル単位の「全か無か」で、 変化のあるフレームは常に全面を
 再ラスタライズしていた。 `partialRedraw = true` (既定) では、 **ダーティが矩形
@@ -401,7 +566,7 @@ overlay は従来、 アクティブな全パネルを**毎フレーム** ThorVG
 - 前提として **`renderCache` 有効時のみ機能する** (staging に前回フレームが
   残っていることが条件)。 buffer サイズ変化 / 遷移エフェクト混色中 /
   ダーティ矩形が面積の 3/4 以上を占める場合は全面描画へ自動フォールバック。
-- `Dialog.partialRedraw = false` で常に全面再描画 (A/B 比較・切り分け用)。
+- `ElementsDialog.partialRedraw = false` で常に全面再描画 (A/B 比較・切り分け用)。
   実際に部分描画できた回数は `renderStats.partials`。
 
 実測 (Windows SDL、 ラスタ 1 回あたりの時間):
@@ -525,11 +690,11 @@ counter / 複合が横ばいなのは**設計どおり**で、 毎フレーム�
 即時モードをやめ、 変化した paint だけ更新する。 ThorVG の damage 機構
 (`TVG_PARTIAL`) もこれとセットで初めて使える。
 
-### 描画パイプラインの区間計測 (static、 `Dialog.renderStats` / `renderStatsReset()`)
+### 描画パイプラインの区間計測 (static、 `ElementsDialog.renderStats` / `renderStatsReset()`)
 
 overlay 描画の負荷内訳を実測するための累積カウンタ (`ElementsDialogManager` の
 PaintOverlay / RenderInstance に計測点を常設。 steady_clock 数回/フレームで
-オーバーヘッドは無視できる)。 `Dialog.renderStats` (読取専用) が辞書を返す:
+オーバーヘッドは無視できる)。 `ElementsDialog.renderStats` (読取専用) が辞書を返す:
 
 | キー | 意味 |
 |---|---|
@@ -548,7 +713,7 @@ PaintOverlay / RenderInstance に計測点を常設。 steady_clock 数回/フ�
 
 すべて累積値なので、 **2 回読んで差分を取り、 経過実時間との比**で
 「Elements が 1 フレーム/1 秒あたりに消費した時間・割合」を出す。
-`Dialog.renderStatsReset()` で 0 クリア (計測区間の開始)。
+`ElementsDialog.renderStatsReset()` で 0 クリア (計測区間の開始)。
 
 計測用ベンチ画面 = **`data/elements_bench/`** (コアデモ)。 更新パターン別の
 シナリオ (静的 / キャレット点滅 / 毎フレーム setVar / アニメ小 / アニメ広域 /
@@ -692,7 +857,7 @@ OpenGL / SDLDrawDevice / WINVER の 3 経路すべてで同じキーが埋まる
 | `texUploadBytes` | 転送した累計バイト数 |
 | `frames` | 転送フェーズの実行回数 (≒ 画面更新フレーム数) |
 
-累積値なので 2 回読んで差分を取る。 overlay 側の内訳は `Dialog.renderStats`。
+累積値なので 2 回読んで差分を取る。 overlay 側の内訳は `ElementsDialog.renderStats`。
 
 ⚠ **fps だけ見ても転送の詰まりは分からない**。 フレーム上限に張り付いていると
 転送が 14ms かかっていても fps は変わらない (今回の PBO 問題がまさにそれで、
@@ -759,12 +924,19 @@ DrawDevice / Window の入力ハンドラは `TVP_DIALOG_INTERCEPT` マクロで
 配送の優先順位は一列に整理されている:
 
 ```
-1. モーダルインスタンス     … 全消費 (最優先。 下にもゲームにも通さない)
-2. ホストホットキー         … registerHotKey 登録キーはダイアログへ渡さず
+0. 最上位ホットキー         … System.registerHotKey (ポンプ入口。 ここより上流)
+1. モーダルインスタンス     … 全消費 (下にもゲームにも通さない)
+2. ホストホットキー         … ElementsDialog.registerHotKey 登録キーはダイアログへ渡さず
                               通常経路 (Window.onKeyDown / onMouseDown) へ直行
 3. フォーカスパネル         … キー/パッドを送り、 未処理分のみ素通し
 4. ゲーム / レイヤ          … 未消費の落ち先
 ```
+
+0 は本機構の外側 (プラットフォームのイベントポンプ入口) で、 **モーダル表示中
+でも効く**唯一の層。 詳細は [HotKey.md](HotKey.md)。 モーダルが出ているかどうかは
+`ElementsDialog.modalActive` (読取専用。 modal インスタンスの有無。 非モーダルの常駐
+オーバレイは含まない) で判別でき、 ホットキーのコールバックが「モーダル中は
+素通しする」判断に使える。
 
 複数インスタンス時の配送ルール (最前面 = z-order 末尾から走査):
 
@@ -815,7 +987,12 @@ DrawDevice / Window の入力ハンドラは `TVP_DIALOG_INTERCEPT` マクロで
 従来のモーダルダイアログと同じ「下を触れない」挙動になる。 非モーダルの常駐メニュー +
 背景のゲーム動作を併存させたいときは `startFlow` (= `modal=false`) を使う。
 
-### ホストホットキー (Dialog.registerHotKey)
+### ホストホットキー (ElementsDialog.registerHotKey)
+
+> 全画面共通で「何が出ていても先に効かせる」キーは、 こちらではなく
+> **最上位ホットキー** (`System.registerHotKey`、 [HotKey.md](HotKey.md)) を使う。
+> ホストホットキーは *ダイアログの入力転送の中* の仕組みなのでモーダル中は無効、
+> かつ専用イベントを持たず通常のゲーム入力経路へ素通しする点が違う。
 
 「ダイアログにフォーカスを渡しつつ、 特定のキーだけは必ずホストが取る」ための
 バイパス機構。 登録したキーは `Forward*` の先頭で判定され、 **ダイアログへ渡らず
@@ -823,9 +1000,9 @@ DrawDevice / Window の入力ハンドラは `TVP_DIALOG_INTERCEPT` マクロで
 `onMouseDown` 等) へ流れる。 専用イベントは無い (バイパス方式)。
 
 ```tjs
-Dialog.registerHotKey(key, shift = 0, duringTextInput = false);
-Dialog.unregisterHotKey(key, shift = 0);
-Dialog.clearHotKeys();
+ElementsDialog.registerHotKey(key, shift = 0, duringTextInput = false);
+ElementsDialog.unregisterHotKey(key, shift = 0);
+ElementsDialog.clearHotKeys();
 ```
 
 - `key` は VK コード。 **キー / パッドボタン (VK_PAD*) / マウスボタン
@@ -893,13 +1070,15 @@ Elements 側はこれを受けて [keyboard / arrow / gamepad ナビゲーショ
 - **PS5 の IME**: `SceImeDialog` は `ShowScreenKeyboard` ではなく `StartTextInput`
   フック内にあるため SDL 標準の `AutoShowingScreenKeyboard()` ポリシーが効かない。
   SDL3-playstation 側で物理キーボード接続時は開かないようガードしてある。
-- **切替**: TJS の `Dialog.virtualKeyboard` プロパティで実行時に変更できる。
+- **切替**: TJS の `ElementsDialog.virtualKeyboard` プロパティで実行時に変更できる。
   `"auto"` (既定 = 物理キーボードが無いときだけ) / `"always"` (常に出す。 テスト用。
   デスクトップでも出る) / `"never"` (出さず OS 側に任せる。 表示中なら閉じる)。
   初期値は環境変数 `KRKRZ_FORCE_VIRTUAL_KEYBOARD=1` なら `"always"`。
 - **既知の制限**: 大文字英数字のみ (v1)。 画面中央に出るため入力欄を覆うことがある。
-  `focus_by_id` (Agent.dialogFocus) だけでは input_box が編集状態にならず
-  `focus_consumes_text()` が false のままなので、 検証時は実クリックで focus させる。
+  (かつて `focus_by_id` (Agent.dialogFocus / `ElementsDialog.focus`) だけでは input_box が
+  編集状態にならず実クリックが必要だった問題は、 elements 側の
+  `descend_focus_first` 修正で解消済み — プログラム的 focus でもキャレット +
+  text 受理になる。)
 
 ## elements_modal ライブラリ
 
@@ -938,11 +1117,14 @@ JSON / JSONC (コメント + 末尾カンマ) 対応。 要素タイプ・属性
 - **`"size": [w, h]`** (top-level) — ダイアログの希望論理サイズ (上限)。 実際は content の自然サイズにフィット縮小される (上側余白対策、 [project_elements_dialog_size] 系)。
 - **`"align"`** + **`"margin"`** (top-level) — overlay 上での配置。 `align` は `"center"` (既定) / `"top"` / `"bottom"` / `"left"` / `"right"` と、 それらの組合せ `"top_left"` / `"top_right"` / `"bottom_left"` / `"bottom_right"` (文字列に `top`/`bottom`/`left`/`right` が含まれるかで縦横独立に判定)。 `margin` は非中央側のサーフェス端からの余白 px (既定 0)。 入力座標の補正 (overlay_session の last_rect) も同じ配置で行われるのでクリック判定はズレない。 全 overlay 経路 (showJson / showFlow / startFlow) で有効。 例: ゲーム画面左上にメニューを出す → `"align": "top_left", "margin": 24`。
 - **`"base"`** (top-level) — 配置 / 拡縮の基準領域。 `"window"` (既定) = ウィンドウ全面 / `"content"` = ゲーム画像の表示領域 (DestRect)。 字幕窓のようにゲーム画像へ追従させたいパネルは `"base": "content"` を指定する (上の「renderScale / 配置」節参照)。 widget 内の `base` (text_area の文字方向) とは別物。
-- **`"font_languages"`** (top-level) — 言語連動フォント置換表 (言語コード → `{map, fallback}`)。 表示言語に応じて widget の `"font"` 指定・theme 既定チェーンの family を差し替える。 `Dialog.fontLanguages` プロパティと同じ表 (上の「フォント / pad アイコンのセットアップ」節参照)。 widget 明示 `"locale"` でパーツ単位の言語固定も可。 設計 = [FontEngine.md](FontEngine.md) 「言語連動フォント置換」節。
-- **`"initial_focus": true`** (focusable widget) — 起動時にフォーカスを当てる候補。 複数あった場合 build 順で先勝ち。
+- **`"font_languages"`** (top-level) — 言語連動フォント置換表 (言語コード → `{map, fallback}`)。 表示言語に応じて widget の `"font"` 指定・theme 既定チェーンの family を差し替える。 `ElementsDialog.fontLanguages` プロパティと同じ表 (上の「フォント / pad アイコンのセットアップ」節参照)。 widget 明示 `"locale"` でパーツ単位の言語固定も可。 設計 = [FontEngine.md](FontEngine.md) 「言語連動フォント置換」節。
+- **`"initial_focus": true`** (focusable widget) — 起動時にフォーカスを当てる候補。 **複数の要素に指定でき**、 先頭候補が `enabled_var` で無効な場面では次の有効な候補へ落ちる。 値に数値を書くと明示優先度 (小さいほど優先、 `true` = 0)、 同値は build 順 — JSON の出現順に依存せず「通常は SAVE、 SAVE が無効なら MAP」のような序列を書ける。 候補の確定は表示直後の idle まで遅延するので、 **show 直後にホストが `setVar` で `enabled_var` を流し込む運用でも、 注入後の有効状態で判定される**。
 - **`text_area` ウィジェット** — 矩形に流し込む静的テキスト。 **本体 `Layer.drawShapedTextArea` と改行位置が一致する** (どちらも `glyphware::layoutBlock` を通るため。 行頭行末禁則つき) のが `text_box` との違いで、 加えて `"align"` / `"line_spacing"` / `"count_var"` (文字送り) を持つ。 字幕 / セリフ窓向け。 詳細は下の「矩形テキスト (`text_area`)」節。
-- **`"close_on_click": true`** (button) — click で modal を閉じ、 `result.action = id` で確定する。 **デフォルト false** で、 click は `Dialog.onAction` を発火させるだけで終了させない。 OK / Cancel など「閉じるボタン」だけに付ける運用。 navigator フローでは、 画面遷移する button (transitions と組) と、 その場で動作させる button (close_on_click 無し → onAction のみ) を使い分ける。 なお TJS Dictionary 経由 (`showDict` 等) では true が int 1 で届くが、 bool 属性は number 0/非0 も真偽として受容する (elements_modal 2026-07-20 対応済。 古い pin では効かないので注意)。
+- **`"close_on_click": true`** (button) — click で modal を閉じ、 `result.action = id` で確定する。 **デフォルト false** で、 click は `ElementsDialog.onAction` を発火させるだけで終了させない。 OK / Cancel など「閉じるボタン」だけに付ける運用。 navigator フローでは、 画面遷移する button (transitions と組) と、 その場で動作させる button (close_on_click 無し → onAction のみ) を使い分ける。 なお TJS Dictionary 経由 (`showDict` 等) では true が int 1 で届くが、 bool 属性は number 0/非0 も真偽として受容する (elements_modal 2026-07-20 対応済。 古い pin では効かないので注意)。
 - **`"gap"` (vtile/htile) / top-level `"style"` ブロック** — 既定で「詰まった」見た目になるのを避ける密度指定。 `{"type":"vtile","gap":8,...}` で子間に spacer 自動挿入相当、 top-level `"style": { "font_scale", "row_height", "tile_gap", "padding" }` で未指定値の既定をまとめて与える (詳細は elements_modal README「style ブロック」)。 いずれも省略で従来と完全一致。
+- **`"shared_vars": ["cfg_*", "ui_lang"]`** (top-level) — **画面をまたいで保つ変数**の宣言。 変数 store は画面ごとに作り直されるので、 設定をタブで渡り歩くと「さっき動かしたスライダー」が既定へ戻ってしまう。 一致した変数はセッション共有ストアと**双方向**になり、 画面を組むときは共有側の値で初期化 (画面の `"vars"` 既定より共有側が優先)、 以後変わるたび共有側へ書き戻す。 パターンは完全一致か末尾 `*` の前方一致。 **どの値を持ち回るかは画面が決めるのでホスト実装は不要**だが、 セーブデータへの落とし込みは下の `ElementsDialog.getSharedVars()` 等で行う。
+- **`"value_var"` (2 値トグル) / `"image_var"` (image)** — 値と絵を変数連動にする。 `checkbox` / `toggle_button` / `slide_switch` は `value_var` で変数 store と双方向 (`""` / `"0"` / `"false"` = off)、 `image` は `image_var` の値がそのまま画像パス (`"resources/x.png"` / `"mem://thumb_3"` / 空 = 無描画) になる。 どちらも `ElementsDialog.setVar` での追従は `onAction` を発火させない。 セーブ一覧のページ送りや設定 ON/OFF を**ホストのコールバック無しで**書ける。
+- **`"atlases": { "cg": { "path": ..., "swappable": true } }`** (top-level) — 差し替え可能アトラス。 画面はそのままで絵の束だけ入れ替える (CG 鑑賞のグループタブ等)。 ホストは `ElementsDialog.setAtlasImage(name, path)` で差し替える (下の節)。
 - **`"input"`** (top-level) — ナビゲーション設定:
   ```jsonc
   "input": {
@@ -1046,7 +1228,7 @@ glyphware (`glyphware::layoutBlock`) へ下ろしたのに合わせ、Elements �
 - **⚠全画面透過の非モーダル overlay** (常駐 HUD 等) は描画矩形が全面のため
   右クリックが常にヒットし、 既定 cancel で意図せず閉じる。 その画面の
   `"input"."bindings"` に `{ "mouse": "right", "action": "none" }` を入れるか、
-  ホスト側で右クリックを使うなら `Dialog.registerHotKey(VK_RBUTTON)` で
+  ホスト側で右クリックを使うなら `ElementsDialog.registerHotKey(VK_RBUTTON)` で
   ダイアログへ渡さずホストへバイパスする (「ホストホットキー」参照)。
 
 ### cursor-warp ナビ (`"cursor_warp"`)
@@ -1062,7 +1244,14 @@ hover 演出 / vars_on_focus) がキー操作のフォーカスに自然追従**
   中心 (トラッククリックの値ジャンプ防止)、 choice_nav グループは選択中メンバー。
   widget の `"focus_point": [ax, ay]` (0..1 アンカー比) で個別調整可。
 - hover 由来 (hover_focus) のフォーカス移動では warp しない (実カーソルと喧嘩
-  しない)。 マウス操作に戻ると次のキー操作まで warp は起きない。
+  しない)。 マウス操作に戻ると次のキー操作まで warp は起きない。 **ナビ種別は
+  実マウスが動く / クリックされた時点で mouse へ戻る** — ここが戻らないと、 一度
+  キー操作した後は hover のたびに warp → 合成 move → hover と往復してフォーカスと
+  実カーソルが 2 項目間で振動し、 グリッド状 UI (ソフトウェアキーボード等) が
+  操作不能になる。
+- **画面を開いた直後は hover 追従を止める** — ポインタが実際に動くまで
+  `hover_focus` をゲートするので、 直前の操作でたまたま項目上に残っていた
+  カーソルが宣言した `initial_focus` を奪わない (hover の見た目は出たまま)。
 - 実装: session が `take_key_focus_move()` でワンショット通知 → manager が
   PaintOverlay 終端で present 変換の逆写像で layer 座標化し
   `iTVPWindow::SetCursorPos` + `SetMouseCursorState(mcsTempHidden)`。
@@ -1089,7 +1278,7 @@ Dictionary → JSON テキストに変換して既存の JSON 経路へそのま
 (elements_modal 側の入口は JSON のまま)。
 
 ```tjs
-var dlg = new Dialog();
+var dlg = new ElementsDialog();
 dlg.showDict(%[
     size: [360, 220], background: [30, 30, 60, 245],
     content: %[ type: "vtile", children: [
@@ -1105,7 +1294,7 @@ dlg.showDict(%[
 
 - **`showFlowScreens` / `startFlowScreens` の画面マップ値も Dictionary 可**
   (JSON 文字列と混在できる)。
-- **`Dialog.dictToJson(value)`** で変換結果の JSON 文字列を取得できる
+- **`ElementsDialog.dictToJson(value)`** で変換結果の JSON 文字列を取得できる
   (デバッグ / JSON 資材の書き出し用)。
 - 対応型: void→null / Integer / Real / String / Dictionary / Array。 Octet・
   それ以外のオブジェクト (関数等)・循環参照・非有限 Real は TJS 例外。
@@ -1122,11 +1311,144 @@ dlg.showDict(%[
   未定義 action のフォールバック (entry なら exit / 子画面なら pop) で足りる
   ケースが大半。 明示したい画面だけ JSON 文字列で書いて混在させればよい。
 
-## TJS Dialog の使い分け
+## ホストのレイヤへ描く (`ElementsPanel`)
+
+`ElementsDialog` の overlay は `DrawDevice::Show()` の終端で画面へ直接貼るので
+**常に最前面**で、 ゲームのレイヤツリーのどこにも属さない。 そのため
+
+- 本文の上に窓の絵が被る (テキストを出す画面を Elements で組めない)
+- `piledCopy` に写らない (ホストのスクリーンショットに入らない)
+- 表 / 裏のどちらでもないので `[trans]` に乗らない
+- 下のレイヤの入力を食べる
+
+という制約がある。 **`ElementsPanel` は `render_to_buffer` の書き込み先を
+ホストのレイヤのビットマップにする**別経路で、 この 4 つを一度に外す。
+z 順・トランジション・スクリーンショット・入力の帰属は、 すべて吉里吉里の
+レイヤの仕組みがそのまま面倒を見る。
+
+```tjs
+var lay = new Layer(win, win.primaryLayer);
+lay.setImageSize(400, 300);
+lay.setSizeToImageSize();
+lay.type = ltAlpha;      // 加算アルファ (ltAddAlpha) でもよい
+lay.hitThreshold = 0;    // すべてのマウスメッセージを受ける
+lay.visible = true;
+
+var panel = new ElementsPanel(lay);
+panel.onAction = function(id, payload) { ... };
+panel.showFile("ui/hud.jsonc");
+
+// レイヤの入力をパネルへ流す (Layer 派生で 1 回書けばよい)
+lay.onMouseDown = function(x, y, b, f) { panel.mouseDown(x, y, b, f); };
+lay.onMouseUp   = function(x, y, b, f) { panel.mouseUp  (x, y, b, f); };
+lay.onMouseMove = function(x, y, f)    { panel.mouseMove(x, y, f); };
+```
+
+**イベント名と引数は `ElementsDialog` と同じ** (`onAction` / `onDrag` / `onVar` /
+`onClose`)。 既存の画面ドライバをほぼそのまま載せられる。
+
+### overlay とは別枠
+
+パネルは manager の instances リストに**入らない**。 したがって
+
+| | overlay (`ElementsDialog`) | パネル (`ElementsPanel`) |
+|---|---|---|
+| `IsModalActive()` (DrawDevice の入力インターセプト) | 立てる | **立てない** |
+| `HasModalInstance()` (ウィンドウクローズ抑止) | 影響する | **しない** |
+| `Agent.dialogs()` / `closeAllDialogs()` | 現れる | **現れない** |
+| ホストホットキー表 / 仮想キーボード / モーダル結果 | 効く | 持たない |
+| z 順 | 常に最前面 | **レイヤツリー任せ** |
+
+共有するのは **プロセス全体のもの**だけ: ThorVG / フォントの初期化
+(`EnsureRuntimeInitialized`)、 テーマ (`defaultFontFamily` / `focusRing` /
+pad テーマ)、 表示言語 (`ElementsDialog.language` の設定はパネルへも配られる)、
+`registerImage` の実行時画像ストア (`ElementsDialog.registerImage` → パネルも
+`invalidate` される)、 そして **通知キュー**。
+
+通知キューを 1 本にしているのは、 同じフレームに overlay とパネルの両方から
+出た通知の相対順序が入れ替わらないようにするため。 そのために manager へ
+2 つの口を足してある:
+
+- `RegisterExternalHandler` / `UnregisterExternalHandler` — 「overlay
+  インスタンスを持たないが生きている handler」の登録。 配送直前の生存確認を
+  通すのに使う
+- `PushDeferScope` / `PopDeferScope` — 「いま session を触っている最中なので
+  即時配送しないでほしい」区間。 overlay の paint 深度と同じもの
+
+### 駆動
+
+`PaintOverlay` を**一切通らない**。 パネルは
+`tTVPContinuousEventCallbackIntf` を実装して**自前で毎フレーム回す**
+(`TVPAddContinuousEventHook`)。 継続イベントは window update の外で呼ばれる
+ので、 ここから TJS を走らせても再入の問題が無い。 吉里吉里の
+アニメーションレイヤと同じ「毎フレーム描いて `Update`」の作り。
+
+```
+session->update()                            ← 変化があったフレームだけ描く
+  ↓ dirty
+render_to_buffer_partial(staging, w, h, 0, 0, rect, updated)
+  ↓ updated の矩形だけ
+staging → レイヤのビットマップへ行コピー (+ 必要なら α 変換)
+  ↓
+layer->Update(updated 矩形)
+```
+
+`update()` に渡す経過 ms は継続イベントの tick 差分。 200ms を超える間隔は
+1 フレーム相当 (16ms) に丸める (別画面から戻ったときに演出が一気に飛ぶのを
+防ぐ)。
+
+### 画素形式とアルファ
+
+elements の canvas は ThorVG の Sw raster が `ColorSpace::ARGB8888`
+(= **alpha-premultiplied**、 A,R,G,B の順) で出力する。 これは吉里吉里の
+レイヤのビットマップとまったく同じ画素形式なので、
+
+| レイヤの `type` | 転送 |
+|---|---|
+| `ltAddAlpha` (加算アルファ = premultiplied) | **そのまま行コピー**。 変換ゼロ |
+| `ltAlpha` ほか (straight alpha) | 行ごとに `TVPConvertAdditiveAlphaToAlpha` (SIMD 実装あり) を通す。 ダーティ矩形だけなので負荷は小さい |
+
+**staging を挟む理由**は 2 つ: レイヤのビットマップは
+`GetMainImagePixelBufferPitch()` が `w*4` と一致しないことがある (アライン
+される) ため、 と `render_to_buffer_partial` が「前回描画がバッファに
+残っている」ことを前提にするため。
+
+### 入力の座標変換は要らない
+
+吉里吉里はレイヤのマウスハンドラへ**レイヤ左上原点**の座標を渡す。 一方
+`render_to_buffer` へ渡す `surface_w/h` を **0** にすると session 内部の
+アンカー配置が無効になり `out_rect = (0,0,コンテンツ実寸)` になるので、
+**レイヤ local 座標 = view local 座標**で一致する。 そのまま
+`on_mouse_*` へ流せばよい。
+
+キー / パッド / テキストは **スクリプトが明示的に流したときだけ**届く
+(`keyDown` / `keyUp` / `text`)。 パネルは既定でキーボードフォーカスを
+取らない — 「複数のパネルのうちどれがキーを取るか」の調停の枠が吉里吉里側に
+無いため、 先に入れると必ず副作用になる。
+
+### 持っていないもの (要ると分かってから足す)
+
+- **キー / パッドのフォーカス調停** (上記)
+- **navigator フロー / `transitions`**。 1 パネル = 1 画面。 画面の切替は
+  `showJson` を呼び直す。 クロスフェードはレイヤを 2 枚にして `[trans]` に
+  任せる (それができるのがこの経路の狙い)
+- **`close_on_click` の自動 finish / モーダル結果**。 `onAction` だけ
+- **仮想キーボード / IME**
+
+### 実装
+
+| ファイル | 中身 |
+|---|---|
+| `common/visual/elements/ElementsLayerPanel.{h,cpp}` | パネル本体 + プロセス全体の fan-out 用 registry |
+| `common/visual/elements/PanelIntf.{h,cpp}` | TJS `ElementsPanel` クラス |
+| `common/visual/elements/ElementsSessionBuild.{h,cpp}` | 画面 JSON → `overlay_session` の組み立て (overlay と共用) |
+| `common/visual/elements/ElementsInputMap.h` | VK / マウス → cycfi 中立入力型 (overlay と共用) |
+
+## TJS ElementsDialog の使い分け
 
 ```tjs
 // 非モーダル (D mode): onAction で逐次反応、 close() で閉じる
-class TestDialog extends Dialog {
+class TestDialog extends ElementsDialog {
     function onAction(id, payload) {
         switch (id) {
         case "ok": System.inform("OK"); close(); break;
@@ -1138,7 +1460,7 @@ var dlg = new TestDialog();
 dlg.showJson(json);   // 非ブロッキング、 close まで継続
 
 // ブロッキングモーダル (E / O mode): close_on_click=true な button で閉じる
-class ModalDialog extends Dialog {
+class ModalDialog extends ElementsDialog {
     // close_on_click=false な button click が来たときだけ意味を持つ
     function onAction(id, payload) {
         dm(@"action: ${id} payload=${payload}");
@@ -1157,7 +1479,7 @@ var result = dlg.showModalJson(json, "Title", 560, 700);  // 独立 window
 
 show* / showModal* / showFlow* / startFlow* の全 API 入口で、 elements /
 elements_modal / host 別 runner 由来の C++ 例外 (`std::exception` および不明型)
-を `Dialog.showModalFile(ui/xxx.jsonc): <what()>` 形式の TJS 例外へ変換する
+を `ElementsDialog.showModalFile(ui/xxx.jsonc): <what()>` 形式の TJS 例外へ変換する
 (`WithDialogExceptionContext`、 `DialogIntf.cpp`)。 TJS 例外 (`TVPReadStream` の
 ストレージエラー等) は元々メッセージ完備なのでそのまま透過。 画像読込失敗は
 elements 側 pixmap が対象リソース名を例外メッセージに含め、 「不存在 (loader が
@@ -1173,7 +1495,7 @@ top-level `"transitions"` ブロックが「閉じトリガの action id → 次
 overlay と同じ nested pump)。
 
 ```tjs
-class FlowDialog extends Dialog {
+class FlowDialog extends ElementsDialog {
     function onScreen(name)            { dm(@"enter: ${name}"); }
     function onScreenLeave(name, act)  { dm(@"leave: ${name} (${act})"); }
     function onAction(id, payload)     { /* 各 widget の値変化 / click */ }
@@ -1235,7 +1557,7 @@ GL 全 DrawDevice で同一動作):
 
 要素の `"animate"` に `"on": "exit"` を付けると、 画面が閉じる / 遷移するとき
 退場演出を再生してから finish する (overlay_session 内で自動協調)。 これは
-close_on_click / Esc 等の画面内トリガに加え、 **TJS `Dialog.close()` からの
+close_on_click / Esc 等の画面内トリガに加え、 **TJS `ElementsDialog.close()` からの
 外部 close でも発火する** (manager が `session->close()` 経由で閉じ、 演出完了後に
 teardown する。 transitions は解決せずフローごと終了)。 Window close 等の即時
 破棄経路 (`ForceClose` / handler 破棄) は演出なしで即 teardown。
@@ -1270,10 +1592,10 @@ dlg.startFlow("ui/menu/app.jsonc");   // 非ブロッキング、 戻り値 = �
 実例は `data/startup.tjs` の `FlowMenuDialog` / `MyWindow.openMenu` /
 `dispatchSample` と `data/ui/menu/*.json`。
 
-## 複数 Dialog / 複数インスタンスの ownership
+## 複数 ElementsDialog / 複数インスタンスの ownership
 
-各 TJS `Dialog` インスタンスは自分の `handler` ポインタで manager 内の自分の overlay
-インスタンスを識別する。 `Dialog::Invalidate` / `Close` は **自分の handler が active な
+各 TJS `ElementsDialog` インスタンスは自分の `handler` ポインタで manager 内の自分の overlay
+インスタンスを識別する。 `ElementsDialog::Invalidate` / `Close` は **自分の handler が active な
 ときだけ** `mgr.Close(this)` を呼ぶ:
 
 ```cpp
@@ -1301,13 +1623,13 @@ getter も `IsHandlerActive(this)` を返す。 ブロッキングモーダル�
 | 5 | WINVER `BasicDrawDevice` アダプタ (`tTVPD3D11DialogRenderer` + `iTVPD3D11DialogHost`) + WM_CHAR テキスト入力 + overlay-modal (nested Win32 pump) + フォント埋込 (resources.rc の `BINARY` 型を `register_font_buffer`) | 完了 |
 | 5b | 描画アダプタ提供口の汎用化 (`iTVPDialogRendererHost` + `dialogRendererHost` TJS プロパティ + tp_stub 公開)。 プラグイン / 差し替え DrawDevice 対応 | 完了 |
 | 6a | JSON レイアウト構築層 (krkrz JsonLayout) | 完了 |
-| 6b | TJS バインディング (`Dialog.showJson` / `showFile` / `close` / `onAction`) | 完了 |
+| 6b | TJS バインディング (`ElementsDialog.showJson` / `showFile` / `close` / `onAction`) | 完了 |
 | 6c | TJS `showModalJson` / `showModalFile` (独立 window + overlay 両モード) | 完了 |
-| 6d | `Dialog.onAction` を showModal* でも発火 + `close_on_click` で閉じる ボタン明示 | 完了 |
+| 6d | `ElementsDialog.onAction` を showModal* でも発火 + `close_on_click` で閉じる ボタン明示 | 完了 |
 | 7  | UserConfig を Elements で実装 (SDL3 ビルド) | 完了 |
 | 7d | JsonLayout 要素拡張 / VT_String 編集 UI / plugin sidecar JSON 等 | 未着手 |
 | 8  | navigator 複数画面フロー (`showFlow` / `showFlowScreens` + `onScreen` / `onScreenLeave`、 manifest/inline 両対応、 Storages 資材解決) | 完了 |
-| 8t | **画面切替エフェクト** (`effect: fade / universal` + `rule` / `vague`、 CPU 合成で全 DrawDevice 対応) + `Dialog.close()` の exit 演出協調 | 完了 (SDL / WINVER 実機検証済) |
+| 8t | **画面切替エフェクト** (`effect: fade / universal` + `rule` / `vague`、 CPU 合成で全 DrawDevice 対応) + `ElementsDialog.close()` の exit 演出協調 | 完了 (SDL / WINVER 実機検証済) |
 | R6 | **複数インスタンス同時表示** (z-order インスタンスリスト + layer 単位テクスチャ + `modal` フラグ + ヒットテスト入力ルーティング + 素通し)。 非モーダル常駐 UI の並存 / modal の重ね出しが可能に | 完了 (描画・ロジック実装済、 GUI 実機での重ね操作検証は未) |
 
 ## Phase 7d 拡張候補 (JsonLayout 要素)
@@ -1325,6 +1647,84 @@ getter も `IsHandlerActive(this)` を返す。 ブロッキングモーダル�
 | 値 API | id ベースの `get_text` / `set_text` / `get_bool` / `set_bool` / `get_value` / `enable` / `select` / `show` / `refresh` | 現状は `OnAction` 一方向のみ |
 | 色形式 | `"#RGB"` `"#RRGGBB"` `"#RRGGBBAA"` / 名前色対応 | 現状は `[r,g,b,a]` 配列のみ |
 | 拡張 | plugin sidecar JSON 自動 scan (UserConfig 拡張) | |
+
+## 終了処理 — ThorVG を畳む (対処済み)
+
+**症状**: プロセス終了時に、実行するたび落ちたり落ちなかったりする。
+全部書き出し終わった**後**の終了処理なのでデータ的な実害は無く、
+表に出るのは「終了時に落ちる」「終了コードが非 0」だけ。
+
+elements_console 側で先に顕在化 (修正前 8/64 で再現)。吉里吉里にも
+**同じ形が成立していた**ので、engine 側でも対処した。
+
+### 仕組み
+
+1. Elements のラベル等が ThorVG の Text でテキストを描く → フォントローダが
+   ThorVG の**名前空間スコープ static** `_activeLoaders` に載る
+   (`external/thorvg/src/renderer/tvgLoader.cpp`)
+2. このリストを空にするのは `LoaderMgr::term()` だけで、それは
+   `tvg::Initializer::term()` の中にしかない
+3. term を呼ばない → **リストに載ったままプロセス終了**
+4. フォントマネージャは**関数内 static** (フォント初回使用時に構築 → 登録が
+   遅い → **破棄は早い**)、`_activeLoaders` は起動時に構築 (**破棄は遅い**)。
+   つまりマネージャの方が先に死ぬ
+5. atexit で `~Inlist` → `~<Font>Loader` → `close()` → 破棄済みマネージャの
+   `retire()`
+
+**順序は決定的**で、確率的なのは「そのアドレスがまだ読めるか」だけ。
+ヒープが撹拌されるほど落ちやすく、絵の少ない画面では落ちずに済んでいた。
+
+吉里吉里は `TVG_LOADER_GW` (glyphware ホストブリッジ) ビルドなので、
+登場人物は `FtLoader` / `FtFontManager` ではなく `GwLoader` /
+`GwFontManager` になるが、**構造は同一**
+(`GwFontManager::instance()` は関数内 static、`GwLoader::close()` が
+`retire()` を呼ぶ、`GwLoader` の型は `FileType::Ttf`)。
+
+### 吉里吉里が該当する条件は揃っていた
+
+- **CRT の atexit を通って終了する**。WINVER は `ExitProcess` を
+  コメントアウトして `main` から return (`win32/environ/Application.cpp`)、
+  SDL は `SDL3Application::Exit()` が `std::exit()`。どちらも静的
+  デストラクタが走る
+- **`elements_modal::shutdown()` を呼んでいなかった** → `Initializer::term()`
+  に到達しない → `LoaderMgr::term()` も走らない
+
+### 対処 (実装済み)
+
+`tTVPElementsDialogManager::ShutdownRuntime()` を新設し、
+`TVPSystemUninit()` の AtExit (`TVP_ATEXIT_PRI_SHUTDOWN`) から呼ぶ
+(`ElementsDialogManager.cpp`)。
+
+```
+ForceClose();                 // view / canvas を全部畳む
+elements_modal::shutdown();   // → tvg::Initializer::term()
+```
+
+**順序が肝**。view / canvas が 1 つでも生きていると `SwRenderer::term()` が
+「まだ canvas がある」と弾き、`Initializer::term()` は `LoaderMgr::term()` の
+手前で早期 return する (戻り値 `InsufficientCondition`)。
+
+AtExit の優先度は**昇順**に実行される (`SysInitIntf.cpp` の
+`TVPCauseAtExit`。コメントの "descending" は誤り) ので、`SHUTDOWN` (100) は
+フォントラスタライザ等の解放 (`RELEASE` = 1000) より前になる。また
+`TVPUninitScriptEngine()` は `TVPCauseAtExit()` より先に走るので、この時点で
+`ElementsDialog` / `ElementsPanel` の TJS オブジェクトは解放済み。
+
+一度も Elements を使っていないプロセスでは manager 自体を作らずに素通りする
+(`EnsureRuntimeInitialized` が立てるフラグで判定)。
+
+### elements 側の前提
+
+これが効くのは elements `47871878` 以降。それ以前は測定用 scratch canvas が
+関数内 static で ThorVG の canvas を握っており、上記の早期 return が起きるため
+**呼んでも無駄だった**。`47871878` で scratch を明示的に手放すようにしてある
+(アトラスの pixmap キャッシュも同様に term の前に解放)。
+
+### 参考
+
+- 調査と修正の経緯: elements `47871878` のコミットメッセージ
+- 再現の取り方: デバッガ下では再現しない (デバッグヒープだと解放済み領域が
+  まだ読めてしまう)。`_NO_DEBUG_HEAP=1` + `cdb -hd` でスタックが取れる
 
 ## 残課題
 

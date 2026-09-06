@@ -32,6 +32,7 @@
 #ifdef KRKRZ_USE_REPL
 #include "ScreenCapture.h"     // TVPRequestScreenCapture / TVPGetLastScreenCapture
 #endif
+#include "HotKeyIntf.h"        // TVPRegisterHotKey / TVPUnregisterHotKey
 
 #ifdef TVP_USE_OPENGL
 extern int TVPGetOpenGLESVersion();
@@ -280,6 +281,41 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/addContinuousHandler)
 	return TJS_S_OK;
 }
 TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/addContinuousHandler)
+//---------------------------------------------------------------------------
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/registerHotKey)
+{
+	// registerHotKey(key, mods, callback) : 最上位ホットキーの登録。
+	// key は VK_*、 mods は ssShift/ssAlt/ssCtrl の組み合わせ。 一致した
+	// キーはイベントポンプの入口で消費され、 フォーカス中のレイヤ /
+	// テキスト入力 / Elements モーダルには渡らず、 押下時に
+	// callback(key, shift) が呼ばれる。 callback が false を返すと消費せず
+	// 通常の dispatch へ流す。 同一 (key, mods) への再登録は差し替え。
+	if(numparams < 3) return TJS_E_BADPARAMCOUNT;
+
+	tjs_uint key = (tjs_uint)(tjs_int)*param[0];
+	tjs_uint32 mods = (tjs_uint32)(tjs_int)*param[1];
+	tTJSVariantClosure clo = param[2]->AsObjectClosureNoAddRef();
+
+	TVPRegisterHotKey(key, mods, clo);
+
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/registerHotKey)
+//---------------------------------------------------------------------------
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/unregisterHotKey)
+{
+	// unregisterHotKey(key, mods) : 登録解除。 戻り値 = 解除できたか。
+	if(numparams < 2) return TJS_E_BADPARAMCOUNT;
+
+	tjs_uint key = (tjs_uint)(tjs_int)*param[0];
+	tjs_uint32 mods = (tjs_uint32)(tjs_int)*param[1];
+
+	bool removed = TVPUnregisterHotKey(key, mods);
+	if(result) *result = removed;
+
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/unregisterHotKey)
 //---------------------------------------------------------------------------
 #ifdef KRKRZ_USE_REPL
 TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/captureScreen)

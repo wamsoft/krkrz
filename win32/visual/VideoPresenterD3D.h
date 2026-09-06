@@ -37,9 +37,14 @@ public:
 	//! @brief 既に GPU 上にある BGRA テクスチャ (SRV) を destClientPx へ alpha 合成で描く。
 	//! CPU アップロードは行わない (HW 動画 = MediaEngine の TransferVideoFrame 出力の present 用)。
 	//! srv は ctx.Device 上のテクスチャの SRV であること。
+	//! @param premultiplied  src の RGB に既にアルファが掛かっているか。
+	//!        ThorVG (Elements の overlay) の出力は premultiplied なので true。
+	//!        動画フレームは straight なので false (既定)。 これを間違えると
+	//!        アルファが二重に掛かり、 半透明部分が薄く出る。
 	bool RenderSRV( const tTVPVideoPresenterContext & ctx,
 	                ID3D11ShaderResourceView * srv, int w, int h,
-	                const tTVPRect & destClientPx, float alpha );
+	                const tTVPRect & destClientPx, float alpha,
+	                bool premultiplied = false );
 
 	//! @brief I420 (planar YUV420, BT.601 limited range) の 1 フレームを destClientPx へ描く。
 	//! Y/U/V の 3 プレーンを R8 テクスチャへ上げ、シェーダで YUV→RGB 変換して alpha 合成する
@@ -61,7 +66,7 @@ private:
 	//! パイプライン設定 + クアッド描画。srv[0..count-1] を samp で dst へ描く (ps 指定)。
 	void DrawQuad( ID3D11DeviceContext * ictx, ID3D11ShaderResourceView * const * srv, int srvCount,
 	               ID3D11PixelShader * ps, const tTVPVideoPresenterContext & ctx,
-	               const tTVPRect & dst, float alpha );
+	               const tTVPRect & dst, float alpha, bool premultiplied = false );
 
 	ID3D11Device*             Dev;   //!< 現在リソースが属するデバイス (変化検出用、非所有)
 	ID3D11VertexShader*       VS;
@@ -70,7 +75,8 @@ private:
 	ID3D11Buffer*             VB;    //!< 4 頂点 (TRIANGLESTRIP) DYNAMIC
 	ID3D11Buffer*             CB;    //!< 定数バッファ (全体アルファ)
 	ID3D11SamplerState*       Samp;
-	ID3D11BlendState*         Blend;
+	ID3D11BlendState*         Blend;       //!< straight alpha (動画フレーム)
+	ID3D11BlendState*         BlendPremul;  //!< premultiplied alpha (Elements overlay)
 	ID3D11Texture2D*          Tex;   //!< BGRA DYNAMIC
 	ID3D11ShaderResourceView* Srv;
 	int TexW, TexH;

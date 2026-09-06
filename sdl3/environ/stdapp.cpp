@@ -75,6 +75,16 @@ static std::string ShowProjectFolderDialog()
 	return result.path;
 }
 
+// 「情報を出して終わるだけ」の起動オプションか (プロジェクト選択を促さない)
+static bool HasInfoOnlyOption(const std::vector<tjs_string> &args)
+{
+	for (size_t i = 1; i < args.size(); i++) {
+		const tjs_string &a = args[i];
+		if (a == TJS_W("-license") || a.rfind(TJS_W("-license="), 0) == 0) return true;
+	}
+	return false;
+}
+
 static bool IsExistent(const char *path)
 {
 	tjs_string _path;
@@ -164,15 +174,23 @@ bool MySDL3Application::InitPath()
 #if defined(SDL_PLATFORM_ANDROID)
 			return false;
 #else
-			// 自動探索で見つからなかった場合、フォルダ選択ダイアログを表示
-			TVPLOG_INFO("No project data found automatically, showing folder selection dialog");
-			std::string selected = ShowProjectFolderDialog();
-			if (!selected.empty()) {
-				projectPath = selected;
-				checkLastDelimiter(projectPath, delimiter);
-				TVPLOG_INFO("User selected project folder: {}", projectPath);
+			// -license のように「情報を出して終わるだけ」の起動では、
+			// プロジェクトが無くてもダイアログを出さず exe の場所で進める
+			// (WINVER の -nosel / -about と同じ扱い)
+			if (HasInfoOnlyOption(_args)) {
+				projectPath = appPath;
+				TVPLOG_INFO("info-only option given, using app path as project path");
 			} else {
-				return false;
+				// 自動探索で見つからなかった場合、フォルダ選択ダイアログを表示
+				TVPLOG_INFO("No project data found automatically, showing folder selection dialog");
+				std::string selected = ShowProjectFolderDialog();
+				if (!selected.empty()) {
+					projectPath = selected;
+					checkLastDelimiter(projectPath, delimiter);
+					TVPLOG_INFO("User selected project folder: {}", projectPath);
+				} else {
+					return false;
+				}
 			}
 #endif
 		}

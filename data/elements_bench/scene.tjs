@@ -1,7 +1,7 @@
 // -*- mode:tjs2 -*-
 // ======================================================================
 //  elements_bench シーン (ElementsBenchScene) — Elements overlay 負荷計測
-//  Dialog.renderStats (描画パイプラインの区間計測) を使い、更新パターンの
+//  ElementsDialog.renderStats (描画パイプラインの区間計測) を使い、更新パターンの
 //  異なるシナリオを切り替えながら renderCache の効果・ラスタ/転送コストを
 //  その場で数値確認する。部分再描画 (ダーティ矩形化) の要否判断用。
 //
@@ -25,16 +25,16 @@
 //  要るため自動対象外。cost 特性は counter の 500ms 版と同等)。
 // ======================================================================
 
-class BenchDialog extends Dialog
+class BenchDialog extends ElementsDialog
 {
-    function BenchDialog() { super.Dialog(); }
+    function BenchDialog() { super.ElementsDialog(); }
     function onAction(id, payload) {}   // ベンチ用: 操作には反応しない
 }
 
 class ElementsBenchScene extends DemoScene
 {
-    var available = false;     // Dialog.renderStats が使えるビルドか
-    var dialogs = [];          // 表示中の Dialog インスタンス
+    var available = false;     // ElementsDialog.renderStats が使えるビルドか
+    var dialogs = [];          // 表示中の ElementsDialog インスタンス
     var scenario = 1;
     var counterDlg;            // counter シナリオの setVar 先 (void = なし)
     var counterVal = 0;
@@ -88,16 +88,16 @@ class ElementsBenchScene extends DemoScene
 
     function create()
     {
-        available = typeof global.Dialog != "undefined"
-                 && typeof global.Dialog.renderStats != "undefined";
+        available = typeof global.ElementsDialog != "undefined"
+                 && typeof global.ElementsDialog.renderStats != "undefined";
         drawStatic();
         if (!available) return;
         // シナリオ切替キーをホストホットキー登録: caret シナリオでパネルが
         // focus を持っていてもバイパスでシーンへ届く (テキスト入力中も有効)
-        for (var k = 0x30; k <= 0x36; k++) Dialog.registerHotKey(k, 0, true); // 0-6
-        Dialog.registerHotKey(0x52, 0, true);   // R
-        Dialog.registerHotKey(0x43, 0, true);   // C
-        Dialog.registerHotKey(0x50, 0, true);   // P
+        for (var k = 0x30; k <= 0x36; k++) ElementsDialog.registerHotKey(k, 0, true); // 0-6
+        ElementsDialog.registerHotKey(0x52, 0, true);   // R
+        ElementsDialog.registerHotKey(0x43, 0, true);   // C
+        ElementsDialog.registerHotKey(0x50, 0, true);   // P
 
         // 自動計測モード (-benchauto): 入力なしで一括スイープしてログ出力
         var a = typeof global.System.getArgument != "undefined"
@@ -120,7 +120,7 @@ class ElementsBenchScene extends DemoScene
             // デスクトップで部分再描画を測りたいときに手動で付ける。
             if (System.getArgument("-benchcaret") !== void
                 && typeof global.Agent != "undefined"
-                && typeof global.Dialog.partialRedraw != "undefined") {
+                && typeof global.ElementsDialog.partialRedraw != "undefined") {
                 autoList.add([1, 2, 1]);   // caret 部分再描画 ON
                 autoList.add([1, 2, 0]);   // caret 部分再描画 OFF (A/B)
             }
@@ -141,10 +141,10 @@ class ElementsBenchScene extends DemoScene
     {
         if (!available) return;
         closeAll();
-        for (var k = 0x30; k <= 0x36; k++) Dialog.unregisterHotKey(k, 0);
-        Dialog.unregisterHotKey(0x52, 0);
-        Dialog.unregisterHotKey(0x43, 0);
-        Dialog.unregisterHotKey(0x50, 0);
+        for (var k = 0x30; k <= 0x36; k++) ElementsDialog.unregisterHotKey(k, 0);
+        ElementsDialog.unregisterHotKey(0x52, 0);
+        ElementsDialog.unregisterHotKey(0x43, 0);
+        ElementsDialog.unregisterHotKey(0x50, 0);
     }
 
     // --- シナリオ管理 ----------------------------------------------------
@@ -314,7 +314,7 @@ class ElementsBenchScene extends DemoScene
 
     function resetStats()
     {
-        Dialog.renderStatsReset();
+        ElementsDialog.renderStatsReset();
         prevStats = void;
         prevTick = 0;
         drawStatsHeader("計測中...");
@@ -360,9 +360,9 @@ class ElementsBenchScene extends DemoScene
         var combo = autoList[autoIdx];
         if (autoT0 == 0) {
             // この組の開始: cache / partial 設定 + シナリオ切替
-            Dialog.renderCache = combo[0] != 0;
-            if (typeof global.Dialog.partialRedraw != "undefined")
-                Dialog.partialRedraw = combo[2] != 0;
+            ElementsDialog.renderCache = combo[0] != 0;
+            if (typeof global.ElementsDialog.partialRedraw != "undefined")
+                ElementsDialog.partialRedraw = combo[2] != 0;
             switchScenario(combo[1]);
             autoPhase = 0;
             autoT0 = tick;
@@ -379,8 +379,8 @@ class ElementsBenchScene extends DemoScene
                     Agent.click(r.x + r.w \ 2, r.y + r.h - 30);
                 }
             }
-            Dialog.renderStatsReset();
-            autoS0 = Dialog.renderStats;
+            ElementsDialog.renderStatsReset();
+            autoS0 = ElementsDialog.renderStats;
             autoPhase = 1;
             autoT0 = tick;
             return;
@@ -389,7 +389,7 @@ class ElementsBenchScene extends DemoScene
 
         // 計測終了 → 結果行 (時間は us、 *_f = 1 フレーム平均、 ras_r = ラスタ 1 回平均)
         var ms = tick - autoT0;
-        var s = Dialog.renderStats;
+        var s = ElementsDialog.renderStats;
         var dF = s.frames - autoS0.frames;
         var dR = s.rasters - autoS0.rasters;
         var dC = s.cachedPresents - autoS0.cachedPresents;
@@ -416,9 +416,9 @@ class ElementsBenchScene extends DemoScene
         autoIdx++;
         autoT0 = 0;
         if (autoIdx >= autoList.count) {
-            Dialog.renderCache = true;
-            if (typeof global.Dialog.partialRedraw != "undefined")
-                Dialog.partialRedraw = true;
+            ElementsDialog.renderCache = true;
+            if (typeof global.ElementsDialog.partialRedraw != "undefined")
+                ElementsDialog.partialRedraw = true;
             dm("@bench done");
             System.terminate();
         }
@@ -426,7 +426,7 @@ class ElementsBenchScene extends DemoScene
 
     function updateStats(tick)
     {
-        var s = Dialog.renderStats;
+        var s = ElementsDialog.renderStats;
         if (prevStats !== void && tick > prevTick) {
             var wallMs = tick - prevTick;
             var dF = s.frames         - prevStats.frames;
@@ -442,9 +442,9 @@ class ElementsBenchScene extends DemoScene
 
             var lines = [];
             lines.add("シナリオ " + scenario + ": " + scenarioName(scenario));
-            lines.add("renderCache=" + (Dialog.renderCache ? "ON" : "OFF")
-                    + "  renderScale=" + fmt1(Dialog.renderScale)
-                    + "  renderCount=" + Dialog.renderCount);
+            lines.add("renderCache=" + (ElementsDialog.renderCache ? "ON" : "OFF")
+                    + "  renderScale=" + fmt1(ElementsDialog.renderScale)
+                    + "  renderCount=" + ElementsDialog.renderCount);
             lines.add("");
             lines.add("フレーム    : " + dF + " (" + fmt1(dF * 1000.0 / wallMs) + " fps)");
             lines.add("ラスタ      : " + dR + " 回 (" + fmt1(dR * 1000.0 / wallMs) + " /s)");
@@ -485,10 +485,10 @@ class ElementsBenchScene extends DemoScene
         var s = stage;
         s.fillRect(0, 0, 1280, 720, 0xff181c24);
         s.font.face = ""; s.font.height = 34;
-        s.drawText(40, 22, "Elements overlay 負荷計測 (Dialog.renderStats)", 0xffffff, 255, true);
+        s.drawText(40, 22, "Elements overlay 負荷計測 (ElementsDialog.renderStats)", 0xffffff, 255, true);
         if (!available) {
             s.font.height = 24;
-            s.drawText(40, 90, "この環境では Dialog.renderStats が使えません (Elements 無効ビルド)", 0xf0a0a0, 255);
+            s.drawText(40, 90, "この環境では ElementsDialog.renderStats が使えません (Elements 無効ビルド)", 0xf0a0a0, 255);
             s.update();
             return;
         }
@@ -552,12 +552,12 @@ class ElementsBenchScene extends DemoScene
             break;
         case 0x52:      // R (キーボード)
         case VK_PAD3:   // X (パッド): renderCache トグル (A/B 比較)
-            Dialog.renderCache = !Dialog.renderCache;
+            ElementsDialog.renderCache = !ElementsDialog.renderCache;
             resetStats();
             break;
         case 0x50:      // P: partialRedraw トグル (部分再描画の A/B 比較)
-            if (typeof global.Dialog.partialRedraw != "undefined") {
-                Dialog.partialRedraw = !Dialog.partialRedraw;
+            if (typeof global.ElementsDialog.partialRedraw != "undefined") {
+                ElementsDialog.partialRedraw = !ElementsDialog.partialRedraw;
                 resetStats();
             }
             break;
@@ -571,7 +571,7 @@ class ElementsBenchScene extends DemoScene
     function onDemoTest()
     {
         if (!available) { dm("@demotest:elements_bench unavailable"); return; }
-        var s = Dialog.renderStats;
+        var s = ElementsDialog.renderStats;
         dm("@demotest:elements_bench scenario=" + scenario
            + " frames=" + s.frames + " rasters=" + s.rasters
            + " cached=" + s.cachedPresents);

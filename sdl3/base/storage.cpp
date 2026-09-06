@@ -251,11 +251,19 @@ public:
     }
 };
 
-static SDLStorageMedia *UserStorage = nullptr;
+static iTVPStorageMedia2 *UserStorage = nullptr;
 
 
-void InitStorageSystem(const char *orgname, const char *appname)
+void InitStorageSystem(const char *orgname, const char *appname,
+                       iTVPStorageMedia2 *platform_media)
 {
+    // プラットフォーム専用実装 (SDL3Application::CreateUserStorageMedia) が
+    // あればそちらを user:// として登録する (PS5 の専用セーブデータ管理等)
+    if (platform_media) {
+        UserStorage = platform_media;
+        TVPRegisterStorageMedia(UserStorage);
+        return;
+    }
     SDL_Storage *user = SDL_OpenUserStorage(orgname, appname, 0);
     if (user) {
         while (!SDL_StorageReady(user)) {

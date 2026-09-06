@@ -5,14 +5,14 @@
 
 - 標準ライブラリのみ。Excel / Win32::OLE / Perl 不要。
 - 源(source of truth): common/msg/text/messages.csv
-    列: section(tjs|tvp|tvp_win32), id, ja, en, chs, opt(空|CRLF|ANSI)
-    ja/en/chs は「普通の文字列」。制御文字は \\n \\r \\t トークン、\\\\ で literal backslash。
-    引用符はそのまま "(CSV 標準クォート)。
+    列: section(tjs|tvp|tvp_win32), id, ja, en, chs, cht, opt(空|CRLF|ANSI)
+    ja/en/chs/cht は「普通の文字列」。制御文字は \\n \\r \\t トークン、\\\\ で literal backslash。
+    引用符はそのまま "(CSV 標準クォート)。cht (繁体字) 未記入は chs へフォールバック。
 - 生成物:
     common/tjs2/tjsErrorInc.h                 TJS_MSG_DECL_NULL(...)   (section=tjs, opt無)
     common/msg/MsgIntfInc.h                   TVP_MSG_DECL_NULL(...)   (section=tvp, opt無)
     win32/msg/MsgImpl.h                        TVP_MSG_DECL_NULL(...)   (section=tvp_win32, opt無)
-    resource/messages.json / -en / -chs        位置配列 JSON (プレーン。&quot; 等の HTML エンティティは廃止)
+    resource/messages.json / -en / -chs / -cht 位置配列 JSON (プレーン。&quot; 等の HTML エンティティは廃止)
     win32/vcproj/string_table_{jp,en,chs}.rc   Win32 STRINGTABLE (UTF-16LE+BOM+CRLF)
     win32/vcproj/string_table_resource.h       #define IDS_...
     generic/msg/MsgLoad.cpp                    JSON 配列からロード
@@ -43,6 +43,7 @@ def load_rows():
                 "ja":  d["ja"],
                 "en":  d["en"],
                 "chs": d["chs"],
+                "cht": d.get("cht") or d["chs"],   # cht 未記入は chs へフォールバック
                 "opt": (d.get("opt") or "").strip(),
                 # flags: "nodecl" = decl(extern/定義) を生成しない。
                 #   共通ヘッダ common/msg/MsgIntf.h で手管理宣言済みの id 用
@@ -139,6 +140,7 @@ def build_outputs(rows):
     out["resource/messages.json"]     = (json_array("ja"),  "utf-8-lf")
     out["resource/messages-en.json"]  = (json_array("en"),  "utf-8-lf")
     out["resource/messages-chs.json"] = (json_array("chs"), "utf-8-lf")  # 旧生成器の en 誤書込みを修正
+    out["resource/messages-cht.json"] = (json_array("cht"), "utf-8-lf")
 
     # --- string_table_*.rc (UTF-16LE+BOM+CRLF) ---
     def rc_file(field):

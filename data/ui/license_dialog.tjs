@@ -1,6 +1,6 @@
 // -*- mode:tjs2 -*-
 // ======================================================================
-//  ライセンス一覧ビューア (Elements Dialog)
+//  ライセンス一覧ビューア (ElementsDialog)
 //
 //  System.getLicenseList() / getLicenseText() の内容を、左ペイン =
 //  ジャンル (group) 別の項目リスト / 右ペイン = ライセンス本文の
@@ -11,9 +11,9 @@
 //  使い方:
 //    Scripts.execStorage("ui/license_dialog.tjs");
 //    showLicenseDialog(win);            // モーダル。閉じるまでブロック
-//    showLicenseDialog(win, false);     // 非モーダル (戻り値 = Dialog or void)
+//    showLicenseDialog(win, false);     // 非モーダル (戻り値 = ElementsDialog or void)
 //
-//  Elements Dialog が無いビルド (KRKRZ_USE_ELEMENTS=OFF) では何もせず
+//  ElementsDialog が無いビルド (KRKRZ_USE_ELEMENTS=OFF) では何もせず
 //  void を返す。
 // ======================================================================
 
@@ -70,15 +70,15 @@ function _licSortedGroups(list)
 // ----------------------------------------------------------------------
 // ダイアログ本体: 項目クリック → setVar で右ペイン (text_box) を差し替え
 // ----------------------------------------------------------------------
-if (typeof global.Dialog != "undefined"
+if (typeof global.ElementsDialog != "undefined"
     && typeof global.LicenseViewerDialog == "undefined") {
     Scripts.eval(
-        "class LicenseViewerDialog extends Dialog"
+        "class LicenseViewerDialog extends ElementsDialog"
         + "{"
         + "    var entries;"          // ジャンル順に並べたエントリ配列
         + "    var current = -1;"     // 選択中 index
         + "    function LicenseViewerDialog(entries)"
-        + "    { super.Dialog(); this.entries = entries; }"
+        + "    { super.ElementsDialog(); this.entries = entries; }"
         + "    function onAction(id, payload)"
         + "    {"
         + "        if (id.length > 1 && id.substring(0, 1) == 'L')"
@@ -192,12 +192,12 @@ function _licScreenDict(w, h, groups, flat)
 // ----------------------------------------------------------------------
 // showLicenseDialog(win, modal = true)
 //   modal=true  : 閉じるまでブロックし、result 辞書 (%[action, values]) を返す
-//   modal=false : 非ブロッキング表示し、Dialog インスタンスを返す
+//   modal=false : 非ブロッキング表示し、ElementsDialog インスタンスを返す
 //                 (呼び側で invalidate すること。表示失敗時は void)
 // ----------------------------------------------------------------------
 function showLicenseDialog(win, modal = true)
 {
-    if (typeof global.Dialog == "undefined") return void;
+    if (typeof global.ElementsDialog == "undefined") return void;
 
     var list = System.getLicenseList();
     if (list === void || list.count == 0) return void;

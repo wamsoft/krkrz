@@ -390,7 +390,7 @@ void tTJSCustomObject::tTJSSymbolData::ReShare()
 //---------------------------------------------------------------------------
 tTJSCustomObject::tTJSCustomObject(tjs_int hashbits)
 {
-	::TVPIncrementTJSCustomObjectCount();
+	::TVPIncrementTJSCustomObjectCount(this);
 	if(TJSObjectHashMapEnabled()) TJSAddObjectHashRecord(this);
 	Count = 0;
 	RebuildHashMagic = TJSGlobalRebuildHashMagic;
@@ -416,7 +416,7 @@ tTJSCustomObject::tTJSCustomObject(tjs_int hashbits)
 //---------------------------------------------------------------------------
 tTJSCustomObject::~tTJSCustomObject()
 {
-	::TVPDecrementTJSCustomObjectCount();
+	::TVPDecrementTJSCustomObjectCount(this);
 	for (auto ci = ClassInstances.rbegin(); ci != ClassInstances.rend(); ci++) {
 		if ((*ci) != nullptr) {
 			(*ci)->Destruct();

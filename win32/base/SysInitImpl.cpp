@@ -1078,7 +1078,10 @@ void TVPBeforeSystemInit()
 
 	if(!forcedataxp3 && !acceptfilenameargument)
 	{
-		if(TVPGetCommandLine(TJS_W("-nosel")) || TVPGetCommandLine(TJS_W("-about")))
+		// -about / -license は情報を出して終わるだけなので、データフォルダの
+		// 選択ダイアログは出さない
+		if(TVPGetCommandLine(TJS_W("-nosel")) || TVPGetCommandLine(TJS_W("-about")) ||
+			TVPGetCommandLine(TJS_W("-license")))
 		{
 			nosel = true;
 		}

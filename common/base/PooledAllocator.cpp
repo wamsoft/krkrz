@@ -125,6 +125,43 @@ TVPPooledAllocator::findSuitable(size_t size, int &fl, int &sl) {
 	return blocks_[fl][sl];
 }
 
+// Block ヘッダの妥当性検査。破損した freelist / ヘッダを踏んだまま
+// removeFree / nextPhys へ進むと 0 番地近傍への書き込み (即死 AV) になるため、
+// pool 経路の入口で安価に検証して縮退モードへ逃がす。
+// (実例: 32-bit 環境のメモリ枯渇時にヘッダが破損し、例外ログ出力の確保で
+//  removeFree が AV → エラー表示もなくプロセス即死)
+bool TVPPooledAllocator::validateBlock(const Block *b, bool expect_free) const {
+	// 範囲: ヘッダ全体が pool 内に収まっていること
+	auto cb = reinterpret_cast<const char *>(b);
+	if (cb < pool_buf_ || cb + BLOCK_HEADER_SIZE > pool_buf_ + pool_size_) return false;
+	// 整列: block 先頭は 16 byte align (pool 先頭から HEADER/ALIGN 単位で構成)
+	if ((reinterpret_cast<uintptr_t>(b) & (ALIGN - 1)) != 0) return false;
+	// サイズ: payload 末尾 (= 次ヘッダ先頭) が pool 内に収まっていること
+	size_t size = sf_size(b->size_and_flags);
+	if (size > pool_size_) return false;
+	const char *next = cb + BLOCK_HEADER_SIZE + size;
+	if (next < cb || next > reinterpret_cast<const char *>(sentinel_end_)) return false;
+	if (expect_free) {
+		if (!(b->size_and_flags & FLAG_FREE)) return false;
+		// free リンクは null か pool 内
+		if (b->next_free && !inPool(b->next_free)) return false;
+		if (b->prev_free && !inPool(b->prev_free)) return false;
+	} else {
+		// USED として free されるブロック。FREE が立っていたら double-free か破損
+		if (b->size_and_flags & FLAG_FREE) return false;
+	}
+	return true;
+}
+
+void TVPPooledAllocator::markCorrupted(const char *where, const void *b) {
+	if (pool_corrupted_) return;
+	pool_corrupted_ = true;
+	TVPLOG_CRITICAL("PooledAllocator [{}]: heap corruption detected in {} (block={:p}). "
+	                "Pool disabled; further allocations fall back to system malloc and "
+	                "existing pool blocks are leaked ({} bytes held).",
+	                name_, where, b, pool_size_);
+}
+
 void TVPPooledAllocator::insertFree(Block *b) {
 	int fl, sl;
 	size_t size = sf_size(b->size_and_flags);
@@ -256,7 +293,14 @@ void *TVPPooledAllocator::allocate(size_t size, TVPAllocTag tag) {
 
 		std::lock_guard<std::mutex> lk(mu_);
 		int fl, sl;
-		Block *b = findSuitable(need, fl, sl);
+		Block *b = pool_corrupted_ ? nullptr : findSuitable(need, fl, sl);
+		if (b && (!validateBlock(b, true) || sf_size(b->size_and_flags) < need)) {
+			// freelist が指すブロックのヘッダが壊れている (or bucket 不変条件の
+			// 破れ)。ここで removeFree に進むと nextPhys 経由で野良アドレスに
+			// 書いて即死するため、縮退して fallback へ流す。
+			markCorrupted("allocate", b);
+			b = nullptr;
+		}
 		if (b) {
 			removeFree(b);
 			splitIfPossible(b, need);
@@ -308,6 +352,11 @@ void TVPPooledAllocator::freePoolBlock(Block *b) {
 	// merge with prev (PREV_FREE flag が立っていれば prev は free)
 	if (b->size_and_flags & FLAG_PREV_FREE) {
 		Block *prev = b->prev_phys;
+		if (!validateBlock(prev, true)) {
+			// 隣接ヘッダ破損。merge すると野良アドレスへ書くので縮退+リーク
+			markCorrupted("free (merge-prev)", prev);
+			return;
+		}
 		size_t b_size = sf_size(b->size_and_flags);
 		removeFree(prev);
 		size_t prev_size = sf_size(prev->size_and_flags);
@@ -319,6 +368,10 @@ void TVPPooledAllocator::freePoolBlock(Block *b) {
 	// merge with next (next が sentinel_end_ なら次は無し)
 	Block *next = nextPhys(b);
 	if (next != sentinel_end_ && (next->size_and_flags & FLAG_FREE)) {
+		if (!validateBlock(next, true)) {
+			markCorrupted("free (merge-next)", next);
+			return;
+		}
 		mergeWithNext(b);
 	}
 	insertFree(b);
@@ -333,6 +386,17 @@ void TVPPooledAllocator::free(void *mem) {
 	if (pool_size_ > 0 && inPool(mem)) {
 		std::lock_guard<std::mutex> lk(mu_);
 		Block *b = blockFromPayload(mem);
+		if (pool_corrupted_) {
+			// 縮退モード: freelist 構造は信用できないのでリークさせる
+			// (プロセス継続を優先。破損検知時に CRITICAL ログ済み)
+			return;
+		}
+		if (!validateBlock(b, false)) {
+			// ヘッダ破損 or double-free。freelist へ戻すと後続の確保が
+			// 即死するため、縮退してこのブロックはリークさせる。
+			markCorrupted("free", b);
+			return;
+		}
 		const size_t freed_size = sf_size(b->size_and_flags);
 		const TVPAllocTag freed_tag = sf_tag(b->size_and_flags);
 		freePoolBlock(b);

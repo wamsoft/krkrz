@@ -14,6 +14,7 @@
 #include "OpenGLContext.h"
 #include "MsgImpl.h"       // TVPCannotShowModal* (generic)
 #include "WindowIntf.h"    // TVPGetWindowCount
+#include "SysInitIntf.h"   // TVPGetCommandLine (-maximizebox)
 #ifdef KRKRZ_USE_REPL
 #include "REPL.h"          // TVPDrainREPL: modal 中も REPL/agent を回す
 #endif
@@ -148,6 +149,7 @@ SDL3WindowForm::SDL3WindowForm(class tTJSNI_Window* win)
 	// ウィンドウ作成
 	mWindow = SDL_CreateWindow("", width, height, flags);
 	ApplyAspectLock();   // 比率固定が先に設定されていれば反映
+	ApplyMaximizeBoxOption();
 	if (mWindow) {
 		// ウィンドウのユーザーデータとして自身を設定
 		//SDL_SetWindowFullscreen(mWindow, true);
@@ -723,6 +725,39 @@ SDL3WindowForm::SetBorderStyle(enum tTVPBorderStyle st)
 	bool resizable = (st == bsSizeable || st == bsSizeToolWin);
 	SDL_SetWindowBordered(mWindow, bordered);
 	SDL_SetWindowResizable(mWindow, resizable);
+	ApplyMaximizeBoxOption();
+}
+
+//---------------------------------------------------------------------------
+// -maximizebox=no のとき Windows の最大化ボタンを外す。
+// リサイズ (ドラッグ + aspectLock) は残したまま、タイトルバーの最大化と
+// タイトルバーのダブルクリック / Win+↑ による最大化だけを封じる。
+// SDL に該当 API は無いのでネイティブスタイルを直接落とす。
+//---------------------------------------------------------------------------
+void SDL3WindowForm::ApplyMaximizeBoxOption()
+{
+#if defined(_WIN32)
+	if (!mWindow) return;
+	static int noMaximize = -1;   // -1=未判定 (オプションは起動後不変)
+	if (noMaximize < 0) {
+		noMaximize = 0;
+		tTJSVariant val;
+		if (TVPGetCommandLine(TJS_W("-maximizebox"), &val)) {
+			ttstr s(val);
+			if (s == TJS_W("no")) noMaximize = 1;
+		}
+	}
+	if (!noMaximize) return;
+	HWND hwnd = (HWND)SDL_GetPointerProperty(SDL_GetWindowProperties(mWindow),
+		SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr);
+	if (!hwnd) return;
+	LONG_PTR style = ::GetWindowLongPtr(hwnd, GWL_STYLE);
+	if (style & WS_MAXIMIZEBOX) {
+		::SetWindowLongPtr(hwnd, GWL_STYLE, style & ~WS_MAXIMIZEBOX);
+		::SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+			SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+	}
+#endif
 }
 
 enum tTVPBorderStyle
@@ -754,6 +789,9 @@ void
 SDL3WindowForm::SetFullScreenMode(bool b)
 {
 	if (mWindow) SDL_SetWindowFullscreen(mWindow, b);
+	// フルスクリーン解除で SDL がウィンドウスタイルを復元し WS_MAXIMIZEBOX が
+	// 戻るため再適用 (非同期に復元される環境向けに LEAVE_FULLSCREEN でも呼ぶ)
+	if (!b) ApplyMaximizeBoxOption();
 }
 
 bool
@@ -851,6 +889,14 @@ SDL3WindowForm::AppEvent(const SDL_Event& event)
 #endif
 			int message = (event.type == SDL_EVENT_KEY_UP) ? AM_KEY_UP : AM_KEY_DOWN;
 			int key = TVPTransSDLKeyToVirtualKey(event.key.key);
+			// キーの取りこぼし / 変換ミスの切り分け用。 SDL が何を渡してきて
+			// 仮想キーへ何に化けたかを一行で出す (-loglevel=debug)。
+			TVPLOG_DEBUG("[key] {} keycode=0x{:08X} scancode={} raw=0x{:04X} "
+			             "mod=0x{:04X} repeat={} -> vk={}",
+			             (event.type == SDL_EVENT_KEY_UP) ? "up" : "down",
+			             (unsigned)event.key.key, (int)event.key.scancode,
+			             (unsigned)event.key.raw, (unsigned)event.key.mod,
+			             (int)event.key.repeat, key);
 			int shift = 0;
 			if (event.key.mod & SDL_KMOD_SHIFT) {
 				SendMessage(message, VK_SHIFT, 0);
@@ -970,6 +1016,11 @@ SDL3WindowForm::AppEvent(const SDL_Event& event)
 			int h = event.window.data2;
 			TVPLOG_DEBUG("Window resized: {}x{}", w, h);
 			SendMessage(AM_DISPLAY_RESIZE, w, h);
+			break;
+		}
+		case SDL_EVENT_WINDOW_LEAVE_FULLSCREEN: {
+			// スタイル復元で最大化ボタンが戻るのを抑える (SetFullScreenMode 参照)
+			ApplyMaximizeBoxOption();
 			break;
 		}
 	}

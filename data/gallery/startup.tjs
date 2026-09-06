@@ -49,6 +49,7 @@ tryScene("sysinfo/scene.tjs",      function() { return new SysInfoScene(); });
 tryScene("text_font/scene.tjs",    function() { return new TextFontScene(); });
 tryScene("text_font/scene.tjs",    function() { return new TextEmojiScene(); });
 tryScene("text_font/scene.tjs",    function() { return new TextGlyphwareScene(); });
+tryScene("text_font/scene.tjs",    function() { return new TextVerticalScene(); });
 tryScene("text_font/scene.tjs",    function() { return new TextRasterizerScene(); });
 tryScene("image_ops/scene.tjs",    function() { return new ImageOpsScene(); });
 tryScene("layer_basic/scene.tjs",  function() { return new LayerBasicScene(); });

@@ -1,7 +1,7 @@
 // -*- mode:tjs2 -*-
 // ======================================================================
 //  elements_gallery シーン (ElementsGalleryScene)
-//  Elements (Dialog) の主要ウィジェットを「実物 + 定義ソース + イベントログ」
+//  Elements (ElementsDialog) の主要ウィジェットを「実物 + 定義ソース + イベントログ」
 //  の 3 点セットで確認するカタログ。単体起動は startup.tjs、束ね起動は
 //  data/ ランチャ。ページ定義は pages.tjs (global GALLERY_PAGES)。
 // ======================================================================
@@ -64,7 +64,7 @@ class ElementsGalleryScene extends DemoScene
 
         if (!hasElements()) {
             stage.font.height = 28;
-            stage.drawText(40, 40, "この環境では Elements Dialog が利用できません", 0xd0a0a0, 255);
+            stage.drawText(40, 40, "この環境では ElementsDialog が利用できません", 0xd0a0a0, 255);
             stage.drawText(40, 80, "SDL3 ビルド + KRKRZ_USE_ELEMENTS=ON でお試しください", 0x9aa4b8, 255);
             stage.update();
         }

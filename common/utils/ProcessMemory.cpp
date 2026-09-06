@@ -18,9 +18,24 @@
 #include <cstdlib>
 #endif
 
+// プラットフォーム層 (nx/src, ps5/src) が登録する取得関数。
+static tTVPProcessMemoryProvider TVPProcessMemoryProviderFunc = nullptr;
+
+void TVPSetProcessMemoryProvider(tTVPProcessMemoryProvider provider)
+{
+	TVPProcessMemoryProviderFunc = provider;
+}
+
 TVPProcessMemoryInfo TVPGetProcessMemoryInfo()
 {
 	TVPProcessMemoryInfo info;
+
+	// プラットフォーム層の実装があればそれを使う (組み機はここ経由)
+	if (TVPProcessMemoryProviderFunc) {
+		TVPProcessMemoryInfo tmp;
+		if (TVPProcessMemoryProviderFunc(tmp)) return tmp;
+	}
+
 #if defined(_WIN32)
 	PROCESS_MEMORY_COUNTERS_EX pmc{};
 	pmc.cb = sizeof(pmc);

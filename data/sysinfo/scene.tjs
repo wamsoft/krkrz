@@ -66,7 +66,7 @@ class SysInfoScene extends DemoScene
             lay.font.height = 19;
             var lines = [];
             try { lines.add("Storages.getFullPath(\"startup.tjs\") = " + Storages.getFullPath("startup.tjs")); } catch (e) {}
-            try { lines.add("Elements Dialog = " + (hasElements() ? "利用可能" : "利用不可 (KRKRZ_USE_ELEMENTS=OFF)")); } catch (e) {}
+            try { lines.add("ElementsDialog = " + (hasElements() ? "利用可能" : "利用不可 (KRKRZ_USE_ELEMENTS=OFF)")); } catch (e) {}
             for (var i = 0; i < lines.count; i++)
                 lay.drawText(32, sy + i * lineH, lines[i], 0x9ab890, 255);
         }

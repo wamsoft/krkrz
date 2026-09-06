@@ -421,13 +421,13 @@ function commonDialogJson()
 }
 
 // ----------------------------------------------------------------------
-// VK_D: 非同期オーバーレイダイアログ (Dialog.showJson, onAction で受ける)
+// VK_D: 非同期オーバーレイダイアログ (ElementsDialog.showJson, onAction で受ける)
 // ----------------------------------------------------------------------
-class TestDialog extends Dialog
+class TestDialog extends ElementsDialog
 {
-    function TestDialog() { super.Dialog(); }
+    function TestDialog() { super.ElementsDialog(); }
     function onAction(id, payload) {
-        dm(@"Dialog action: ${id} payload=${payload}");
+        dm(@"ElementsDialog action: ${id} payload=${payload}");
         switch (id) {
         case "ok":
             System.inform("OK pressed");
@@ -478,9 +478,9 @@ function softkeyTest()
 // 押下を観測する用。 ok / cancel は元々 close_on_click=true なので modal が
 // 閉じてから result.action として帰ってくる (それも一応 onAction にも来る)。
 // ----------------------------------------------------------------------
-class ModalActionDialog extends Dialog
+class ModalActionDialog extends ElementsDialog
 {
-    function ModalActionDialog() { super.Dialog(); }
+    function ModalActionDialog() { super.ElementsDialog(); }
     function onAction(id, payload) {
         dm(@"  modal onAction: id=${id} payload=${payload}");
     }
@@ -523,16 +523,16 @@ function modalOverlayTest()
 // navigator フロー用ハンドラ。 onScreen / onScreenLeave で画面遷移を観測し、
 // onAction で各画面の widget 値変化 / click を受ける。
 // ----------------------------------------------------------------------
-class FlowDialog extends Dialog
+class FlowDialog extends ElementsDialog
 {
-    function FlowDialog() { super.Dialog(); }
+    function FlowDialog() { super.ElementsDialog(); }
     function onScreen(name)          { dm(@"  flow enter: ${name}"); }
     function onScreenLeave(name, act){ dm(@"  flow leave: ${name} (action='${act}')"); }
     function onAction(id, payload)   { dm(@"  flow action: id=${id} payload=${payload}"); }
 }
 
 // ----------------------------------------------------------------------
-// VK_F: マニフェスト駆動の複数画面フロー (Dialog.showFlow, ブロッキング overlay)
+// VK_F: マニフェスト駆動の複数画面フロー (ElementsDialog.showFlow, ブロッキング overlay)
 //   data/ui/app.jsonc → menu → settings / about を push / pop で遷移。
 // ----------------------------------------------------------------------
 function flowTest()
@@ -548,7 +548,7 @@ function flowTest()
 }
 
 // ----------------------------------------------------------------------
-// VK_G: インライン駆動の複数画面フロー (Dialog.showFlowScreens)
+// VK_G: インライン駆動の複数画面フロー (ElementsDialog.showFlowScreens)
 //   ファイル I/O なし。 画面名→JSON文字列の辞書 + 起点画面名で遷移。
 // ----------------------------------------------------------------------
 function flowInlineTest()
@@ -605,10 +605,10 @@ function flowInlineTest()
 //   サンプルの起動はフロー終了後に MyWindow.dispatchSample が result.action を
 //   見て行う (フローの nested pump 中に modal を多重起動しないため)。
 // ----------------------------------------------------------------------
-class FlowMenuDialog extends Dialog
+class FlowMenuDialog extends ElementsDialog
 {
     var win;
-    function FlowMenuDialog(w) { super.Dialog(); win = w; }
+    function FlowMenuDialog(w) { super.ElementsDialog(); win = w; }
     function onScreen(name)            { dm(@"  menu screen: ${name}"); }
     function onScreenLeave(name, act)  { dm(@"  menu leave: ${name} (action='${act}')"); }
     // close_on_click 無しの button click はここに来る (メニューは閉じない)。
@@ -627,10 +627,10 @@ class FlowMenuDialog extends Dialog
 //   されるので、 メニューをクリックすればメニューが、 パネルをクリックすれば
 //   パネルが反応する (どちらにも当たらないクリックはゲーム背景へ素通し)。
 // ----------------------------------------------------------------------
-class InfoPanelDialog extends Dialog
+class InfoPanelDialog extends ElementsDialog
 {
     var win;
-    function InfoPanelDialog(w) { super.Dialog(); win = w; }
+    function InfoPanelDialog(w) { super.ElementsDialog(); win = w; }
     function onScreen(name)           { dm(@"  panel screen: ${name}"); }
     function onScreenLeave(name, act) { dm(@"  panel leave: ${name} (action='${act}')"); }
     function onAction(id, payload) {
@@ -1344,7 +1344,7 @@ class MyWindow extends Window
         case "load":   loadTest();         break;
         case "info":   sysInfo();          break;
         // 情報パネルの開閉。 メニューは開いたまま → メニュー + パネルが同時表示
-        // (複数非モーダル共存)。 togglePanel は別 Dialog インスタンスを使う。
+        // (複数非モーダル共存)。 togglePanel は別 ElementsDialog インスタンスを使う。
         case "panel":  togglePanel();      break;
         // --- 保留 (メニューを閉じてから起動) ---
         case "ddev":

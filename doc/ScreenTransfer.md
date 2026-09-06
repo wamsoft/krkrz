@@ -37,7 +37,7 @@ GPU テクスチャの内容は保持される前提なので、送らなかっ�
 
 - `System.renderStats` … 本画面の転送。`texUploadUs` / `texUploads` /
   `texUploadBytes` / `frames`。`System.renderStatsReset()` で 0 クリア。
-- `Dialog.renderStats` … Elements overlay 側の内訳 (update / raster / acquire /
+- `ElementsDialog.renderStats` … Elements overlay 側の内訳 (update / raster / acquire /
   upload / present)。ベンチ画面は `data/elements_bench`。
 - **すべて累積値**。2 回読んで差分を取り、経過実時間との比で見る。
 
@@ -135,4 +135,4 @@ WINVER は 2026-08-16 まで実際にこの状態だった (毎フレーム 3.5M
 4. 転送が本当に重いなら、1 回あたりのバイト数を減らす (更新矩形を絞る) 方向で改善する。
    回数を減らす方向 (矩形を union にまとめる) は、面積が増えるので逆効果になりやすい
 5. 転送が犯人でなければ [DrawStats.md](DrawStats.md) (スレッド利用率) と
-   `Dialog.renderStats` (overlay) を見る
+   `ElementsDialog.renderStats` (overlay) を見る

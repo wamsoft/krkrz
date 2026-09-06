@@ -1,7 +1,7 @@
 //---------------------------------------------------------------------------
 //!@file TJS Variant → JSON テキスト (UTF-8) シリアライザ
 //
-// Dialog.showDict / showModalDict 等で、 TJS の Dictionary / Array で書いた
+// ElementsDialog.showDict / showModalDict 等で、 TJS の Dictionary / Array で書いた
 // レイアウトを elements_modal が要求する JSON テキストへ変換する。
 //
 // 対応型:

@@ -444,8 +444,13 @@ Compress::Zlib + Digest::MD5) は不要です。出力は旧版とバイト単�
 します。詳細は `common/msg/text/README.md`。
 
 生成物: `tjsErrorInc.h` / `MsgIntfInc.h` / `MsgImpl.h` /
-`resource/messages{,-en,-chs}.json` / `win32/vcproj/string_table_*.rc` +
+`resource/messages{,-en,-chs,-cht}.json` / `win32/vcproj/string_table_*.rc` +
 `string_table_resource.h` / generic・win32 の `MsgLoad.cpp`
+
+CSV の言語列は ja / en / chs / cht。**cht (繁体字) 未記入の行は chs へフォールバック**
+します。WINVER の Win32 STRINGTABLE は jp / en / chs の 3 種のみで、繁体字の
+エンジンメッセージは PE リソースの言語解決でフォールバックします
+(SDL3 は `messages-cht.json` を直接読むので繁体字が出ます)。
 
 ### バージョン (CMake)
 
@@ -473,6 +478,7 @@ Compress::Zlib + Digest::MD5) は不要です。出力は旧版とバイト単�
 | ドキュメント | 内容 |
 |---|---|
 | [ElementsDialog.md](doc/ElementsDialog.md) | Elements ダイアログ機構 (JSON レイアウト / 入力ルーティング / overlay 描画) |
+| [HotKey.md](doc/HotKey.md) | 最上位ホットキー (`System.registerHotKey`) — 全 dispatch より先に効くキー |
 | [ModalWindow.md](doc/ModalWindow.md) | `Window.showModal` と複数ウィンドウの落とし穴 |
 | [Gamepad.md](doc/Gamepad.md) | ゲームパッド入力 (論理インデックス / 軸 / 振動) |
 | [PadOverlay.md](doc/PadOverlay.md) | パッド状態オーバレイ |
@@ -501,6 +507,7 @@ Compress::Zlib + Digest::MD5) は不要です。出力は旧版とバイト単�
 |---|---|
 | [REPL.md](doc/REPL.md) | 対話型 TJS シェル / ファイルチャネル / ブラウザ REPL / Agent 駆動 |
 | [CommandLinePresets.md](doc/CommandLinePresets.md) | コマンドラインのプリセット |
+| [UserStorage.md](doc/UserStorage.md) | `user://` ストレージメディアの初期化とプラットフォーム差し替えフック |
 | [AppEvent.md](doc/AppEvent.md) | アプリイベントの送出 |
 | [LicenseSystem.md](doc/LicenseSystem.md) | ライセンス表記の収集機構 |
 | [Versioning.md](doc/Versioning.md) | バージョン番号の供給元と上げ方 |

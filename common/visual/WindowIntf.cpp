@@ -42,9 +42,13 @@
 #include "elements/ElementsDialogManager.h"
 // Window レベルの入力イベントを Elements ダイアログがアクティブな場合に
 // onClick/onMouseDown/onKeyDown 等の TJS 通知より前に Elements 側へ転送する。
+//
+// ゲートは「このウィンドウの DrawDevice に overlay が載っているか」で判定する
+// (DrawDevice.cpp 側の同名マクロと同じ理由。 プロセス全体の IsModalActive()
+// で判定すると overlay を載せていない別ウィンドウの入力まで食われる)。
 #define TVP_DIALOG_INTERCEPT(forward_call) \
 	do { \
-		if (tTVPElementsDialogManager::Instance().IsModalActive()) { \
+		if (tTVPElementsDialogManager::Instance().IsActiveOnDevice(GetDrawDevice())) { \
 			/* cursor-warp ナビ用に入力元 window (this) を記録 */ \
 			tTVPElementsDialogManager::Instance().NoteInputWindow(this); \
 			if (tTVPElementsDialogManager::Instance().forward_call) \

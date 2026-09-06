@@ -49,7 +49,7 @@ template<class T> static inline void SafeRelease( T *&p ) { if(p) { p->Release()
 }
 //---------------------------------------------------------------------------
 tTVPVideoPresenterD3D::tTVPVideoPresenterD3D()
-: Dev(0), VS(0), PS(0), IL(0), VB(0), CB(0), Samp(0), Blend(0), Tex(0), Srv(0), TexW(0), TexH(0)
+: Dev(0), VS(0), PS(0), IL(0), VB(0), CB(0), Samp(0), Blend(0), BlendPremul(0), Tex(0), Srv(0), TexW(0), TexH(0)
 , PSYUV(0), TexY(0), TexU(0), TexV(0), SrvY(0), SrvU(0), SrvV(0), PlaneW(0), PlaneH(0)
 {
 }
@@ -67,6 +67,7 @@ void tTVPVideoPresenterD3D::Release()
 	SafeRelease(Srv);
 	SafeRelease(Tex);
 	SafeRelease(Blend);
+	SafeRelease(BlendPremul);
 	SafeRelease(Samp);
 	SafeRelease(CB);
 	SafeRelease(VB);
@@ -153,6 +154,12 @@ bool tTVPVideoPresenterD3D::EnsurePipeline( ID3D11Device * dev )
 	hr = dev->CreateBlendState(&bl, &Blend);
 	if( FAILED(hr) ) { Release(); return false; }
 
+	// premultiplied 用: src の RGB には既にアルファが掛かっているので SrcBlend
+	// は ONE。 Elements の overlay (ThorVG の ColorSpace::ARGB8888 出力) 用。
+	bl.RenderTarget[0].SrcBlend = D3D11_BLEND_ONE;
+	hr = dev->CreateBlendState(&bl, &BlendPremul);
+	if( FAILED(hr) ) { Release(); return false; }
+
 	return true;
 }
 //---------------------------------------------------------------------------
@@ -209,11 +216,11 @@ bool tTVPVideoPresenterD3D::Render( const tTVPVideoPresenterContext & ctx,
 //---------------------------------------------------------------------------
 bool tTVPVideoPresenterD3D::RenderSRV( const tTVPVideoPresenterContext & ctx,
 	ID3D11ShaderResourceView * srv, int w, int h,
-	const tTVPRect & dst, float alpha )
+	const tTVPRect & dst, float alpha, bool premultiplied )
 {
 	if( !ctx.Device || !ctx.Context || !srv || w <= 0 || h <= 0 ) return false;
 	if( !EnsurePipeline(ctx.Device) ) return false;
-	DrawQuad( ctx.Context, &srv, 1, PS, ctx, dst, alpha );
+	DrawQuad( ctx.Context, &srv, 1, PS, ctx, dst, alpha, premultiplied );
 	return true;
 }
 //---------------------------------------------------------------------------
@@ -298,7 +305,8 @@ bool tTVPVideoPresenterD3D::RenderI420( const tTVPVideoPresenterContext & ctx,
 //---------------------------------------------------------------------------
 void tTVPVideoPresenterD3D::DrawQuad( ID3D11DeviceContext * ictx,
 	ID3D11ShaderResourceView * const * srv, int srvCount, ID3D11PixelShader * ps,
-	const tTVPVideoPresenterContext & ctx, const tTVPRect & dst, float alpha )
+	const tTVPVideoPresenterContext & ctx, const tTVPRect & dst, float alpha,
+	bool premultiplied )
 {
 	// -- 定数バッファ (全体アルファ)
 	D3D11_MAPPED_SUBRESOURCE cm;
@@ -338,7 +346,8 @@ void tTVPVideoPresenterD3D::DrawQuad( ID3D11DeviceContext * ictx,
 	ictx->PSSetShaderResources(0, srvCount, srv);
 	ictx->PSSetSamplers(0, 1, &Samp);
 	const float bf[4] = { 0, 0, 0, 0 };
-	ictx->OMSetBlendState(Blend, bf, 0xffffffff);
+	ictx->OMSetBlendState((premultiplied && BlendPremul) ? BlendPremul : Blend,
+	                      bf, 0xffffffff);
 	ictx->Draw(4, 0);
 
 	// SRV を外す (次フレーム Map 時の hazard 回避)

@@ -44,7 +44,7 @@ void TVPRegisterElementsFontsFromStorageDir(const ttstr& dir);
 void TVPRegisterElementsFontsFromWinResources();
 #endif
 
-//! @brief 単一フォントを明示登録する (TJS Dialog.registerFont のバックエンド)。
+//! @brief 単一フォントを明示登録する (TJS ElementsDialog.registerFont のバックエンド)。
 //!        weight / slant / stretch は `cycfi::elements::font_constants` の整数値:
 //!          weight  : 10 thin / 20 extra_light / 30 light / 40 normal /
 //!                    50 medium / 60 semi_bold / 70 bold / 80 extra_bold /
@@ -66,14 +66,14 @@ ttstr TVPRegisterElementsFont(const ttstr& family, const ttstr& path,
 void TVPApplyRegisteredFontsToElementsTheme();
 
 //! @brief 任意の families 文字列 (comma 区切り) を theme フォントとして
-//!        強制的に当てはめる。 TJS `Dialog.defaultFontFamily = "..."` から
+//!        強制的に当てはめる。 TJS `ElementsDialog.defaultFontFamily = "..."` から
 //!        呼ばれる。 families が登録済かどうかは検査しない (FT loader が
 //!        フォールバックで処理する)。
 void TVPSetElementsDefaultFontFamily(const ttstr& families);
 
 //! @brief 現在の theme に当てはまっている families 文字列を返す。
 //!        未設定 (空) なら elements のデフォルト名前を返さず空文字を返す。
-//!        TJS `Dialog.defaultFontFamily` プロパティ getter。
+//!        TJS `ElementsDialog.defaultFontFamily` プロパティ getter。
 ttstr TVPGetElementsDefaultFontFamily();
 
 //! @brief Elements の block text バックエンド (矩形テキストの折返し/禁則/

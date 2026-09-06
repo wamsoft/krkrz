@@ -102,6 +102,8 @@ common/base/LicenseIntf.h
 common/base/StorageCache.cpp
 common/environ/TouchPoint.cpp
 common/environ/PadManager.cpp
+common/environ/HotKeyIntf.cpp
+common/environ/HotKeyIntf.h
 common/extension/Extension.cpp
 common/msg/MsgIntf.cpp
 common/msg/MsgLanguage.cpp
@@ -156,6 +158,14 @@ common/visual/GlyphwareHost.h
 common/visual/GlyphwareHost.cpp
 common/visual/GlyphwareText.h
 common/visual/GlyphwareText.cpp
+common/visual/VerticalCharClass.h
+common/visual/VerticalCharClass.cpp
+common/visual/VerticalLineBreak.h
+common/visual/VerticalLineBreak.cpp
+common/visual/VerticalParagraph.h
+common/visual/VerticalParagraph.cpp
+common/visual/VerticalText.h
+common/visual/VerticalText.cpp
 common/visual/GlyphwareFontRasterizer.h
 common/visual/GlyphwareFontRasterizer.cpp
 common/visual/FreeType.cpp
@@ -196,6 +206,10 @@ list(APPEND KRKRZ_SRC
 	# REPL メインスレッド実行キュー (console / file / web / socket 各チャネル共用)。
 	common/utils/ReplMainQueue.cpp
 	common/utils/ReplMainQueue.h
+	# 監視式 (吉里吉里2 デバッグ窓「監視式」の復活)。 REPL の .watch と
+	# -replweb の Watch パネルが共有するコア。 doc/DebugToolsRevival.md
+	common/utils/ReplWatch.cpp
+	common/utils/ReplWatch.h
 )
 # -replfile= ファイル監視コマンドチャネル (エージェント駆動) と、その応答口を使う
 # file-based modal (confirm / ファイル選択 等を REPL 経由で応答)。ローカル
@@ -216,6 +230,8 @@ if (KRKRZ_REPL_WEB)
 list(APPEND KRKRZ_SRC
 	common/utils/ReplWebServer.cpp
 	common/utils/ReplWebServer.h
+	# 埋め込みブラウザ UI (ReplWebServer.cpp から #include する単一 HTML)
+	common/utils/replweb_ui.inc
 	common/utils/ReplWebIntf.cpp
 	common/utils/ReplWebIntf.h
 )
@@ -592,6 +608,17 @@ if (KRKRZ_USE_ELEMENTS)
 		common/visual/elements/ElementsDialogManager.cpp
 		common/visual/elements/ElementsDialogManager.h
 		common/visual/elements/ElementsUserConfig.h
+		# 出力先 (overlay / ホストのレイヤ) に依らない共通部。
+		# ElementsInputMap.h = VK / マウス → cycfi 中立入力型の対応表 (ヘッダのみ)。
+		# ElementsSessionBuild = 画面 JSON → overlay_session の組み立て。
+		common/visual/elements/ElementsInputMap.h
+		common/visual/elements/ElementsSessionBuild.cpp
+		common/visual/elements/ElementsSessionBuild.h
+		# 画面をホストのレイヤへ描くパネル (overlay とは別枠)。
+		common/visual/elements/ElementsLayerPanel.cpp
+		common/visual/elements/ElementsLayerPanel.h
+		common/visual/elements/PanelIntf.cpp
+		common/visual/elements/PanelIntf.h
 		common/visual/elements/DialogIntf.cpp
 		common/visual/elements/DialogIntf.h
 		common/visual/elements/ElementsModalRunner.h
@@ -684,6 +711,9 @@ if (KRKRZ_USE_ELEMENTS)
 	# cycfi::elements::register_font を呼ぶため同様に C++20。
 	set_source_files_properties(
 		common/visual/elements/ElementsDialogManager.cpp
+		common/visual/elements/ElementsSessionBuild.cpp
+		common/visual/elements/ElementsLayerPanel.cpp
+		common/visual/elements/PanelIntf.cpp
 		common/visual/elements/StoragesResourceLoader.cpp
 		common/visual/elements/BlockTextBackend.cpp
 		sdl3/visual/SDLElementsUserConfig.cpp

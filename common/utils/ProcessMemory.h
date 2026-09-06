@@ -20,6 +20,13 @@ struct TVPProcessMemoryInfo {
 // 現在のプロセスのメモリ情報を取得。
 TVPProcessMemoryInfo TVPGetProcessMemoryInfo();
 
+// プラットフォーム側から実装を差し込むフック。
+//   組み機 (NX / PS5 等) の SDK ヘッダは engine から直接触らない方針なので、
+//   プラットフォーム層 (nx/src, ps5/src) が起動時にこれを登録する。
+//   登録されていればこちらを優先し、 true を返したときだけ採用する。
+typedef bool (*tTVPProcessMemoryProvider)(TVPProcessMemoryInfo &out);
+void TVPSetProcessMemoryProvider(tTVPProcessMemoryProvider provider);
+
 // ログに 1 行で出力するヘルパ。TVPHeapDump や周期ダンプから呼ぶ。
 void TVPDumpProcessMemoryInfo();
 

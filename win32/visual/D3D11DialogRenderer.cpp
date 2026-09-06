@@ -200,8 +200,14 @@ void tTVPD3D11DialogRenderer::PresentOverlay(const void* layer, int x, int y, in
 
 	// アップロード済みテクスチャ (0xAARRGGBB = メモリ上 BGRA = B8G8R8A8_UNORM)
 	// を dst 矩形へ α 合成描画。alpha=1.0 (レイヤ内容自体の α で合成される)。
+	//
+	// **premultiplied 合成**にする。 Elements の canvas は ThorVG の Sw raster が
+	// `ColorSpace::ARGB8888` (= alpha-premultiplied) で出力したもの。 straight
+	// alpha で合成するとアルファが二重に掛かり、 文字のアンチエイリアスや
+	// 半透明の下地が薄く出る。
 	tTVPRect dst(x, y, x + w, y + h);
-	L.presenter->RenderSRV(vctx, L.srv, L.w, L.h, dst, 1.0f);
+	L.presenter->RenderSRV(vctx, L.srv, L.w, L.h, dst, 1.0f,
+	                       /*premultiplied=*/true);
 }
 //---------------------------------------------------------------------------
 void tTVPD3D11DialogRenderer::ReleaseLayer(const void* layer)

@@ -85,8 +85,8 @@ class PadAdvancedScene extends DemoScene
     function onExit()
     {
         System.onJoypadChange = void;
-        if (hasElements() && typeof Dialog.unregisterHotKey != "undefined") {
-            for (var i = 0; i < btnDefs.count; i++) Dialog.unregisterHotKey(btnDefs[i].vk);
+        if (hasElements() && typeof ElementsDialog.unregisterHotKey != "undefined") {
+            for (var i = 0; i < btnDefs.count; i++) ElementsDialog.unregisterHotKey(btnDefs[i].vk);
         }
         if (overlayOn && typeof System.setPadOverlay != "undefined") {
             System.setPadOverlay(false);
@@ -117,10 +117,10 @@ class PadAdvancedScene extends DemoScene
     // パッドボタンをホストホットキーとして確保 / 解除する
     function applyHotKeys()
     {
-        if (!hasElements() || typeof Dialog.registerHotKey == "undefined") return;
+        if (!hasElements() || typeof ElementsDialog.registerHotKey == "undefined") return;
         for (var i = 0; i < btnDefs.count; i++) {
-            if (hotkeyOn) Dialog.registerHotKey(btnDefs[i].vk);
-            else          Dialog.unregisterHotKey(btnDefs[i].vk);
+            if (hotkeyOn) ElementsDialog.registerHotKey(btnDefs[i].vk);
+            else          ElementsDialog.unregisterHotKey(btnDefs[i].vk);
         }
     }
 

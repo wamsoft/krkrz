@@ -200,6 +200,21 @@ window.aspectLock = "16:9";   // "" を入れると解除
   何もせず getter が 0 を返す) なので、`aspectLock` を読み戻すと空文字列になる。
   対象は SDL3 デスクトップ。
 
+### 最大化の封じ込め (`-maximizebox=no`)
+
+`aspectLock` はドラッグ中の比率を保つが、**最大化** (タイトルバーの最大化ボタン /
+タイトルバーのダブルクリック / Win+↑) はディスプレイの作業領域いっぱいまで
+広げるので、そこだけは比率も倍率も指定通りにならない。これを封じたいときは
+起動オプション `-maximizebox=no` を指定する。
+
+- ネイティブスタイルから `WS_MAXIMIZEBOX` を落とすだけなので、**枠のドラッグ
+  によるリサイズと Alt+Enter のフルスクリーン切替はそのまま使える**。
+- SDL は resizable / bordered / フルスクリーン切替のたびにウィンドウスタイルを
+  組み直して `WS_MAXIMIZEBOX` を復活させるため、生成時・`SetBorderStyle` ・
+  `SetFullScreenMode` ・フルスクリーン解除の各所から `ApplyMaximizeBoxOption()`
+  を呼び直している (`sdl3/environ/form.cpp`)。
+- **SDL3 ビルドの Windows 限定**。他プラットフォームと WINVER は no-op。
+
 ---
 
 ## 6. 現状との差分 = やること

@@ -1,19 +1,19 @@
 // -*- mode:tjs2 -*-
 // ======================================================================
 //  elements_flow シーン (ElementsFlowScene)
-//  Dialog フロー (startFlow) の画面切替エフェクト (fade / universal) と
+//  ElementsDialog フロー (startFlow) の画面切替エフェクト (fade / universal) と
 //  退場 (exit) 演出のデモ。単体起動は startup.tjs、束ね起動はランチャ。
 //  画面定義は flow/*.jsonc (transitions の effect / rule / vague を宣言)。
 // ======================================================================
 
-// onScreen / onClose をシーンへ中継する Dialog。Dialog クラスが無い環境で
+// onScreen / onClose をシーンへ中継する ElementsDialog。ElementsDialog クラスが無い環境で
 // このファイル自体の読み込みが失敗しないよう、Scripts.eval で条件付き定義。
-if (typeof global.Dialog != "undefined" && typeof global.FlowDemoDialog == "undefined") {
+if (typeof global.ElementsDialog != "undefined" && typeof global.FlowDemoDialog == "undefined") {
     Scripts.eval(
-        "class FlowDemoDialog extends Dialog"
+        "class FlowDemoDialog extends ElementsDialog"
         + "{"
         + "    var owner;"
-        + "    function FlowDemoDialog(o) { super.Dialog(); owner = o; }"
+        + "    function FlowDemoDialog(o) { super.ElementsDialog(); owner = o; }"
         + "    function onScreen(name) { if (owner !== void) owner.onFlowScreen(name); }"
         + "    function onClose(action) { if (owner !== void) owner.onFlowClosed(action); }"
         + "}",
@@ -37,7 +37,7 @@ class ElementsFlowScene extends DemoScene
 
         if (!hasElements()) {
             stage.font.height = 26;
-            stage.drawText(40, 40, "Elements Dialog が利用できないビルドです", 0xd0a0a0, 255);
+            stage.drawText(40, 40, "ElementsDialog が利用できないビルドです", 0xd0a0a0, 255);
             stage.update();
             setInfo("KRKRZ_USE_ELEMENTS=ON のビルドが必要です");
             return;

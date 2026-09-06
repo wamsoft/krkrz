@@ -27,6 +27,9 @@ namespace {
 std::mutex                                       g_mutex;
 std::unordered_set<TJS::tTJSDictionaryObject *>  g_dicts;
 std::unordered_set<TJS::tTJSArrayObject *>       g_arrays;
+// 生存中の tTJSCustomObject。 dump 時に ClassNames[0] を引いてクラス名別に
+// 数えるために覚えておく (「どのクラスが増え続けているか」を名指しするため)。
+std::unordered_set<TJS::tTJSCustomObject *>      g_customs;
 std::atomic<uint64_t>                            g_custom_object_count{0};
 std::atomic<uint64_t>                            g_custom_object_peak{0};
 
@@ -34,15 +37,21 @@ constexpr size_t kTopN = 10;
 
 } // namespace
 
-void TVPIncrementTJSCustomObjectCount() noexcept {
+void TVPIncrementTJSCustomObjectCount(TJS::tTJSCustomObject *obj) noexcept {
 	uint64_t cur = g_custom_object_count.fetch_add(1, std::memory_order_relaxed) + 1;
 	uint64_t pk  = g_custom_object_peak.load(std::memory_order_relaxed);
 	while (cur > pk &&
 	       !g_custom_object_peak.compare_exchange_weak(pk, cur, std::memory_order_relaxed)) {}
+	if (!obj) return;
+	std::lock_guard<std::mutex> lk(g_mutex);
+	g_customs.insert(obj);
 }
 
-void TVPDecrementTJSCustomObjectCount() noexcept {
+void TVPDecrementTJSCustomObjectCount(TJS::tTJSCustomObject *obj) noexcept {
 	g_custom_object_count.fetch_sub(1, std::memory_order_relaxed);
+	if (!obj) return;
+	std::lock_guard<std::mutex> lk(g_mutex);
+	g_customs.erase(obj);
 }
 
 void TVPRegisterTJSDictionary(TJS::tTJSDictionaryObject *obj) noexcept {
@@ -125,10 +134,21 @@ void TVPDumpTJSObjectStats() noexcept {
 	};
 	BinStats bins[kNumBins];
 
+	// クラス名別の生存数。 ClassNames[0] が最派生クラス名。
+	// (Dictionary / Array / 素の Object はクラス未適用なので "(no class)")
+	std::unordered_map<std::string, size_t> per_class;
+
 	{
 		std::lock_guard<std::mutex> lk(g_mutex);
 		dict_instances  = g_dicts.size();
 		array_instances = g_arrays.size();
+		for (auto *o : g_customs) {
+			const std::vector<ttstr> &names = o->GetClassNames();
+			std::string key;
+			if (names.empty() || names[0].IsEmpty()) key = "(no class)";
+			else TVPUtf16ToUtf8(key, names[0].c_str());
+			++per_class[key];
+		}
 		dict_sizes.reserve(dict_instances);
 		for (auto *d : g_dicts) {
 			tjs_int c = d->Count;
@@ -153,6 +173,23 @@ void TVPDumpTJSObjectStats() noexcept {
 	            (unsigned long long)dict_total_entries);
 	TVPLOG_INFO("TJSObjectStats: Array      instances={}",
 	            (unsigned long long)array_instances);
+
+	// クラス名別の生存数 上位 (増え続けているクラスを名指しするため)。
+	// 2 回 dump して差分を見ると、 どのクラスが解放されずに溜まっているかが判る。
+	{
+		std::vector<std::pair<size_t, std::string>> cls;
+		cls.reserve(per_class.size());
+		for (auto const &kv : per_class) cls.emplace_back(kv.second, kv.first);
+		size_t cn = std::min<size_t>(20, cls.size());
+		std::partial_sort(cls.begin(), cls.begin() + cn, cls.end(),
+		                  [](auto const &a, auto const &b) { return a.first > b.first; });
+		TVPLOG_INFO("TJSObjectStats: per-class live (top {} of {} classes)",
+		            (unsigned long long)cn, (unsigned long long)cls.size());
+		for (size_t i = 0; i < cn; ++i)
+			TVPLOG_INFO("TJSObjectStats:   class[{}] live={} name={}",
+			            (unsigned long long)i,
+			            (unsigned long long)cls[i].first, cls[i].second);
+	}
 
 	if (dict_instances == 0) return;
 

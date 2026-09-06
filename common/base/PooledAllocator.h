@@ -153,6 +153,14 @@ private:
 	void          mappingSearchIndex(size_t size, int &fl, int &sl) const;
 	Block        *findSuitable(size_t size, int &fl, int &sl);
 
+	// Block ヘッダの妥当性検査 (mu_ 保持下で呼ぶ)。範囲/整列/サイズ/リンクを
+	// 確認し、破損を見つけたら false。expect_free = freelist 上のブロックとして
+	// FREE flag と free リンクも検査するか。
+	bool          validateBlock(const Block *b, bool expect_free) const;
+	// 破損検知時の縮退処理 (mu_ 保持下で呼ぶ)。以後 pool からの新規確保を止め、
+	// pool 内ポインタの free はリークさせる (プロセスは落とさない)。
+	void          markCorrupted(const char *where, const void *b);
+
 	void          insertFree(Block *b);
 	void          removeFree(Block *b);
 	void          splitIfPossible(Block *b, size_t need_size);
@@ -188,6 +196,9 @@ private:
 	uint32_t            fl_bitmap_ = 0;
 	uint32_t            sl_bitmap_[FL_COUNT] = {};
 	Block              *blocks_[FL_COUNT][SL_COUNT] = {{}};
+	// freelist/ヘッダ破損を検知したら true (mu_ 保持下で設定)。以後 pool 経路は
+	// 使わず fallback へ縮退し、pool 内ポインタの free はリークさせる。
+	bool                pool_corrupted_ = false;
 
 	tTVPMemoryAllocatorStatsCollector stats_{
 		tTVPMemoryAllocatorStatsCollector::Mode::Sized};

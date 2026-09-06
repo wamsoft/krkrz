@@ -99,6 +99,7 @@ tjs_string ExePath() {
 
 bool TVPCheckAbout();
 bool TVPCheckPrintDataPath();
+bool TVPCheckPrintLicense();   // LicenseIntf.cpp
 void TVPOnError();
 
 int _argc;
@@ -462,6 +463,11 @@ bool tTVPApplication::StartApplication( int argc, tjs_char* argv[] ) {
 #ifndef TVP_IGNORE_LOAD_TPM_PLUGIN
 		TVPLoadPluigins(); // load plugin module *.tpm
 #endif
+
+		// -license : 収集済みライセンスを標準出力へ出して終了する。
+		// プラグイン (*.tpm) が登録した分も載るよう、 ロード後に判定する。
+		if(TVPCheckPrintLicense()) return true;
+
 		// Check digitizer
 		CheckDigitizer();
 

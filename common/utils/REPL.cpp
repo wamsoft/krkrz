@@ -37,6 +37,9 @@
 #include "PadOverlay.h"             // TVPPadOverlay::SetEnabled / IsEnabled
 #include "StorageCache.h"           // TVPDumpFileCacheList
 #include "GraphicsLoaderIntf.h"     // TVPDumpImageCacheList
+#include "ReplWatch.h"              // 監視式 (.watch)
+#include "EventIntf.h"              // TVP(Get|Set)SystemEventDisabledState (.event)
+#include "TickCount.h"              // TVPGetTickCount (監視式の自動更新)
 
 // pretty print 設定 (REPL の .depth / .compact コマンドから変更)
 static int g_repl_pp_depth = 3;
@@ -287,6 +290,13 @@ bool tTVPReplThread::ProcessLine(const std::string& input_in,
 			emit(LL_HELP, "  .dlg             - List active Elements dialogs (Agent.dialogs)");
 			emit(LL_HELP, "  .dlgclose        - Close all Elements dialogs (Agent.closeAllDialogs)");
 			emit(LL_HELP, "  .click X Y       - Inject a mouse click at (X,Y) (Agent.click)");
+			emit(LL_HELP, "  .watch           - List watch expressions (evaluates first)");
+			emit(LL_HELP, "  .watch add EXPR  - Add a watch expression");
+			emit(LL_HELP, "  .watch rm ID|all - Remove a watch expression (or all)");
+			emit(LL_HELP, "  .watch edit ID EXPR - Replace a watch expression");
+			emit(LL_HELP, ReplFmt("  .watch auto [ms|on|off] - Show/set auto-update interval (current: %s)",
+				TVPReplWatch::GetInterval() < 0 ? "off" : "on"));
+			emit(LL_HELP, "  .event [on|off]  - Show/toggle System.eventDisabled");
 			emit(LL_HELP, "Enter TJS expressions or statements to evaluate.");
 			return true;
 		}
@@ -346,6 +356,149 @@ bool tTVPReplThread::ProcessLine(const std::string& input_in,
 			return true;
 		}
 		if (input == ".clear") { multiline_input.clear(); return true; }
+		//-------------------------------------------------------------------
+		// 監視式 (.watch) — 吉里吉里2 デバッグ窓「監視式」の復活。
+		// 評価は必ずメインスレッドで走らせる (ここは worker スレッド)。
+		//-------------------------------------------------------------------
+		if (input.rfind(".watch", 0) == 0 && (input.size() == 6 || input[6] == ' ')) {
+			auto wtrim = [](std::string t) {
+				while (!t.empty() && (t.front() == ' ' || t.front() == '\t')) t.erase(t.begin());
+				while (!t.empty() && (t.back()  == ' ' || t.back()  == '\t')) t.pop_back();
+				return t;
+			};
+			// 先頭語 (サブコマンド) と残り (引数) に割る。 式は空白を含みうるので
+			// 残りはそのまま渡す。
+			std::string rest = wtrim(input.size() > 6 ? input.substr(6) : "");
+			std::string sub;
+			{
+				size_t sp = rest.find_first_of(" \t");
+				if (sp == std::string::npos) { sub = rest; rest.clear(); }
+				else { sub = rest.substr(0, sp); rest = wtrim(rest.substr(sp)); }
+			}
+
+			auto dumpList = [&]() {
+				auto entries = TVPReplWatch::List();
+				if (entries.empty()) {
+					emit(LL_NORMAL, "(no watch expressions)");
+					return;
+				}
+				for (const auto& e : entries) {
+					std::string expr8, val8;
+					TVPUtf16ToUtf8(expr8, e.expr.AsStdString());
+					TVPUtf16ToUtf8(val8,  e.value.AsStdString());
+					// 例外を投げる式も «(error) ... という値» として並べる
+					// (原典と同じ。 LL_ERROR はコマンド自体の失敗に取っておく —
+					// ファイルチャネルはそこで ok=false を立てるので、 混ぜると
+					// 一覧の順序が result / error に割れてしまう)。
+					emit(LL_NORMAL,
+					     ReplFmt("%d: ", e.id) + expr8 + " = " +
+					     (e.evaluated ? val8 : std::string("(not evaluated)")));
+				}
+			};
+
+			if (sub.empty()) {
+				// 一覧 (表示前に全件評価する = 原典の Update ボタン相当)
+				TVPReplWatch::EvaluateAllOnMain();
+				dumpList();
+				return true;
+			}
+			if (sub == "add") {
+				if (rest.empty()) { emit(LL_ERROR, "usage: .watch add <expression>"); return true; }
+				tjs_string expr16;
+				TVPUtf8ToUtf16(expr16, rest);
+				int id = TVPReplWatch::Add(ttstr(expr16.c_str()));
+				TVPReplWatch::EvaluateAllOnMain();
+				// 追加した 1 件だけ返す
+				for (const auto& e : TVPReplWatch::List()) {
+					if (e.id != id) continue;
+					std::string val8;
+					TVPUtf16ToUtf8(val8, e.value.AsStdString());
+					emit(LL_NORMAL, ReplFmt("%d: ", e.id) + rest + " = " + val8);
+					break;
+				}
+				return true;
+			}
+			if (sub == "rm" || sub == "remove" || sub == "del") {
+				if (rest == "all") {
+					TVPReplWatch::Clear();
+					emit(LL_NORMAL, "(all watch expressions removed)");
+					return true;
+				}
+				int id = atoi(rest.c_str());
+				if (id <= 0 || !TVPReplWatch::Remove(id)) {
+					emit(LL_ERROR, "usage: .watch rm <id>|all");
+				} else {
+					emit(LL_NORMAL, ReplFmt("(removed #%d)", id));
+				}
+				return true;
+			}
+			if (sub == "edit") {
+				size_t sp = rest.find_first_of(" \t");
+				std::string idstr = (sp == std::string::npos) ? rest : rest.substr(0, sp);
+				std::string expr  = (sp == std::string::npos) ? "" : wtrim(rest.substr(sp));
+				int id = atoi(idstr.c_str());
+				if (id <= 0 || expr.empty()) {
+					emit(LL_ERROR, "usage: .watch edit <id> <expression>");
+					return true;
+				}
+				tjs_string expr16;
+				TVPUtf8ToUtf16(expr16, expr);
+				if (!TVPReplWatch::Edit(id, ttstr(expr16.c_str()))) {
+					emit(LL_ERROR, ReplFmt("(no such watch id: %d)", id));
+					return true;
+				}
+				TVPReplWatch::EvaluateAllOnMain();
+				dumpList();
+				return true;
+			}
+			if (sub == "auto") {
+				if (!rest.empty()) {
+					if (rest == "off" || rest == "false")
+						TVPReplWatch::SetInterval(TVPReplWatch::kIntervalOff);
+					else if (rest == "on" || rest == "true")
+						TVPReplWatch::SetInterval(TVPReplWatch::kDefaultIntervalMs);
+					else
+						TVPReplWatch::SetInterval(atoi(rest.c_str()));
+				}
+				int iv = TVPReplWatch::GetInterval();
+				if (iv < 0)       emit(LL_NORMAL, "watch auto = off");
+				else if (iv == 0) emit(LL_NORMAL, "watch auto = every frame");
+				else              emit(LL_NORMAL, ReplFmt("watch auto = %d ms", iv));
+				return true;
+			}
+			emit(LL_ERROR, "usage: .watch [add EXPR | rm ID|all | edit ID EXPR | auto [ms|on|off]]");
+			return true;
+		}
+		//-------------------------------------------------------------------
+		// .event — System.eventDisabled の表示 / 切替 (吉里吉里2 コントローラの
+		// Event ボタン相当)。 再有効化で TVPDeliverAllEvents() が走るので、
+		// 読み書きともメインスレッドへ運ぶ。
+		//-------------------------------------------------------------------
+		if (input.rfind(".event", 0) == 0 && (input.size() == 6 || input[6] == ' ')) {
+			std::string arg = input.size() > 6 ? input.substr(6) : "";
+			while (!arg.empty() && (arg.front() == ' ' || arg.front() == '\t')) arg.erase(arg.begin());
+			while (!arg.empty() && (arg.back()  == ' ' || arg.back()  == '\t')) arg.pop_back();
+			if (!arg.empty() && arg != "on" && arg != "true" && arg != "1" &&
+			    arg != "off" && arg != "false" && arg != "0" && arg != "toggle") {
+				emit(LL_ERROR, "usage: .event [on|off|toggle]");
+				return true;
+			}
+			bool state = false;
+			bool ran = TVPReplMainQueue::SubmitTask([&arg, &state]{
+				if (arg == "on" || arg == "true" || arg == "1")
+					TVPSetSystemEventDisabledState(true);
+				else if (arg == "off" || arg == "false" || arg == "0")
+					TVPSetSystemEventDisabledState(false);
+				else if (arg == "toggle")
+					TVPSetSystemEventDisabledState(!TVPGetSystemEventDisabledState());
+				// 引数なし = 表示のみ。 «.event と打っただけでイベントが止まる»
+				// のは事故のもとなので、 空はトグルにしない。
+				state = TVPGetSystemEventDisabledState();
+			});
+			if (!ran) emit(LL_ERROR, "(shutting down)");
+			else      emit(LL_NORMAL, ReplFmt("eventDisabled = %s", state ? "on" : "off"));
+			return true;
+		}
 		if (input.rfind(".depth", 0) == 0) {
 			std::string arg = input.size() > 6 ? input.substr(6) : "";
 			while (!arg.empty() && arg.front() == ' ') arg.erase(arg.begin());
@@ -670,6 +823,13 @@ void TVPCreateREPL()
 	}
 #endif
 
+	// 監視式 (.watch) の «メインスレッドはどれか» を記録する。 TVPCreateREPL は
+	// メインスレッドから呼ばれるので、 ここが唯一確実な機会。
+	TVPReplWatch::NoteMainThread();
+	// 前回の式リストを読み戻す (-replwatchfile=no で無効)。 以後は変更のたびに
+	// 自動保存される。
+	TVPReplWatch::InitPersistence();
+
 	// 例外で即終了しない / inform・MessageDlg を REPL コンソールへ流すための
 	// グローバルフラグを立てる ([[project_dap_pause_blocks_app]] 系の agent 駆動)。
 	TVPReplActive = true;
@@ -712,4 +872,13 @@ void TVPDrainREPL()
 #endif
 	// console / file channel いずれの提出も共有キューが処理する。
 	TVPReplMainQueue::Drain();
+	// 監視式の自動更新 (.watch auto)。 評価はメインスレッドで行う契約なので
+	// ここが定位置。 自動更新オフ / 式ゼロなら即 return する。
+	TVPReplWatch::Drain(TVPGetTickCount());
+#ifdef KRKRZ_REPL_WEB
+	// ブラウザが全部閉じたらアプリも終わる (-replwebidle=<秒>)。未指定なら no-op。
+	TVPReplWeb::CheckIdleShutdown();
+	// コントローラ (/state) の表示を追従させる。変化が無ければ何もしない。
+	TVPReplWeb::PublishStateIfChanged();
+#endif
 }

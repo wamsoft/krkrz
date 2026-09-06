@@ -1,5 +1,5 @@
 {
-    /* elements_modal navigator マニフェスト (Dialog.showFlow が読む)。
+    /* elements_modal navigator マニフェスト (ElementsDialog.showFlow が読む)。
        JSONC 対応 (行/ブロックコメント + 末尾カンマ可)。
 
        entry   : 起点画面名 (screens のキー)。

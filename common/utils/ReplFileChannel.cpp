@@ -4,6 +4,7 @@
 #include "tjsCommHead.h"
 #include "ReplFileChannel.h"
 #include "ReplMainQueue.h"
+#include "REPL.h"             // tTVPReplThread::ProcessLine / LineSink (ドットコマンド)
 #include "ReplModal.h"        // TVPSetReplModalChannelDir
 #include "SysInitIntf.h"      // TVPGetCommandLine
 #include "DebugIntf.h"        // TVPPrettyPrint, TVPAddLog
@@ -56,6 +57,19 @@ std::string JsonEscape(const std::string& s)
 		}
 	}
 	return out;
+}
+
+// cmd ファイルの中身を 1 行として扱えるよう前後の空白・改行を落とす
+// (エディタや Write が付ける末尾改行でドットコマンド判定を外さないため)。
+std::string TrimLine(const std::string& s)
+{
+	size_t b = 0, e = s.size();
+	auto isws = [](char c) {
+		return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+	};
+	while (b < e && isws(s[b])) ++b;
+	while (e > b && isws(s[e - 1])) --e;
+	return s.substr(b, e - b);
 }
 
 std::string TtstrToUtf8Std(const ttstr& s)
@@ -148,23 +162,48 @@ void tTVPReplFileChannel::Execute()
 			if (ReadWholeFile(cmd, script_utf8)) {
 				fs::remove(cmd, ec);
 
-				// utf-8 → utf-16 して共有キューでメイン実行。
-				tjs_string script_u16;
-				TVPUtf8ToUtf16(script_u16, script_utf8);
-
-				tTJSVariant result;
-				ttstr error;
-				bool ok = TVPReplMainQueue::Submit(ttstr(script_u16.c_str()), result, error);
-
-				if (GetTerminated()) break;
-
-				// 結果 JSON を組み立て。
+				bool ok = true;
 				std::string result_utf8, error_utf8;
-				if (ok) {
-					ttstr pp = TVPPrettyPrint(result, 4, false);
-					result_utf8 = TtstrToUtf8Std(pp);
+
+				// 先頭が '.' ならドットコマンド。 console / web と同じ
+				// ProcessLine へ通し、 出力行を改行で連結して result に返す
+				// (.watch / .mem / .cap 等をエージェントからも叩けるように)。
+				// 通常の TJS はこれまでどおり共有キューへ直接出す — 応答の
+				// result は「評価結果 1 個の pretty print」という契約なので、
+				// 全部を ProcessLine 経由にはしない。
+				std::string line = TrimLine(script_utf8);
+				if (!line.empty() && line[0] == '.') {
+					std::string out, err;
+					tTVPReplThread::LineSink sink;
+					sink.emit = [&out, &err](int level, const std::string& s) {
+						std::string& dst =
+							(level == tTVPReplThread::LL_ERROR) ? err : out;
+						if (!dst.empty()) dst += "\n";
+						dst += s;
+					};
+					std::string multiline;   // ドットコマンドは継続入力を使わない
+					tTVPReplThread::ProcessLine(line, multiline, sink);
+					if (GetTerminated()) break;
+					result_utf8 = out;
+					error_utf8 = err;
+					ok = err.empty();
 				} else {
-					error_utf8 = TtstrToUtf8Std(error);
+					// utf-8 → utf-16 して共有キューでメイン実行。
+					tjs_string script_u16;
+					TVPUtf8ToUtf16(script_u16, script_utf8);
+
+					tTJSVariant result;
+					ttstr error;
+					ok = TVPReplMainQueue::Submit(ttstr(script_u16.c_str()), result, error);
+
+					if (GetTerminated()) break;
+
+					if (ok) {
+						ttstr pp = TVPPrettyPrint(result, 4, false);
+						result_utf8 = TtstrToUtf8Std(pp);
+					} else {
+						error_utf8 = TtstrToUtf8Std(error);
+					}
 				}
 				std::string json = "{\"ok\":";
 				json += ok ? "true" : "false";

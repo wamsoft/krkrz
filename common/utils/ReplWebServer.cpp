@@ -15,6 +15,9 @@
 
 #include "ReplWebServer.h"
 #include "REPL.h"            // tTVPReplThread::ProcessLine / LineSink / LineLevel
+#include "ReplWatch.h"       // 監視式 (/watch + /sub/watch)
+#include "TickCount.h"       // TVPGetTickCount (アイドル終了の見張り)
+#include "EventIntf.h"       // TVP(Get|Set)SystemEventDisabledState (/state)
 #include "ReplMainQueue.h"   // TVPReplMainQueue::SubmitTask (ハンドラのメインスレッド実行)
 #include "SysInitIntf.h"     // TVPGetCommandLine
 #include "LogIntf.h"         // TVPLogSetConsoleSink / TVPLogLevel
@@ -69,10 +72,59 @@ struct Client {
 	std::deque<std::string>  queue;   // 送信待ちの SSE フレーム ("data: ...\n\n" 済み)
 	std::string              channel; // 購読チャネル ("log" = 既定の /events)
 	bool                     closed = false;
+	// 「いますぐ起きて生存確認 (:ping) を送れ」の合図。 閉じる合図 (POST /bye)
+	// が来たとき、 ハートビートの周期を待たずに死んだ socket を落とすため。
+	bool                     poke = false;
 };
 
 std::mutex                             g_clients_mu;
 std::vector<std::shared_ptr<Client>>   g_clients;
+
+//---------------------------------------------------------------------------
+// ブラウザが閉じたらアプリも終わる (-replwebidle=<秒>)
+//
+// ブラウザを UI にした構成 (`-replweb` + アプリモード起動) では、 ウィンドウを
+// 閉じたのに本体だけ残り続けるのが困る。 **SSE 購読が 1 本も無い状態が <秒>
+// 続いたら終了**する見張りを置く。
+//
+// 既定は無効 (0)。 ブラウザを開かないエージェント駆動や、 `-replweb` を単なる
+// API 面として使う構成を勝手に殺さないため。 また **一度でも購読が来てから
+// 武装する** ので、 有効にしていてもブラウザを開く前に落ちることはない。
+// 判定と終了はメインスレッド (TVPDrainREPL → CheckIdleShutdown) で行う。
+//---------------------------------------------------------------------------
+//---------------------------------------------------------------------------
+// Pad (スクリプトエディタ) の書込許可ディレクトリ (-replwebpad=<dir>)
+//
+// **既定は書込禁止**。 `-replweb` は 0.0.0.0 バインドもできるし、 UI の [保存]
+// はうっかり押せるので、 «書ける場所を明示したときだけ書ける» に倒す。
+// 値はストレージパスの接頭辞 (例 `-replwebpad=scenario/`)。 これが空でない
+// ときだけ POST /pad/file を受け付け、 かつ path がこの接頭辞で始まること。
+//
+// なお **これはセキュリティ境界ではない** — `/cmd` で任意の TJS が実行できる
+// 時点でプロセスの全権限が開いている。 «事故で資材を上書きしない» ための柵。
+//---------------------------------------------------------------------------
+std::string               g_pad_write_dir;     // 空 = 書込禁止
+
+constexpr int             kIdleDefaultSec = 5; // -replwebidle 未指定時
+int                       g_idle_sec = 0;      // 0 = 無効
+std::atomic<bool>         g_ever_subscribed{false};
+std::atomic<tjs_uint64>   g_last_client_gone{0};  // 0 = 購読中 (または未武装)
+
+// 閉じる合図 (POST /bye) を受けた印。 ブラウザは pagehide / beforeunload で
+// beacon を投げてくるので、 それが来たら猶予を <秒> ではなく下の短い値へ
+// 切り替える。 «本当に誰も居ないか» の判定は購読数のままなので、 複数タブの
+// 1 枚を閉じただけでは畳まれない (残ったタブの購読が勝つ)。
+//
+// 合図は **socket が閉じるより先に届く** (beacon は pagehide 中に飛び、 TCP は
+// その後で落ちる)。 1 回叩き起こすだけでは «まだ生きている» と判定されるので、
+// 合図から kByeProbeMs の間は kByePokeMs ごとに叩き起こし続けて、 死んだ
+// socket が落ちるのを待つ。 探り切っても購読が残るなら «別タブが閉じただけ»
+// なので合図を取り下げる。
+std::atomic<tjs_uint64>   g_bye_at{0};          // 0 = 合図なし
+std::atomic<tjs_uint64>   g_bye_last_poke{0};
+constexpr tjs_uint64      kByeGraceMs = 2000;   // 購読ゼロ確認後の猶予
+constexpr tjs_uint64      kByeProbeMs = 3000;   // 合図から探り続ける時間
+constexpr tjs_uint64      kByePokeMs  = 200;    // 探る間隔
 
 //---------------------------------------------------------------------------
 // 登録ハンドラ / 静的マウントのレジストリ。
@@ -262,6 +314,20 @@ void PushFrameToChannel(const std::string& channel, const std::string& frame)
 }
 
 //---------------------------------------------------------------------------
+// 全 SSE クライアントを叩き起こす。 起きた側は送るものが無ければ :ping を
+// 出すので、 **死んだ socket がその場で落ちる**。 閉じる合図 (POST /bye) から
+// «本当に居なくなったか» をハートビート周期を待たずに確かめるために使う。
+void PokeAllClients()
+{
+	std::lock_guard<std::mutex> lk(g_clients_mu);
+	for (auto& c : g_clients) {
+		std::lock_guard<std::mutex> clk(c->mu);
+		c->poke = true;
+		c->cv.notify_one();
+	}
+}
+
+//---------------------------------------------------------------------------
 // ログ 1 行を "log" チャネル (/events) へ配信 + バックログへ格納
 void Broadcast(const char* cls, const std::string& text)
 {
@@ -373,17 +439,30 @@ void HandleSse(sock_t s, const std::string& channel, bool withBacklog)
 		std::lock_guard<std::mutex> lk(g_clients_mu);
 		g_clients.push_back(client);
 	}
+	// アイドル終了の見張り: 購読が来たので «ブラウザが居る» 状態へ。
+	// 新しい購読は «閉じる合図» を取り消す (開き直し / 別タブ)。
+	g_ever_subscribed.store(true, std::memory_order_release);
+	g_last_client_gone.store(0, std::memory_order_release);
+	g_bye_at.store(0, std::memory_order_release);
+
+	// ハートビート間隔。 切断は «次の :ping が失敗して初めて» 分かるので、
+	// これが切断検知の遅れの上限になる。 アイドル終了を武装しているときは
+	// «ブラウザが閉じてから終了まで» がこのぶん延びてしまうので、 短くする
+	// (コメント 1 行なので通信量は無視できる)。
+	int hb_sec = 15;
+	if (g_idle_sec > 0 && g_idle_sec < hb_sec) hb_sec = g_idle_sec < 1 ? 1 : g_idle_sec;
 
 	bool alive = true;
 	while (alive && g_running.load(std::memory_order_acquire)) {
 		std::deque<std::string> batch;
 		{
 			std::unique_lock<std::mutex> lk(client->mu);
-			client->cv.wait_for(lk, std::chrono::seconds(15), [&] {
-				return !client->queue.empty() || client->closed ||
+			client->cv.wait_for(lk, std::chrono::seconds(hb_sec), [&] {
+				return !client->queue.empty() || client->closed || client->poke ||
 				       !g_running.load(std::memory_order_acquire);
 			});
 			if (client->closed) alive = false;
+			client->poke = false;
 			batch.swap(client->queue);
 		}
 		if (batch.empty()) {
@@ -396,10 +475,18 @@ void HandleSse(sock_t s, const std::string& channel, bool withBacklog)
 		if (!SendStr(s, out)) break;
 	}
 	// 登録解除
-	std::lock_guard<std::mutex> lk(g_clients_mu);
-	for (size_t i = 0; i < g_clients.size(); ++i) {
-		if (g_clients[i] == client) { g_clients.erase(g_clients.begin() + i); break; }
+	bool none_left = false;
+	{
+		std::lock_guard<std::mutex> lk(g_clients_mu);
+		for (size_t i = 0; i < g_clients.size(); ++i) {
+			if (g_clients[i] == client) { g_clients.erase(g_clients.begin() + i); break; }
+		}
+		none_left = g_clients.empty();
 	}
+	// 最後の 1 本が抜けた時刻を覚える (残っているなら 0 に戻す — リロードや
+	// タブ追加で出入りするので «最後に空になった時刻» だけが意味を持つ)。
+	g_last_client_gone.store(none_left ? TVPGetTickCount() : 0,
+	                         std::memory_order_release);
 }
 
 void HandleCmd(sock_t s, const std::string& body)
@@ -493,6 +580,33 @@ std::string UrlDecode(const std::string& s)
 		}
 	}
 	return o;
+}
+
+// application/x-www-form-urlencoded のデコード ('+' は空白)。
+std::string UrlDecodeForm(const std::string& s)
+{
+	std::string t = s;
+	for (auto& c : t) if (c == '+') c = ' ';
+	return UrlDecode(t);
+}
+
+// "a=1&b=2" → map。 値が無いキーは空文字列。
+std::map<std::string, std::string> ParseFormParams(const std::string& src)
+{
+	std::map<std::string, std::string> out;
+	size_t i = 0;
+	while (i < src.size()) {
+		size_t amp = src.find('&', i);
+		std::string pair = src.substr(i, amp == std::string::npos ? std::string::npos : amp - i);
+		if (!pair.empty()) {
+			size_t eq = pair.find('=');
+			if (eq == std::string::npos) out[UrlDecodeForm(pair)] = std::string();
+			else out[UrlDecodeForm(pair.substr(0, eq))] = UrlDecodeForm(pair.substr(eq + 1));
+		}
+		if (amp == std::string::npos) break;
+		i = amp + 1;
+	}
+	return out;
 }
 
 // 拡張子 → MIME (静的配信用の最小テーブル)
@@ -737,6 +851,352 @@ bool DispatchRegistered(sock_t s, const std::string& method, const std::string& 
 }
 
 //---------------------------------------------------------------------------
+// Pad (/pad/exec, /pad/file) — 吉里吉里2 の「スクリプトエディタ」窓の相当物
+//
+// 原典 (utils/win32/PadFormUnit.cpp) は複数行テキスト窓で、 機能は
+// **Execute (テキストを実行)** と **Save**。 編集操作 (Undo/Cut/Copy/Paste) は
+// ブラウザの textarea が持っているので、 サーバに要るのはこの 2 つだけ。
+//
+//   POST /pad/exec         body = TJS スクリプト (複数行可)
+//                          → {"ok":bool,"result":"...","error":"..."}
+//   GET  /pad/file?path=   ストレージから読む (text/plain)
+//   POST /pad/file?path=   ストレージへ書く。 **-replwebpad=<dir> 配下のみ**
+//
+// exec は `/cmd` (1 行 + ドットコマンド) と違い **本文をまるごと 1 回**
+// 実行する。 複数行の関数定義やループをそのまま流せる。
+//---------------------------------------------------------------------------
+void HandlePadExec(sock_t s, const std::string& body)
+{
+	WebResp r;
+	r.mime = "application/json; charset=utf-8";
+	std::string script = body;
+	// 末尾の改行だけ落とす (先頭の字下げは意味を持つので触らない)
+	while (!script.empty() && (script.back() == '\n' || script.back() == '\r'))
+		script.pop_back();
+	if (script.empty()) {
+		r.status = 400;
+		r.body = "{\"error\":\"empty script\"}";
+		SendWebResp(s, r);
+		return;
+	}
+	tjs_string u16;
+	TVPUtf8ToUtf16(u16, script);
+	tTJSVariant result;
+	ttstr error;
+	// Submit は HTTP スレッドから呼んでよい (メインの Drain が処理して起こす)。
+	bool ok = TVPReplMainQueue::Submit(ttstr(u16.c_str()), result, error);
+	std::string result_utf8, error_utf8;
+	if (ok) {
+		ttstr pp = TVPPrettyPrint(result, 4, false);
+		std::string tmp; TVPUtf16ToUtf8(tmp, pp.AsStdString());
+		result_utf8 = tmp;
+	} else {
+		std::string tmp; TVPUtf16ToUtf8(tmp, error.AsStdString());
+		error_utf8 = tmp;
+		if (error_utf8.empty()) error_utf8 = "server shutting down";
+	}
+	r.status = 200;
+	r.body = std::string("{\"ok\":") + (ok ? "true" : "false") +
+	         ",\"result\":\"" + JsonEscape(result_utf8) + "\"" +
+	         ",\"error\":\"" + JsonEscape(error_utf8) + "\"}";
+	SendWebResp(s, r);
+}
+
+// ストレージへ書く (メインスレッド)。
+void WriteStorageOnMain(const std::string& utf8name, const std::string& data,
+                        WebResp& out)
+{
+	tjs_string wname;
+	TVPUtf8ToUtf16(wname, utf8name);
+	ttstr name(wname.c_str());
+	try {
+		iTJSBinaryStream* stream = TVPCreateStream(name, TJS_BS_WRITE);
+		if (!stream) {
+			out.status = 500;
+			out.body = "{\"error\":\"cannot open for write\"}";
+			return;
+		}
+		try {
+			if (!data.empty())
+				stream->Write(data.data(), (tjs_uint)data.size());
+		} catch (...) {
+			delete stream;
+			throw;
+		}
+		delete stream;
+		out.status = 200;
+		out.body = "{\"ok\":true}";
+	} catch (...) {
+		out.status = 500;
+		out.body = "{\"error\":\"write failed\"}";
+	}
+}
+
+void HandlePadFile(sock_t s, const std::string& method,
+                   const std::string& query, const std::string& body)
+{
+	WebResp r;
+	r.mime = "application/json; charset=utf-8";
+	auto params = ParseFormParams(query);
+	auto it = params.find("path");
+	std::string path = (it == params.end()) ? std::string() : it->second;
+
+	if (path.empty() || PathIsUnsafe(path)) {
+		r.status = 400;
+		r.body = "{\"error\":\"bad or missing path\"}";
+		SendWebResp(s, r);
+		return;
+	}
+
+	if (method == "GET") {
+		auto resp = std::make_shared<WebResp>();
+		std::string name = path;
+		bool ran = TVPReplMainQueue::SubmitTask([=] {
+			ReadStorageOnMain(name, "text/plain; charset=utf-8", *resp);
+		});
+		if (!ran) { r.status = 503; r.body = "{\"error\":\"server shutting down\"}"; SendWebResp(s, r); return; }
+		SendWebResp(s, *resp);
+		return;
+	}
+	if (method != "POST") {
+		r.status = 405;
+		r.body = "{\"error\":\"method not allowed\"}";
+		SendWebResp(s, r);
+		return;
+	}
+
+	// --- 書込は許可ディレクトリ配下のみ ---
+	if (g_pad_write_dir.empty()) {
+		r.status = 403;
+		r.body = "{\"error\":\"saving is disabled (start with -replwebpad=<dir> to allow)\"}";
+		SendWebResp(s, r);
+		return;
+	}
+	if (path.compare(0, g_pad_write_dir.size(), g_pad_write_dir) != 0) {
+		r.status = 403;
+		r.body = "{\"error\":\"outside the allowed directory (" +
+		         JsonEscape(g_pad_write_dir) + ")\"}";
+		SendWebResp(s, r);
+		return;
+	}
+
+	auto resp = std::make_shared<WebResp>();
+	std::string name = path, data = body;
+	bool ran = TVPReplMainQueue::SubmitTask([=] {
+		WriteStorageOnMain(name, data, *resp);
+	});
+	if (!ran) { r.status = 503; r.body = "{\"error\":\"server shutting down\"}"; SendWebResp(s, r); return; }
+	resp->mime = "application/json; charset=utf-8";
+	SendWebResp(s, *resp);
+}
+
+//---------------------------------------------------------------------------
+// コントローラ (/state) — 吉里吉里2 の「コントローラ」窓の相当物
+//
+// 原典 (environ/win32/MainFormUnit.cpp) のツールバーは ScriptEditor / Console /
+// Watch / Event / Exit の 5 つ。 前 3 つはこの UI ではタブなので、 サーバ側に
+// 要るのは **Event (System.eventDisabled) と Exit** だけ。
+//
+//   GET  /state   { "eventDisabled": bool }
+//   POST /state   op=event value=on|off|toggle   → イベント配送の停止/再開
+//                 op=exit                        → アプリ終了
+//
+// 状態は /sub/state へも push する (複数タブの同期 + **ゲーム自身が
+// eventDisabled を変えたときの追従**)。 変化の検出は毎フレーム
+// PublishStateIfChanged() で行う。
+//---------------------------------------------------------------------------
+std::string StateJson(bool event_disabled)
+{
+	return std::string("{\"eventDisabled\":") + (event_disabled ? "true" : "false") + "}";
+}
+
+void HandleState(sock_t s, const std::string& method,
+                 const std::string& query, const std::string& body)
+{
+	WebResp r;
+	r.mime = "application/json; charset=utf-8";
+	auto params = ParseFormParams(body.empty() ? query : body);
+	auto param = [&](const char* k) -> std::string {
+		auto i = params.find(k);
+		return i == params.end() ? std::string() : i->second;
+	};
+
+	if (method == "POST") {
+		std::string op = param("op");
+		if (op == "event") {
+			std::string v = param("value");
+			bool ran = TVPReplMainQueue::SubmitTask([&v] {
+				if (v == "on" || v == "true" || v == "1")
+					TVPSetSystemEventDisabledState(true);
+				else if (v == "off" || v == "false" || v == "0")
+					TVPSetSystemEventDisabledState(false);
+				else
+					TVPSetSystemEventDisabledState(!TVPGetSystemEventDisabledState());
+			});
+			if (!ran) {
+				r.status = 503;
+				r.body = "{\"error\":\"server shutting down\"}";
+				SendWebResp(s, r);
+				return;
+			}
+		} else if (op == "exit") {
+			// 応答を返してから終了させる (ブラウザ側で fetch が失敗しないように)。
+			r.status = 200;
+			r.body = StateJson(TVPGetSystemEventDisabledState());
+			SendWebResp(s, r);
+			TVPReplMainQueue::SubmitTask([] {
+				TVPAddImportantLog(TJS_W("ReplWeb: exit requested from browser"));
+				TVPTerminateAsync(0);
+			});
+			return;
+		} else {
+			r.status = 400;
+			r.body = "{\"error\":\"unknown op (event/exit)\"}";
+			SendWebResp(s, r);
+			return;
+		}
+	} else if (method != "GET") {
+		r.status = 405;
+		r.body = "{\"error\":\"method not allowed\"}";
+		SendWebResp(s, r);
+		return;
+	}
+
+	r.status = 200;
+	r.body = StateJson(TVPGetSystemEventDisabledState());
+	SendWebResp(s, r);
+}
+
+//---------------------------------------------------------------------------
+// POST /bye — 「このページを閉じます」の合図 (ブラウザの pagehide /
+// beforeunload から navigator.sendBeacon で飛んでくる)。
+//
+// アイドル終了 (-replwebidle) の猶予を <秒> から kByeGraceMs へ前倒しするだけ
+// で、 «本当に誰も居ないか» の判定は購読数のまま。 複数タブの 1 枚を閉じても
+// 残ったタブの購読が勝つので畳まれない。 合図が届かなくても (beacon は
+// ベストエフォート) 従来どおり <秒> 経てば畳まれる — **速くなるだけの経路**。
+//
+// 合図を受けたら全 SSE クライアントを叩き起こす。 切断は :ping の送信が失敗
+// して初めて分かるので、 ここで一度 ping させないとハートビート周期ぶん待つ
+// ことになる (それでは前倒しの意味がない)。
+//
+// 見張りが無効 (既定) でも 204 を返すだけで害は無い。
+//---------------------------------------------------------------------------
+void HandleBye(sock_t s)
+{
+	if (g_idle_sec > 0) {
+		tjs_uint64 now = TVPGetTickCount();
+		g_bye_at.store(now ? now : 1, std::memory_order_release);
+		g_bye_last_poke.store(0, std::memory_order_release);
+		PokeAllClients();
+	}
+	WebResp r;
+	r.status = 204;
+	SendWebResp(s, r);
+}
+
+//---------------------------------------------------------------------------
+// 監視式 API (/watch) — 吉里吉里2 デバッグ窓「監視式」の Web 側 (P2)
+//
+// パラメータは **application/x-www-form-urlencoded** で受ける (クエリでも
+// body でも可。 body 優先)。 計画 (doc/DebugToolsRevival.md §4.3) は JSON body
+// だったが、 本体に JSON パーサを増やさない方針なので form 形式にした。
+// curl からも `-d 'op=add&expr=1+2'` で叩けて、 ブラウザからは
+// URLSearchParams がそのまま使える。
+//
+//   GET  /watch            現在の一覧 + 値 (評価しない = ポーリングしても安全)
+//   GET  /watch?eval=1     全件評価してから返す (原典の Update ボタン相当)
+//   POST /watch  op=add       expr=<式>      式を追加して評価
+//                op=rm        id=<id>        削除
+//                op=edit      id=<id> expr=<式>  差し替えて評価
+//                op=clear                    全消し
+//                op=interval  ms=<ms>        自動更新の間隔 (0=毎フレーム / <0=off)
+//                op=eval                     全件評価のみ
+//
+// 応答は成功なら常に現在の状態 (GET と同じ JSON)、 引数不正なら 400 +
+// {"error":"..."}。 自動更新の push 先は既存の汎用 SSE /sub/watch。
+//---------------------------------------------------------------------------
+
+void HandleWatch(sock_t s, const std::string& method,
+                 const std::string& query, const std::string& body)
+{
+	WebResp r;
+	r.mime = "application/json; charset=utf-8";
+
+	auto fail = [&](int status, const std::string& msg) {
+		r.status = status;
+		r.body = "{\"error\":\"" + JsonEscape(msg) + "\"}";
+	};
+	auto okState = [&] {
+		r.status = 200;
+		r.body = TVPReplWatch::ToJson();
+	};
+
+	// body が空ならクエリを見る (GET はクエリのみ)。
+	auto params = ParseFormParams(body.empty() ? query : body);
+
+	if (method == "GET") {
+		// 既定は «評価しない» スナップショット。 GET が任意の TJS を走らせるのは
+		// 驚きが大きく、 ポーリングでも安全であってほしいため。
+		auto it = params.find("eval");
+		if (it != params.end() && it->second != "0" && it->second != "false") {
+			if (!TVPReplWatch::EvaluateAllOnMain()) { fail(503, "server shutting down"); SendWebResp(s, r); return; }
+		}
+		okState();
+		SendWebResp(s, r);
+		return;
+	}
+	if (method != "POST") {
+		fail(405, "method not allowed");
+		SendWebResp(s, r);
+		return;
+	}
+
+	auto pit = params.find("op");
+	std::string op = (pit == params.end()) ? std::string() : pit->second;
+	auto param = [&](const char* k) -> std::string {
+		auto i = params.find(k);
+		return i == params.end() ? std::string() : i->second;
+	};
+	auto evalAll = [&] { return TVPReplWatch::EvaluateAllOnMain(); };
+	auto toTt = [](const std::string& u8) {
+		tjs_string w; TVPUtf8ToUtf16(w, u8); return ttstr(w.c_str());
+	};
+
+	if (op == "add") {
+		std::string expr = param("expr");
+		if (expr.empty()) { fail(400, "op=add needs expr"); SendWebResp(s, r); return; }
+		TVPReplWatch::Add(toTt(expr));
+		if (!evalAll()) { fail(503, "server shutting down"); SendWebResp(s, r); return; }
+	} else if (op == "rm") {
+		std::string ids = param("id");
+		int id = std::atoi(ids.c_str());
+		if (id <= 0)                     { fail(400, "op=rm needs id"); SendWebResp(s, r); return; }
+		if (!TVPReplWatch::Remove(id))   { fail(404, "no such watch id"); SendWebResp(s, r); return; }
+	} else if (op == "edit") {
+		std::string ids = param("id"), expr = param("expr");
+		int id = std::atoi(ids.c_str());
+		if (id <= 0 || expr.empty())     { fail(400, "op=edit needs id and expr"); SendWebResp(s, r); return; }
+		if (!TVPReplWatch::Edit(id, toTt(expr))) { fail(404, "no such watch id"); SendWebResp(s, r); return; }
+		if (!evalAll()) { fail(503, "server shutting down"); SendWebResp(s, r); return; }
+	} else if (op == "clear") {
+		TVPReplWatch::Clear();
+	} else if (op == "interval") {
+		auto mit = params.find("ms");
+		if (mit == params.end())         { fail(400, "op=interval needs ms"); SendWebResp(s, r); return; }
+		TVPReplWatch::SetInterval(std::atoi(mit->second.c_str()));
+	} else if (op == "eval") {
+		if (!evalAll()) { fail(503, "server shutting down"); SendWebResp(s, r); return; }
+	} else {
+		fail(400, "unknown op (add/rm/edit/clear/interval/eval)");
+		SendWebResp(s, r);
+		return;
+	}
+	okState();
+	SendWebResp(s, r);
+}
+
+//---------------------------------------------------------------------------
 void HandleConnection(sock_t s)
 {
 	std::string method, path, body;
@@ -750,6 +1210,11 @@ void HandleConnection(sock_t s)
 		else if (p.rfind("/sub/", 0) == 0 && p.size() > 5)
 		                                         HandleSse(s, p.substr(5), false);
 		else if (p == "/cmd" && method == "POST") HandleCmd(s, body);
+		else if (p == "/watch")                  HandleWatch(s, method, query, body);
+		else if (p == "/bye" && method == "POST") HandleBye(s);
+		else if (p == "/state")                  HandleState(s, method, query, body);
+		else if (p == "/pad/exec" && method == "POST") HandlePadExec(s, body);
+		else if (p == "/pad/file")               HandlePadFile(s, method, query, body);
 		else if (!DispatchRegistered(s, method, p, query, body))
 		                                         Handle404(s);
 	}
@@ -902,13 +1367,98 @@ void Start()
 	StartOn(host, port);
 	if (!IsActive()) return;
 
+	// -replwebidle=<秒> : ブラウザ (SSE 購読) が全部消えて <秒> 経ったら終了。
+	//
+	// **既定は有効** (kIdleDefaultSec)。 ブラウザを UI にした構成で、 ウィンドウ
+	// を閉じたのに本体だけ残るのが既定の挙動だと困るため。 «一度でも購読が来て
+	// から武装する» ので、 ブラウザを開かないエージェント駆動や API 面としての
+	// 利用は影響を受けない (購読ゼロのまま何時間でも生きる)。
+	// 明示的に切りたいときは -replwebidle=no / off / 0。
+	g_idle_sec = kIdleDefaultSec;
+	{
+		tTJSVariant iv;
+		if (TVPGetCommandLine(TJS_W("-replwebidle"), &iv)) {
+			ttstr o(iv);
+			if (o == TJS_W("no") || o == TJS_W("off") || o == TJS_W("false") ||
+			    o == TJS_W("0")) {
+				g_idle_sec = 0;
+			} else if (o.IsEmpty() || o == TJS_W("yes") || o == TJS_W("on") ||
+			           o == TJS_W("true")) {
+				g_idle_sec = kIdleDefaultSec;
+			} else {
+				g_idle_sec = (int)(tjs_int)iv;
+				if (g_idle_sec < 0) g_idle_sec = 0;
+			}
+		}
+	}
+	// -replwebpad=<dir> : Pad の [保存] を許すストレージ接頭辞。 未指定なら
+	// 書込禁止 (403)。 «書ける場所を明示したときだけ書ける» に倒してある。
+	{
+		tTJSVariant pv;
+		if (TVPGetCommandLine(TJS_W("-replwebpad"), &pv)) {
+			ttstr d(pv);
+			if (!d.IsEmpty()) {
+				tjs_string t(d.c_str());
+				TVPUtf16ToUtf8(g_pad_write_dir, t);
+				// 接頭辞比較なので、 ディレクトリ指定は末尾 '/' を補って
+				// "scenario" が "scenario_old/..." に当たらないようにする。
+				if (!g_pad_write_dir.empty() && g_pad_write_dir.back() != '/')
+					g_pad_write_dir += '/';
+				TVPAddLog(ttstr(TJS_W("ReplWeb: pad save allowed under ")) + d);
+			}
+		}
+	}
+
+	if (g_idle_sec > 0) {
+		TVPAddLog(ttstr(TJS_W("ReplWeb: idle shutdown armed (")) +
+			ttstr((tjs_int)g_idle_sec) +
+			ttstr(TJS_W(" s after the last browser disconnects; -replwebidle=no to disable)")));
+	} else {
+		TVPAddLog(TJS_W("ReplWeb: idle shutdown disabled (-replwebidle=no)"));
+	}
+
+	// --- ブラウザ自動オープン ---
+	// 既定は «ループバック束縛 かつ コンソール無し (= GUI 起動)» のときだけ
+	// アプリモードで開く。 端末から起動したときに勝手に開かないのは、 端末が
+	// あるなら自分で開けるし、 CI / エージェント駆動を邪魔しないため。
+	//
+	// -replwebopen=<app|tab|no> で明示指定できる:
+	//   app       アプリモード (Edge / Chrome の --app。 枠なしウィンドウ)
+	//   tab / yes 既定ブラウザの通常ウィンドウ
+	//   no / off  開かない (上の自動オープンも抑止)
+	// **端末から起動しつつブラウザも開きたい**ときや、 逆に GUI 起動で開かせ
+	// たくないときはこれを使う。 -replwebidle と組むとブラウザ = アプリになる。
 	bool loopback = (host == "127.0.0.1" || host == "localhost" || host == "::1");
 #ifdef _WIN32
 	bool has_console = (::GetConsoleWindow() != NULL);
 #else
 	bool has_console = true; // 非 Windows は自動起動しない (ログのみ)
 #endif
-	if (loopback && !has_console) OpenBrowser(ttstr(), /*appMode*/true);
+	bool open = (loopback && !has_console);
+	bool app_mode = true;
+	tTJSVariant ov;
+	if (TVPGetCommandLine(TJS_W("-replwebopen"), &ov)) {
+		ttstr o(ov);
+		if (o == TJS_W("no") || o == TJS_W("off") || o == TJS_W("false") || o == TJS_W("0")) {
+			open = false;
+		} else if (o == TJS_W("tab") || o == TJS_W("window") ||
+		           o == TJS_W("browser") || o == TJS_W("yes") ||
+		           o == TJS_W("on") || o == TJS_W("true") || o == TJS_W("1")) {
+			open = true; app_mode = false;
+		} else {   // "app" / 空 (= -replwebopen だけ書いた) はアプリモード
+			open = true; app_mode = true;
+		}
+	}
+	if (open) {
+		bool ok = OpenBrowser(ttstr(), app_mode);
+		TVPAddImportantLog(ttstr(TJS_W("ReplWeb: open browser (")) +
+			ttstr(app_mode ? TJS_W("app mode") : TJS_W("tab")) +
+			ttstr(TJS_W(") -> ")) + GetURL() +
+			ttstr(ok ? TJS_W(" [ok]") : TJS_W(" [failed]")));
+	} else {
+		TVPAddLog(TJS_W("ReplWeb: browser auto-open skipped "
+		                "(use -replwebopen=app|tab to force)"));
+	}
 }
 
 //---------------------------------------------------------------------------
@@ -930,6 +1480,20 @@ bool OpenBrowser(const ttstr& url, bool appMode)
 
 void Stop()
 {
+	if (!g_running.load(std::memory_order_acquire)) return;
+	// **終了することを購読者へ知らせてから畳む**。 ブラウザはこれを見て自分の
+	// ウィンドウを閉じる (本体だけ終わってページが残るのを防ぐ)。 g_running を
+	// 落とす前に流すこと — 落とすと SSE スレッドが送らずに抜けてしまう。
+	{
+		std::string json = std::string("{\"eventDisabled\":") +
+			(TVPGetSystemEventDisabledState() ? "true" : "false") +
+			",\"exiting\":true}";
+		tjs_string u16;
+		TVPUtf8ToUtf16(u16, json);
+		BroadcastChannel(ttstr(TJS_W("state")), ttstr(u16.c_str()));
+		// 送り切る時間を少しだけ与える (SSE スレッドが起きて send するまで)。
+		std::this_thread::sleep_for(std::chrono::milliseconds(150));
+	}
 	if (!g_running.exchange(false)) return;
 	// listen を閉じて accept を解除
 	if (g_listen != SOCK_INVALID) { closesock(g_listen); g_listen = SOCK_INVALID; }
@@ -1014,6 +1578,68 @@ bool UnregisterStatic(const ttstr& prefix)
 	return false;
 }
 
+//---------------------------------------------------------------------------
+// アイドル終了の見張り。 メインスレッドから毎フレーム呼ばれる (TVPDrainREPL)。
+// «一度でも購読が来た» 後に購読が 0 本になり、 その状態が -replwebidle=<秒>
+// 続いたらアプリを終了する。 判定も終了要求もメインスレッドなので、 HTTP
+// スレッドから終了を叩くより安全。
+//---------------------------------------------------------------------------
+void CheckIdleShutdown()
+{
+	if (g_idle_sec <= 0) return;
+	if (!g_running.load(std::memory_order_acquire)) return;
+	if (!g_ever_subscribed.load(std::memory_order_acquire)) return;
+	tjs_uint64 now  = TVPGetTickCount();
+	tjs_uint64 bye  = g_bye_at.load(std::memory_order_acquire);
+	tjs_uint64 gone = g_last_client_gone.load(std::memory_order_acquire);
+
+	if (gone == 0) {
+		// まだ購読が残っている。 閉じる合図から少しの間は叩き起こして探る
+		// (合図は socket が落ちるより先に届くため)。 探り切っても残るなら
+		// «別タブが閉じただけ» なので取り下げる。
+		if (bye != 0 && now >= bye) {
+			if (now - bye > kByeProbeMs) {
+				g_bye_at.store(0, std::memory_order_release);
+			} else {
+				tjs_uint64 last = g_bye_last_poke.load(std::memory_order_acquire);
+				if (last == 0 || now - last >= kByePokeMs) {
+					g_bye_last_poke.store(now, std::memory_order_release);
+					PokeAllClients();
+				}
+			}
+		}
+		return;
+	}
+	if (now < gone) return;  // 念のため (時刻が巻き戻ったら次フレームで測り直す)
+	// 閉じる合図が来ているなら短い猶予で畳む。 来ていなければ従来どおり <秒>。
+	tjs_uint64 grace = (bye != 0) ? kByeGraceMs : (tjs_uint64)g_idle_sec * 1000;
+	if (now - gone < grace) return;
+
+	// 二重要求を避けるため武装解除してから落とす。
+	g_idle_sec = 0;
+	TVPAddImportantLog(TJS_W("ReplWeb: no browser connected — shutting down (-replwebidle)"));
+	TVPTerminateAsync(0);
+}
+
+//---------------------------------------------------------------------------
+// コントローラの状態を /sub/state へ push する (変化したときだけ)。
+// メインスレッドから毎フレーム呼ばれる (TVPDrainREPL)。 ここで見ているので、
+// **ゲーム自身が System.eventDisabled を変えてもブラウザの表示が追従する**。
+//---------------------------------------------------------------------------
+void PublishStateIfChanged()
+{
+	if (!g_running.load(std::memory_order_acquire)) return;
+	static int last = -1;   // -1 = 未取得
+	bool ed = TVPGetSystemEventDisabledState();
+	int cur = ed ? 1 : 0;
+	if (cur == last) return;
+	last = cur;
+	std::string json = StateJson(ed);
+	tjs_string u16;
+	TVPUtf8ToUtf16(u16, json);
+	BroadcastChannel(ttstr(TJS_W("state")), ttstr(u16.c_str()));
+}
+
 void BroadcastChannel(const ttstr& channel, const ttstr& payload)
 {
 	PushFrameToChannel(TtstrToUtf8(channel), SseFrame(TtstrToUtf8(payload)));
@@ -1028,122 +1654,10 @@ void ClearHandlers()
 }
 
 //---------------------------------------------------------------------------
-// 埋め込みビューワー (単一 HTML)。上=ログ / 下=入力。
-// ブラウザネイティブで 選択/コピー/貼り付け/スクロール/検索 が効く。
+// 埋め込みビューワー (単一 HTML)。 Console / Watch のタブ構成。
+// 肥大するので本体は replweb_ui.inc へ分離してある (ビルド構成は変更なし)。
 namespace {
-const char* kHtmlPage = R"HTMLPAGE(<!doctype html>
-<html lang="ja"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Kirikiri Z REPL</title>
-<style>
-  :root { color-scheme: dark; }
-  html,body { margin:0; height:100%; background:#1e1e1e; color:#d4d4d4;
-    font-family: Consolas, "Cascadia Mono", "MS Gothic", monospace; font-size:14px; }
-  #app { display:flex; flex-direction:column; height:100vh; }
-  #top { padding:4px 8px; background:#252526; border-bottom:1px solid #333;
-    display:flex; gap:8px; align-items:center; }
-  #top b { color:#4ec9b0; }
-  #top input[type=search] { flex:1; background:#1e1e1e; color:#d4d4d4;
-    border:1px solid #3c3c3c; padding:3px 6px; border-radius:3px; }
-  #log { flex:1; overflow-y:auto; padding:6px 8px; white-space:pre-wrap;
-    word-break:break-word; }
-  #log .line { }
-  .echo    { color:#9cdcfe; }
-  .result  { color:#6a9955; }
-  .error   { color:#f48771; }
-  .help    { color:#4ec9b0; }
-  .info    { color:#d4d4d4; }
-  .warn    { color:#dcdcaa; }
-  .debug   { color:#4fc1ff; }
-  .verbose { color:#808080; }
-  .critical{ color:#f14c4c; font-weight:bold; }
-  .hidden { display:none; }
-  #bottom { display:flex; align-items:center; gap:6px; padding:6px 8px;
-    background:#252526; border-top:1px solid #333; }
-  #prompt { color:#6a9955; font-weight:bold; }
-  #cmd { flex:1; background:#1e1e1e; color:#d4d4d4; border:1px solid #3c3c3c;
-    padding:5px 8px; border-radius:3px; font:inherit; }
-  #status { font-size:12px; color:#808080; }
-  button { background:#0e639c; color:#fff; border:0; padding:4px 10px;
-    border-radius:3px; cursor:pointer; }
-  button:hover { background:#1177bb; }
-</style></head>
-<body><div id="app">
-  <div id="top">
-    <b>Kirikiri&nbsp;Z REPL</b>
-    <span id="status">connecting...</span>
-    <input id="filter" type="search" placeholder="フィルタ (ログを絞り込み)">
-    <button id="clear">Clear</button>
-  </div>
-  <div id="log"></div>
-  <div id="bottom">
-    <span id="prompt">krkrz&gt;</span>
-    <input id="cmd" autocomplete="off" spellcheck="false"
-      placeholder="TJS 式/文を入力 (Enter=実行, .help=コマンド一覧, ↑↓=履歴)">
-  </div>
-</div>
-<script>
-(function(){
-  var log = document.getElementById('log');
-  var cmd = document.getElementById('cmd');
-  var statusEl = document.getElementById('status');
-  var promptEl = document.getElementById('prompt');
-  var filterEl = document.getElementById('filter');
-  var hist = [], hpos = -1, filterText = '';
-
-  function atBottom(){ return log.scrollHeight - log.scrollTop - log.clientHeight < 40; }
-  function applyFilter(el){
-    if(!filterText) { el.classList.remove('hidden'); return; }
-    el.classList.toggle('hidden', el.textContent.toLowerCase().indexOf(filterText) < 0);
-  }
-  function append(cls, text){
-    var stick = atBottom();
-    var d = document.createElement('div');
-    d.className = 'line ' + cls;
-    d.textContent = text;
-    applyFilter(d);
-    log.appendChild(d);
-    if(stick) log.scrollTop = log.scrollHeight;
-  }
-
-  var es = new EventSource('/events');
-  es.onopen = function(){ statusEl.textContent = 'connected'; };
-  es.onerror = function(){ statusEl.textContent = 'disconnected (retrying)'; };
-  es.onmessage = function(e){
-    try { var m = JSON.parse(e.data); append(m.cls || 'info', m.text || ''); }
-    catch(_) {}
-  };
-
-  filterEl.addEventListener('input', function(){
-    filterText = filterEl.value.toLowerCase();
-    var lines = log.children;
-    for(var i=0;i<lines.length;i++) applyFilter(lines[i]);
-  });
-  document.getElementById('clear').addEventListener('click', function(){
-    log.innerHTML=''; cmd.focus();
-  });
-
-  function submit(){
-    var line = cmd.value;
-    cmd.value=''; hpos=-1;
-    fetch('/cmd', {method:'POST', body: line})
-      .then(function(r){ return r.text(); })
-      .then(function(cont){ promptEl.innerHTML = (cont==='1') ? '&nbsp;&nbsp;...&gt;' : 'krkrz&gt;'; })
-      .catch(function(){});
-    if(line.trim() !== '' && (hist.length===0 || hist[hist.length-1]!==line)) hist.push(line);
-  }
-  cmd.addEventListener('keydown', function(e){
-    if(e.key==='Enter'){ e.preventDefault(); submit(); }
-    else if(e.key==='ArrowUp'){ e.preventDefault();
-      if(hist.length){ if(hpos<0) hpos=hist.length; if(hpos>0) hpos--; cmd.value=hist[hpos]; } }
-    else if(e.key==='ArrowDown'){ e.preventDefault();
-      if(hpos>=0){ hpos++; if(hpos>=hist.length){ hpos=-1; cmd.value=''; } else cmd.value=hist[hpos]; } }
-  });
-  cmd.focus();
-})();
-</script>
-</body></html>
-)HTMLPAGE";
+#include "replweb_ui.inc"
 } // anonymous
 
 } // namespace TVPReplWeb

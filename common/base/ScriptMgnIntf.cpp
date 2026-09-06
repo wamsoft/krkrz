@@ -66,6 +66,7 @@
 
 #ifdef KRKRZ_HAS_ELEMENTS
 #include "elements/DialogIntf.h"
+#include "elements/PanelIntf.h"
 #endif
 // Agent クラス (エージェント駆動制御 API)。 REPL 機構の一部なので
 // KRKRZ_REPL=OFF (= KRKRZ_USE_REPL 未定義) では完全に除外される。
@@ -239,7 +240,11 @@ void TVPInitScriptEngine()
 	REGISTER_OBJECT(BitmapLayerTreeOwner, TVPCreateNativeClass_BitmapLayerTreeOwner());
 
 #ifdef KRKRZ_HAS_ELEMENTS
-	REGISTER_OBJECT(Dialog, TVPCreateNativeClass_Dialog());
+	// 旧名 "Dialog" は案件側 TJS のクラス名と衝突したため ElementsDialog へ改名
+	// (エイリアスは衝突が再発するので置かない)
+	REGISTER_OBJECT(ElementsDialog, TVPCreateNativeClass_Dialog());
+	// Elements の画面をホストのレイヤへ描くパネル (overlay の ElementsDialog とは別枠)
+	REGISTER_OBJECT(ElementsPanel, TVPCreateNativeClass_ElementsPanel());
 #endif
 #if defined(KRKRZ_HAS_ELEMENTS) && defined(KRKRZ_USE_REPL)
 	REGISTER_OBJECT(Agent, TVPCreateNativeClass_Agent());

@@ -9,7 +9,7 @@
 //     tTVPElementsDialogManager の overlay 経路で代替予定)。
 //
 // 主用途:
-//   - TJS `Dialog.showModalJson` / `showModalFile` (DialogIntf.cpp)
+//   - TJS `ElementsDialog.showModalJson` / `showModalFile` (DialogIntf.cpp)
 //   - `-userconf` 起動時の UserConfig UI (SDL host のみ)
 //
 // 戻り値の仕組み:

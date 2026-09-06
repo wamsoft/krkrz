@@ -76,6 +76,18 @@ bool UnregisterStatic(const ttstr& prefix);
 /// 汎用 SSE チャネル (/sub/<channel>) の購読者へ payload を配信 (改行可)。
 void BroadcastChannel(const ttstr& channel, const ttstr& payload);
 
+/// アイドル終了の見張り (メインスレッドから毎フレーム呼ぶ = TVPDrainREPL)。
+/// `-replwebidle=<秒>` 指定時のみ働く。 «一度でも SSE 購読が来た» 後に購読が
+/// 0 本になり、 その状態が指定秒数続いたらアプリを終了する。 ブラウザを UI に
+/// した構成で、 ウィンドウを閉じたのに本体だけ残るのを防ぐ。 既定 (未指定) は
+/// 無効なので、 ブラウザを開かないエージェント駆動には影響しない。
+void CheckIdleShutdown();
+
+/// コントローラ状態 (System.eventDisabled) の変化を /sub/state へ push する。
+/// メインスレッドから毎フレーム呼ぶ (TVPDrainREPL)。 変化が無ければ何もしない。
+/// ゲーム自身が eventDisabled を変えてもブラウザ表示が追従するのはこれのおかげ。
+void PublishStateIfChanged();
+
 /// 全ハンドラ/マウントを解放 (TJS クロージャの参照を手放す)。
 /// スクリプトエンジン終了より前にメインスレッドで呼ぶこと。
 void ClearHandlers();

@@ -1064,6 +1064,24 @@
 				"value": ""
 			},
 			{
+				"caption": "窗口最大化按钮",
+				"description": "设置标题栏是否显示最大化按钮。\n\n设置为「禁用」后最大化按钮会消失，双击标题栏或按 Win+↑ 也无法最大化。拖动窗口边框调整大小以及 Alt+Enter 切换全屏仍然可以使用。\n\n仅在 SDL3 版本的 Windows 上有效（其他平台不执行任何操作）。",
+				"name": "maximizebox",
+				"type": "select",
+				"user": false,
+				"values": [
+					{
+						"value": "yes",
+						"desc": "启用",
+						"default": true
+					},
+					{
+						"value": "no",
+						"desc": "禁用"
+					}
+				]
+			},
+			{
 				"caption": "视频硬件解码",
 				"description": "设定叠加视频播放 (VideoOverlay) 时，是否对 mp4 / wmv 等 Media Foundation 支持的格式使用硬件解码 (IMFMediaEngine)。\n\n指定「不进行」则所有格式都使用软件解码。请在视频播放有问题的环境中用于排查。webm / mpeg 无论此设置如何始终使用软件解码。\n\n仅在 Windows 原生 (WINVER) 版本有效。",
 				"name": "mediaengine",

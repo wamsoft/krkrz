@@ -4,6 +4,7 @@
 #include "LogIntf.h"
 #include "SysInitIntf.h"
 #include "SystemIntf.h"
+#include "LicenseIntf.h"     // TVPCheckPrintLicense (-license)
 #ifdef KRKRZ_USE_REPL
 #include "REPL.h"
 #endif
@@ -123,6 +124,77 @@ static void ShowGamepadInfo(const char *state)
     }
 }
 
+// 接続機器の抜き差しへの追従。 開いたハンドルの開け閉めと接続数の数え直しを
+// 行う。 モーダルの nested pump (SDLElementsModalRunner) は SDL_AppEvent を
+// 通らないので、 そちらからも同じ順でここを通す必要がある。 通らないと
+// モーダル中に抜いたパッドのハンドルが残り、 接続数も古いままになって
+// 操作不能になる。
+void TVPProcessDeviceSDLEvent(const SDL_Event *event)
+{
+    switch (event->type) {
+    case SDL_EVENT_WINDOW_SHOWN:
+        // ウィンドウが表示されたときの処理
+        {
+            SDL_Window *window = SDL_GetWindowFromEvent(event);
+            if (window) {
+                SDL_Log("Window shown: %s", SDL_GetWindowTitle(window));
+            }
+            ShowGamepadInfo("window show"); // Show connected gamepads info
+        }
+        break;
+    
+    case SDL_EVENT_JOYSTICK_ADDED:
+        /* this event is sent for each hotplugged stick, but also each already-connected joystick during SDL_Init(). */
+        if (joystick == NULL) {  /* we don't have a stick yet and one was added, open it! */
+            joystick = SDL_OpenJoystick(event->jdevice.which);
+            if (!joystick) {
+                SDL_Log("Failed to open joystick ID %u: %s", (unsigned int) event->jdevice.which, SDL_GetError());
+            }
+        } else {
+            SDL_Log("Joystick already opened, ignoring additional add event for ID %u", (unsigned int) event->jdevice.which);
+        }
+        break;
+    
+    case SDL_EVENT_JOYSTICK_REMOVED:
+        if (joystick && (SDL_GetJoystickID(joystick) == event->jdevice.which)) {
+            SDL_CloseJoystick(joystick);  /* our joystick was unplugged. */
+            joystick = NULL;
+        }
+        break;
+    
+    case SDL_EVENT_GAMEPAD_ADDED:
+        /* this event is sent for each hotplugged stick, but also each already-connected joystick during SDL_Init(). */
+        // 全ゲームパッドを開いたまま保持する (開いていないパッドは SDL がボタン
+        // イベントを生成せず、「最後に押したパッドへ切替」が効かないため)。
+        {
+            // 接続された全ゲームパッドを開いて保持する。論理層 (active/last-operated)
+            // は tTVPPadManager が毎フレームのポーリングで追従する。
+            EnsureGamepadOpen(event->gdevice.which);
+        }
+        ShowGamepadInfo("added"); // Show connected gamepads info
+        break;
+
+    case SDL_EVENT_GAMEPAD_REMOVED:
+        {
+            SDL_JoystickID which = event->gdevice.which;
+            // 保持リストから該当ハンドルを探して除去 + クローズ (SDL の削除後 ID
+            // 検索に頼らず、開済みハンドルの instance id を突き合わせる)。
+            // active の再選択は tTVPPadManager が次フレームのポーリングで行う。
+            for (auto it = g_open_gamepads.begin(); it != g_open_gamepads.end(); ++it) {
+                if (SDL_GetGamepadID(*it) == which) {
+                    SDL_CloseGamepad(*it);
+                    g_open_gamepads.erase(it);
+                    break;
+                }
+            }
+        }
+        ShowGamepadInfo("removed"); // Show connected gamepads info
+        break;
+    default:
+        break;
+    }
+}
+
 SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event)
 {
     switch (event->type) {
@@ -194,62 +266,11 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event)
         return SDL_APP_SUCCESS;
 
     case SDL_EVENT_WINDOW_SHOWN:
-        // ウィンドウが表示されたときの処理
-        {
-            SDL_Window *window = SDL_GetWindowFromEvent(event);
-            if (window) {
-                SDL_Log("Window shown: %s", SDL_GetWindowTitle(window));
-            }
-            ShowGamepadInfo("window show"); // Show connected gamepads info
-        }
-        break;
-    
     case SDL_EVENT_JOYSTICK_ADDED:
-        /* this event is sent for each hotplugged stick, but also each already-connected joystick during SDL_Init(). */
-        if (joystick == NULL) {  /* we don't have a stick yet and one was added, open it! */
-            joystick = SDL_OpenJoystick(event->jdevice.which);
-            if (!joystick) {
-                SDL_Log("Failed to open joystick ID %u: %s", (unsigned int) event->jdevice.which, SDL_GetError());
-            }
-        } else {
-            SDL_Log("Joystick already opened, ignoring additional add event for ID %u", (unsigned int) event->jdevice.which);
-        }
-        break;
-    
     case SDL_EVENT_JOYSTICK_REMOVED:
-        if (joystick && (SDL_GetJoystickID(joystick) == event->jdevice.which)) {
-            SDL_CloseJoystick(joystick);  /* our joystick was unplugged. */
-            joystick = NULL;
-        }
-        break;
-    
     case SDL_EVENT_GAMEPAD_ADDED:
-        /* this event is sent for each hotplugged stick, but also each already-connected joystick during SDL_Init(). */
-        // 全ゲームパッドを開いたまま保持する (開いていないパッドは SDL がボタン
-        // イベントを生成せず、「最後に押したパッドへ切替」が効かないため)。
-        {
-            // 接続された全ゲームパッドを開いて保持する。論理層 (active/last-operated)
-            // は tTVPPadManager が毎フレームのポーリングで追従する。
-            EnsureGamepadOpen(event->gdevice.which);
-        }
-        ShowGamepadInfo("added"); // Show connected gamepads info
-        break;
-
     case SDL_EVENT_GAMEPAD_REMOVED:
-        {
-            SDL_JoystickID which = event->gdevice.which;
-            // 保持リストから該当ハンドルを探して除去 + クローズ (SDL の削除後 ID
-            // 検索に頼らず、開済みハンドルの instance id を突き合わせる)。
-            // active の再選択は tTVPPadManager が次フレームのポーリングで行う。
-            for (auto it = g_open_gamepads.begin(); it != g_open_gamepads.end(); ++it) {
-                if (SDL_GetGamepadID(*it) == which) {
-                    SDL_CloseGamepad(*it);
-                    g_open_gamepads.erase(it);
-                    break;
-                }
-            }
-        }
-        ShowGamepadInfo("removed"); // Show connected gamepads info
+        TVPProcessDeviceSDLEvent(event);
         break;
 
 
@@ -400,6 +421,14 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
         delete app;
         DoneAudioSystem();
         return SDL_APP_FAILURE;
+	}
+
+	// -license : 収集済みライセンスを標準出力へ出して終了する。
+	// 静的リンクプラグインの登録 (TVPLoadStaticPluigins) まで済んだ状態で判定する。
+	if (TVPCheckPrintLicense()) {
+		delete app;
+		DoneAudioSystem();
+		return SDL_APP_SUCCESS;
 	}
 
     // GlobalAllocStats プール初期化。Application + InitPath が済んで

@@ -9,8 +9,8 @@
 //    dm(x)               … Debug.message ラッパ
 //    nf(x)               … 実数を JSON 妥当な固定小数文字列へ ("%.3f")
 //    tryPlugin(dll)      … canLink ガード付き Plugins.link (成否を返す)
-//    hasElements()       … Elements Dialog クラスが利用可能か
-//    class DemoPanel     … onAction を owner.onPanelAction へ中継する Dialog
+//    hasElements()       … ElementsDialog クラスが利用可能か
+//    class DemoPanel     … onAction を owner.onPanelAction へ中継する ElementsDialog
 //                          (Elements が無い環境では定義されない)
 //    class DemoWindow    … デモ用ウィンドウ基底クラス
 //      - stage                 デモが描画するフルスクリーンレイヤ (primary の
@@ -25,7 +25,7 @@
 //                              登録前 (起動直後の数フレーム) は showJson が
 //                              false を返すため、成功するまで自動リトライする
 //      - showPanelDict(dict)   同上の Dictionary レイアウト版 (%[ ] で直接
-//                              レイアウトを書ける。Dialog.dictToJson 使用)
+//                              レイアウトを書ける。ElementsDialog.dictToJson 使用)
 //      - closePanel()
 //      - onPanelAction(id, payload)  パネル操作フック (override して使う)
 //      - onDemoFrame(tick)     毎フレームフック (override して使う)
@@ -63,8 +63,8 @@ function tryPlugin(dll)
     return false;
 }
 
-// Elements Dialog (SDL3 ビルド + KRKRZ_USE_ELEMENTS=ON) が使えるか
-function hasElements() { return typeof global.Dialog != "undefined"; }
+// ElementsDialog (SDL3 ビルド + KRKRZ_USE_ELEMENTS=ON) が使えるか
+function hasElements() { return typeof global.ElementsDialog != "undefined"; }
 
 //----------------------------------------------------------------------
 // 子レイヤを含めてまるごと invalidate する。エンジンの Layer.invalidate は
@@ -106,15 +106,15 @@ function padKeyToLogical(key)
 
 //----------------------------------------------------------------------
 // DemoPanel: onAction を owner (DemoWindow) の onPanelAction へ中継する
-// だけの Dialog。Dialog クラスが無い環境で demolib 自体の読み込みが失敗
+// だけの ElementsDialog。ElementsDialog クラスが無い環境で demolib 自体の読み込みが失敗
 // しないよう、Scripts.eval で条件付き定義する。
 //----------------------------------------------------------------------
 if (hasElements()) {
     Scripts.eval(
-        "class DemoPanel extends Dialog"
+        "class DemoPanel extends ElementsDialog"
         + "{"
         + "    var owner;"
-        + "    function DemoPanel(o) { super.Dialog(); owner = o; }"
+        + "    function DemoPanel(o) { super.ElementsDialog(); owner = o; }"
         + "    function onAction(id, payload) { owner.onPanelAction(id, payload); }"
         + "}",
         "demo_common.tjs(DemoPanel)");
@@ -256,26 +256,26 @@ class DemoWindow extends Window
     function showPanelJson(json)
     {
         if (!hasElements()) {
-            dm("Elements Dialog が利用できないためパネルをスキップします");
+            dm("ElementsDialog が利用できないためパネルをスキップします");
             return false;
         }
         if (_tryShowPanel(json)) { _pendingPanelJson = void; return true; }
         _pendingPanelJson = json;
         return false;
     }
-    // Dictionary レイアウト版 (Dialog.showDict 対応ビルドが必要)。
-    // Dialog.dictToJson で JSON 化して showPanelJson のリトライ機構に乗せる。
+    // Dictionary レイアウト版 (ElementsDialog.showDict 対応ビルドが必要)。
+    // ElementsDialog.dictToJson で JSON 化して showPanelJson のリトライ機構に乗せる。
     function showPanelDict(dict)
     {
         if (!hasElements()) {
-            dm("Elements Dialog が利用できないためパネルをスキップします");
+            dm("ElementsDialog が利用できないためパネルをスキップします");
             return false;
         }
-        if (typeof global.Dialog.dictToJson == "undefined") {
-            dm("Dialog.dictToJson が無い (古いビルド) ためパネルをスキップします");
+        if (typeof global.ElementsDialog.dictToJson == "undefined") {
+            dm("ElementsDialog.dictToJson が無い (古いビルド) ためパネルをスキップします");
             return false;
         }
-        return showPanelJson(global.Dialog.dictToJson(dict));
+        return showPanelJson(global.ElementsDialog.dictToJson(dict));
     }
     function _tryShowPanel(json)
     {
@@ -363,8 +363,8 @@ class DemoScene
     function showPanelDict(dict)
     {
         if (!hasElements()) { dm("Elements 無しのためパネルをスキップ"); return false; }
-        if (typeof global.Dialog.dictToJson == "undefined") { dm("Dialog.dictToJson 無し"); return false; }
-        return window.shellShowPanel(this, global.Dialog.dictToJson(dict));
+        if (typeof global.ElementsDialog.dictToJson == "undefined") { dm("ElementsDialog.dictToJson 無し"); return false; }
+        return window.shellShowPanel(this, global.ElementsDialog.dictToJson(dict));
     }
     function closePanel()         { window.shellClosePanel(); }
     // GL シーン用: OGLDrawDevice 派生を drawDevice に設定し、ツリーを透過にする。
@@ -553,13 +553,13 @@ class DemoShell extends Window
         // テキスト入力ウィジェット focus 中も既定で抑止)。パッドの A/START/十字は
         // 登録しない = フォーカスパネルのウィジェット操作に流す (パネル不在時は
         // 素通しで従来どおりシェル/シーンへ届く)。
-        if (hasElements() && typeof Dialog.registerHotKey != "undefined") {
-            Dialog.registerHotKey(VK_ESCAPE);
-            Dialog.registerHotKey(VK_PRIOR);
-            Dialog.registerHotKey(VK_NEXT);
-            Dialog.registerHotKey(VK_PAD2);   // B  = 戻る (ESC 相当)
-            Dialog.registerHotKey(VK_PAD5);   // LB = PgUp 相当
-            Dialog.registerHotKey(VK_PAD6);   // RB = PgDn 相当
+        if (hasElements() && typeof ElementsDialog.registerHotKey != "undefined") {
+            ElementsDialog.registerHotKey(VK_ESCAPE);
+            ElementsDialog.registerHotKey(VK_PRIOR);
+            ElementsDialog.registerHotKey(VK_NEXT);
+            ElementsDialog.registerHotKey(VK_PAD2);   // B  = 戻る (ESC 相当)
+            ElementsDialog.registerHotKey(VK_PAD5);   // LB = PgUp 相当
+            ElementsDialog.registerHotKey(VK_PAD6);   // RB = PgDn 相当
         }
 
         System.addContinuousHandler(onShellCont);

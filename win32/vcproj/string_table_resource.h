@@ -464,4 +464,7 @@
 #define IDS_TVP_CANNOT_RETRIVE_INSTANCE                                            10460
 #define IDS_TVP_PARAMETER_REQUIRE_CLASS_INSTANCE                                   10461
 #define IDS_TVP_UNIMPLEMENTED_CHARACTER_DATA_FOR_FULL_COLORED                      10462
+#define IDS_TVP_LICENSE_LIST_HEADER                                                10463
+#define IDS_TVP_LICENSE_LIST_FOOTER                                                10464
+#define IDS_TVP_LICENSE_NOT_FOUND                                                  10465
 #endif

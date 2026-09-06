@@ -4,8 +4,8 @@
 //    文字入力まわりを 1 画面で試す:
 //      - Window.onTextInput         … 文字列単位のテキスト入力 (IME 確定文字列を含む) を受ける
 //      - Layer.imeMode / attention  … 入力欄に応じた IME の開閉と変換候補位置
-//      - Dialog.virtualKeyboard     … 内蔵仮想キーボード (auto/always/never)
-//      - Dialog.hasPhysicalKeyboard … 物理キーボードの有無
+//      - ElementsDialog.virtualKeyboard     … 内蔵仮想キーボード (auto/always/never)
+//      - ElementsDialog.hasPhysicalKeyboard … 物理キーボードの有無
 //      - System.inputString         … モーダルなテキスト入力
 //      - Clipboard.asText / hasFormat … クリップボードの読み書き
 //
@@ -60,10 +60,10 @@ class SoftkeyImeScene extends DemoScene
         imeValues.add(typeof global.imOpen     != "undefined" ? imOpen     : 0);
         imeValues.add(typeof global.imDontCare != "undefined" ? imDontCare : 0);
 
-        // 仮想キーボードの制御は Dialog クラスの static 相当プロパティ
-        vkAvailable = hasElements() && (typeof Dialog.virtualKeyboard != "undefined");
+        // 仮想キーボードの制御は ElementsDialog クラスの static 相当プロパティ
+        vkAvailable = hasElements() && (typeof ElementsDialog.virtualKeyboard != "undefined");
         if (vkAvailable) {
-            var cur = Dialog.virtualKeyboard;
+            var cur = ElementsDialog.virtualKeyboard;
             for (var i = 0; i < vkNames.count; i++) if (vkNames[i] == cur) vkIndex = i;
         }
 
@@ -91,7 +91,7 @@ class SoftkeyImeScene extends DemoScene
     function onExit()
     {
         // 仮想キーボードの強制表示を残さない
-        if (vkAvailable && vkIndex != 0) { Dialog.virtualKeyboard = "auto"; vkIndex = 0; }
+        if (vkAvailable && vkIndex != 0) { ElementsDialog.virtualKeyboard = "auto"; vkIndex = 0; }
         field = void;   // レイヤは shell が stage ごと破棄する
     }
 
@@ -177,7 +177,7 @@ class SoftkeyImeScene extends DemoScene
         y = row(IX, y, "仮想キーボード", vkAvailable ? vkNames[vkIndex] : "(未提供)",
                 vkAvailable ? 0xdfe6f2 : 0x9fb0c8);
         y = row(IX, y, "物理キーボード",
-                vkAvailable ? (Dialog.hasPhysicalKeyboard ? "あり" : "なし") : "(不明)");
+                vkAvailable ? (ElementsDialog.hasPhysicalKeyboard ? "あり" : "なし") : "(不明)");
         y = row(IX, y, "focus", (isvalid field && window.focusedLayer == field) ? "入力欄" : "(別のレイヤ)");
         y = row(IX, y, "Elements 欄", elementsText != "" ? elementsText : "(空)");
         y += 10;
@@ -302,11 +302,11 @@ class SoftkeyImeScene extends DemoScene
         case "vk":
             vkIndex = Math.floor(payload + 0.5);
             if (vkAvailable) {
-                Dialog.virtualKeyboard = vkNames[vkIndex];
+                ElementsDialog.virtualKeyboard = vkNames[vkIndex];
                 setInfo("仮想キーボード: " + vkNames[vkIndex]
                         + (vkNames[vkIndex] == "always" ? " (入力欄に focus すると出ます)" : ""));
             } else {
-                setInfo("Dialog.virtualKeyboard がこのビルドには無い");
+                setInfo("ElementsDialog.virtualKeyboard がこのビルドには無い");
             }
             dirty = true;
             break;
@@ -375,7 +375,7 @@ class SoftkeyImeScene extends DemoScene
                 %[ type : "label", text : "IME モード (Layer.imeMode)" ],
                 %[ type : "framed_cycle_picker", id : "ime", options : imeNames, initial : imeModeIndex ],
                 %[ type : "vspacer", height : 6 ],
-                %[ type : "label", text : "仮想キーボード (Dialog.virtualKeyboard)" ],
+                %[ type : "label", text : "仮想キーボード (ElementsDialog.virtualKeyboard)" ],
                 %[ type : "segmented_picker", id : "vk", options : vkNames, initial : vkIndex ],
                 %[ type : "vspacer", height : 8 ],
                 %[ type : "label", text : "Elements 入力欄 (クリックで focus)" ],
