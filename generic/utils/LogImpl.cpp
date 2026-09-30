@@ -9,6 +9,7 @@
 #include "tjsCommHead.h"
 #include "LogIntf.h"
 #include "LogPlogBackend.h"
+#include "GlobalAllocStats.h"
 
 //---------------------------------------------------------------------------
 // TVPLogLevel ⇔ seam の中立 severity 変換
@@ -57,6 +58,8 @@ void TVPLogSetLevel(TVPLogLevel logLevel)
 
 void TVPLog(TVPLogLevel logLevel, const char *file, int line, const char *func, const char *format, tvpfmt::format_args args)
 {
+	// alloc 経路で保留されたログ (pool 容量超過など) をここで出す。
+	TVPGlobalAllocStats::FlushDeferredLog();
 	// 整形は tjs 側の tvpfmt で行い、 結果の UTF-8 文字列だけを backend に渡す。
 	std::string msg;
 	try {

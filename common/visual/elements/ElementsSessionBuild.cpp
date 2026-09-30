@@ -8,6 +8,7 @@
 #include "ElementsDialogManager.h"   // Dispatch{Action,Drag,Var} (通知キューは 1 本)
 #include "CharacterSet.h"            // TVPUtf8ToUtf16 / TVPUtf16ToUtf8
 #include "tjsDictionary.h"           // TJSCreateDictionaryObject
+#include "SysInitIntf.h"            // TVPGetCommandLine (-paddelay / -padinterval)
 
 #include <set>
 #include <type_traits>
@@ -131,6 +132,26 @@ void ApplyVarWatch(elements_modal::overlay_session& session,
 }
 
 //---------------------------------------------------------------------------
+// `-paddelay` / `-padinterval` が **明示指定されたときだけ** その値を返す。
+//
+// この 2 つはもともとホスト側のパッドキーリピート (VK_PAD* の KeyDown を
+// 繰り返し投げる機構) の設定だが、 Elements のナビ速度には効いていなかった。
+// Elements は dpad を「軸値」に変換して自前のタイマ (view::process_pad_axes)
+// で送りを作るので、 ホストのリピートは軸値の再代入にしかならないため。
+// オプション名から期待される挙動と食い違うので、 明示指定時は Elements 側の
+// 既定としても流す。 未指定なら elements の既定 (400ms / magnitude 連動) のまま
+// = 既定の操作感は変えない。
+static void PadRepeatFromCommandLine(int& delay_ms, int& rate_ms)
+{
+	delay_ms = 0;
+	rate_ms  = -1;
+	tTJSVariant v;
+	if (TVPGetCommandLine(TJS_W("-paddelay"), &v))    delay_ms = (tjs_int)v;
+	if (TVPGetCommandLine(TJS_W("-padinterval"), &v)) rate_ms  = (tjs_int)v;
+	if (delay_ms < 0) delay_ms = 0;
+	if (rate_ms  < 0) rate_ms  = -1;
+}
+
 std::unique_ptr<elements_modal::overlay_session> BuildSession(
 	const std::string& json_utf8,
 	const SessionOptions& opt,
@@ -139,6 +160,15 @@ std::unique_ptr<elements_modal::overlay_session> BuildSession(
 	if (opt.width <= 0 || opt.height <= 0) return nullptr;
 
 	auto sess = std::make_unique<elements_modal::overlay_session>();
+	// 軸ナビのリピート既定は start() より前に渡す (start の中で
+	// input_defaults.jsonc の後・画面別 "input" の前に当てられる = 画面が
+	// 明示していればそちらが勝つ)。 呼出側が指定していなければ起動オプションを見る。
+	{
+		int delay = opt.padRepeatDelayMs;
+		int rate  = opt.padRepeatRateMs;
+		if (delay <= 0 && rate < 0) PadRepeatFromCommandLine(delay, rate);
+		if (delay > 0 || rate >= 0) sess->set_axis_repeat_default(delay, rate);
+	}
 	// pixel_scale は 1.0 固定 — 実際の描画密度は render_to_buffer に渡す
 	// buffer サイズから毎回導出される。
 	if (!sess->start(json_utf8, opt.width, opt.height, 1.0f,

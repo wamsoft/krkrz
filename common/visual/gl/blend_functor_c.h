@@ -892,6 +892,22 @@ struct do_gray_scale_functor {
 		return (d1 >> 8) * 0x10101 + (s1 & 0xff000000);
 	}
 };
+// 重み指定版グレースケール。 rw_+gw_+bw_ == 256 (8bit 固定小数) が前提で、
+// この条件なら各画素の総和は最大 255*256 = 65280 に収まる (SSE2 版が 16bit
+// レーンで加算するのと同じ制約)。 正規化は呼出側 (TVPNormalizeGrayScaleWeight)。
+struct do_gray_scale_weight_functor {
+	const tjs_uint32 rw_, gw_, bw_;
+	inline do_gray_scale_weight_functor( tjs_int rw, tjs_int gw, tjs_int bw )
+		: rw_((tjs_uint32)rw), gw_((tjs_uint32)gw), bw_((tjs_uint32)bw) {}
+	inline tjs_uint32 operator()( tjs_uint32 s1 ) const {
+		tjs_uint32 d1 = (s1&0xff)*bw_;
+		d1 += ((s1 >> 8)&0xff)*gw_;
+		d1 += ((s1 >> 16)&0xff)*rw_;
+		d1 >>= 8;
+		if( d1 > 255 ) d1 = 255;	// SSE2 の packus 飽和と合わせる
+		return d1 * 0x10101 + (s1 & 0xff000000);
+	}
+};
 struct red_blue_swap_functor {
 	inline tjs_uint32 operator()( tjs_uint32 s ) const {
 		return ( ( ( s & 0xff0000 ) >> 16 ) | ( s & 0xff00ff00 ) | ( ( s & 0xff ) << 16 ) );

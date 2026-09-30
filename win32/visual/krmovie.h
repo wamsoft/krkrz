@@ -71,6 +71,14 @@ public:
 	virtual bool __stdcall GetI420Frame( const BYTE** y, int* yStride, const BYTE** u, int* uStride,
 		const BYTE** v, int* vStride, int* w, int* h ) { return false; }
 
+	// 「音を出さずに 1 コマだけ出す」= prepare 再生。engine の VideoOverlay.prepare()
+	// (レイヤモード) から呼ばれ、音声シンクを開始しないまま先頭フレームだけをデコード/
+	// 提示し、その後は先頭位置へ戻した一時停止状態で待機する (= 直後の Play() が頭から
+	// 始まる)。提示は通常再生と同じ EC_UPDATE で通知する。
+	// 対応した実装のみ true を返す。false の実装には engine が従来どおり Play() を使う
+	// (= 冒頭の音が僅かに漏れる)。
+	virtual bool __stdcall PrepareFrame() { return false; }
+
 	virtual void __stdcall SetStopFrame( int frame ) = 0;
 	virtual void __stdcall GetStopFrame( int *frame ) = 0;
 	virtual void __stdcall SetDefaultStopFrame() = 0;

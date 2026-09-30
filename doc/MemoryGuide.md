@@ -104,7 +104,8 @@ Storages.dumpImageCacheList();
 | コマンド | 動作 |
 |---|---|
 | `.mem` | 1 行サマリ (各 allocator の live/peak/alloc_n + GlobalAlloc + システム空き) |
-| `.memdump` | `TVPHeapDump()` 相当の詳細ダンプ |
+| `.memdump` | `TVPHeapDump()` 相当の詳細ダンプ (末尾に生存サイズの分布。`-memstatsite` 時は呼び出し元別の上位も) |
+| `.memsites [N] [関数名の一部]` | 生存確保を呼び出し元別に上位 N 件ダンプ。`KRKRZ_ENABLE_MEMSTAT_DETAIL=ON` ビルド + `-memstatsite` 起動時のみ |
 | `.mempeakclear` | `System.resetMemoryPeak()` 相当 |
 | `.memoverlay [on\|off]` | overlay toggle / 明示制御 |
 | `.sysalloc` | システムアロケータの空き / 確保可能サイズ / プロセス RSS を 1 行表示 |
@@ -128,6 +129,8 @@ CLI と `config.cf` の両方で指定可能。
 | `-bitmappoolsize=N` | Bitmap pool 容量 (MB)。`none`/`off`/`0` で raw malloc にフォールバック |
 | `-soundpoolsize=N` | Sound pool 容量 (MB)。`none`/`off`/`0` で BasicSoundAllocator にフォールバック (既定 128MB) |
 | `-sdlpoolsize=N` | SDL pool 容量 (MB)。`KRKRZ_SDLMEMORY_STAT=ON` ビルドのみ有効 |
+| `-memstatsite=<段数>` | 確保ごとにスタックを取り、呼び出し元別に生存バイト / 件数を数える (`yes` = 16 段、1〜32)。`KRKRZ_ENABLE_MEMSTAT_DETAIL=ON` ビルドのみ。重いので調査専用 |
+| `-lazyarraymember=yes` | Array のメソッドをインスタンスへコピーせずクラスから引く (空配列 1 個 約 3KB → ほぼ 0)。既定 `no`。挙動差は [MemoryDesign.md](MemoryDesign.md) §8.5 |
 | `-loglevel=info` | 周期ダンプの結果を console に出すなら必要 |
 
 例:

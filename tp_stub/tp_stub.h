@@ -2042,6 +2042,8 @@ extern void * TVPImportFuncPtr6fefcb1c2ca01a876c301ab41dbdab9f;
 extern void * TVPImportFuncPtrdf55083347df0483b4ca6ba1e4f0b9a0;
 extern void * TVPImportFuncPtrd8d28310f702714733c4c5dc850058df;
 extern void * TVPImportFuncPtr52d24c38b05be174bc5c4fdcf02e9b9f;
+extern void * TVPImportFuncPtrcd3ec9eb8ddd01f6215e987ba46739c7;
+extern void * TVPImportFuncPtr36a64c17571c50fb558175980bdb24e0;
 extern void * TVPImportFuncPtrf27f455c8f30cbaf1706faac3c7b8e02;
 extern void * TVPImportFuncPtrf6d0533e3fd457217b426ac6f04d9f12;
 extern void * TVPImportFuncPtr78ec453a50b2800bb01347e8ebbac000;
@@ -2068,6 +2070,9 @@ extern void * TVPImportFuncPtr347a4fa85af84e223c4b61d33ead694a;
 extern void * TVPImportFuncPtr4ad1dd24b3b4769ee10149eea006af7a;
 extern void * TVPImportFuncPtrb246b17b62d273bdc04e9d9e827f5c74;
 extern void * TVPImportFuncPtr4ccd3f6ab60d61be6dbfc59e8e3d1726;
+extern void * TVPImportFuncPtrcf7118dbd7e878ac059cc2c8c6660c4c;
+extern void * TVPImportFuncPtrc15c08961dd99d25d12723440da84264;
+extern void * TVPImportFuncPtrf01495ff840690213058f9708d6b5dba;
 extern void * TVPImportFuncPtrc23ece207f6ec2dd7c76ef873047aee3;
 extern void * TVPImportFuncPtr81507020bc646be2f53ab95b9430ba27;
 extern void * TVPImportFuncPtracc0d3861d1b971abcbdda1c075dd681;
@@ -2338,6 +2343,7 @@ extern void * TVPImportFuncPtr985fcda0141eb3b4c6bd8342e947f130;
 extern void * TVPImportFuncPtrd00e4f9e493334d2f65ea379ff03d717;
 extern void * TVPImportFuncPtr0c246e6c7c8798e4c10d2bbfc66326c9;
 extern void * TVPImportFuncPtr501015843a83368b3ff1c7c9ef5f3bcb;
+extern void * TVPImportFuncPtrf07a385c28364974bea949e6c8390507;
 extern void * TVPImportFuncPtr4248e67258df19203e6d814435ed8180;
 extern void * TVPImportFuncPtr90c8aa95b37fee182505b350f548f4cf;
 extern void * TVPImportFuncPtr61d5fc5a060f346752a3a8b6886d17bc;
@@ -4995,7 +5001,8 @@ typedef void * TVP_THREAD_PARAM;
 //---------------------------------------------------------------------------
 enum tTVPClipboardFormat
 {
-	cbfText = 1
+	cbfText = 1,
+	cbfBitmap = 2
 };
 
 
@@ -5501,6 +5508,16 @@ inline bool TVPIsAnyMouseButtonPressedInShiftStateFlags(tjs_uint32 state)
 #define VK_PAD_R_RIGHT	0x1D2
 #define VK_PAD_R_DOWN	0x1D3
 // 20
+// 24 : 位置基準のフェイスボタン
+//   VK_PAD1..4 は「刻印 A/B/X/Y」を指す (任天堂系と Xbox で同じ文字の
+//   ボタンに乗る) のに対し、 こちらは「配置」を指す (下/右/左/上)。
+//   同じ物理ボタンが両方の VK を発火させるので、 割り当てる側は
+//   「刻印で揃えたいボタン」と「配置で揃えたいボタン」で使い分ける。
+#define VK_PAD_FACE_SOUTH	0x1D4 // 下 (Xbox=A / 任天堂=B / PS=×)
+#define VK_PAD_FACE_EAST	0x1D5 // 右 (Xbox=B / 任天堂=A / PS=○)
+#define VK_PAD_FACE_WEST	0x1D6 // 左 (Xbox=X / 任天堂=Y / PS=□)
+#define VK_PAD_FACE_NORTH	0x1D7 // 上 (Xbox=Y / 任天堂=X / PS=△)
+// 28
 #define VK_PADANY		0x1DF   // returns whether any one of pad buttons are pressed,
 							    // in System.getKeyState
 #define VK_PAD_LAST		0x1DF   // last PAD related key code
@@ -8420,6 +8437,26 @@ inline ttstr TVPGetPlatformName()
 	typedef ttstr (STDCALL * __functype)();
 	return ((__functype)(TVPImportFuncPtr52d24c38b05be174bc5c4fdcf02e9b9f))();
 }
+inline ttstr TVPGetPlatformTag()
+{
+	if(!TVPImportFuncPtrcd3ec9eb8ddd01f6215e987ba46739c7)
+	{
+		static char funcname[] = "ttstr ::TVPGetPlatformTag()";
+		TVPImportFuncPtrcd3ec9eb8ddd01f6215e987ba46739c7 = TVPGetImportFuncPtr(funcname);
+	}
+	typedef ttstr (STDCALL * __functype)();
+	return ((__functype)(TVPImportFuncPtrcd3ec9eb8ddd01f6215e987ba46739c7))();
+}
+inline ttstr TVPGetSystemLanguage()
+{
+	if(!TVPImportFuncPtr36a64c17571c50fb558175980bdb24e0)
+	{
+		static char funcname[] = "ttstr ::TVPGetSystemLanguage()";
+		TVPImportFuncPtr36a64c17571c50fb558175980bdb24e0 = TVPGetImportFuncPtr(funcname);
+	}
+	typedef ttstr (STDCALL * __functype)();
+	return ((__functype)(TVPImportFuncPtr36a64c17571c50fb558175980bdb24e0))();
+}
 inline ttstr TVPGetOSName()
 {
 	if(!TVPImportFuncPtrf27f455c8f30cbaf1706faac3c7b8e02)
@@ -8690,6 +8727,36 @@ inline HWND TVPGetApplicationWindowHandle()
 	return ((__functype)(TVPImportFuncPtr4ccd3f6ab60d61be6dbfc59e8e3d1726))();
 }
 #endif
+inline void TVPRegisterBundledPlugin(const ttstr & name)
+{
+	if(!TVPImportFuncPtrcf7118dbd7e878ac059cc2c8c6660c4c)
+	{
+		static char funcname[] = "void ::TVPRegisterBundledPlugin(const ttstr &)";
+		TVPImportFuncPtrcf7118dbd7e878ac059cc2c8c6660c4c = TVPGetImportFuncPtr(funcname);
+	}
+	typedef void (STDCALL * __functype)(const ttstr &);
+	((__functype)(TVPImportFuncPtrcf7118dbd7e878ac059cc2c8c6660c4c))(name);
+}
+inline void TVPUnregisterBundledPlugin(const ttstr & name)
+{
+	if(!TVPImportFuncPtrc15c08961dd99d25d12723440da84264)
+	{
+		static char funcname[] = "void ::TVPUnregisterBundledPlugin(const ttstr &)";
+		TVPImportFuncPtrc15c08961dd99d25d12723440da84264 = TVPGetImportFuncPtr(funcname);
+	}
+	typedef void (STDCALL * __functype)(const ttstr &);
+	((__functype)(TVPImportFuncPtrc15c08961dd99d25d12723440da84264))(name);
+}
+inline bool TVPIsBundledPlugin(const ttstr & name)
+{
+	if(!TVPImportFuncPtrf01495ff840690213058f9708d6b5dba)
+	{
+		static char funcname[] = "bool ::TVPIsBundledPlugin(const ttstr &)";
+		TVPImportFuncPtrf01495ff840690213058f9708d6b5dba = TVPGetImportFuncPtr(funcname);
+	}
+	typedef bool (STDCALL * __functype)(const ttstr &);
+	return ((__functype)(TVPImportFuncPtrf01495ff840690213058f9708d6b5dba))(name);
+}
 inline void TVPThrowPluginUnboundFunctionError(const char * funcname)
 {
 	if(!TVPImportFuncPtrc23ece207f6ec2dd7c76ef873047aee3)
@@ -11415,6 +11482,16 @@ inline void TVPDoGrayScale(tjs_uint32 * dest , tjs_int len)
 	}
 	typedef void (STDCALL * __functype)(tjs_uint32 *, tjs_int);
 	((__functype)(TVPImportFuncPtr501015843a83368b3ff1c7c9ef5f3bcb))(dest, len);
+}
+inline void TVPDoGrayScaleWeight(tjs_uint32 * dest , tjs_int len , tjs_int rw , tjs_int gw , tjs_int bw)
+{
+	if(!TVPImportFuncPtrf07a385c28364974bea949e6c8390507)
+	{
+		static char funcname[] = "void ::TVPDoGrayScaleWeight(tjs_uint32 *,tjs_int,tjs_int,tjs_int,tjs_int)";
+		TVPImportFuncPtrf07a385c28364974bea949e6c8390507 = TVPGetImportFuncPtr(funcname);
+	}
+	typedef void (STDCALL * __functype)(tjs_uint32 *, tjs_int , tjs_int , tjs_int , tjs_int);
+	((__functype)(TVPImportFuncPtrf07a385c28364974bea949e6c8390507))(dest, len, rw, gw, bw);
 }
 inline void TVPRedBlueSwap(tjs_uint32 * dest , tjs_int len)
 {

@@ -13,6 +13,8 @@
 
 #include <shellapi.h>
 #include <shlobj.h>
+#include <commctrl.h>   // TASKDIALOGCONFIG (System.choice)
+#include <vector>
 
 #include "GraphicsLoaderImpl.h"
 
@@ -24,6 +26,84 @@
 #include "InputDialog.h"   // TVPInputString
 #ifdef KRKRZ_USE_REPL_FILECHANNEL
 #include "ReplModal.h"   // TVPReplConfirm / TVPReplInputString
+
+//---------------------------------------------------------------------------
+// モニタ情報 (doc/WindowState.md)
+//   windowEx プラグインが持っていた System.getMonitorInfo / getDisplayMonitors /
+//   getSystemMetrics を本体へ移したもの。辞書の形はプラグインと同じにしてある。
+//     矩形       : %[ x, y, w, h ]
+//     モニタ情報 : %[ name, primary, monitor:<矩形>, work:<矩形> ]
+//---------------------------------------------------------------------------
+static void TVPSetMonRect(iTJSDispatch2 *dsp, const tjs_char *name, const RECT &r)
+{
+	iTJSDispatch2 *sub = TJSCreateDictionaryObject();
+	try {
+		tTJSVariant v;
+		v = (tjs_int)r.left;            sub->PropSet(TJS_MEMBERENSURE, TJS_W("x"), NULL, &v, sub);
+		v = (tjs_int)r.top;             sub->PropSet(TJS_MEMBERENSURE, TJS_W("y"), NULL, &v, sub);
+		v = (tjs_int)(r.right - r.left); sub->PropSet(TJS_MEMBERENSURE, TJS_W("w"), NULL, &v, sub);
+		v = (tjs_int)(r.bottom - r.top); sub->PropSet(TJS_MEMBERENSURE, TJS_W("h"), NULL, &v, sub);
+		tTJSVariant sv(sub, sub);
+		dsp->PropSet(TJS_MEMBERENSURE, name, NULL, &sv, dsp);
+	} catch(...) {
+		sub->Release();
+		throw;
+	}
+	sub->Release();
+}
+// HMONITOR から情報辞書を作る。失敗したら nullptr
+static iTJSDispatch2 * TVPCreateMonitorInfoDic(HMONITOR mon)
+{
+	MONITORINFOEXW mi;
+	ZeroMemory(&mi, sizeof(mi));
+	mi.cbSize = sizeof(mi);
+	if(!mon || !::GetMonitorInfoW(mon, &mi)) return nullptr;
+	iTJSDispatch2 *dsp = TJSCreateDictionaryObject();
+	try {
+		tTJSVariant v;
+		v = ttstr(mi.szDevice);                            dsp->PropSet(TJS_MEMBERENSURE, TJS_W("name"), NULL, &v, dsp);
+		v = (tjs_int)((mi.dwFlags & MONITORINFOF_PRIMARY) ? 1 : 0);
+		dsp->PropSet(TJS_MEMBERENSURE, TJS_W("primary"), NULL, &v, dsp);
+		TVPSetMonRect(dsp, TJS_W("monitor"), mi.rcMonitor);
+		TVPSetMonRect(dsp, TJS_W("work"),    mi.rcWork);
+	} catch(...) {
+		dsp->Release();
+		throw;
+	}
+	return dsp;
+}
+struct tTVPMonitorEnumParam { iTJSDispatch2 *Array; tjs_int Count; };
+static BOOL CALLBACK TVPMonitorEnumProc(HMONITOR mon, HDC, LPRECT prc, LPARAM lp)
+{
+	tTVPMonitorEnumParam *pm = reinterpret_cast<tTVPMonitorEnumParam *>(lp);
+	iTJSDispatch2 *dic = TVPCreateMonitorInfoDic(mon);
+	if(dic) {
+		try {
+			// 範囲指定で列挙したときは、その範囲との重なりも入れる (windowEx と同じ)
+			if(prc) TVPSetMonRect(dic, TJS_W("intersect"), *prc);
+			tTJSVariant v(dic, dic);
+			pm->Array->PropSetByNum(TJS_MEMBERENSURE, pm->Count, &v, pm->Array);
+			pm->Count++;
+		} catch(...) {
+			dic->Release();
+			throw;
+		}
+		dic->Release();
+	}
+	return TRUE;
+}
+// 引数から HWND を得る (Window インスタンス)
+static HWND TVPGetHWNDFromVariant(tTJSVariant *v)
+{
+	if(!v || v->Type() != tvtObject) return NULL;
+	iTJSDispatch2 *dsp = v->AsObjectNoAddRef();
+	if(!dsp) return NULL;
+	tTJSVariant hv;
+	if(TJS_FAILED(dsp->PropGet(0, TJS_W("HWND"), NULL, &hv, dsp))) return NULL;
+	if(hv.Type() == tvtVoid) return NULL;
+	return reinterpret_cast<HWND>((intptr_t)(tjs_int64)hv);
+}
+
 #endif
 #ifdef KRKRZ_REPL_WEB
 #include "ReplWebServer.h"   // TVPReplWeb::GetURL (System.replWebURL)
@@ -38,6 +118,7 @@
 // CompatibleNativeFuncs は撤去 (touch API は Win10 で常在、直接リンク)
 #include "DebugIntf.h"
 #include "VersionFormUnit.h"
+#include "FontSystem.h"         // TVPFontSystem (System.addFont)
 #include "PluginImpl.h"
 #include "BinaryStreamBuffer.h"     // TVPGetFileAllocator
 #include "SoundAllocator.h"         // TVPGetSoundAllocator
@@ -112,6 +193,64 @@ static bool TVPConfirmYesNo(const ttstr & text, const ttstr & caption, HWND pare
 	int ret = ::MessageBox( parent, (const wchar_t*)text.AsStdString().c_str(),
 		(const wchar_t*)caption.AsStdString().c_str(), MB_YESNO|MB_ICONQUESTION );
 	return ret == IDYES;
+}
+//---------------------------------------------------------------------------
+// TVPChoose : 選択肢から 1 つ選ぶモーダル (System.choice)。選ばれた index を返す。
+//   閉じた / Esc は def。ボタンの文言を任意にするため TaskDialogIndirect を使う
+//   (comctl32 v6 はマニフェストで指定済み。リンク不要にするため実行時に引く)。
+//---------------------------------------------------------------------------
+static int TVPChoose(const ttstr & text, const ttstr & caption,
+	const std::vector<ttstr> & choices, int def, HWND parent)
+{
+#ifdef KRKRZ_USE_REPL_FILECHANNEL
+	if( TVPReplActive ) {
+		int index = def;
+		if( TVPReplChoice(caption, text, choices, def, index) ) return index;
+	}
+#endif
+	if( parent == INVALID_HANDLE_VALUE ) parent = NULL;
+	if( parent == NULL ) {
+		parent = TVPGetModalWindowOwnerHandle();
+		if( parent == INVALID_HANDLE_VALUE ) parent = NULL;
+	}
+
+	typedef HRESULT (WINAPI *TaskDialogIndirectProc)(const TASKDIALOGCONFIG *, int *, int *, BOOL *);
+	static TaskDialogIndirectProc proc = NULL;
+	static bool resolved = false;
+	if( !resolved ) {
+		resolved = true;
+		HMODULE mod = ::GetModuleHandleW(L"comctl32.dll");
+		if( !mod ) mod = ::LoadLibraryW(L"comctl32.dll");
+		if( mod ) proc = (TaskDialogIndirectProc)::GetProcAddress(mod, "TaskDialogIndirect");
+	}
+	if( !proc ) {
+		// TaskDialog が使えない環境: 本文だけ見せて既定を返す
+		::MessageBox( parent, (const wchar_t*)text.AsStdString().c_str(),
+			(const wchar_t*)caption.AsStdString().c_str(), MB_OK|MB_ICONQUESTION );
+		return def;
+	}
+
+	const int base_id = 1000;	// IDOK / IDCANCEL 等と重ならない番号
+	std::vector<TASKDIALOG_BUTTON> buttons(choices.size());
+	for( size_t i = 0; i < choices.size(); i++ ) {
+		buttons[i].nButtonID = base_id + (int)i;
+		buttons[i].pszButtonText = (PCWSTR)choices[i].c_str();
+	}
+	TASKDIALOGCONFIG config = {};
+	config.cbSize = sizeof(config);
+	config.hwndParent = parent;
+	config.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION;	// Esc / × で閉じられる
+	config.pszWindowTitle = (PCWSTR)caption.c_str();
+	config.pszContent = (PCWSTR)text.c_str();
+	config.cButtons = (UINT)buttons.size();
+	config.pButtons = buttons.data();
+	config.nDefaultButton = base_id + def;
+
+	int pressed = 0;
+	if( FAILED(proc(&config, &pressed, NULL, NULL)) ) return def;
+	int index = pressed - base_id;
+	if( index < 0 || index >= (int)choices.size() ) return def;	// 閉じた / Esc
+	return index;
 }
 //---------------------------------------------------------------------------
 
@@ -622,13 +761,20 @@ bool TVPCreateAppLock(const ttstr &lockname)
 	if (nolock > 0) return true;
 
 	// lock application using mutex
-	CreateMutex(NULL, TRUE, (const wchar_t*)lockname.c_str());
+	//   ⚠ GetLastError は CreateMutex の直後に採ること。 間に何か挟むと消える。
+	//   ⚠ 「作れなかった」と「既にある」を分ける。 以前はどんなエラーでも
+	//     false (= 既に起動中) にしていたので、ミューテックスを作れない環境では
+	//     起動そのものが止まってしまっていた。
+	HANDLE mutex = ::CreateMutexW(NULL, TRUE, (const wchar_t*)lockname.c_str());
+	const DWORD err = ::GetLastError();
 
-	if(GetLastError())
+	if(mutex == NULL) return true;          // 作れない環境では抑止しない
+
+	if(err == ERROR_ALREADY_EXISTS)
 	{
-		return false; // already running
+		::CloseHandle(mutex);               // 錠は先着が持っている
+		return false;                       // already running
 	}
-
 
 	// No need to release the mutex object because the mutex is automatically
 	// released when the calling thread exits.
@@ -847,6 +993,31 @@ void TVPAddGlobalHeapCompactCallback()
 //---------------------------------------------------------------------------
 
 //---------------------------------------------------------------------------
+// System.choice(caption, text, choices [, default = 0]) の引数を読む。
+//   choices は文字列の配列 (1 個以上)。default は範囲外なら 0 に丸める。
+static tjs_error TVPReadChoiceArgs(tjs_int numparams, tTJSVariant **param,
+	ttstr &caption, ttstr &text, std::vector<ttstr> &choices, int &def)
+{
+	if(numparams < 3) return TJS_E_BADPARAMCOUNT;
+	caption = (param[0]->Type() != tvtVoid) ? ttstr(*param[0]) : ttstr(TJS_W("Choice"));
+	text = *param[1];
+	if(param[2]->Type() != tvtObject) return TJS_E_INVALIDPARAM;
+	iTJSDispatch2 *arr = param[2]->AsObjectNoAddRef();
+	if(!arr) return TJS_E_INVALIDPARAM;
+	tTJSVariant cnt;
+	if(TJS_FAILED(arr->PropGet(0, TJS_W("count"), NULL, &cnt, arr))) return TJS_E_INVALIDPARAM;
+	tjs_int n = (tjs_int)cnt;
+	for(tjs_int i = 0; i < n; i++) {
+		tTJSVariant v;
+		arr->PropGetByNum(0, i, &v, arr);
+		choices.push_back(ttstr(v));
+	}
+	if(choices.empty()) return TJS_E_INVALIDPARAM;
+	def = (numparams >= 4 && param[3]->Type() != tvtVoid) ? (int)(tjs_int)*param[3] : 0;
+	if(def < 0 || def >= (int)choices.size()) def = 0;
+	return TJS_S_OK;
+}
+//---------------------------------------------------------------------------
 // TVPCreateNativeClass_System
 //---------------------------------------------------------------------------
 tTJSNativeClass * TVPCreateNativeClass_System()
@@ -914,6 +1085,21 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/confirm)
 TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
 	/*func. name*/confirm)
 //----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/choice)
+{
+	// 選択肢から 1 つ選ぶモーダル。選ばれた index を返す (閉じた / Esc は default)。
+	// REPL (-replfile) 駆動中はモーダル応答チャネルに type:"choice" で出す。
+	ttstr caption, text;
+	std::vector<ttstr> choices;
+	int def = 0;
+	tjs_error er = TVPReadChoiceArgs(numparams, param, caption, text, choices, def);
+	if(TJS_FAILED(er)) return er;
+	int index = TVPChoose(text, caption, choices, def, NULL);
+	if(result) *result = (tjs_int)index;
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
+	/*func. name*/choice)
 TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/inputString)
 {
 	// System.inputString(caption, prompt, default="") -> 入力文字列 / キャンセルで void
@@ -943,6 +1129,168 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/inputString)
 }
 TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
 	/*func. name*/inputString)
+//----------------------------------------------------------------------
+//----------------------------------------------------------------------
+// System.getMonitorInfo([nearest[, window | x, y | x, y, w, h]])
+//   引数なし            : プライマリモニタ
+//   (nearest, window)   : そのウィンドウのあるモニタ
+//   (nearest, x, y)     : その点のあるモニタ
+//   (nearest, x,y,w,h)  : その矩形と重なるモニタ
+//   nearest が真なら「いちばん近いモニタ」、偽なら重ならないとき void
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/getMonitorInfo)
+{
+	if(result) result->Clear();
+	HMONITOR mon = NULL;
+	DWORD flag = (numparams > 0 && (tjs_int)*param[0]) ? MONITOR_DEFAULTTONEAREST : MONITOR_DEFAULTTONULL;
+	switch(numparams) {
+	case 0:
+		{
+			POINT pt = { 0, 0 };
+			mon = ::MonitorFromPoint(pt, MONITOR_DEFAULTTOPRIMARY);
+		}
+		break;
+	case 2:
+		{
+			HWND hwnd = TVPGetHWNDFromVariant(param[1]);
+			if(!hwnd) return TJS_E_INVALIDPARAM;
+			mon = ::MonitorFromWindow(hwnd, flag);
+		}
+		break;
+	case 3:
+		{
+			POINT pt;
+			pt.x = (LONG)(tjs_int)*param[1];
+			pt.y = (LONG)(tjs_int)*param[2];
+			mon = ::MonitorFromPoint(pt, flag);
+		}
+		break;
+	case 5:
+		{
+			RECT r;
+			r.left   = (LONG)(tjs_int)*param[1];
+			r.top    = (LONG)(tjs_int)*param[2];
+			r.right  = r.left + (LONG)(tjs_int)*param[3];
+			r.bottom = r.top  + (LONG)(tjs_int)*param[4];
+			mon = ::MonitorFromRect(&r, flag);
+		}
+		break;
+	default:
+		return TJS_E_BADPARAMCOUNT;
+	}
+	if(!mon) return TJS_S_OK;
+	iTJSDispatch2 *dic = TVPCreateMonitorInfoDic(mon);
+	if(dic) {
+		if(result) *result = tTJSVariant(dic, dic);
+		dic->Release();
+	}
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
+	/*func. name*/getMonitorInfo)
+//----------------------------------------------------------------------
+// System.getDisplayMonitors([x, y, w, h])
+//   全モニタ (または指定矩形と重なるモニタ) の情報を配列で返す
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/getDisplayMonitors)
+{
+	if(result) result->Clear();
+	RECT r;
+	bool useRect = false;
+	switch(numparams) {
+	case 0: break;
+	case 4:
+		r.left   = (LONG)(tjs_int)*param[0];
+		r.top    = (LONG)(tjs_int)*param[1];
+		r.right  = r.left + (LONG)(tjs_int)*param[2];
+		r.bottom = r.top  + (LONG)(tjs_int)*param[3];
+		useRect = true;
+		break;
+	default:
+		return TJS_E_BADPARAMCOUNT;
+	}
+	iTJSDispatch2 *arr = TJSCreateArrayObject();
+	try {
+		tTVPMonitorEnumParam pm = { arr, 0 };
+		::EnumDisplayMonitors(NULL, useRect ? &r : NULL, &TVPMonitorEnumProc, (LPARAM)&pm);
+		if(result) *result = tTJSVariant(arr, arr);
+	} catch(...) {
+		arr->Release();
+		throw;
+	}
+	arr->Release();
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
+	/*func. name*/getDisplayMonitors)
+//----------------------------------------------------------------------
+// System.getSystemMetrics("CXSIZEFRAME") … Win32 の GetSystemMetrics
+//   ⚠ Win32 固有。SDL / CS 版は void を返す
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/getSystemMetrics)
+{
+	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
+	if(result) result->Clear();
+	ttstr key(*param[0]);
+	if(key.IsEmpty()) return TJS_E_INVALIDPARAM;
+	key.ToUppserCase();
+	int index = -1;
+	struct { const tjs_char *Name; int Index; } table[] = {
+		{ TJS_W("CXSCREEN"),       SM_CXSCREEN       },
+		{ TJS_W("CYSCREEN"),       SM_CYSCREEN       },
+		{ TJS_W("CXFULLSCREEN"),   SM_CXFULLSCREEN   },
+		{ TJS_W("CYFULLSCREEN"),   SM_CYFULLSCREEN   },
+		{ TJS_W("CXVIRTUALSCREEN"),SM_CXVIRTUALSCREEN},
+		{ TJS_W("CYVIRTUALSCREEN"),SM_CYVIRTUALSCREEN},
+		{ TJS_W("XVIRTUALSCREEN"), SM_XVIRTUALSCREEN },
+		{ TJS_W("YVIRTUALSCREEN"), SM_YVIRTUALSCREEN },
+		{ TJS_W("CMONITORS"),      SM_CMONITORS      },
+		{ TJS_W("CXBORDER"),       SM_CXBORDER       },
+		{ TJS_W("CYBORDER"),       SM_CYBORDER       },
+		{ TJS_W("CXEDGE"),         SM_CXEDGE         },
+		{ TJS_W("CYEDGE"),         SM_CYEDGE         },
+		{ TJS_W("CXFRAME"),        SM_CXFRAME        },
+		{ TJS_W("CYFRAME"),        SM_CYFRAME        },
+		{ TJS_W("CXSIZEFRAME"),    SM_CXSIZEFRAME    },
+		{ TJS_W("CYSIZEFRAME"),    SM_CYSIZEFRAME    },
+		{ TJS_W("CXFIXEDFRAME"),   SM_CXFIXEDFRAME   },
+		{ TJS_W("CYFIXEDFRAME"),   SM_CYFIXEDFRAME   },
+		{ TJS_W("CXDLGFRAME"),     SM_CXDLGFRAME     },
+		{ TJS_W("CYDLGFRAME"),     SM_CYDLGFRAME     },
+		{ TJS_W("CXPADDEDBORDER"), SM_CXPADDEDBORDER },
+		{ TJS_W("CYCAPTION"),      SM_CYCAPTION      },
+		{ TJS_W("CYSMCAPTION"),    SM_CYSMCAPTION    },
+		{ TJS_W("CYMENU"),         SM_CYMENU         },
+		{ TJS_W("CXICON"),         SM_CXICON         },
+		{ TJS_W("CYICON"),         SM_CYICON         },
+		{ TJS_W("CXSMICON"),       SM_CXSMICON       },
+		{ TJS_W("CYSMICON"),       SM_CYSMICON       },
+		{ TJS_W("CXCURSOR"),       SM_CXCURSOR       },
+		{ TJS_W("CYCURSOR"),       SM_CYCURSOR       },
+		{ TJS_W("CXVSCROLL"),      SM_CXVSCROLL      },
+		{ TJS_W("CYHSCROLL"),      SM_CYHSCROLL      },
+		{ TJS_W("CXMIN"),          SM_CXMIN          },
+		{ TJS_W("CYMIN"),          SM_CYMIN          },
+		{ TJS_W("CXMAXIMIZED"),    SM_CXMAXIMIZED    },
+		{ TJS_W("CYMAXIMIZED"),    SM_CYMAXIMIZED    },
+		{ TJS_W("CXMAXTRACK"),     SM_CXMAXTRACK     },
+		{ TJS_W("CYMAXTRACK"),     SM_CYMAXTRACK     },
+		{ TJS_W("CXDOUBLECLK"),    SM_CXDOUBLECLK    },
+		{ TJS_W("CYDOUBLECLK"),    SM_CYDOUBLECLK    },
+		{ TJS_W("CXDRAG"),         SM_CXDRAG         },
+		{ TJS_W("CYDRAG"),         SM_CYDRAG         },
+		{ TJS_W("SWAPBUTTON"),     SM_SWAPBUTTON     },
+		{ TJS_W("MOUSEPRESENT"),   SM_MOUSEPRESENT   },
+		{ TJS_W("MOUSEWHEELPRESENT"), SM_MOUSEWHEELPRESENT },
+		{ TJS_W("REMOTESESSION"),  SM_REMOTESESSION  },
+		{ TJS_W("SHUTTINGDOWN"),   SM_SHUTTINGDOWN   },
+	};
+	for(size_t i = 0; i < sizeof(table)/sizeof(table[0]); i++) {
+		if(key == table[i].Name) { index = table[i].Index; break; }
+	}
+	if(index < 0) return TJS_S_OK;   // 知らないキーは void
+	if(result) *result = (tjs_int)::GetSystemMetrics(index);
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
+	/*func. name*/getSystemMetrics)
 //----------------------------------------------------------------------
 TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/getTickCount)
 {
@@ -1051,22 +1399,6 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/setArgument)
 }
 TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
 	/*func. name*/setArgument)
-//----------------------------------------------------------------------
-TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/createAppLock)
-{
-	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
-	if(!result) return TJS_S_OK;
-
-	ttstr lockname = *param[0];
-
-	bool res = TVPCreateAppLock(lockname);
-
-	if(result) *result = (tjs_int)res;
-
-	return TJS_S_OK;
-}
-TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
-	/*func. name*/createAppLock)
 //----------------------------------------------------------------------
 TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/dumpHeap)
 {
@@ -1235,6 +1567,37 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/showVersion)
 }
 TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
 	/*func. name*/showVersion)
+//----------------------------------------------------------------------
+// System.addFont(storage) : フォントファイルを登録し、実 face 名の配列を返す
+//   generic 版の System.addFont と対にするための WINVER 側の実装。
+//   中身は Font.addFont と同じ (FontSystem::AddExtraFont)。
+//   旧 addFont プラグインの System.addFont(file, extract) の置き換えでもある
+//   (extract はストレージ側が面倒を見るので不要。 戻り値は登録数ではなく face 名の配列)。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/addFont)
+{
+	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
+
+	ttstr storage = *param[0];
+	std::vector<ttstr> faces;
+	TVPFontSystem->AddExtraFont( storage.AsStdString(), result ? &faces : nullptr );
+
+	if(result)
+	{
+		iTJSDispatch2 *dsp = TJSCreateArrayObject();
+		tTJSVariant tmp(dsp, dsp);
+		*result = tmp;
+		dsp->Release();
+		for(tjs_uint i = 0; i < faces.size(); i++)
+		{
+			tmp = faces[i];
+			dsp->PropSetByNum(TJS_MEMBERENSURE, i, &tmp, dsp);
+		}
+	}
+
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
+	/*func. name*/addFont)
 //---------------------------------------------------------------------------
 
 //----------------------------------------------------------------------

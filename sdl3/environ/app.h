@@ -32,6 +32,24 @@ protected:
 	//! ホイールの WHEEL_DELTA(=120) 換算残差 (SDL3 はノッチ単位の float)
 	float mWheelAccum;
 
+	//-- ウィンドウ状態まわり (doc/WindowState.md)
+	bool mExEventEnabled;       //!< registerExEvent() したか
+	bool mDeviceChangeEnabled;  //!< registerDeviceChange() したか
+	bool mMoveDisabled;         //!< SDL には移動を止める口が無いので値の保持だけ
+	bool mResizeDisabled;       //!< borderStyle と合わせて SDL_SetWindowResizable へ
+	//! 最大化 / 最小化していないときの外形矩形。SDL は覚えていないので自前で追う
+	bool mHasNormalRect;
+	int  mNormalLeft, mNormalTop, mNormalWidth, mNormalHeight;
+
+	//! 通常状態なら現在の位置とサイズを控える (最大化前の矩形を返すため)
+	void UpdateNormalRect();
+	//! borderStyle と disableResize を合わせて SDL へ反映する
+	void ApplyResizable();
+	//! 拡張イベントを投げる (registerExEvent していないときは何もしない)
+	void FireExEvent(const tjs_char *name, int argc = 0, int a0 = 0, int a1 = 0);
+	//! onDeviceChanged(arrival) を投げる (registerDeviceChange していないときは何もしない)
+	void FireDeviceChanged(bool arrival);
+
 	bool checkTouchDevice();
 
 	//! ウィンドウ移動 (クライアントの物理ピクセルサイズを維持する)
@@ -122,6 +140,25 @@ public:
 
 	virtual void SetEnableTouchMouse( bool b );
 	virtual bool GetEnableTouchMouse() const;
+
+	// --- ウィンドウ状態 / 矩形 / 拡張イベント (doc/WindowState.md) -------
+	virtual bool GetMaximized() const;
+	virtual bool GetMinimized() const;
+	virtual void Maximize();
+	virtual void Minimize();
+	virtual void ShowRestore();
+	virtual bool GetNormalRect( int& l, int& t, int& w, int& h ) const;
+	virtual bool GetWindowRectScreen( int& l, int& t, int& w, int& h ) const;
+	virtual bool GetClientRectScreen( int& l, int& t, int& w, int& h ) const;
+	virtual bool SetClientRectScreen( int l, int t, int w, int h );
+	virtual void SetMoveDisabled( bool b );
+	virtual bool GetMoveDisabled() const { return mMoveDisabled; }
+	virtual void SetResizeDisabled( bool b );
+	virtual bool GetResizeDisabled() const { return mResizeDisabled; }
+	virtual void SetDeviceChangeEnabled( bool b ) { mDeviceChangeEnabled = b; }
+	virtual bool GetDeviceChangeEnabled() const { return mDeviceChangeEnabled; }
+	virtual void SetExEventEnabled( bool b ) { mExEventEnabled = b; }
+	virtual bool GetExEventEnabled() const { return mExEventEnabled; }
 
 	//< SDLイベント処理
 	bool AppEvent(const SDL_Event& event);
@@ -214,6 +251,13 @@ public:
 
 	// デスクトップ (作業領域) の矩形 (System.desktop*)。 BaseDisplayID の
 	// SDL_GetDisplayUsableBounds (タスクバー等を除いた領域、 グローバル座標)。
+	// モニタ情報 (System.getMonitorInfo / getDisplayMonitors)
+	virtual tjs_int GetMonitorCount() const override;
+	virtual bool GetMonitorInfoAt(tjs_int index, tTVPMonitorInfo &info) const override;
+	virtual tjs_int GetPrimaryMonitorIndex() const override;
+	virtual tjs_int FindMonitorForRect(tjs_int x, tjs_int y, tjs_int w, tjs_int h,
+									   bool nearest) const override;
+
 	virtual tjs_int DesktopLeft() const override;
 	virtual tjs_int DesktopTop() const override;
 	virtual tjs_int DesktopWidth() const override;
@@ -228,6 +272,8 @@ public:
 
 	// Yes/No モーダル確認 (System.confirm)。SDL_ShowMessageBox で同期表示。
 	virtual bool ConfirmYesNo(const tjs_string& string, const tjs_string& caption) override;
+	virtual int Choose(const tjs_string& string, const tjs_string& caption,
+		const std::vector<tjs_string>& choices, int def) override;
 
 	// テキスト入力 (System.inputString)。既定は Elements 実装。OS のソフトウェア
 	// キーボード等へ差し替えたいプラットフォームはこのメソッドを override する。
@@ -286,6 +332,12 @@ public:
 
 	//< シェル実行 (System.shellExecute)。SDL_OpenURL で URL/ファイルを既定ハンドラで開く。
 	virtual bool ShellExecute(const tjs_char *target, const tjs_char *param) override;
+
+	//< 多重起動の抑止 (System.createAppLock)。
+	//< ⚠ SDL の同期プリミティブ (SDL_Mutex / SDL_Semaphore) は**プロセス内専用**で
+	//<   名前付き = プロセス間のものが無いので、テンポラリ領域のロックファイルを
+	//<   OS の排他ロックで掴む形にしてある。 実装は app.cpp。
+	virtual bool CreateAppLock(const ttstr &lockname) override;
 
 	// -----------------------------------------------------------------------
 

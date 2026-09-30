@@ -13,6 +13,7 @@
 #include "MsgIntf.h"
 
 #include "StorageImpl.h"
+#include "UtilStreams.h"   // tTVPLocalTempStorageHolder (プラグインの取り出し)
 #include "WindowImpl.h"
 #include "SysInitIntf.h"
 #ifdef KRKRZ_USE_REPL_FILECHANNEL
@@ -288,7 +289,9 @@ bool TVPRemoveFile(const ttstr &name)
 //---------------------------------------------------------------------------
 bool TVPRemoveFolder(const ttstr &name)
 {
-	return 0==LocalFileSystem->RemoveDirectory(name.c_str());
+	// ⚠ iTVPLocalFileSystem::RemoveDirectory は成功で true を返す。
+	//   ここを 0== にしていたため、削除できていても false を返していた。
+	return LocalFileSystem->RemoveDirectory(name.c_str());
 }
 //---------------------------------------------------------------------------
 
@@ -316,6 +319,15 @@ tjs_uint64 TVPLastModifiedFileTime(const ttstr &name)
 tjs_uint64 TVPFileSize(const ttstr &name)
 {
 	return LocalFileSystem->FileSize(name.c_str());
+}
+//---------------------------------------------------------------------------
+// ローカルの実フォルダを isDir つきで列挙する (common/base/StorageIntf.h)
+//---------------------------------------------------------------------------
+void TVPGetLocalFolderListAt(const ttstr &name,
+	const std::function<void(const tjs_char *name, bool isDir)> &lister, bool withDir)
+{
+	InitLocalFileSystem();
+	LocalFileSystem->GetListAt(name.c_str(), lister, withDir);
 }
 
 //---------------------------------------------------------------------------
@@ -510,7 +522,18 @@ retry:
 tTVPPluginHolder::tTVPPluginHolder(const ttstr &aname)
 : LocalTempStorageHolder(nullptr)
 {
-	// not found in TVP storage system; search exepath, exepath\plugin	
+	// [2026-09-26] まずストレージシステムに聞く (WINVER 側と同じ手順)。
+	//   これが無いと **自動検索パスに置いたプラグインも、file:// のフルパス指定も
+	//   解決できない**。呼び出し側 (ゲーム) が tools/plugin64/ 等を autopath へ
+	//   足していても見つからず、「プラグインを読み込めません」になっていた。
+	ttstr place(TVPGetPlacedPath(aname));
+	if(!place.IsEmpty()) {
+		// アーカイブ内にあるときはテンポラリへ取り出して使う
+		LocalTempStorageHolder = new tTVPLocalTempStorageHolder(place);
+		return;
+	}
+
+	// 見つからなければ実行ファイルの場所 / プラグインフォルダを直接探す
 	ttstr basepath = Application->AppPath();
 	ttstr pname = basepath + aname;
 	if(TVPCheckExistentLocalFile(pname)) {
@@ -542,38 +565,7 @@ const ttstr & tTVPPluginHolder::GetLocalName() const
 }
 //---------------------------------------------------------------------------
 
-static bool setDirListFile(iTJSDispatch2 *array, tjs_int count, ttstr const &file) 
-{
-	// [dirlist] 配列に追加する
-	tTJSVariant val(file);
-	array->PropSetByNum(0, count, &val, array);
-	return true;
-}
 
-static void _dirtree(const ttstr &path, const ttstr &subdir, iTJSDispatch2 *array, tjs_int &count, bool dironly) 
-{
-	LocalFileSystem->GetListAt(path.c_str(), [array, &count, &path, &subdir, dironly](const tjs_char *filename, bool isDir) {
-		ttstr file = filename;
-	#ifdef TVP_NO_NORMALIZE_PATH
-	#else
-		tjs_char *p = file.Independ();
-		while(*p) {
-			// make all characters small
-			if(*p >= TJS_W('A') && *p <= TJS_W('Z'))
-				*p += TJS_W('a') - TJS_W('A');
-			p++;
-		}
-	#endif
-		if (isDir) {
-			ttstr name(subdir + file + TJS_W("/"));
-			setDirListFile(array, count++, name);
-			_dirtree(path + file + TJS_W("/"), name, array, count, dironly);
-		} else if (!dironly) {
-			ttstr name(subdir + file);
-			setDirListFile(array, count++, name);
-		}
-	}, dironly);
-}
 
 //---------------------------------------------------------------------------
 // TVPCreateNativeClass_Storages
@@ -660,91 +652,6 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/selectDirectory)
 TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
 	/*func. name*/selectDirectory)
 //----------------------------------------------------------------------
-TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/isExistentDirectory)
-{
-	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
-
-	ttstr path = *param[0];
-
-	if(path.GetLastChar() != TJS_W('/')) {
-		TVPThrowExceptionMessage(TVPRequireSlashEndOfDirectory);
-	}
-	path = TVPNormalizeStorageName(path);
-	TVPGetLocalName(path);
-	if(result)
-		*result = TVPCheckExistentLocalFolder(path) ? 1:0;
-
-	return TJS_S_OK;
-}
-TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
-	/*func. name*/isExistentDirectory)
-//----------------------------------------------------------------------
-TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/dirlist)
-{
-	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
-
-	ttstr path = *param[0];
-
-	if(path.GetLastChar() != TJS_W('/')) {
-		TVPThrowExceptionMessage(TVPRequireSlashEndOfDirectory);
-	}
-
-	path = TVPNormalizeStorageName(path);
-	TVPGetLocalName(path);
-
-	if(result) {
-		// Array クラスのオブジェクトを作成
-		iTJSDispatch2 * array = TJSCreateArrayObject();
-		tjs_int count = 0;
-
-		LocalFileSystem->GetListAt(path.c_str(), [array, &count](const tjs_char *filename, bool isDir) {
-			ttstr file = filename;
-			if (isDir) {
-				file += TJS_W("/");
-			}
-	#ifdef TVP_NO_NORMALIZE_PATH
-	#else
-			tjs_char *p = file.Independ();
-			while(*p) {
-				// make all characters small
-				if(*p >= TJS_W('A') && *p <= TJS_W('Z'))
-					*p += TJS_W('a') - TJS_W('A');
-				p++;
-			}
-	#endif
-			setDirListFile(array, count++, file);
-		}, true);
-		*result = tTJSVariant(array, array);
-		array->Release();
-	}
-
-	return TJS_S_OK;
-}
-TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
-	/*func. name*/dirlist)
-//----------------------------------------------------------------------
-TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/dirtree)
-{
-	if (numparams < 1) return TJS_E_BADPARAMCOUNT;
-	bool dironly = numparams > 1 ? param[1]->operator bool() : false;
-		
-	ttstr path(TVPNormalizeStorageName(ttstr(*param[0])+TJS_W("/")));
-	TVPGetLocalName(path);
-
-	if(result) {
-		iTJSDispatch2 * array = TJSCreateArrayObject();
-		tjs_int count = 0;
-
-		_dirtree(path, TJS_W(""), array, count, dironly);
-
-		*result = tTJSVariant(array, array);
-		array->Release();
-	}
-	return TJS_S_OK;
-}
-TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
-	/*func. name*/dirtree)
-//----------------------------------------------------------------------
 	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/commitSavedata)
 {
 	LocalFileSystem->CommitSavedata();
@@ -759,59 +666,6 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/rollbackSavedata)
 }
 TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
 	/*func. name*/rollbackSavedata)
-TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/moveFile)
-{
-	if(numparams < 2) return TJS_E_BADPARAMCOUNT;
-
-	tTJSVariant *from = param[0];
-	tTJSVariant *to   = param[1];
-
-	bool ret = false;
-	if (from && to && from->Type() == tvtString && to->Type() == tvtString) {
-
-		// 正規パス
-		ttstr fromFile = TVPNormalizeStorageName(from->AsString());
-		ttstr toFile   = TVPNormalizeStorageName(to->AsString());
-
-		TVPLOG_DEBUG("move from:{} to:{}", fromFile, toFile);
-
-		if (TVPMoveStorage(fromFile, toFile)) {
-			ret = true;
-			TVPClearAutoPathCacheFile(fromFile);
-			TVPAddAutoPathCacheFile(toFile);
-		}
-	}
-	if (result) {
-		*result = ret ? 1:0;
-	}
-	return TJS_S_OK;
-}
-TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
-	/*func. name*/moveFile)
-TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/deleteFile)
-{
-	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
-
-	tTJSVariant *path = param[0];
-
-	bool ret = false;
-	if (path && path->Type() == tvtString) {
-		// 正規パス
-		ttstr pathFile = TVPNormalizeStorageName(path->AsString());
-		TVPLOG_DEBUG("delete file:{}", pathFile);
-		if (TVPRemoveStorage(pathFile)) {
-			ret = true;
-			TVPClearAutoPathCacheFile(pathFile);
-		}
-	}
-
-	if (result) {
-		*result = ret ? 1:0;
-	}
-	return TJS_S_OK;
-}
-TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
-	/*func. name*/deleteFile)
 
 TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/getLastModifiedFileTime)
 {

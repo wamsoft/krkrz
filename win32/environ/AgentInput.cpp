@@ -12,6 +12,7 @@
 #include "AgentInput.h"
 #include "Application.h"
 #include "WindowFormUnit.h"
+#include "VirtualCursor.h"
 
 namespace {
 // 注入先のフォーム。モーダルウィンドウ表示中はそちらを対象にする
@@ -26,6 +27,8 @@ TTVPWindowForm* AgentMainForm()
 
 bool TVPAgentInjectMouseMove(int shift, int x, int y)
 {
+	// -ignoremouse 中でも Agent の注入は通す (実入力だけを捨てる)。
+	tTVPAgentMouseInjectScope inject_scope;
 	TTVPWindowForm* form = AgentMainForm();
 	if (!form) return false;
 	form->OnMouseMove(shift, x, y);
@@ -34,6 +37,8 @@ bool TVPAgentInjectMouseMove(int shift, int x, int y)
 
 bool TVPAgentInjectMouseButton(bool down, int button, int shift, int x, int y)
 {
+	// -ignoremouse 中でも Agent の注入は通す (実入力だけを捨てる)。
+	tTVPAgentMouseInjectScope inject_scope;
 	TTVPWindowForm* form = AgentMainForm();
 	if (!form) return false;
 	if (down) {
@@ -50,6 +55,8 @@ bool TVPAgentInjectMouseButton(bool down, int button, int shift, int x, int y)
 
 bool TVPAgentInjectWheel(int delta, int shift, int x, int y)
 {
+	// -ignoremouse 中でも Agent の注入は通す (実入力だけを捨てる)。
+	tTVPAgentMouseInjectScope inject_scope;
 	TTVPWindowForm* form = AgentMainForm();
 	if (!form) return false;
 	form->OnMouseWheel(delta, shift, x, y);

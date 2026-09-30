@@ -98,6 +98,9 @@ private:
 	std::condition_variable Cond;
 	enum tState { stStopped, stPlaying, stPaused, stEnded };
 	std::atomic<tState> State;
+	//! prepare 再生中 (音声を開始せず 1 コマだけ提示して stPaused に戻る)。
+	//! PrepareFrame() が立て、1 コマ提示した時点でデコードスレッドが下ろす。
+	std::atomic<bool> PrepareOnly;
 	std::atomic<bool> Terminate;
 	std::atomic<bool> DoSeek;
 	std::atomic<__int64> SeekMs;
@@ -147,6 +150,8 @@ public:
 	virtual void __stdcall Play();
 	virtual void __stdcall Stop();
 	virtual void __stdcall Pause();
+	//! 音声を開始せずに 1 コマだけデコード/提示する (engine の prepare)。
+	virtual bool __stdcall PrepareFrame();
 	virtual void __stdcall SetPosition( unsigned __int64 tick );
 	virtual void __stdcall GetPosition( unsigned __int64 *tick );
 	virtual void __stdcall GetStatus( tTVPVideoStatus *status );

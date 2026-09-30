@@ -525,8 +525,54 @@ tTVPAtExit TVPDestroyPluginVectorAtExit
 	(TVP_ATEXIT_PRI_RELEASE, TVPDestroyPluginVector);
 //---------------------------------------------------------------------------
 static bool TVPPluginLoading = false;
+//---------------------------------------------------------------------------
+// 同梱プラグインの申告 (PluginImpl.h の TVPRegisterBundledPlugin)
+//   詰め合わせプラグインが「この名前は自分が提供している」と登録する。
+//   以後 link は何もせず成功し、canLink も true を返す。
+//---------------------------------------------------------------------------
+static std::vector<ttstr> TVPBundledPlugins;
+static ttstr TVPNormalizeBundledPluginName(const ttstr &name)
+{
+	ttstr n = TVPExtractStorageName(name);
+	n.ToLowerCase();
+	return n;
+}
+void TVPRegisterBundledPlugin(const ttstr &name)
+{
+	ttstr key = TVPNormalizeBundledPluginName(name);
+	for(std::vector<ttstr>::iterator i = TVPBundledPlugins.begin();
+		i != TVPBundledPlugins.end(); i++)
+	{
+		if(*i == key) return;
+	}
+	TVPBundledPlugins.push_back(key);
+	TVPAddImportantLog(ttstr(TJS_W("(info) Bundled Plugin:")) + key);
+}
+void TVPUnregisterBundledPlugin(const ttstr &name)
+{
+	ttstr key = TVPNormalizeBundledPluginName(name);
+	for(std::vector<ttstr>::iterator i = TVPBundledPlugins.begin();
+		i != TVPBundledPlugins.end(); i++)
+	{
+		if(*i == key) { TVPBundledPlugins.erase(i); return; }
+	}
+}
+bool TVPIsBundledPlugin(const ttstr &name)
+{
+	ttstr key = TVPNormalizeBundledPluginName(name);
+	for(std::vector<ttstr>::iterator i = TVPBundledPlugins.begin();
+		i != TVPBundledPlugins.end(); i++)
+	{
+		if(*i == key) return true;
+	}
+	return false;
+}
+//---------------------------------------------------------------------------
 void TVPLoadPlugin(const ttstr & name)
 {
+	// 詰め合わせプラグインが既に提供しているものは何もしない
+	if(TVPIsBundledPlugin(name)) return;
+
 	// load plugin
 	if(TVPPluginLoading)
 		TVPThrowExceptionMessage(TVPCannnotLinkPluginWhilePluginLinking);
@@ -566,6 +612,9 @@ void TVPLoadPlugin(const ttstr & name)
 //---------------------------------------------------------------------------
 bool TVPUnloadPlugin(const ttstr & name)
 {
+	// 詰め合わせプラグインが提供しているものは常に「あり」扱い
+	if(TVPIsBundledPlugin(name)) return true;
+
 	// unload plugin
 
 	// 静的プラグインは登録名をキーに正規化する (TVPLoadPlugin と対称)
@@ -591,6 +640,9 @@ bool TVPUnloadPlugin(const ttstr & name)
 //---------------------------------------------------------------------------
 bool TVPCanLoadPlugin(const ttstr & name)
 {
+	// 詰め合わせプラグインが提供しているものは常に「あり」扱い
+	if(TVPIsBundledPlugin(name)) return true;
+
 	// 指定名のプラグインがロード可能かを判定する。例外は投げない。
 	// TVPLoadPlugin() (および tTVPPluginHolder の探索順) と同等の判定を行う:
 	//   1) 既にロード済み

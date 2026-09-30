@@ -743,10 +743,24 @@ void TVPEnsureDataPathDirectory()
 static void PushAllCommandlineArguments()
 {
 	// store arguments given by commandline to "TVPProgramArguments"
-	bool acceptfilenameargument = GetSystemSecurityOption("acceptfilenameargument") != 0;
+	// acceptfilenameargument の 0 / 1 / 2 の意味は win32/base/SysInitImpl.cpp と同じ
+	// (2 = 単独の "--" があれば前をオプションとして読み、無ければ 1 と同じ)
+	const int acceptfilenameargument = GetSystemSecurityOption("acceptfilenameargument");
 
 	bool argument_stopped = false;
-	if(acceptfilenameargument) argument_stopped = true;
+	bool keep_nonoption = false;	// "--" より前の非オプション引数も -argN にする (値 2)
+	if(acceptfilenameargument == 2)
+	{
+		bool has_stopper = false;
+		for(tjs_int i = 1; i< Application->GetArgumentCount(); i++)
+		{
+			const tjs_char *arg = Application->GetArgument(i);
+			if(arg[0] == '-' && arg[1] == '-' && arg[2] == 0) { has_stopper = true; break; }
+		}
+		if(has_stopper) keep_nonoption = true;
+		else argument_stopped = true;
+	}
+	else if(acceptfilenameargument) argument_stopped = true;
 	int file_argument_count = 0;
 	for(tjs_int i = 1; i< Application->GetArgumentCount(); i++)
 	{
@@ -774,6 +788,13 @@ static void PushAllCommandlineArguments()
 						value += TJS_W("=yes");
 					TVPProgramArguments.push_back(TVPParseCommandLineOne(value));
 				}
+			}
+			else if(keep_nonoption)
+			{
+				ttstr arg_name_and_value = TJS_W("-arg") + ttstr(file_argument_count) + TJS_W("=")
+					+ ttstr(arg);
+				file_argument_count++;
+				TVPProgramArguments.push_back(arg_name_and_value);
 			}
 		}
 	}

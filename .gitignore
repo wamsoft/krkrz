@@ -49,6 +49,9 @@ data
 !/data/elements_gallery/
 !/data/elements_flow/
 !/data/elements_bench/
+!/data/elements_audit/
+# elements_audit の資材は -genassets で生成する (リポジトリには置かない)
+/data/elements_audit/image/
 !/data/upload_bench/
 !/data/gl_canvas/
 !/data/gl_particles/

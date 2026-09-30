@@ -11,7 +11,7 @@ add_link_options("$<$<AND:$<C_COMPILER_ID:MSVC>,$<COMPILE_LANGUAGE:C,CXX>>:/DEBU
 
 
 set(PROJECT_NAME krkrz)
-set(PROJECT_VERSION 2.3.0)
+set(PROJECT_VERSION 2.4.0)
 
 # ----------------------------------------------------
 # vcpkg マニフェスト統合
@@ -284,6 +284,58 @@ if (MASTER)
     message(STATUS "MASTER build: all stat features forced OFF")
 endif()
 
+# ----------------------------------------------------
+# 埋め込みリソースの取捨選択 (resource/ → exe / bundle / objcopy)
+#
+# エンジン同梱の resource/ にはテキスト用フォントが 3 本入っており、Windows の
+# .rsrc だけで 6MB 強を占める (notosansjp-regular.otf 4.3MB /
+# notoemoji-regular.ttf 1.9MB / roboto-regular.ttf 0.16MB)。案件が自前の
+# フォントを data/ 配下から registerFontDir() 等で供給する構成では、この 2 本の
+# 大物は完全な死荷重になるため、埋め込みから外せるようにする。
+#
+#   KRKRZ_EMBED_BUNDLED_FONTS=OFF  → notosansjp / notoemoji を埋め込まない
+#   KRKRZ_RESOURCE_EXCLUDE="a;b"   → 任意のファイル名を追加で除外
+#
+# roboto-regular.ttf と elements_basic.ttf は Elements の既定テーマ
+# (label_font / heading_font / アイコン) が参照するので、OFF でも残す。
+# 除外すると当然そのフォントは resource:// から引けなくなる。日本語を
+# 描画する構成では案件側でフォントを供給すること。
+# ----------------------------------------------------
+option(KRKRZ_EMBED_BUNDLED_FONTS
+       "embed the bundled CJK / emoji fonts (notosansjp, notoemoji) into the binary" ON)
+set(KRKRZ_RESOURCE_EXCLUDE "" CACHE STRING
+    "resource/ file names to exclude from embedding (';' separated)")
+
+# RESOURCE_FILES (file(GLOB) の結果) から除外対象を落とす。
+# variant ごとの分岐 (SDL / WIN) の両方から呼ぶので、分岐より前で定義する。
+function(krkrz_filter_resource_files _var)
+	set(_excl ${KRKRZ_RESOURCE_EXCLUDE})
+	if(NOT KRKRZ_EMBED_BUNDLED_FONTS)
+		list(APPEND _excl "notosansjp-regular.otf" "notoemoji-regular.ttf")
+	endif()
+	if(NOT _excl)
+		return()
+	endif()
+	set(_kept "")
+	foreach(_f IN LISTS ${_var})
+		get_filename_component(_n "${_f}" NAME)
+		string(TOLOWER "${_n}" _nlower)
+		set(_drop FALSE)
+		foreach(_e IN LISTS _excl)
+			string(TOLOWER "${_e}" _elower)
+			if(_nlower STREQUAL _elower)
+				set(_drop TRUE)
+			endif()
+		endforeach()
+		if(_drop)
+			message(STATUS "resource: exclude ${_n} (not embedded)")
+		else()
+			list(APPEND _kept "${_f}")
+		endif()
+	endforeach()
+	set(${_var} "${_kept}" PARENT_SCOPE)
+endfunction()
+
 # 描画分散判定 (GetAdaptiveThreadNum 等) の pixel 数閾値乗数。
 # 各 callsite ごとの factor に対して "pixelNum >= factor * SCALE" で threading 化判定。
 # 値を下げるほど小さい画像でも threading 化される。Switch (Tegra) 実機で 500 / 200 / 100
@@ -334,11 +386,27 @@ set(LIBNAME lib${PROJECT_NAME})
 set(PLUGIN_DIR "plugin")
 endif()
 
+# 出力実行ファイル名の差し替え口。
+#   既定 (空) は従来通り krkrz.exe / krkrz64.exe。出荷パッケージャが決め打ちの
+#   土台 exe 名を要求する場合 (吉里吉里系のパッケージツールは tvpwin32.exe /
+#   tvpwin64.exe を土台にして暗号化フィルタ等を被せる作りのものがある) に
+#   -DKRKRZ_EXE_NAME=tvpwin64 のように与える。
+#   CMake ターゲット名 (${EXENAME}) は krkrz のまま据え置き、OUTPUT_NAME と
+#   VERSIONINFO の OriginalFilename だけを差し替える。ターゲット名を変えると
+#   umbrella の `make run` など既存の参照が全部ずれるため。
+set(KRKRZ_EXE_NAME "" CACHE STRING
+    "output executable base name (empty = krkrz / krkrz64)")
+if(KRKRZ_EXE_NAME)
+set(EXE_OUTPUT_NAME ${KRKRZ_EXE_NAME})
+else()
+set(EXE_OUTPUT_NAME ${EXENAME})
+endif()
+
 if(APPLE)
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
-set(KRKRZ_APPLE_BUNDLE_RUNTIME_DIR "${EXENAME}.app")
+set(KRKRZ_APPLE_BUNDLE_RUNTIME_DIR "${EXE_OUTPUT_NAME}.app")
 else()
-set(KRKRZ_APPLE_BUNDLE_RUNTIME_DIR "${EXENAME}.app/Contents/MacOS")
+set(KRKRZ_APPLE_BUNDLE_RUNTIME_DIR "${EXE_OUTPUT_NAME}.app/Contents/MacOS")
 endif()
 set(KRKRZ_PLUGIN_INSTALL_DIR "${KRKRZ_APPLE_BUNDLE_RUNTIME_DIR}")
 else()
@@ -515,10 +583,13 @@ foreach(PLUGIN ${TVP_PLUGINS})
         set(TVP_STATIC_PLUGIN OFF)
     endif()
 
-    # TVP_PLUGIN_FOLDERS から該当プラグインのフォルダを検索
+    # TVP_PLUGIN_FOLDERS から該当プラグインのフォルダを検索。
+    # ⚠ フォルダがあるだけでは駄目で **CMakeLists.txt を持つもの** を採る。
+    #   同名のフォルダが複数のツリーにあり、片方が中身の無い置き場 (SVN switch 用の
+    #   _makefile だけ等) のことがあるため。
     set(PLUGIN_SOURCE_DIR "")
     foreach(FOLDER ${TVP_PLUGIN_FOLDERS})
-        if(EXISTS "${FOLDER}/${PLUGIN}")
+        if(EXISTS "${FOLDER}/${PLUGIN}/CMakeLists.txt")
             set(PLUGIN_SOURCE_DIR "${FOLDER}/${PLUGIN}")
             break()
         endif()
@@ -549,6 +620,20 @@ foreach(PLUGIN ${TVP_PLUGINS})
         # krkrz_plugin() を使わない従来型 CMakeLists はフォルダ名=ターゲット名前提
         set(PLUGIN_TARGETS ${PLUGIN})
     endif()
+
+    # そのプラグインが「この構成では自分を作らない」と判断して return したケース
+    # (例: packinoneWin32 は KRKRZ_VARIANT=WIN のときだけターゲットを作る)。
+    # ターゲットが無いまま install() へ渡すと configure が落ちるので、ここで外す。
+    set(_PLUGIN_TARGETS_EXISTING "")
+    foreach(PLUGIN_TARGET ${PLUGIN_TARGETS})
+        if(TARGET ${PLUGIN_TARGET})
+            list(APPEND _PLUGIN_TARGETS_EXISTING ${PLUGIN_TARGET})
+        endif()
+    endforeach()
+    if(NOT _PLUGIN_TARGETS_EXISTING)
+        message(STATUS "skipped plugin: ${PLUGIN} (この構成ではターゲットが作られなかった)")
+    endif()
+    set(PLUGIN_TARGETS ${_PLUGIN_TARGETS_EXISTING})
 
     foreach(PLUGIN_TARGET ${PLUGIN_TARGETS})
     if(TVP_STATIC_PLUGIN)
@@ -874,6 +959,7 @@ set(KRKRZ_RESOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/resource" CACHE PATH
     "リソースフォルダ (既定=エンジン同梱。案件の nxresource で上書き可)")
 set(RESOURCE_DIR ${KRKRZ_RESOURCE_DIR})
 file(GLOB RESOURCE_FILES "${RESOURCE_DIR}/*")
+krkrz_filter_resource_files(RESOURCE_FILES)
 
 if (WIN32)
 
@@ -1305,6 +1391,7 @@ set(KRKRZ_RESOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/resource" CACHE PATH
     "リソースフォルダ (既定=エンジン同梱。案件の nxresource で上書き可)")
 set(RESOURCE_DIR ${KRKRZ_RESOURCE_DIR})
 file(GLOB RESOURCE_FILES "${RESOURCE_DIR}/*")
+krkrz_filter_resource_files(RESOURCE_FILES)
 set(RC_FILE ${CMAKE_BINARY_DIR}/resources.rc)
 file(WRITE ${RC_FILE} "")
 foreach(RESOURCE ${RESOURCE_FILES})
@@ -1375,6 +1462,14 @@ install(TARGETS ${EXENAME}
 )
 
 endif() # KRKRZ_VARIANT
+
+# 出力名の差し替え (KRKRZ_EXE_NAME)。LIB variant には exe ターゲットが無いので
+# TARGET ガードを噛ませる。install(TARGETS) は generate 時の OUTPUT_NAME を
+# 見るので、ここで後から設定しても配布物側にも効く。
+if(KRKRZ_EXE_NAME AND TARGET ${EXENAME})
+	set_target_properties(${EXENAME} PROPERTIES OUTPUT_NAME ${KRKRZ_EXE_NAME})
+	message(STATUS "executable output name: ${KRKRZ_EXE_NAME} (target ${EXENAME})")
+endif()
 
 # ----------------------------------------------------
 # ライセンス文の配布同梱

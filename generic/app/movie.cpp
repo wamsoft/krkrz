@@ -63,6 +63,14 @@ class tTVPMoviePlayer : public iTVPMoviePlayer {
   virtual void Pause() {
     mPlayer->Pause();
   }
+  virtual bool PrepareFrame() {
+    // movie-player の Seek は「PRELOADING 状態で 1 コマ強制デコード → 元の状態へ
+    // 戻す」実装で、audio sink を Start するのは STATE_PLAY のときだけ。よって
+    // Seek(0) だけで「音を出さずに 1 コマ」がそのまま実現できる。
+    if (!mPlayer) return false;
+    mPlayer->Seek(0);
+    return true;
+  }
   virtual void Resume() {
     mPlayer->Resume();
   }

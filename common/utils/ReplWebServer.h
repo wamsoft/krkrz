@@ -73,6 +73,18 @@ void RegisterStatic(const ttstr& prefix, const ttstr& storageDir);
 /// 静的配信マウントを解除。登録が無ければ false。
 bool UnregisterStatic(const ttstr& prefix);
 
+/// 組み込みブラウザ UI へ**タブを 1 枚足す** (案件の観測 / 操作パネル)。
+/// 中身は `path` を iframe で読み込む (通常は RegisterStatic のマウント配下)。
+/// 同じ `id` で呼び直すと上書き。 登録 / 解除は開いているページへ即反映される。
+///
+/// 組み込みページへ外部スクリプトを差し込む形にしていないのは、 案件を内部 DOM
+/// へ依存させないため。 パネル側は同一オリジンなので fetch / EventSource で
+/// 自由にサーバを叩ける。
+void RegisterPanel(const ttstr& id, const ttstr& label, const ttstr& path);
+
+/// パネルを外す。 登録が無ければ false。
+bool UnregisterPanel(const ttstr& id);
+
 /// 汎用 SSE チャネル (/sub/<channel>) の購読者へ payload を配信 (改行可)。
 void BroadcastChannel(const ttstr& channel, const ttstr& payload);
 

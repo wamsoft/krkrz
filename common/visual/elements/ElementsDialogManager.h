@@ -168,10 +168,23 @@ public:
 		bool modal = false;
 		bool active = false;
 		ttstr screen;     //!< フローの現画面名 (単発ダイアログは空)
-		ttstr focused;    //!< 現在フォーカス中の widget id (無ければ空)
+		ttstr focused;    //!< 現在フォーカス中の widget id (無ければ空)。
+		                  //!< id を追跡する仕掛け (input ブロック等) を持つ画面
+		                  //!< でのみ埋まる。 空 = 追跡していない、が普通で、
+		                  //!< 「フォーカスが無い」を意味しない
+		bool textFocus = false;   //!< テキスト入力ウィジェットが編集フォーカスを
+		                          //!< 持つか (session->focus_consumes_text())。
+		                          //!< ソフトキーボード / IME の開閉判断と同じ値
 		int x = 0, y = 0, w = 0, h = 0;   //!< 直近描画矩形 (surface logical)
 	};
 	std::vector<InstanceInfo> DescribeInstances() const;
+
+	//! @brief IME の変換 / 変換候補ウィンドウ用に最後にホストへ渡した矩形
+	//!        (ウィンドウクライアント座標 px)。 診断用 (Agent.imeStatus())。
+	//! @param cursor テキスト領域左端からのキャレットの相対 x
+	//! @return テキスト欄に編集フォーカスがあり値が有効なら真
+	bool GetTextInputArea(tjs_int& x, tjs_int& y, tjs_int& w, tjs_int& h,
+	                      tjs_int& cursor) const;
 
 	//! @brief index 番目のインスタンスの id 付き widget を列挙 (UI ツリー dump)。
 	//!        Agent.dialogTree() から「どの widget が居るか / 現在値」を観測する。
@@ -355,7 +368,8 @@ public:
 
 	//! @brief 入力を転送してきた window を記録する (TVP_DIALOG_INTERCEPT 経由)。
 	//!        cursor-warp ナビ ("input":{"cursor_warp":true}) でフォーカス移動先へ
-	//!        実マウスカーソルを SetCursorPos するのに使う。 window 側の入力
+	//!        **仮想カーソル位置**を置くのに使う (実 OS カーソルは動かさない。
+	//!        doc/VirtualCursor.md)。 window 側の入力
 	//!        ハンドラ (tTJSNI_BaseWindow::On*) が this を渡す。
 	void NoteInputWindow(class iTVPWindow* window);
 
@@ -418,7 +432,12 @@ public:
 	void SetPadThemeAuto(bool enable);
 	bool GetPadThemeAuto() const;
 	// auto のときだけ、 今つながっているパッドを見てテーマを設定し直す。
+	// テーマが変わったら出ている画面を invalidate する (pad_icon は描画時に
+	// theme を見るので、 再描画だけで絵が差し替わる)。
 	void ResolveAutoPadTheme();
+	// 毎フレーム (PaintOverlay) から呼ぶ。 パッドの接続数 / 系統が前回と
+	// 変わっていたときだけ ResolveAutoPadTheme を走らせる (抜き差し追従)。
+	void PollAutoPadTheme();
 
 	void SetPartialRedraw(bool enable);
 	bool GetPartialRedraw() const;

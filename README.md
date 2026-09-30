@@ -508,6 +508,8 @@ CSV の言語列は ja / en / chs / cht。**cht (繁体字) 未記入の行は c
 | [REPL.md](doc/REPL.md) | 対話型 TJS シェル / ファイルチャネル / ブラウザ REPL / Agent 駆動 |
 | [CommandLinePresets.md](doc/CommandLinePresets.md) | コマンドラインのプリセット |
 | [UserStorage.md](doc/UserStorage.md) | `user://` ストレージメディアの初期化とプラットフォーム差し替えフック |
+| [LocalFileOps.md](doc/LocalFileOps.md) | Storages のローカルファイル操作と環境変数 (旧 fstat / systemEx の本体化、プラグインとの分担) |
+| [WindowState.md](doc/WindowState.md) | Window の最大化 / 矩形 / 拡張イベントとモニタ情報 (旧 windowEx の本体化) |
 | [AppEvent.md](doc/AppEvent.md) | アプリイベントの送出 |
 | [LicenseSystem.md](doc/LicenseSystem.md) | ライセンス表記の収集機構 |
 | [Versioning.md](doc/Versioning.md) | バージョン番号の供給元と上げ方 |

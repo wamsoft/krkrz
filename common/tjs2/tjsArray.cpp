@@ -1110,6 +1110,15 @@ iTJSDispatch2 *tTJSArrayClass::CreateBaseTJSObject()
 	return new tTJSArrayObject();
 }
 //---------------------------------------------------------------------------
+bool TJSArrayLazyMemberBinding = false;
+bool tTJSArrayClass::BindMembersLazily(iTJSDispatch2 *dsp)
+{
+	if(!TJSArrayLazyMemberBinding) return false;
+	// dsp is always a tTJSArrayObject here (made by CreateBaseTJSObject)
+	static_cast<tTJSArrayObject*>(dsp)->SetLazyMemberClass(this);
+	return true;
+}
+//---------------------------------------------------------------------------
 
 
 
@@ -1462,12 +1471,35 @@ void tTJSArrayNI::AssignStructure(iTJSDispatch2 * dsp,
 tTJSArrayObject::tTJSArrayObject() : tTJSCustomObject(TJS_ARRAY_BASE_HASH_BITS)
 {
 	CallFinalize = false;
+	LazyMemberClass = NULL;
 	TVPRegisterTJSArray(this);
 }
 //---------------------------------------------------------------------------
 tTJSArrayObject::~tTJSArrayObject()
 {
+	if(LazyMemberClass) LazyMemberClass->Release();
 	TVPUnregisterTJSArray(this);
+}
+//---------------------------------------------------------------------------
+void tTJSArrayObject::SetLazyMemberClass(iTJSDispatch2 *cls)
+{
+	if(cls) cls->AddRef();
+	if(LazyMemberClass) LazyMemberClass->Release();
+	LazyMemberClass = cls;
+}
+//---------------------------------------------------------------------------
+bool tTJSArrayObject::FindLazyProperty(const tjs_char *membername,
+	tjs_uint32 *hint, tTJSVariant &prop)
+{
+	// returns true when the class has a property of the name
+	// (count, length, or a property attached by a plugin)
+	if(!LazyMemberClass || !membername) return false;
+	if(TJS_FAILED(LazyMemberClass->PropGet(TJS_IGNOREPROP|TJS_MEMBERMUSTEXIST,
+		membername, hint, &prop, LazyMemberClass))) return false;
+	if(prop.Type() != tvtObject) return false;
+	iTJSDispatch2 *obj = prop.AsObjectNoAddRef();
+	if(!obj) return false;
+	return obj->IsInstanceOf(0, NULL, NULL, TJS_W("Property"), NULL) == TJS_S_TRUE;
 }
 //---------------------------------------------------------------------------
 
@@ -1658,7 +1690,18 @@ tjs_error TJS_INTF_METHOD
 	if(membername && IsNumber(membername, idx))
 		return FuncCallByNum(flag, idx, result, numparams, param, objthis);
 
-	return inherited::FuncCall(flag, membername, hint, result, numparams, param, objthis);
+	if(LazyMemberClass && membername && Count == 0)
+	{
+		// no members of its own (the usual case): go to the class directly
+		if(!GetValidity()) return TJS_E_INVALIDOBJECT;
+		return LazyMemberClass->FuncCall(flag, membername, hint, result, numparams, param,
+			LazyThis(objthis));
+	}
+	tjs_error hr = inherited::FuncCall(flag, membername, hint, result, numparams, param, objthis);
+	if(hr == TJS_E_MEMBERNOTFOUND && LazyMemberClass && membername)
+		hr = LazyMemberClass->FuncCall(flag, membername, hint, result, numparams, param,
+			LazyThis(objthis));
+	return hr;
 }
 //---------------------------------------------------------------------------
 tjs_error TJS_INTF_METHOD
@@ -1680,7 +1723,27 @@ tjs_error TJS_INTF_METHOD
 	tjs_int idx;
 	if(membername && IsNumber(membername, idx))
 		return PropGetByNum(flag, idx, result, objthis);
-	return inherited::PropGet(flag, membername, hint, result, objthis);
+	tjs_error hr;
+	if(LazyMemberClass && membername && Count == 0)
+	{
+		// no members of its own (the usual case): go to the class directly
+		if(!GetValidity()) return TJS_E_INVALIDOBJECT;
+		hr = TJS_E_MEMBERNOTFOUND;
+	}
+	else
+	{
+		hr = inherited::PropGet(flag, membername, hint, result, objthis);
+	}
+	if(hr == TJS_E_MEMBERNOTFOUND && LazyMemberClass && membername)
+	{
+		iTJSDispatch2 *self = LazyThis(objthis);
+		hr = LazyMemberClass->PropGet(flag, membername, hint, result, self);
+		// bind the method to this array, as the copied member used to be
+		if(TJS_SUCCEEDED(hr) && result && result->Type() == tvtObject &&
+			result->AsObjectThisNoAddRef() == NULL)
+			result->ChangeClosureObjThis(self);
+	}
+	return hr;
 }
 //---------------------------------------------------------------------------
 tjs_error TJS_INTF_METHOD
@@ -1703,6 +1766,18 @@ tjs_error TJS_INTF_METHOD
 	tjs_int idx;
 	if(membername && IsNumber(membername, idx))
 		return PropSetByNum(flag, idx, param, objthis);
+	if(LazyMemberClass && membername)
+	{
+		// a member of the instance itself comes first
+		tjs_error hr = inherited::PropSet(flag & ~TJS_MEMBERENSURE, membername, hint,
+			param, objthis);
+		if(hr != TJS_E_MEMBERNOTFOUND) return hr;
+		// properties of the class (count ...) are set through the property;
+		// anything else becomes a member of this instance, as before
+		tTJSVariant prop;
+		if(!(flag & TJS_IGNOREPROP) && FindLazyProperty(membername, hint, prop))
+			return prop.AsObjectNoAddRef()->PropSet(0, NULL, NULL, param, LazyThis(objthis));
+	}
 	return inherited::PropSet(flag, membername, hint, param, objthis);
 }
 //---------------------------------------------------------------------------
@@ -1744,6 +1819,11 @@ tjs_error TJS_INTF_METHOD
 	tjs_int idx;
 	if(membername && IsNumber((const tjs_char*)(*membername), idx))
 		return PropSetByNum(flag, idx, param, objthis);
+	if(LazyMemberClass && membername)
+	{
+		// same handling as PropSet (the class properties go through the property)
+		return PropSet(flag, (const tjs_char*)(*membername), NULL, param, objthis);
+	}
 	return inherited::PropSetByVS(flag, membername, param, objthis);
 }
 //---------------------------------------------------------------------------
@@ -1852,7 +1932,11 @@ tjs_error TJS_INTF_METHOD
 	tjs_int idx;
 	if(membername && IsNumber(membername, idx))
 		return IsInstanceOfByNum(flag, idx, classname, objthis);
-	return inherited::IsInstanceOf(flag, membername, hint, classname, objthis);
+	tjs_error hr = inherited::IsInstanceOf(flag, membername, hint, classname, objthis);
+	if(hr == TJS_E_MEMBERNOTFOUND && LazyMemberClass && membername)
+		hr = LazyMemberClass->IsInstanceOf(flag, membername, hint, classname,
+			LazyThis(objthis));
+	return hr;
 }
 //---------------------------------------------------------------------------
 tjs_error TJS_INTF_METHOD
@@ -1875,7 +1959,16 @@ tjs_error TJS_INTF_METHOD
 	tjs_int idx;
 	if(membername && IsNumber(membername, idx))
 		return OperationByNum(flag, idx, result, param, objthis);
-	return inherited::Operation(flag, membername, hint, result, param, objthis);
+	tjs_error hr = inherited::Operation(flag, membername, hint, result, param, objthis);
+	if(hr == TJS_E_MEMBERNOTFOUND && LazyMemberClass && membername)
+	{
+		// e.g. "a.count += 1": operate through the class property
+		tTJSVariant prop;
+		if(FindLazyProperty(membername, hint, prop))
+			hr = LazyMemberClass->Operation(flag, membername, hint, result, param,
+				LazyThis(objthis));
+	}
+	return hr;
 }
 //---------------------------------------------------------------------------
 tjs_error TJS_INTF_METHOD 

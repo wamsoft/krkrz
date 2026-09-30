@@ -37,6 +37,12 @@ extern void TJSThrowNarrowToWideConversionError();
 extern void TJSCompactStringHeap();
 #ifdef TJS_DEBUG_DUMP_STRING
 extern void TJSDumpStringHeap(void);
+#ifdef KRKRZ_ENABLE_MEMSTAT_DETAIL
+// 診断用: 文字列ヒープの生存セルを列挙する (ヒープのロック内で呼ぶ)。
+// fn の中で TJS 文字列を確保してはいけない。block はブロック番号、nblocks はブロック数。
+extern void TJSVisitStringHeap(void (*fn)(void *ctx, tjs_uint block, const tTJSVariantString *vs),
+	void *ctx, tjs_uint *nblocks, tjs_uint *cells_per_block);
+#endif
 #endif
 //---------------------------------------------------------------------------
 

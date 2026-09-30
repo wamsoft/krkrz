@@ -432,6 +432,13 @@ TTVPWindowForm::TranslateDrawAreaToWindow(int &x, int &y)
 }
 
 void TTVPWindowForm::OnMouseDown( int button, int shift, int x, int y ) {
+	// -ignoremouse: 実マウスの入力を捨てる (Agent の注入だけ通す)。
+	if (TVPShouldDropRealMouse()) return;
+	// クリックは**実座標が勝つ**: ユーザは見えているポインタの位置を押している
+	// ので、 仮想位置をそこへ合わせてから配送する (doc/VirtualCursor.md)。
+	// キー / パッドのナビが仮想位置を別の場所へ置いていても、 クリックで
+	// 揃うのでヒット判定と hover が食い違わない。
+	VirtualCursor.Set(x, y);
 
 	//if( !CanSendPopupHide() ) DeliverPopupHide();
 
@@ -451,6 +458,8 @@ void TTVPWindowForm::OnMouseDown( int button, int shift, int x, int y ) {
 }
 
 void TTVPWindowForm::OnMouseDoubleClick( int button, int x, int y ) {
+	// -ignoremouse: 実マウスの入力を捨てる (Agent の注入だけ通す)。
+	if (TVPShouldDropRealMouse()) return;
 	TranslateWindowToDrawArea( x, y );
 	if( button == mbLeft ) left_double_click_ = true;
 	if( TJSNativeInstance ) {
@@ -459,6 +468,13 @@ void TTVPWindowForm::OnMouseDoubleClick( int button, int x, int y ) {
 }
 
 void TTVPWindowForm::OnMouseUp( int button, int shift, int x, int y ) {
+	// -ignoremouse: 実マウスの入力を捨てる (Agent の注入だけ通す)。
+	if (TVPShouldDropRealMouse()) return;
+	// クリックは**実座標が勝つ**: ユーザは見えているポインタの位置を押している
+	// ので、 仮想位置をそこへ合わせてから配送する (doc/VirtualCursor.md)。
+	// キー / パッドのナビが仮想位置を別の場所へ置いていても、 クリックで
+	// 揃うのでヒット判定と hover が食い違わない。
+	VirtualCursor.Set(x, y);
 	TranslateWindowToDrawArea(x, y);
 	//ReleaseMouseCapture();
 	MouseVelocityTracker.addMovement( TVPGetRoughTickCount32(), (float)x, (float)y );
@@ -483,7 +499,13 @@ void TTVPWindowForm::OnMouseUp( int button, int shift, int x, int y ) {
 }
 
 void TTVPWindowForm::OnMouseMove( int shift, int x, int y ) {
+	// -ignoremouse: 実マウスの入力を捨てる (Agent の注入だけ通す)。
+	if (TVPShouldDropRealMouse()) return;
 	TranslateWindowToDrawArea(x, y);
+	// 実マウスの移動は常に仮想位置を上書きする (実移動が勝つ)。 ここへ来るのは
+	// ウィンドウ内の移動 (とキャプチャ中のドラッグ) だけなので、 「ウィンドウ外の
+	// 実マウスは無視して現状維持」が自動的に成り立つ。
+	VirtualCursor.Set(x, y);
 	MouseVelocityTracker.addMovement( TVPGetRoughTickCount32(), (float)x, (float)y );
 	if( TJSNativeInstance ) {
 		tjs_uint32 s = TVP_TShiftState_To_uint32(shift);
@@ -492,9 +514,9 @@ void TTVPWindowForm::OnMouseMove( int shift, int x, int y ) {
 	}
 
 	// mcsTempHidden は「マウスを動かすまで一時非表示」— 実マウスの移動で復帰
-	// させる (win32 実装の RestoreMouseCursor 相当)。 cursor-warp が生む合成
-	// move は ElementsDialogManager が期待座標一致で再 hide するので、 warp
-	// 直後に不用意に出っぱなしにはならない。
+	// させる (win32 実装の RestoreMouseCursor 相当)。 cursor-warp は実 OS
+	// カーソルを動かさない (仮想カーソル位置を更新するだけ) ので、 ここへ来る
+	// のは常に実マウスの移動であり、 warp 直後に不用意に出っぱなしにはならない。
 	if (GetMouseCursorState() == mcsTempHidden)
 		SetMouseCursorState(mcsVisible);
 
@@ -506,6 +528,8 @@ void TTVPWindowForm::OnMouseMove( int shift, int x, int y ) {
 }
 
 void TTVPWindowForm::OnMouseWheel( int delta, int shift, int x, int y ) {
+	// -ignoremouse: 実マウスの入力を捨てる (Agent の注入だけ通す)。
+	if (TVPShouldDropRealMouse()) return;
 	TranslateWindowToDrawArea( x, y);
 	// wheel
 	if( TJSNativeInstance ) {
@@ -539,6 +563,8 @@ TTVPWindowForm::GetMouseCursorState() const
 void
 TTVPWindowForm::GetCursorPos(tjs_int &x, tjs_int &y)
 {
+    // 仮想カーソルが有効ならそちらが真実 (doc/VirtualCursor.md)。
+    if (VirtualCursor.Get(x, y)) return;
     x = mCursorX;
     y = mCursorY;
 }
@@ -546,6 +572,9 @@ TTVPWindowForm::GetCursorPos(tjs_int &x, tjs_int &y)
 void
 TTVPWindowForm::SetCursorPos(tjs_int x, tjs_int y)
 {
+    // 実カーソルを動かす経路。 仮想位置も揃えておく (「ポインタをここへ置く」
+    // という意図なので hover もそこへ来るのが正)。
+    VirtualCursor.Set(x, y);
     mCursorX = x;
     mCursorY = y;
 }

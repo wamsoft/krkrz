@@ -548,14 +548,21 @@ void tTVPLayerManager::PrimaryTouchMove( tjs_real x, tjs_real y, tjs_real cx, tj
 //---------------------------------------------------------------------------
 void tTVPLayerManager::PrimaryTouchScaling( tjs_real startdist, tjs_real curdist, tjs_real cx, tjs_real cy, tjs_int flag )
 {
+	// 受け取るレイヤのローカル座標で渡す (PrimaryTouchDown / Move と同じ)
 	if(FocusedLayer)
+	{
+		FocusedLayer->FromPrimaryCoordinates(cx, cy);
 		FocusedLayer->FireTouchScaling(startdist,curdist,cx,cy,flag);
+	}
 }
 //---------------------------------------------------------------------------
 void tTVPLayerManager::PrimaryTouchRotate( tjs_real startangle, tjs_real curangle, tjs_real dist, tjs_real cx, tjs_real cy, tjs_int flag )
 {
 	if(FocusedLayer)
+	{
+		FocusedLayer->FromPrimaryCoordinates(cx, cy);
 		FocusedLayer->FireTouchRotate(startangle,curangle,dist,cx,cy,flag);
+	}
 }
 //---------------------------------------------------------------------------
 void tTVPLayerManager::PrimaryMultiTouch()

@@ -467,6 +467,11 @@ public:
 	void LRFlip(const tTVPRect &rect);
 
 	void DoGrayScale(tTVPRect rect);
+	//! @brief RGB の重みを指定したグレースケール化
+	//! @param rw,gw,bw  R/G/B の重み。 相対値でよく (内部で合計 1 に正規化する)、
+	//!                  BT.601 なら 0.299/0.587/0.114 でも 76/149/29 でも同じ。
+	//!                  負値は 0 に丸め、 合計が 0 なら何もしない。
+	void DoGrayScale(tTVPRect rect, tjs_real rw, tjs_real gw, tjs_real bw);
 
 	void AdjustGamma(tTVPRect rect, const tTVPGLGammaAdjustData & data);
 	void AdjustGammaForAdditiveAlpha(tTVPRect rect, const tTVPGLGammaAdjustData & data);

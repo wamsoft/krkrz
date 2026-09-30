@@ -1,0 +1,81 @@
+// -*- mode:tjs2 -*-
+// ======================================================================
+//  elements_audit 用アトラス画像ジェネレータ (シナリオ 3 = アトラス常駐量)
+// ----------------------------------------------------------------------
+//  image/audit_atlas_0.png .. audit_atlas_7.png (各 1536x1536, アルファ付き)
+//  を生成する。展開後 RGBA で 1 枚あたり約 9MB、8 枚で約 72MB になり、
+//  json_layout.cpp のデコードキャッシュ (既定予算 192MB) の増減が観測できる。
+//
+//  リポジトリにはバイナリを置かない方針なので、使う人が 1 回だけ走らせる。
+//
+//  実行方法 (umbrella ルートから):
+//    krkrz64.exe src/core/data/elements_audit -genassets
+//  (startup.tjs が本スクリプトを exec して終了する)
+// ======================================================================
+
+var AN = 8;              // 生成枚数
+var AW = 1536, AH = 1536;
+
+// 生成済みなら何もしない (誤って上書き・再生成しないため)
+var allExist = true;
+for (var i = 0; i < AN; i++) {
+    if (!Storages.isExistentStorage("image/audit_atlas_" + i + ".png")) {
+        allExist = false;
+        break;
+    }
+}
+if (allExist) {
+    Debug.message("@genassets:skip (image/audit_atlas_*.png は生成済み)");
+    System.exit(0);
+}
+
+var genWin = new Window();
+genWin.setInnerSize(320, 240);
+var genBase = new Layer(genWin, null);
+genBase.setSize(320, 240);
+genBase.visible = true;
+
+var atlas = new Layer(genWin, genBase);
+atlas.setSize(AW, AH);
+atlas.type = ltAlpha;
+
+// 枚ごとに色味を変える (キャッシュのキーが別であることを目視でも確かめられる)
+var hues = [0xff4060, 0xff9040, 0xffe040, 0x40d060,
+            0x40c0e0, 0x4060ff, 0xa040e0, 0xe040a0];
+
+for (var n = 0; n < AN; n++) {
+    var base = hues[n];
+    atlas.fillRect(0, 0, AW, AH, 0x00000000);
+
+    // 市松 + グラデーションで、PNG が極端に小さくならないようにする
+    // (ファイルサイズではなく展開後サイズを見たいので中身は何でもよいが、
+    //  真っ平らだと圧縮が効きすぎてディスク上が不自然に小さくなる)
+    var cell = 48;
+    for (var y = 0; y < AH; y += cell) {
+        for (var x = 0; x < AW; x += cell) {
+            var on = (((x \ cell) + (y \ cell)) & 1) != 0;
+            var r = (base >> 16) & 0xff, g = (base >> 8) & 0xff, b = base & 0xff;
+            var k = (x + y) * 255 \ (AW + AH);
+            r = (r * (255 - k) + 40 * k) \ 255;
+            g = (g * (255 - k) + 40 * k) \ 255;
+            b = (b * (255 - k) + 60 * k) \ 255;
+            var a = on ? 0xff000000 : 0xc0000000;
+            atlas.fillRect(x, y, cell, cell, a + (r << 16) + (g << 8) + b);
+        }
+    }
+
+    // ボタン 3 状態相当の領域 (シナリオ 3 の画面が atlas_button で参照する)
+    atlas.fillRect(0, 0, 240, 72, 0xff202830);
+    atlas.fillRect(0, 80, 240, 72, 0xff304050);
+    atlas.fillRect(0, 160, 240, 72, 0xff405a70);
+    atlas.font.height = 40;
+    atlas.drawText(16, 16, "ATLAS " + n, 0xffffff, 255);
+
+    atlas.saveLayerImage("image/audit_atlas_" + n + ".png", "png");
+    Debug.message("@genassets:saved image/audit_atlas_" + n + ".png ("
+                  + AW + "x" + AH + ")");
+}
+
+Debug.message("@genassets:done " + AN + " 枚 (展開後 約 "
+              + (AN * AW * AH * 4 \ (1024 * 1024)) + "MB)");
+System.exit(0);

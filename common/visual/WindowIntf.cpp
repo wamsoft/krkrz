@@ -24,6 +24,35 @@
 #include "VideoOvlIntf.h"
 #include "DrawDevice.h"
 #include "CharacterSet.h"   // TVPUtf16ToUtf8 (OnTextInput の Elements 転送)
+#include "tjsDictionary.h" // TJSCreateDictionaryObject (getNormalRect の戻り値)
+
+// 矩形は %[ x, y, w, h ] の辞書で返す (windowEx プラグインと同じ形)
+static void TVPSetRectResult(tTJSVariant *result, tjs_int l, tjs_int t, tjs_int w, tjs_int h)
+{
+	if(!result) return;
+	iTJSDispatch2 *dsp = TJSCreateDictionaryObject();
+	try {
+		tTJSVariant v;
+		v = l; dsp->PropSet(TJS_MEMBERENSURE, TJS_W("x"), NULL, &v, dsp);
+		v = t; dsp->PropSet(TJS_MEMBERENSURE, TJS_W("y"), NULL, &v, dsp);
+		v = w; dsp->PropSet(TJS_MEMBERENSURE, TJS_W("w"), NULL, &v, dsp);
+		v = h; dsp->PropSet(TJS_MEMBERENSURE, TJS_W("h"), NULL, &v, dsp);
+		*result = tTJSVariant(dsp, dsp);
+	} catch(...) {
+		dsp->Release();
+		throw;
+	}
+	dsp->Release();
+}
+// 辞書から矩形を読む (既定値つき)
+static tjs_int TVPGetRectMember(iTJSDispatch2 *dsp, const tjs_char *name, tjs_int def)
+{
+	tTJSVariant v;
+	if(TJS_FAILED(dsp->PropGet(0, name, NULL, &v, dsp))) return def;
+	if(v.Type() == tvtVoid) return def;
+	return (tjs_int)v;
+}
+//----------------------------------------------------------------------
 
 #ifdef TVP_USE_OPENGL
 #include "OpenGLContext.h"   // iTVPGLContext / InitGLES
@@ -1043,6 +1072,167 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/bringToFront)
 }
 TJS_END_NATIVE_METHOD_DECL(/*func. name*/bringToFront)
 //----------------------------------------------------------------------
+// 最大化 / 最小化 / 復帰 (doc/WindowState.md)。windowEx プラグインから本体へ移した。
+// SDL / CS 版はウィンドウ状態を持たないので何もしない (fullScreen と同じ扱い)
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/maximize)
+{
+	TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Window);
+	_this->Maximize();
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_METHOD_DECL(/*func. name*/maximize)
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/minimize)
+{
+	TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Window);
+	_this->Minimize();
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_METHOD_DECL(/*func. name*/minimize)
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/showRestore)
+{
+	TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Window);
+	_this->ShowRestore();
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_METHOD_DECL(/*func. name*/showRestore)
+//----------------------------------------------------------------------
+// 最大化 / 最小化していないときの外形矩形を %[ x, y, w, h ] で返す。
+// 取れないときは void (SDL / CS 版は常に void)
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/getNormalRect)
+{
+	TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Window);
+	tjs_int l = 0, t = 0, w = 0, h = 0;
+	if(!_this->GetNormalRect(l, t, w, h)) {
+		if(result) result->Clear();
+		return TJS_S_OK;
+	}
+	TVPSetRectResult(result, l, t, w, h);
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_METHOD_DECL(/*func. name*/getNormalRect)
+//----------------------------------------------------------------------
+// 外形 (装飾込み) の画面座標矩形
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/getWindowRect)
+{
+	TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Window);
+	tjs_int l = 0, t = 0, w = 0, h = 0;
+	if(!_this->GetWindowRectScreen(l, t, w, h)) {
+		if(result) result->Clear();
+		return TJS_S_OK;
+	}
+	TVPSetRectResult(result, l, t, w, h);
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_METHOD_DECL(/*func. name*/getWindowRect)
+//----------------------------------------------------------------------
+// クライアント (描画領域) の**画面座標**矩形。
+// left / top / innerWidth / innerHeight と違い、装飾を除いた領域が画面のどこにあるかを返す
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/getClientRect)
+{
+	TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Window);
+	tjs_int l = 0, t = 0, w = 0, h = 0;
+	if(!_this->GetClientRectScreen(l, t, w, h)) {
+		if(result) result->Clear();
+		return TJS_S_OK;
+	}
+	TVPSetRectResult(result, l, t, w, h);
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_METHOD_DECL(/*func. name*/getClientRect)
+//----------------------------------------------------------------------
+// マウスカーソル位置 (**描画領域座標**)。
+//
+// ⚠ `Layer.setCursorPos` / `Layer.cursorX` は**レイヤ座標**で、こちらとは
+//    座標系が違う。 レイヤ座標を持っているならそちらを使うこと。
+//    ここは「描画領域の左上を原点とした座標をそのまま入れたい」用。
+//    具体例 = `onTouchScaling` / `onTouchRotate` の cx / cy。 これらは
+//    マウスと違い `TransformToPrimaryLayerManager` を通らず、描画領域座標の
+//    まま TJS へ届く。 レイヤ座標へ直すには DestRect が要るが TJS へ出て
+//    いないので、そのまま渡せるこちらが要る。
+//
+// 下回りは WINVER = ClientToScreen + ::SetCursorPos /
+// SDL3 = TranslateDrawAreaToWindow + SDL_WarpMouseInWindow。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/setCursorPos)
+{
+	TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Window);
+	if(numparams < 2) return TJS_E_BADPARAMCOUNT;
+	_this->SetCursorPos((tjs_int)*param[0], (tjs_int)*param[1]);
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_METHOD_DECL(/*func. name*/setCursorPos)
+//----------------------------------------------------------------------
+// setCursorPos と同じ座標系で現在位置を読む。 戻りは %[ x, y ]
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/getCursorPos)
+{
+	TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Window);
+	tjs_int x = 0, y = 0;
+	_this->GetCursorPos(x, y);
+	if(result) {
+		iTJSDispatch2 *dict = TJSCreateDictionaryObject();
+		if(!dict) return TJS_E_FAIL;
+		tTJSVariant tmp;
+		tmp = x; dict->PropSet(TJS_MEMBERENSURE, TJS_W("x"), NULL, &tmp, dict);
+		tmp = y; dict->PropSet(TJS_MEMBERENSURE, TJS_W("y"), NULL, &tmp, dict);
+		*result = tTJSVariant(dict, dict);
+		dict->Release();
+	}
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_METHOD_DECL(/*func. name*/getCursorPos)
+//----------------------------------------------------------------------
+// クライアントが指定の画面座標矩形になるようにウィンドウを動かす。
+// 引数は %[ x, y, w, h ] の辞書で、欠けた要素は現在値を使う
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/setClientRect)
+{
+	TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Window);
+	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
+	if(param[0]->Type() != tvtObject) return TJS_E_INVALIDPARAM;
+	iTJSDispatch2 *dsp = param[0]->AsObjectNoAddRef();
+	if(!dsp) return TJS_E_INVALIDPARAM;
+
+	tjs_int l = 0, t = 0, w = 0, h = 0;
+	if(!_this->GetClientRectScreen(l, t, w, h)) {
+		if(result) *result = false;
+		return TJS_S_OK;
+	}
+	l = TVPGetRectMember(dsp, TJS_W("x"), l);
+	t = TVPGetRectMember(dsp, TJS_W("y"), t);
+	w = TVPGetRectMember(dsp, TJS_W("w"), w);
+	h = TVPGetRectMember(dsp, TJS_W("h"), h);
+	bool ok = _this->SetClientRectScreen(l, t, w, h);
+	if(result) *result = ok;
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_METHOD_DECL(/*func. name*/setClientRect)
+//----------------------------------------------------------------------
+// 拡張イベントを有効にする (doc/WindowState.md)。
+//   これを呼ぶまで onMove / onMoving / onResizing / onMoveSizeBegin /
+//   onMoveSizeEnd / onDPIChanged / onDisplayChanged / onMinimize /
+//   onMaximize / onMaximizeQuery は投げられない (windowEx と同じ)。
+//   SDL / CS 版は何も起きない
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/registerExEvent)
+{
+	TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Window);
+	_this->RegisterExEvent();
+	if(result) *result = _this->GetExEventEnabled();
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_METHOD_DECL(/*func. name*/registerExEvent)
+//----------------------------------------------------------------------
+// 入力デバイスの抜き差しで onDeviceChanged(arrival) が飛ぶようにする。
+//   本体の入力 (マウス / XInput パッド) は自分で追従するので、これが要るのは
+//   プラグインなどが自前でデバイスを列挙しているとき。SDL / CS 版は何も起きない
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/registerDeviceChange)
+{
+	TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Window);
+	_this->RegisterDeviceChange();
+	if(result) *result = _this->GetDeviceChangeEnabled();
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_METHOD_DECL(/*func. name*/registerDeviceChange)
+//----------------------------------------------------------------------
 TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/update)
 {
 	TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Window);
@@ -1527,6 +1717,19 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/onCloseQuery)
 	return TJS_S_OK;
 }
 TJS_END_NATIVE_METHOD_DECL(/*func. name*/onCloseQuery)
+//----------------------------------------------------------------------
+// 最大化して良いかの返事 (doc/WindowState.md)。onCloseQuery と同じ作り。
+//   本体が onMaximizeQuery を同期で投げる → ハンドラが最大化を止めたいときだけ
+//   super.onMaximizeQuery(false) を呼び返す。呼ばなければ既定どおり最大化する
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/onMaximizeQuery)
+{
+	TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Window);
+	bool canmaximize = true;
+	if(numparams >= 1 && param[0]->Type() != tvtVoid) canmaximize = 0 != (tjs_int)*param[0];
+	_this->SetMaximizeQueryResult( canmaximize );
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_METHOD_DECL(/*func. name*/onMaximizeQuery)
 //----------------------------------------------------------------------
 TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/onPopupHide)
 {
@@ -2210,6 +2413,48 @@ TJS_BEGIN_NATIVE_PROP_DECL(borderStyle)
 }
 TJS_END_NATIVE_PROP_DECL(borderStyle)
 //----------------------------------------------------------------------
+// 枠の操作禁止 (doc/WindowState.md)。枠なし表示で掴んで動かされないようにする。
+// SDL / CS 版は枠が無いので常に false
+TJS_BEGIN_NATIVE_PROP_DECL(disableMove)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Window);
+		*result = _this->GetMoveDisabled();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_BEGIN_NATIVE_PROP_SETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Window);
+		_this->SetMoveDisabled(param->operator bool());
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_PROP_DECL(disableMove)
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_PROP_DECL(disableResize)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Window);
+		*result = _this->GetResizeDisabled();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_BEGIN_NATIVE_PROP_SETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Window);
+		_this->SetResizeDisabled(param->operator bool());
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_PROP_DECL(disableResize)
+//----------------------------------------------------------------------
 TJS_BEGIN_NATIVE_PROP_DECL(stayOnTop)
 {
 	TJS_BEGIN_NATIVE_PROP_GETTER
@@ -2361,6 +2606,36 @@ TJS_BEGIN_NATIVE_PROP_DECL(fullScreen)
 	TJS_END_NATIVE_PROP_SETTER
 }
 TJS_END_NATIVE_PROP_DECL(fullScreen)
+//----------------------------------------------------------------------
+// 最大化 / 最小化しているか (読み取り専用)。設定は maximize() / minimize() /
+// showRestore() で行う。SDL / CS 版は常に偽
+TJS_BEGIN_NATIVE_PROP_DECL(maximized)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Window);
+		*result = _this->GetMaximized();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_DENY_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_PROP_DECL(maximized)
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_PROP_DECL(minimized)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Window);
+		*result = _this->GetMinimized();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_DENY_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_PROP_DECL(minimized)
 //----------------------------------------------------------------------
 TJS_BEGIN_NATIVE_PROP_DECL(mainWindow) /* static */
 {

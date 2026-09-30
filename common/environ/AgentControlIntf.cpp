@@ -14,8 +14,19 @@
 #include "DebugIntf.h"
 #include "CharacterSet.h"
 #include "AgentInput.h"        // TVPAgentInject* / TVPAgentRequestRedraw (platform seam)
+#include "VirtualCursor.h"     // TVPIgnoreRealMouse (-ignoremouse / Agent.ignoreRealMouse)
+#include "SysInitIntf.h"        // TVPGetCommandLine (-ignoremouse)
 #include "tvpinputdefs.h"      // mbLeft / mbRight / mbMiddle
 #include "ScreenCapture.h"     // TVPRequestScreenCapture / TVPGetLastScreenCapture
+#include "WindowIntf.h"        // TVPGetWindowCount / TVPGetWindowListAt (imeStatus)
+#include "WindowImpl.h"        // tTJSNI_Window::GetImeStatus (WINVER のみ実装)
+#ifdef __WINVER__
+#include "ImeStatus.h"         // tTVPImeStatus
+#else
+#include <SDL3/SDL.h>          // SDL_GetTextInputArea / SDL_TextInputActive
+#include "Application.h"       // Application->MainWindowForm()
+#include "WindowForm.h"        // TTVPWindowForm::NativeWindowHandle()
+#endif
 
 #ifdef KRKRZ_HAS_ELEMENTS
 #include "elements/ElementsDialogManager.h"
@@ -33,6 +44,21 @@ tjs_uint32 tTJSNC_Agent::ClassID = (tjs_uint32)-1;
 
 tTJSNC_Agent::tTJSNC_Agent() : inherited(TJS_W("Agent"))
 {
+	// -ignoremouse=yes: 最初から実マウス入力を捨てる (Agent の注入だけ通す)。
+	// Agent が居るビルドでのみ有効にする — Agent の無いビルドで実マウスを
+	// 捨てると操作不能になるため。
+	{
+		tTJSVariant v;
+		if (TVPGetCommandLine(TJS_W("-ignoremouse"), &v)) {
+			ttstr s = v;
+			TVPIgnoreRealMouse = (s != TJS_W("no") && s != TJS_W("0")
+			                      && s != TJS_W("false"));
+			if (TVPIgnoreRealMouse)
+				TVPAddImportantLog(TJS_W("-ignoremouse: 実マウス入力を捨てます "
+				                         "(Agent の注入のみ有効)"));
+		}
+	}
+
 	TJS_BEGIN_NATIVE_MEMBERS(Agent)
 	TJS_DECL_EMPTY_FINALIZE_METHOD
 	//---------------------------------------------------------------------------
@@ -45,6 +71,38 @@ tTJSNC_Agent::tTJSNC_Agent() : inherited(TJS_W("Agent"))
 	//=== 入力: マウス =========================================================
 	//---------------------------------------------------------------------------
 	// mouseMove(x, y [, shift])
+	//---------------------------------------------------------------------------
+	// ignoreRealMouse プロパティ (static 相当):
+	//   真にすると **実マウスの入力を捨てる** (Agent の注入だけを通す)。
+	//   自動テストで「入力は全部 Agent が出す」前提を作るためのもので、人が
+	//   うっかりポインタを動かしても測定が汚れない。
+	//
+	//   起動オプション `-ignoremouse=yes` を付けると最初から有効。
+	//   仮想カーソル位置は Agent 注入で更新されるので、hover もフォーカスも
+	//   従来どおり動く (doc/VirtualCursor.md)。
+	//
+	//   ⚠ 有効にすると人の手ではマウス操作できなくなる。検証用。
+	TJS_BEGIN_NATIVE_PROP_DECL(ignoreRealMouse)
+	{
+		TJS_BEGIN_NATIVE_PROP_GETTER
+		{
+			*result = (tjs_int)(TVPIgnoreRealMouse ? 1 : 0);
+			return TJS_S_OK;
+		}
+		TJS_END_NATIVE_PROP_GETTER
+
+		TJS_BEGIN_NATIVE_PROP_SETTER
+		{
+			TVPIgnoreRealMouse = (bool)(tjs_int)*param;
+			TVPAddImportantLog(TVPIgnoreRealMouse
+				? TJS_W("Agent: ignoreRealMouse = true (実マウス入力を捨てます)")
+				: TJS_W("Agent: ignoreRealMouse = false"));
+			return TJS_S_OK;
+		}
+		TJS_END_NATIVE_PROP_SETTER
+	}
+	TJS_END_NATIVE_PROP_DECL(ignoreRealMouse)
+	//---------------------------------------------------------------------------
 	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/mouseMove)
 	{
 		if (numparams < 2) return TJS_E_BADPARAMCOUNT;
@@ -170,6 +228,110 @@ tTJSNC_Agent::tTJSNC_Agent() : inherited(TJS_W("Agent"))
 	TJS_END_NATIVE_METHOD_DECL(/*func. name*/text)
 
 	//=== Elements ダイアログ制御 ==============================================
+	//---------------------------------------------------------------------------
+	// imeStatus()  — ウィンドウごとの IME 関連状態 (WINVER のみ。 他は空配列)。
+	//   「入力欄にキャレットは出ているのに日本語が打てない」の切り分け用。
+	//   Window.imeMode の getter は既定値しか返さず、 実際に適用しているモードや
+	//   入力コンテキストの有無は見えないため、 ここで一式返す。
+	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/imeStatus)
+	{
+		iTJSDispatch2* arr = TJSCreateArrayObject();
+		if (!arr) return TJS_E_FAIL;
+#ifdef __WINVER__
+		const tjs_int count = TVPGetWindowCount();
+		tjs_int n = 0;
+		for (tjs_int i = 0; i < count; ++i) {
+			tTJSNI_Window* win = TVPGetWindowListAt(i);
+			tTVPImeStatus st = {};
+			if (!win || !win->GetImeStatus(st)) continue;
+			iTJSDispatch2* d = TJSCreateDictionaryObject();
+			if (!d) { arr->Release(); return TJS_E_FAIL; }
+			auto setI = [&](const tjs_char* k, tjs_int v) {
+				tTJSVariant vv(v);
+				d->PropSet(TJS_MEMBERENSURE, k, nullptr, &vv, d);
+			};
+			auto setB = [&](const tjs_char* k, bool v) {
+				tTJSVariant vv(v);
+				d->PropSet(TJS_MEMBERENSURE, k, nullptr, &vv, d);
+			};
+			setI(TJS_W("index"),            i);
+			setB(TJS_W("isMain"),           win == TVPMainWindow);
+			setB(TJS_W("visible"),          st.visible);
+			setB(TJS_W("hasFocus"),         st.hasFocus);
+			setB(TJS_W("trapKeys"),         st.trapKeys);
+			setB(TJS_W("keyTrapperIsSelf"), st.keyTrapperIsSelf);
+			setB(TJS_W("attentionPoint"),   st.attentionPoint);
+			setB(TJS_W("controlImeState"),  st.controlImeState);
+			setB(TJS_W("contextAttached"),  st.contextAttached);
+			setB(TJS_W("disabledBySelf"),   st.disabledBySelf);
+			setB(TJS_W("imeAvailable"),     st.imeAvailable);
+			setB(TJS_W("open"),             st.open);
+			setB(TJS_W("overrideActive"),   st.overrideActive);
+			setB(TJS_W("contextForced"),    st.contextForced);
+			setI(TJS_W("imeMode"),          st.lastSetImeMode);
+			setI(TJS_W("defaultImeMode"),   st.defaultImeMode);
+			setI(TJS_W("savedImeMode"),     st.savedImeMode);
+			setI(TJS_W("conversion"),       (tjs_int)st.conversion);
+			setI(TJS_W("sentence"),         (tjs_int)st.sentence);
+#ifdef KRKRZ_HAS_ELEMENTS
+			// 変換 / 変換候補ウィンドウ用に最後にホストへ渡した矩形。
+			tjs_int ax = 0, ay = 0, aw = 0, ah = 0, ac = 0;
+			const bool area_ok = tTVPElementsDialogManager::Instance()
+				.GetTextInputArea(ax, ay, aw, ah, ac);
+			setB(TJS_W("areaValid"),  area_ok);
+			setI(TJS_W("areaX"),      ax);
+			setI(TJS_W("areaY"),      ay);
+			setI(TJS_W("areaW"),      aw);
+			setI(TJS_W("areaH"),      ah);
+			setI(TJS_W("areaCursor"), ac);
+#endif
+			tTJSVariant dv(d, d);
+			arr->PropSetByNum(TJS_MEMBERENSURE, n++, &dv, arr);
+			d->Release();
+		}
+#else
+		// SDL host: IME の開閉自体は SDL に任せているので、 ここで返せるのは
+		// 「テキスト入力が有効か」と「入力欄としてどの矩形を SDL へ渡したか」。
+		// 矩形は SDL_SetTextInputArea → 各バックエンド (Windows なら
+		// ImmSetCompositionWindow / ImmSetCandidateWindow) へ流れる。
+		if (Application && Application->MainWindowForm()) {
+			auto* sw = static_cast<SDL_Window*>(
+				Application->MainWindowForm()->NativeWindowHandle());
+			if (sw) {
+				iTJSDispatch2* d = TJSCreateDictionaryObject();
+				if (!d) { arr->Release(); return TJS_E_FAIL; }
+				auto setI = [&](const tjs_char* k, tjs_int v) {
+					tTJSVariant vv(v);
+					d->PropSet(TJS_MEMBERENSURE, k, nullptr, &vv, d);
+				};
+				auto setB = [&](const tjs_char* k, bool v) {
+					tTJSVariant vv(v);
+					d->PropSet(TJS_MEMBERENSURE, k, nullptr, &vv, d);
+				};
+				SDL_Rect r = {};
+				int cursor = 0;
+				const bool got = SDL_GetTextInputArea(sw, &r, &cursor);
+				setI(TJS_W("index"), 0);
+				setB(TJS_W("isMain"), true);
+				setB(TJS_W("textInputActive"), SDL_TextInputActive(sw));
+				setB(TJS_W("areaValid"), got);
+				setI(TJS_W("areaX"), r.x);
+				setI(TJS_W("areaY"), r.y);
+				setI(TJS_W("areaW"), r.w);
+				setI(TJS_W("areaH"), r.h);
+				setI(TJS_W("areaCursor"), cursor);
+				tTJSVariant dv(d, d);
+				arr->PropSetByNum(TJS_MEMBERENSURE, 0, &dv, arr);
+				d->Release();
+			}
+		}
+#endif
+		if (result) *result = tTJSVariant(arr, arr);
+		arr->Release();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_METHOD_DECL(/*func. name*/imeStatus)
+
 #ifdef KRKRZ_HAS_ELEMENTS
 	//---------------------------------------------------------------------------
 	// dialogs()  — アクティブダイアログ記述の配列を返す。
@@ -200,6 +362,7 @@ tTJSNC_Agent::tTJSNC_Agent() : inherited(TJS_W("Agent"))
 				setB(TJS_W("active"), info.active);
 				setS(TJS_W("screen"), info.screen);
 				setS(TJS_W("focused"), info.focused);
+				setB(TJS_W("textFocus"), info.textFocus);
 				setI(TJS_W("x"), info.x);
 				setI(TJS_W("y"), info.y);
 				setI(TJS_W("w"), info.w);

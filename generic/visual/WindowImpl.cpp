@@ -180,7 +180,10 @@ void tTJSNI_Window::ClearVideo()
 void 
 tTJSNI_Window::AddVideoOverlay( tTJSNI_VideoOverlay *overlay ) 
 {
-	VideoOverlays.push_back( overlay );
+	// Play / Prepare の双方から呼ばれるので二重登録を避ける (登録が重なると
+	// Update() が 1 フレームに複数回走る)。
+	if( std::find( VideoOverlays.begin(), VideoOverlays.end(), overlay ) == VideoOverlays.end() )
+		VideoOverlays.push_back( overlay );
 	CheckVideoOverlay();
 }
 
@@ -872,6 +875,107 @@ bool tTJSNI_Window::GetFullScreen() const
 	return Form->GetFullScreenMode();
 }
 //---------------------------------------------------------------------------
+// 最大化 / 最小化 / 復帰 (doc/WindowState.md)
+bool tTJSNI_Window::GetMaximized() const
+{
+	if(!Form) return false;
+	return Form->GetMaximized();
+}
+bool tTJSNI_Window::GetMinimized() const
+{
+	if(!Form) return false;
+	return Form->GetMinimized();
+}
+void tTJSNI_Window::Maximize()
+{
+	if(!Form) return;
+	Form->Maximize();
+}
+void tTJSNI_Window::Minimize()
+{
+	if(!Form) return;
+	Form->Minimize();
+}
+void tTJSNI_Window::ShowRestore()
+{
+	if(!Form) return;
+	Form->ShowRestore();
+}
+bool tTJSNI_Window::GetNormalRect( tjs_int& l, tjs_int& t, tjs_int& w, tjs_int& h ) const
+{
+	if(!Form) return false;
+	int il = 0, it = 0, iw = 0, ih = 0;
+	if(!Form->GetNormalRect( il, it, iw, ih )) return false;
+	l = il; t = it; w = iw; h = ih;
+	return true;
+}
+bool tTJSNI_Window::GetWindowRectScreen( tjs_int& l, tjs_int& t, tjs_int& w, tjs_int& h ) const
+{
+	if(!Form) return false;
+	int il = 0, it = 0, iw = 0, ih = 0;
+	if(!Form->GetWindowRectScreen( il, it, iw, ih )) return false;
+	l = il; t = it; w = iw; h = ih;
+	return true;
+}
+bool tTJSNI_Window::GetClientRectScreen( tjs_int& l, tjs_int& t, tjs_int& w, tjs_int& h ) const
+{
+	if(!Form) return false;
+	int il = 0, it = 0, iw = 0, ih = 0;
+	if(!Form->GetClientRectScreen( il, it, iw, ih )) return false;
+	l = il; t = it; w = iw; h = ih;
+	return true;
+}
+bool tTJSNI_Window::SetClientRectScreen( tjs_int l, tjs_int t, tjs_int w, tjs_int h )
+{
+	if(!Form) return false;
+	return Form->SetClientRectScreen( (int)l, (int)t, (int)w, (int)h );
+}
+void tTJSNI_Window::RegisterExEvent()
+{
+	if(!Form) return;
+	Form->SetExEventEnabled( true );
+}
+bool tTJSNI_Window::GetExEventEnabled() const
+{
+	if(!Form) return false;
+	return Form->GetExEventEnabled();
+}
+void tTJSNI_Window::SetMaximizeQueryResult( bool b )
+{
+	if(!Form) return;
+	Form->OnMaximizeQueryCalled( b );
+}
+void tTJSNI_Window::RegisterDeviceChange()
+{
+	if(!Form) return;
+	Form->SetDeviceChangeEnabled( true );
+}
+bool tTJSNI_Window::GetDeviceChangeEnabled() const
+{
+	if(!Form) return false;
+	return Form->GetDeviceChangeEnabled();
+}
+void tTJSNI_Window::SetMoveDisabled( bool b )
+{
+	if(!Form) return;
+	Form->SetMoveDisabled( b );
+}
+bool tTJSNI_Window::GetMoveDisabled() const
+{
+	if(!Form) return false;
+	return Form->GetMoveDisabled();
+}
+void tTJSNI_Window::SetResizeDisabled( bool b )
+{
+	if(!Form) return;
+	Form->SetResizeDisabled( b );
+}
+bool tTJSNI_Window::GetResizeDisabled() const
+{
+	if(!Form) return false;
+	return Form->GetResizeDisabled();
+}
+//---------------------------------------------------------------------------
 void tTJSNI_Window::SetUseMouseKey(bool b)
 {
 	if(!Form) return;
@@ -900,6 +1004,12 @@ void tTJSNI_Window::SetMouseCursorState(tTVPMouseCursorState mcs)
 {
 	if(!Form) return;
 	Form->SetMouseCursorState(mcs);
+}
+//---------------------------------------------------------------------------
+void tTJSNI_Window::SetVirtualCursorPos(tjs_int x, tjs_int y)
+{
+	if(!Form) return;
+	Form->SetVirtualCursorPos(x, y);
 }
 //---------------------------------------------------------------------------
 tTVPMouseCursorState tTJSNI_Window::GetMouseCursorState() const

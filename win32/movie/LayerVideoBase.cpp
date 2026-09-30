@@ -21,7 +21,7 @@
 //---------------------------------------------------------------------------
 tTVPLayerVideoBase::tTVPLayerVideoBase( HWND owner, bool overlayOutput, bool preferI420 )
 : VideoWidth(0), VideoHeight(0), VideoFPS(0.0), DurationMs(0)
-, State(stStopped), Terminate(false), DoSeek(false), SeekMs(0)
+, State(stStopped), PrepareOnly(false), Terminate(false), DoSeek(false), SeekMs(0)
 , OwnerWindow(owner), FrontIdx(0), BufferSize(0)
 , Updated(false), Completed(false), CurPtsMs(0)
 , ClockValid(false), AudioEpochMs(0), PtsEpochMs(0)
@@ -112,8 +112,13 @@ void tTVPLayerVideoBase::ThreadMain()
 			continue;
 		}
 
+		// prepare 再生中 (音を出さずに 1 コマだけ) は音声を一切動かさない。
+		// シンクは Start していないので供給しても鳴らないが、開始しない sink に
+		// 溜め込んでも次の Rewind で捨てるだけなので単に触らない。
+		const bool prepareOnly = PrepareOnly.load();
+
 		// 音声を先に供給してシンクを満たす (A/V 同期のマスタクロック源)
-		if( hasAudio ) { DecoderPumpAudio(); if( Audio ) Audio->DrainConsumed(); }
+		if( hasAudio && !prepareOnly ) { DecoderPumpAudio(); if( Audio ) Audio->DrainConsumed(); }
 
 		// 1 フレームデコード (overlay=内部保持 / layer=裏バッファへボトムアップ書き込み)
 		__int64 pts = 0;
@@ -137,11 +142,18 @@ void tTVPLayerVideoBase::ThreadMain()
 		{
 			Completed = true;
 			State = stEnded;
+			// prepare の途中で終端/失敗したら prepare は畳む (engine は EC_COMPLETE 側で
+			// prepare の待ちを解除する)。
+			PrepareOnly = false;
 			if( OwnerWindow ) ::PostMessage( OwnerWindow, WM_GRAPHNOTIFY, 0, 0 );
 			continue;
 		}
 
-		if( hasAudio && Audio )
+		if( prepareOnly )
+		{
+			// prepare: 提示ペースを作る必要が無い (1 コマだけ出して止まる) ので即提示。
+		}
+		else if( hasAudio && Audio )
 		{
 			// 音声マスタクロックに同期。基準が無ければこのフレームで確立。
 			if( !ClockValid )
@@ -215,6 +227,16 @@ void tTVPLayerVideoBase::ThreadMain()
 		}
 		CurPtsMs = pts;
 		Updated = true;
+		if( prepareOnly )
+		{
+			// 1 コマ出したので停止状態へ戻す。音声は一度も Start していないので
+			// 冒頭の音は漏れない。engine は EC_UPDATE を受けて perPrepare を発火する。
+			// デコード位置は消費した分だけ進んでいるので先頭へ戻しておく
+			// (直後の Play() が頭から始まるようにする)。
+			State = stPaused;
+			PrepareOnly = false;
+			SeekMs = 0; DoSeek = true;
+		}
 		if( OwnerWindow ) ::PostMessage( OwnerWindow, WM_GRAPHNOTIFY, 0, 0 );
 	}
 }
@@ -253,6 +275,7 @@ void __stdcall tTVPLayerVideoBase::Play()
 	std::lock_guard<std::mutex> lk(Mtx);
 	bool fresh = ( State == stStopped || State == stEnded );
 	if( State == stEnded ) { DoSeek = true; SeekMs = 0; }
+	PrepareOnly = false;   // prepare 中に本再生が来たら prepare は打ち切る
 	if( fresh ) ClockValid = false; // 新規再生はクロック基準を取り直す (pause 復帰は維持)
 	State = stPlaying;
 	Completed = false;
@@ -260,11 +283,28 @@ void __stdcall tTVPLayerVideoBase::Play()
 	Cond.notify_all();
 }
 //---------------------------------------------------------------------------
+// 音を出さずに先頭の 1 コマだけ提示する (engine の VideoOverlay.prepare)。
+// Play() との違いは Audio->Start() を呼ばないことと、1 コマ提示したところで
+// デコードスレッド自身が stPaused へ戻ること。
+//---------------------------------------------------------------------------
+bool __stdcall tTVPLayerVideoBase::PrepareFrame()
+{
+	std::lock_guard<std::mutex> lk(Mtx);
+	SeekMs = 0; DoSeek = true;   // 先頭のコマを出す
+	PrepareOnly = true;
+	ClockValid = false;
+	Completed = false;
+	State = stPlaying;   // デコードスレッドを回すためだけの一時的な状態
+	Cond.notify_all();
+	return true;
+}
+//---------------------------------------------------------------------------
 void __stdcall tTVPLayerVideoBase::Stop()
 {
 	std::lock_guard<std::mutex> lk(Mtx);
 	State = stStopped;
 	ClockValid = false;
+	PrepareOnly = false;
 	if( Audio ) Audio->Stop();
 	Cond.notify_all();
 }
@@ -272,6 +312,7 @@ void __stdcall tTVPLayerVideoBase::Stop()
 void __stdcall tTVPLayerVideoBase::Pause()
 {
 	std::lock_guard<std::mutex> lk(Mtx);
+	PrepareOnly = false;   // prepare 中の pause は prepare の打ち切り
 	if( State == stPlaying )
 	{
 		State = stPaused;

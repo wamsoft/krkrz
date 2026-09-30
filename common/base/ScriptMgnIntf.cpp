@@ -135,6 +135,17 @@ void TVPInitScriptEngine()
 		}
 	}
 
+	// Array objects resolve the class members on demand
+	// (not copying add/count/... into every instance)
+	if(TVPGetCommandLine(TJS_W("-lazyarraymember"), &val) )
+	{
+		ttstr str(val);
+		if(str == TJS_W("yes"))
+			TJSArrayLazyMemberBinding = true;
+		else if(str == TJS_W("no"))
+			TJSArrayLazyMemberBinding = false;
+	}
+
 	// Set igonre-prop compat mode
 	if(TVPGetCommandLine(TJS_W("-unaryaster"), &val) )
 	{

@@ -712,7 +712,9 @@ bool tTJSNC_RegExp::Exec(OnigRegion* region, const ttstr &target, tTJSNI_RegExp 
 		_this->LeftContext = ttstr(target, _this->Start);
 	} else {
 		int num_regs = region->num_regs;
-		_this->Index = _this->Start + region->beg[0];
+		// region->beg/end は Oniguruma のバイトオフセットなので文字数へ直す
+		// (LastIndex / LastMatch / LeftContext と同じ換算)。
+		_this->Index = _this->Start + region->beg[0]/sizeof(tjs_char);
 		int lastindex = 0;
 		for( int i = 0; i < num_regs; i++ ) {
 			if( lastindex < region->end[i] ) {

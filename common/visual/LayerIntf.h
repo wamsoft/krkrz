@@ -779,6 +779,7 @@ public:
 
 	void AdjustGamma(const tTVPGLGammaAdjustData & data);
 	void DoGrayScale();
+	void DoGrayScale(tjs_real rw, tjs_real gw, tjs_real bw);
 	void LRFlip();
 	void UDFlip();
 

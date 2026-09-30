@@ -56,6 +56,26 @@ OHFH = []           # tp_stub.h
 OCFH = []           # tp_stub.cpp
 
 
+# WINVER 専用関数の、非 WINVER ビルド用スタブの引数リスト。
+#   ⚠ 以前は "static void STDCALL X(){}" という **引数も戻り値も無い空関数** を出していた。
+#     プラグインは本物のつもりで呼ぶので戻り値 (RAX) がゴミになり、それをポインタとして
+#     辿った瞬間に落ちる (実例: 旧 PackinOne.dll が SDL ビルドで即死)。
+#   引数の数だけ void* を並べ (x86 stdcall のスタック解放量を合わせるため)、nullptr を返す。
+def stub_void_args(arg):
+    a = (arg or "").strip()
+    if a == "" or a == "void":
+        return ""
+    depth = 0
+    n = 1
+    for ch in a:
+        if ch in "(<[":
+            depth += 1
+        elif ch in ")>]":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            n += 1
+    return ", ".join(["void *"] * n)
+
 def _strip(s):
     # Perl: s/^\s*(.*?)\s*$/$1/  (no /s, no /m)
     return re.sub(r'^\s*(.*?)\s*$', r'\1', s, count=1, flags=re.ASCII)
@@ -252,7 +272,7 @@ def make_func_stub(rettype, name, arg, type_, prefix, isconst, isstatic, envname
 
     if envname:
         OFH.append("#else\n")
-        OFH.append("static void STDCALL TVP_Stub_" + md5 + "(){}\n")
+        OFH.append("static void * STDCALL TVP_Stub_" + md5 + "(" + stub_void_args(arg) + "){ return 0; }\n")
         OFH.append("#endif // " + envname + "\n")
 
     if envname:
@@ -330,7 +350,7 @@ def make_exp_stub(rettype, name, arg, envname=None):
 
     if envname:
         OFH.append("#else\n")
-        OFH.append("static void STDCALL TVP_Stub_" + md5 + "(){}\n")
+        OFH.append("static void * STDCALL TVP_Stub_" + md5 + "(" + stub_void_args(arg) + "){ return 0; }\n")
         OFH.append("#endif // " + envname + "\n")
 
     func_list.append(mangled)

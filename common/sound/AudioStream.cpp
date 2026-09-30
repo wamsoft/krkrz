@@ -60,6 +60,23 @@ static const int VOLUME_MAX = 100000;
 static tjs_int TVPVolumeLogFactor = 3322;
 
 //---------------------------------------------------------------------------
+// リニアゲイン (0.0-1.0) → SetVolume の 0..100000。
+// SetVolume 側が知覚カーブを掛けるので、その逆変換を掛けてから渡す。
+// これを通さずにリニアゲインを渡すとカーブが二重に掛かる (ムービー音声が
+// 指定 80% で実測 0.541 = 0.690 のさらに 1.661 乗になっていた)。
+//---------------------------------------------------------------------------
+tjs_int TVPAudioGainToVolume(float gain)
+{
+	if (gain <= 0.0f) return 0;
+	if (gain >= 1.0f) return VOLUME_MAX;
+	float v = std::pow(gain, 2000.0f / (float)TVPVolumeLogFactor);
+	tjs_int r = (tjs_int)(v * (float)VOLUME_MAX + 0.5f);
+	if (r < 0) r = 0;
+	if (r > VOLUME_MAX) r = VOLUME_MAX;
+	return r;
+}
+
+//---------------------------------------------------------------------------
 
 TVPLogLevel MALogLevelToTVPLogLevel(ma_uint32 level)
 {
@@ -637,6 +654,33 @@ private:
 // デバイス側実装
 // --------------------------------------------------------------------------------
 
+// サンプル形式 → miniaudio フォーマット / 1 サンプルのバイト数。
+// BitsPerSample は float 出力のデコーダがフラグ付きの値 (0x10000+32) を
+// 入れてくることがあるので、判定には使わず SampleType を見る。
+static ma_format TVPGetMaFormat(TVPAudioSampleType type)
+{
+	switch(type) {
+	case astUInt8:   return ma_format_u8;
+	case astInt16:   return ma_format_s16;
+	case astInt24:   return ma_format_s24;   // 3 バイト詰め (WAV の 24bit と同じ並び)
+	case astInt32:   return ma_format_s32;
+	case astFloat32:
+	default:         return ma_format_f32;
+	}
+}
+//---------------------------------------------------------------------------
+static tjs_int TVPGetSampleBytes(TVPAudioSampleType type)
+{
+	switch(type) {
+	case astUInt8:   return 1;
+	case astInt16:   return 2;
+	case astInt24:   return 3;
+	case astInt32:   return 4;
+	case astFloat32:
+	default:         return 4;
+	}
+}
+//---------------------------------------------------------------------------
 iTVPAudioStream* TVPCreateAudioStream(tTVPAudioStreamParam &param) 
 {
 	MiniAudioStream* stream = new MiniAudioStream(param);
@@ -716,14 +760,14 @@ MiniAudioStream::MiniAudioStream(const tTVPAudioStreamParam& param )
 : WakeupHandler(nullptr)
 , WakeupUser(nullptr)
 , SampleRate(param.SampleRate)
-, FrameSize(param.BitsPerSample/8 * param.Channels)
+, FrameSize(TVPGetSampleBytes(param.SampleType) * param.Channels)
 , AudioVolumeValue(VOLUME_MAX)
 , AudioBalanceValue(0)
 , AudioFrequency(param.SampleRate)
 , ReadPosition(0)
 , EosReached(false)
 {
-	data_source.Format     = ((param.BitsPerSample == 8)? ma_format_u8 : ((param.BitsPerSample == 16)? ma_format_s16 : ma_format_f32));
+	data_source.Format     = TVPGetMaFormat(param.SampleType);
 	data_source.Channels   = param.Channels;
 	data_source.SampleRate = param.SampleRate;
 	data_source.Stream     = this;

@@ -147,8 +147,9 @@ public:
 private:
 	void ApplyVolume()
 	{
-		// iTVPAudioStream の volume 範囲は 0 .. 100000
-		if (mStream) mStream->SetVolume((tjs_int)(mVolume * 100000.0f + 0.5f));
+		// mVolume はリニアゲイン。SetVolume は 0..100000 を受けて知覚カーブを
+		// 掛けるので、そのまま 100000 倍で渡すとカーブが二重に掛かる
+		if (mStream) mStream->SetVolume(TVPAudioGainToVolume(mVolume));
 	}
 };
 

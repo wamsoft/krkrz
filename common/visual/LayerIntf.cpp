@@ -4604,6 +4604,17 @@ void tTJSNI_BaseLayer::DoGrayScale()
 	Update();
 }
 //---------------------------------------------------------------------------
+void tTJSNI_BaseLayer::DoGrayScale(tjs_real rw, tjs_real gw, tjs_real bw)
+{
+	// this is not affected by DrawFace
+	if(!MainImage) TVPThrowExceptionMessage(TVPNotDrawableLayerType);
+
+	MainImage->DoGrayScale(ClipRect, rw, gw, bw);
+
+	ImageModified = true;
+	Update();
+}
+//---------------------------------------------------------------------------
 void tTJSNI_BaseLayer::LRFlip()
 {
 	// this is not affected by DrawFace
@@ -7987,7 +7998,26 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/doGrayScale)
 {
 	TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_BaseLayer);
 
-	_this->DoGrayScale();
+	// 引数無し = 従来どおり BT.709 (0.2126/0.7152/0.0722 相当) 固定。
+	// 3 引数 = R/G/B の重み指定 (相対値。 内部で合計 1 に正規化するので
+	// 0.299/0.587/0.114 でも 76/149/29 でも同じ結果になる)。
+	if(numparams == 0)
+	{
+		_this->DoGrayScale();
+	}
+	else if(numparams >= 3)
+	{
+		tjs_real rw = (tjs_real)*param[0];
+		tjs_real gw = (tjs_real)*param[1];
+		tjs_real bw = (tjs_real)*param[2];
+		if(rw < 0 || gw < 0 || bw < 0 || (rw + gw + bw) <= 0)
+			return TJS_E_INVALIDPARAM;
+		_this->DoGrayScale(rw, gw, bw);
+	}
+	else
+	{
+		return TJS_E_BADPARAMCOUNT;
+	}
 
 	return TJS_S_OK;
 }

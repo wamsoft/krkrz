@@ -70,6 +70,7 @@ REPL 特殊コマンド:
 | `.compact [on\|off]` | 結果表示のコンパクトモード切替 |
 | `.mem` | File/Bitmap allocator + GlobalAlloc (Krkrz/SDL) + Process memory + システムアロケータの 1 行サマリ |
 | `.memdump` | 詳細メモリ統計をログへダンプ (`TVPHeapDump` = per-allocator + GlobalAlloc + Process memory + システム空き + WINVER の HeapWalk) |
+| `.memsites [N] [関数名の一部]` | 生存確保を呼び出し元別に上位 N 件ダンプ (診断ビルド + `-memstatsite`。[MemoryDesign.md](MemoryDesign.md) §8.4) |
 | `.memoverlay [on\|off]` | 画面オーバレイを切替 (SDL3 build) |
 | `.mempeakclear` | File/Bitmap allocator + GlobalAlloc collector の peak を current_used に揃える |
 | `.sysalloc` | システムアロケータ情報 (空き / 確保可能 / RSS) を 1 行表示 (コンソール機等のプラットフォーム固有値含む) |
@@ -189,8 +190,8 @@ console (CONIN$) を介さずにエージェントが REPL を駆動するため
 スレッド実行は共有キュー (`ReplMainQueue`) で console REPL と共用される。
 
 このチャネルと、その応答口を使う file-based modal (`System.confirm` /
-`inputString` / ファイル選択を REPL 経由で応答する `modal`/`modalresp`
-サブプロトコル) は、 ローカルファイルシステムを使うデスクトップ向け機能で、
+`inputString` / `choice` / ファイル選択を REPL 経由で応答する `modal`/`modalresp`
+サブプロトコル。 要求・応答の書式は `common/utils/ReplModal.h`) は、 ローカルファイルシステムを使うデスクトップ向け機能で、
 CMake の `KRKRZ_REPL_FILE` (既定は `KRKRZ_REPL` に追従) でゲートされる。
 端末 (標準入出力) を持たない一部プラットフォーム向けの web-only ビルド
 (`KRKRZ_REPL_WEB` のみ) ではリンク外となり、 その場合の modal 呼び出し元は
@@ -370,6 +371,7 @@ GUI (コンソール無し) 起動で `-replweb` 指定時のみ、 loopback バ
 | `GET /pad/file?path=` | ストレージから読む (text/plain) |
 | `POST /pad/file?path=` | ストレージへ書く。**`-replwebpad=<dir>` 配下のみ**。未指定なら 403 |
 | `GET` / `POST /state` / `GET /sub/state` | コントローラ (`eventDisabled` の取得/設定、終了要求) |
+| `GET /panels` | 案件が登録したパネルの一覧 (組み込み UI がタブを組むのに使う) |
 | `POST /bye` | ページを閉じる合図 (`-replwebidle` の猶予を前倒し) |
 
 **組み込みルートは `WebServer.register` / `serveStatic` より先に判定される**
@@ -422,8 +424,11 @@ curl -N localhost:8899/sub/watch      # 自動更新の push を受ける
 持っているので、 サーバに要るのはこの 2 つだけ。
 
 - `POST /pad/exec` は `/cmd` (1 行 + ドットコマンド) と違い、 **本文をまるごと
-  1 回**実行する。 複数行の関数定義やループをそのまま流せる。 式なら値が、
-  文なら `(void)` が返る (共有キューの «式か文か» 判定に従う)。
+  1 回**実行する。 複数行の関数定義やループをそのまま流せる。 返り値は
+  `(void)` で、 `1+2` のような «文にならない単発の式» のときだけ値が返る。
+  - `/cmd` が «式として通るなら式» と判定するのに対し、 pad は
+    **«文として通るなら文»** と逆向きに判定する (共有キューの `ExecMode`)。
+    式優先だと `式; 残り...` が «式» と見なされ、 先頭の文しか実行されない。
 - 本文はブラウザの `localStorage` に自動保存する。 Pad は「書いて実行」を
   繰り返す場所なので、 リロードで消えると使い物にならない。 ストレージへの
   書き出しは `[保存]` と役割を分けてある。
@@ -439,6 +444,63 @@ curl -N localhost:8899/sub/watch      # 自動更新の push を受ける
 資材を上書きしない» ための柵として理解すること。 ネットワークへ開く
 (`-replweb=0.0.0.0:...`) 場合は、 そもそも信頼できる環境でのみ使う。
 
+### 文言と言語 (i18n)
+
+**既定の言語は本体の言語設定に従う**。 `/state` が返す `langs` が本体の決定結果
+(優先順) で、 `-language=` も OS 言語もそこに反映されている
+(`TVPGetMessageResourceSuffixes()` をそのまま写しているだけ)。 UI はその順に見て、
+**表を持っている最初の言語**を使う。
+
+```json
+{"eventDisabled":false,"langs":["cht","chs","en","ja"]}
+```
+
+- 例: `-language=zh-Hant` の環境では `cht` → `chs` → `en` の順に探し、
+  現状 `cht`/`chs` の表が無いので **en へ落ちる**。 エンジンのメッセージと
+  同じ落とし方になるので UI だけ日本語のまま、 ということが起きない。
+- 上部の言語セレクタで **その場で切り替えられる** (即時。 選択は
+  `localStorage` に残り、 以後は本体設定より優先される)。
+
+#### 文言表は本体のメッセージ資材と分けている
+
+**`messages*.json` とは共有していない**。 あちらは製品のエンジンメッセージで、
+CSV からの生成パイプライン (`gen_messages.py`) に載っており、 WINVER では PE
+文字列テーブルになる。 開発ツールの UI 文言をそこへ混ぜると、 資材の性格も
+生成手順も違うものが同居してしまう。
+
+代わりに **`replweb_ui.inc` の `I18N` にページ同梱**で持つ
+(`-replweb` だけで完結させる方針。 切替が即時なのもこのおかげ)。
+**共有しているのは「どの言語を使うか」の決定だけ**で、 そこが揃っていれば
+実害は無い。
+
+現在の対応言語は **ja / en**。 **足すときは `I18N` にブロックを 1 つ増やす
+だけ** (キーが無ければ日本語へ落ちるので、 部分訳でも壊れない)。
+文言は HTML 側が `data-i18n` / `data-i18n-ph` / `data-i18n-title`、
+JS 側が `t('key')`。
+
+### 案件パネル (組み込み UI へタブを足す)
+
+組み込みページは Console / Watch / Pad の固定タブだが、 **案件が独自の観測 /
+操作パネルを «隣のタブ» として足せる**。 自前ページを `serveStatic` で立てる
+だけだと、 コンソールも監視式もコントローラも失ってしまうため。
+
+```tjs
+WebServer.serveStatic("/tool/", "web/");
+WebServer.registerPanel("mytool", "案件ツール", "/tool/tool.html");
+```
+
+- 中身は **iframe で読み込む**。 組み込みページへ外部スクリプトを差し込む形に
+  していないのは、 **案件を内部 DOM へ依存させない**ため (こちらの UI を変える
+  たびに案件が壊れる、を避ける)。 同一オリジンなのでパネル側から `fetch` /
+  `EventSource` でサーバを自由に叩ける (`/cmd` `/watch` `/pad/exec` や、
+  自分で `register` したエンドポイント)。
+- 同じ `id` で呼び直すと上書き。 登録 / 解除は `/sub/panels` の push で
+  **開いているページへ即反映**される (タブが増減する)。
+- 中身は **そのタブを初めて開いたときに読み込む**ので、 重いツールを登録しても
+  起動は遅くならない。
+- `path` は **`/` で始まるサーバ上のパス**。 不正なら登録せず理由をログへ出す
+  (シェル経由で叩くとパスが Windows パスへ変換されて弾かれることがある)。
+
 ### `WebServer` TJS クラス (拡張登録口)
 
 スクリプト / プラグインがこのサーバへ機能を追加公開するためのクラス
@@ -452,6 +514,8 @@ curl -N localhost:8899/sub/watch      # 自動更新の push を受ける
 | `WebServer.unregister(prefix)` | ハンドラ解除。 あれば 1 |
 | `WebServer.serveStatic(prefix, storageDir)` | prefix 以下の GET を `storageDir + 相対パス` のストレージから配信 (`..` は 403)。 例: `("/ui/", "ui/")` |
 | `WebServer.unserveStatic(prefix)` | 静的マウント解除 |
+| `WebServer.registerPanel(id, label, path)` | 組み込み UI へタブを 1 枚足す (中身は `path` を iframe で読む。上記) |
+| `WebServer.unregisterPanel(id)` | パネルを外す。 あれば 1 |
 | `WebServer.broadcast(channel, text)` | `/sub/<channel>` の購読者へ text を配信 (改行可、 SSE 複数 data 行に整形) |
 | `WebServer.start([port])` | **サーバをスクリプトから起動** (127.0.0.1、 既定 8899)。 `-replweb` を付けなくても UI サーバを立てられる。 既に稼働中なら無視。 戻り値 = 稼働中か |
 | `WebServer.startAt(host, port)` | バインド先を明示して起動 (`"0.0.0.0"` で全 IF)。 戻り値 = 稼働中か |

@@ -92,6 +92,16 @@ extern void * TVPSearchAvailKMPWaveDecoder(const ttstr & storage, KMPMODULE ** m
 #endif
 extern void TVPAddExportFunction(const tjs_char *name, void *ptr);
 extern void TVPAddExportFunction(const char *name, void *ptr);
+// 同梱プラグインの申告 (packinone のような詰め合わせプラグイン向け)
+//   詰め合わせ側が V2Link で「この名前のプラグインは自分が持っている」と登録すると、
+//   以後 Plugins.link(name) は何もせず成功し、Plugins.canLink(name) も true を返す。
+//   旧 PackinOne は Plugins.link を自前で差し替えて同じことをしていた (本体に口が無かったため)。
+//   名前はファイル名部分だけを見て大小文字を無視する ("csvParser.dll" と
+//   "tools/plugin64/csvparser.dll" は同じものとして扱う)。
+TJS_EXP_FUNC_DEF(void, TVPRegisterBundledPlugin, (const ttstr &name));
+TJS_EXP_FUNC_DEF(void, TVPUnregisterBundledPlugin, (const ttstr &name));
+TJS_EXP_FUNC_DEF(bool, TVPIsBundledPlugin, (const ttstr &name));
+
 TJS_EXP_FUNC_DEF(void, TVPThrowPluginUnboundFunctionError, (const char *funcname));
 TJS_EXP_FUNC_DEF(void, TVPThrowPluginUnboundFunctionError, (const tjs_char *funcname));
 

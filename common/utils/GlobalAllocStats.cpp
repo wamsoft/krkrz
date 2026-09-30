@@ -12,6 +12,7 @@
 #include "tjsCommHead.h"
 #include "GlobalAllocStats.h"
 #include "LogIntf.h"
+#include "PooledAllocator.h"        // TVPPooledAllocator::FlushDeferredLog (ALLOC_STATS=OFF でも FilePool 等で使う)
 
 #include <atomic>
 #include <cstdlib>
@@ -22,8 +23,8 @@
 #ifdef KRKRZ_ENABLE_ALLOC_STATS
 
 #include "MemoryAllocatorStats.h"   // TVPFormatBytes / TVPAllocTagName
-#include "PooledAllocator.h"        // TVPPooledAllocator (TLSF) + Application.h 経由で TVPAllocTag
 #include "AllocTagScope.h"          // TVPCurrentAllocTag()
+#include "AllocSiteStats.h"         // 呼び出し元別集計 (MEMSTAT_DETAIL + -memstatsite)
 #include "SysInitIntf.h"            // TVPGetCommandLine
 
 // ---------------------------------------------------------------------------
@@ -66,11 +67,40 @@ struct Header {
 	uint32_t magic;    // 4
 	uint16_t tag;      // 2 (TVPAllocTag as raw uint16)
 	uint16_t pad;      // 2 (alignment, unused)
+#ifdef KRKRZ_ENABLE_MEMSTAT_DETAIL
+	// 診断ビルドだけ 32 byte にして確保元サイト番号 (AllocSiteStats) を持つ。
+	uint32_t site;     // 4 (0 = 記録なし)
+	uint32_t pad2;     // 4
+	uint64_t pad3;     // 8
+#endif
 };
-// size を明示 64bit にしているため 32bit / 64bit いずれの環境でも Header = 16 byte。
+// size を明示 64bit にしているため 32bit / 64bit いずれの環境でも Header = 16 byte
+// (診断ビルドは 32 byte)。
 // __STDCPP_DEFAULT_NEW_ALIGNMENT__ (典型 8 or 16) を満たすため 16 倍数を確認。
+#ifndef KRKRZ_ENABLE_MEMSTAT_DETAIL
 static_assert(sizeof(Header) == 16, "Header must be exactly 16 bytes");
+#endif
 static_assert(sizeof(Header) % 16 == 0, "Header must be 16-byte aligned");
+
+#ifdef KRKRZ_ENABLE_MEMSTAT_DETAIL
+// 生存サイズ分布のビン: [2^k, 2^(k+1)) を 2 分割した半オクターブ刻み。
+// size 0 / 1 は bin 0。
+constexpr int kLiveBins = 2 * 48;
+inline int live_bin_index(size_t size) {
+	if (size < 2) return 0;
+	unsigned k = 63;
+	while (!(size >> k)) --k;           // k = floor(log2(size))
+	int half = (int)((size >> (k - 1)) & 1);
+	int idx = (int)k * 2 + half;
+	return idx < kLiveBins ? idx : kLiveBins - 1;
+}
+// bin の下限バイト数
+inline uint64_t live_bin_floor(int idx) {
+	int k = idx / 2;
+	uint64_t base = 1ULL << k;
+	return (idx & 1) ? base + (base >> 1) : base;
+}
+#endif
 
 // doc/legacy/MemoryInspection.md §3.2 と同じビン区分。
 inline int size_bin_index(size_t size) {
@@ -96,6 +126,11 @@ public:
 #ifdef KRKRZ_ENABLE_MEMSTAT_DETAIL
 		// size histogram
 		size_hist_[size_bin_index(size)].fetch_add(1, std::memory_order_relaxed);
+		{
+			auto &lb = live_bins_[live_bin_index(size)];
+			lb.count.fetch_add(1, std::memory_order_relaxed);
+			lb.bytes.fetch_add(size, std::memory_order_relaxed);
+		}
 		// per-tag
 		if (tag < TVPGlobalAllocStats::kMaxTags) {
 			auto &slot = tag_slots_[tag];
@@ -113,6 +148,11 @@ public:
 		free_bytes_.fetch_add(size, std::memory_order_relaxed);
 		live_bytes_.fetch_sub(size, std::memory_order_relaxed);
 #ifdef KRKRZ_ENABLE_MEMSTAT_DETAIL
+		{
+			auto &lb = live_bins_[live_bin_index(size)];
+			lb.count.fetch_sub(1, std::memory_order_relaxed);
+			lb.bytes.fetch_sub(size, std::memory_order_relaxed);
+		}
 		if (tag < TVPGlobalAllocStats::kMaxTags) {
 			auto &slot = tag_slots_[tag];
 			slot.free_count.fetch_add(1, std::memory_order_relaxed);
@@ -183,6 +223,14 @@ public:
 		return !was;
 	}
 
+	// 容量超過警告の保留。alloc 経路では立てるだけで、出力は FlushDeferredLog。
+	void setOverflowLogPending() {
+		overflow_log_pending_.store(true, std::memory_order_relaxed);
+	}
+	bool takeOverflowLogPending() {
+		return overflow_log_pending_.exchange(false, std::memory_order_relaxed);
+	}
+
 private:
 	std::atomic<uint64_t> alloc_count_{0};
 	std::atomic<uint64_t> alloc_bytes_{0};
@@ -192,6 +240,17 @@ private:
 	std::atomic<uint64_t> peak_bytes_{0};
 
 	std::atomic<uint64_t> size_hist_[TVPGlobalAllocStats::kSizeHistBins]{};
+
+#ifdef KRKRZ_ENABLE_MEMSTAT_DETAIL
+public:
+	struct LiveBin {
+		std::atomic<int64_t> count{0};
+		std::atomic<int64_t> bytes{0};
+	};
+	const LiveBin &liveBin(int i) const { return live_bins_[i]; }
+private:
+	LiveBin live_bins_[kLiveBins]{};
+#endif
 
 	struct TagSlotAtomic {
 		std::atomic<uint64_t> alloc_count{0};
@@ -204,8 +263,12 @@ private:
 
 	std::atomic<iTVPMemoryAllocator *> pool_{nullptr};
 	std::atomic<bool>                 warned_overflow_{false};
+	std::atomic<bool>                 overflow_log_pending_{false};
 	const char                       *name_ = "?";
 };
+
+// いずれかの Collector に保留ログがあるか (FlushDeferredLog の早期 return 用)。
+std::atomic<bool> g_deferred_log_pending{false};
 
 // zero-init される atomic は static 初期化順序問題から免れる。
 Collector g_krkrz;
@@ -231,10 +294,13 @@ inline void *do_malloc(Collector &c, size_t size) {
 		uint64_t fb_after  = alloc->fallbackAllocCount();
 		// fb_after > fb_before なら、pool 容量を初めて (or 累積で) 超えた。
 		// 集計として overflow が起きた事実は確かなので 1 度だけ警告を出す。
+		// ここでログを出してはいけない: ログ出力は TJS 文字列ヒープ等を確保するので、
+		// 呼び出し元 (例: TJSAddStringHeapBlock の free list 張り替え途中) へ再入し、
+		// 解放済みポインタの二重 delete → magic 不一致 → pool 内ポインタの
+		// std::free でヒープ破壊 (0xC0000374) になる。フラグだけ立てて遅延出力。
 		if (fb_after > fb_before && c.firstOverflowDetected()) {
-			TVPLOG_WARNING("GlobalAllocStats[{}]: pool capacity exceeded "
-			               "({} bytes); subsequent allocs fall back to system malloc",
-			               c.name(), alloc->capacity());
+			c.setOverflowLogPending();
+			g_deferred_log_pending.store(true, std::memory_order_release);
 		}
 		if (raw) magic = kMagicPool;
 	}
@@ -250,6 +316,12 @@ inline void *do_malloc(Collector &c, size_t size) {
 	h->magic = magic;
 	h->tag   = tag;
 	h->pad   = 0;
+#ifdef KRKRZ_ENABLE_MEMSTAT_DETAIL
+	h->site  = (&c == &g_krkrz) ? TVPAllocSiteStats::Capture() : 0;
+	h->pad2  = 0;
+	h->pad3  = 0;
+	TVPAllocSiteStats::OnAlloc(h->site, size);
+#endif
 	c.recordAlloc(size, tag);
 	return static_cast<char *>(raw) + sizeof(Header);
 }
@@ -268,6 +340,9 @@ inline void do_free(Collector &c, void *p) {
 		size_t size = static_cast<size_t>(h->size);
 		uint16_t tag = h->tag;
 		c.recordFree(size, tag);
+#ifdef KRKRZ_ENABLE_MEMSTAT_DETAIL
+		TVPAllocSiteStats::OnFree(h->site, size);
+#endif
 		// pool は bindPool 後 unbind しない前提。
 		iTVPMemoryAllocator *alloc = c.pool();
 		if (alloc) {
@@ -279,6 +354,9 @@ inline void do_free(Collector &c, void *p) {
 	}
 	if (h->magic == kMagicRaw) {
 		c.recordFree(static_cast<size_t>(h->size), h->tag);
+#ifdef KRKRZ_ENABLE_MEMSTAT_DETAIL
+		TVPAllocSiteStats::OnFree(h->site, static_cast<size_t>(h->size));
+#endif
 		std::free(h);
 		return;
 	}
@@ -392,6 +470,9 @@ void Initialize() {
 	g_sdl.bindPool(nullptr, "SDL");
 #endif
 
+	// 呼び出し元別集計 (-memstatsite)。tracking を on にする前に表を用意する。
+	TVPAllocSiteStats::Initialize();
+
 	// tracking を on。これ以降の alloc は header + 経路振り分けが効く。
 	// release で pool_ store を含むすべての書き込みが他スレッドにも見える状態にする。
 	g_tracking_active.store(true, std::memory_order_release);
@@ -455,11 +536,27 @@ std::string Summarize() {
 	return out;
 }
 
+void FlushDeferredLog() {
+	TVPPooledAllocator::FlushDeferredLog();
+	if (!g_deferred_log_pending.load(std::memory_order_acquire)) return;
+	// 先に落としてから出力する (出力中の TVPLog → 本関数の再入は即 return)。
+	if (!g_deferred_log_pending.exchange(false, std::memory_order_acq_rel)) return;
+	Collector *collectors[] = { &g_krkrz, &g_sdl };
+	for (Collector *c : collectors) {
+		if (!c->takeOverflowLogPending()) continue;
+		iTVPMemoryAllocator *alloc = c->pool();
+		TVPLOG_WARNING("GlobalAllocStats[{}]: pool capacity exceeded "
+		               "({} bytes); subsequent allocs fall back to system malloc",
+		               c->name(), alloc ? alloc->capacity() : 0);
+	}
+}
+
 void Dump() {
 	if (!g_tracking_active.load(std::memory_order_relaxed)) {
 		TVPLOG_INFO("GlobalAlloc: tracking not yet activated");
 		return;
 	}
+	FlushDeferredLog();
 	auto k = GetKrkrzStats();
 	TVPLOG_INFO("GlobalAlloc[Krkrz] live={} peak={} total_alloc={} total_freed={} alloc_n={} free_n={}",
 	            TVPFormatBytes(k.live_bytes), TVPFormatBytes(k.peak_bytes),
@@ -503,6 +600,18 @@ void Dump() {
 		            TVPFormatBytes(t.total_allocated),
 		            TVPFormatBytes(t.total_freed));
 	}
+	// 生存サイズ分布 (半オクターブ刻み、生存のあるビンだけ)
+	TVPLOG_INFO("GlobalAlloc[Krkrz]   live by size (bin floor: bytes / count):");
+	for (int i = 0; i < kLiveBins; ++i) {
+		const auto &lb = g_krkrz.liveBin(i);
+		int64_t n = lb.count.load(std::memory_order_relaxed);
+		if (n <= 0) continue;
+		int64_t b = lb.bytes.load(std::memory_order_relaxed);
+		TVPLOG_INFO("GlobalAlloc[Krkrz]     >={} : {} / {}",
+		            live_bin_floor(i), TVPFormatBytes((uint64_t)b), n);
+	}
+	// 呼び出し元別 (-memstatsite 指定時のみ)
+	if (TVPAllocSiteStats::Enabled()) TVPAllocSiteStats::Dump(40);
 #endif // KRKRZ_ENABLE_MEMSTAT_DETAIL
 #ifdef KRKRZ_SDLMEMORY_STAT
 	auto s = GetSdlStats();
@@ -597,6 +706,10 @@ std::string Summarize() {
 
 void Dump() {
 	TVPLOG_INFO("GlobalAlloc: disabled at compile time (KRKRZ_ENABLE_ALLOC_STATS=OFF)");
+}
+
+void FlushDeferredLog() {
+	TVPPooledAllocator::FlushDeferredLog();
 }
 
 } // namespace TVPGlobalAllocStats

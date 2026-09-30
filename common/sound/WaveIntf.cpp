@@ -701,7 +701,9 @@ tTVPWaveDecoder * tTVPWDC_RIFFWave::Create(const ttstr & storagename,
 			// data ends before "size" described in the header
 
 		// compute total sample count and total length in time
-		format.TotalSamples = size / (format.Channels * format.BitsPerSample / 8);
+		// コンテナ幅で割る。有効ビット数 (BitsPerSample) はコンテナより
+		// 小さいことがある (WAVEFORMATEXTENSIBLE の 24bit in 32bit 等)。
+		format.TotalSamples = size / (format.Channels * format.BytesPerSample);
 		format.TotalTime = format.TotalSamples * 1000 / format.SamplesPerSec;
 
 		// create tTVPWD_RIFFWave instance

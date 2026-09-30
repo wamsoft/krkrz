@@ -24,6 +24,23 @@
 `x * layerW / DestRect幅`) でゲーム論理座標へ自動補正されるため、どの fit/zoom でも
 正しくゲーム内部に届く。
 
+### 入力イベントの座標系
+
+受け手が Window か Layer かで座標系が変わる。
+
+| 受け手 | 座標系 | 例 |
+|---|---|---|
+| **Window** のイベント / メソッド | **描画領域座標** (DestRect の左上が原点、ウィンドウのピクセル単位) | `Window.onMouseDown` / `onTouchDown` / `onTouchScaling` の `cx,cy` / `Window.setCursorPos` / `getCursorPos` |
+| **Layer** のイベント / メソッド | **レイヤ座標** (受け取るレイヤのローカル座標。上の変換 + `FromPrimaryCoordinates`) | `Layer.onMouseDown` / `onTouchDown` / `onTouchScaling` の `cx,cy` / `Layer.setCursorPos` / `cursorX,Y` |
+
+- 距離 (`onTouchScaling` の `startdistance` / `currentdistance`、`onTouchRotate` の
+  `distance`) は Layer 側でも**描画領域のピクセル距離のまま**。fill 等では x と y の
+  倍率が違い、1 つの係数で換算できないため。拡大率は比で求める。
+- ⚠ `onTouchScaling` / `onTouchRotate` の中心 `cx,cy` は、2026-09-29 まで Layer 側でも
+  描画領域座標のまま届いていた (`tTVPDrawDevice` / `tTVPLayerTreeOwner` が中心を
+  変換せず、`tTVPLayerManager` もフォーカスレイヤのローカル座標へ直していなかった)。
+  いまは `onTouchDown` / `Move` と同じくレイヤ座標になる。
+
 ## 対応状況
 
 - 配置の指定 (fit / zoom / align / offset) は**全バリアント共通**。

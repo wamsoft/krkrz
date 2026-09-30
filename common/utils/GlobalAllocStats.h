@@ -84,6 +84,14 @@ std::string Summarize();
 // TVPHeapDump 用 INFO ログ出力 (Krkrz / Sdl 各 1 行 + pool 状態)
 void Dump();
 
+// alloc 経路内で検知した事象 (pool 容量超過、TVPPooledAllocator の破損検知など)
+// の保留ログを出力する。
+// alloc 経路から直接ログを出すと、ログ出力自身の確保 (TJS 文字列ヒープ等) が
+// 呼び出し元の途中状態へ再入して破壊するため、alloc 経路はフラグだけ立てて
+// ログは本関数で遅延出力する。TVPLog の入口 (= ログを出してよい地点) と
+// Dump から呼ばれる。保留が無ければ atomic load だけで戻る。
+void FlushDeferredLog();
+
 // プール初期化。本関数を呼び出すまで全 alloc は素 malloc/free 直行
 // (オーバーヘッドゼロ、stats なし、pool なし)。本関数で:
 //   1. TVPGetCommandLine から `-krkrzpoolsize` / `-sdlpoolsize` (MB、

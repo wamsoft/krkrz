@@ -369,7 +369,9 @@ SDL3FileSystem::LastModifiedFileTime(const tjs_char *path)
 	std::string file_path_utf8;
 	TVPUtf16ToUtf8(file_path_utf8, path);
 	SDL_PathInfo pathInfo;
-	if (SDL_GetPathInfo(file_path_utf8.c_str(), &pathInfo) && pathInfo.type == SDL_PATHTYPE_FILE) {
+	// フォルダの時刻も返す (WINVER の GetFileAttributesExW と同じ。Storages.getTime 用)
+	if (SDL_GetPathInfo(file_path_utf8.c_str(), &pathInfo) &&
+		(pathInfo.type == SDL_PATHTYPE_FILE || pathInfo.type == SDL_PATHTYPE_DIRECTORY)) {
 		// SDL_PathInfo.modify_time は Unix エポック(1970)起点の「ナノ秒」。
 		// fstat プラグイン / 他バリアントと同じ Windows FILETIME
 		// (1601-01-01 UTC 起点・100ns 刻み) に変換して返す。取得失敗時は 0。

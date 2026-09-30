@@ -124,6 +124,10 @@ SDL3WindowForm::SDL3WindowForm(class tTJSNI_Window* win)
  , mStartupDisplayApplied(false)
  , mFixedSurfaceWidth(0), mFixedSurfaceHeight(0)
  , mWheelAccum(0.0f)
+ , mExEventEnabled(false), mDeviceChangeEnabled(false)
+ , mMoveDisabled(false), mResizeDisabled(false)
+ , mHasNormalRect(false)
+ , mNormalLeft(0), mNormalTop(0), mNormalWidth(0), mNormalHeight(0)
 {
 	SDL_WindowFlags flags = SDL_WINDOW_HIDDEN;
 #if defined(TVP_USE_OPENGL)
@@ -722,9 +726,8 @@ SDL3WindowForm::SetBorderStyle(enum tTVPBorderStyle st)
 	mBorderStyle = st;
 	if (!mWindow) return;
 	bool bordered = (st != bsNone);
-	bool resizable = (st == bsSizeable || st == bsSizeToolWin);
 	SDL_SetWindowBordered(mWindow, bordered);
-	SDL_SetWindowResizable(mWindow, resizable);
+	ApplyResizable();   // disableResize と合わせて反映する
 	ApplyMaximizeBoxOption();
 }
 
@@ -766,6 +769,130 @@ SDL3WindowForm::GetBorderStyle() const
 	return mBorderStyle;
 }
 
+//---------------------------------------------------------------------------
+// ウィンドウ状態 / 矩形 / 拡張イベント (doc/WindowState.md)
+//   windowEx プラグイン (Win32 専用) から本体へ移した機能の SDL 版。
+//   ⚠ SDL に無いもの (枠ドラッグ中の onMoving / onResizing、onMoveSizeBegin /
+//      onMoveSizeEnd、onMaximizeQuery、onPaste) は**実装できない**。
+//      いずれも「OS がドラッグ中に同期で問い合わせてくる」類で SDL は通さない。
+//---------------------------------------------------------------------------
+bool SDL3WindowForm::GetMaximized() const
+{
+	if (!mWindow) return false;
+	return (SDL_GetWindowFlags(mWindow) & SDL_WINDOW_MAXIMIZED) != 0;
+}
+bool SDL3WindowForm::GetMinimized() const
+{
+	if (!mWindow) return false;
+	return (SDL_GetWindowFlags(mWindow) & SDL_WINDOW_MINIMIZED) != 0;
+}
+void SDL3WindowForm::Maximize()
+{
+	if (!mWindow) return;
+	UpdateNormalRect();
+	SDL_MaximizeWindow(mWindow);
+}
+void SDL3WindowForm::Minimize()
+{
+	if (!mWindow) return;
+	UpdateNormalRect();
+	SDL_MinimizeWindow(mWindow);
+}
+void SDL3WindowForm::ShowRestore()
+{
+	if (mWindow) SDL_RestoreWindow(mWindow);
+}
+// 通常状態のときだけ現在値を控える。最大化中に呼ばれても上書きしない
+void SDL3WindowForm::UpdateNormalRect()
+{
+	if (!mWindow) return;
+	Uint32 flags = SDL_GetWindowFlags(mWindow);
+	if (flags & (SDL_WINDOW_MAXIMIZED | SDL_WINDOW_MINIMIZED | SDL_WINDOW_FULLSCREEN)) return;
+	int l = 0, t = 0, w = 0, h = 0;
+	if (!GetWindowRectScreen(l, t, w, h)) return;
+	mNormalLeft = l; mNormalTop = t; mNormalWidth = w; mNormalHeight = h;
+	mHasNormalRect = true;
+}
+bool SDL3WindowForm::GetNormalRect(int &l, int &t, int &w, int &h) const
+{
+	if (!mHasNormalRect) {
+		// まだ一度も控えていない (= ずっと通常状態) なら現在値でよい
+		return GetWindowRectScreen(l, t, w, h);
+	}
+	l = mNormalLeft; t = mNormalTop; w = mNormalWidth; h = mNormalHeight;
+	return true;
+}
+// SDL_GetWindowPosition / Size はクライアント (内側) を返すので、
+// 外形は装飾の厚み (SDL_GetWindowBordersSize) を足して求める
+bool SDL3WindowForm::GetWindowRectScreen(int &l, int &t, int &w, int &h) const
+{
+	int cl = 0, ct = 0, cw = 0, ch = 0;
+	if (!GetClientRectScreen(cl, ct, cw, ch)) return false;
+	int top = 0, left = 0, bottom = 0, right = 0;
+	if (!SDL_GetWindowBordersSize(mWindow, &top, &left, &bottom, &right)) {
+		// 取れない環境 (枠なし / 一部プラットフォーム) は外形 = クライアント
+		top = left = bottom = right = 0;
+	}
+	l = cl - left; t = ct - top; w = cw + left + right; h = ch + top + bottom;
+	return true;
+}
+bool SDL3WindowForm::GetClientRectScreen(int &l, int &t, int &w, int &h) const
+{
+	if (!mWindow) return false;
+	int x = 0, y = 0, cw = 0, ch = 0;
+	SDL_GetWindowPosition(mWindow, &x, &y);
+	SDL_GetWindowSize(mWindow, &cw, &ch);
+	l = x; t = y; w = cw; h = ch;
+	return true;
+}
+bool SDL3WindowForm::SetClientRectScreen(int l, int t, int w, int h)
+{
+	if (!mWindow) return false;
+	SDL_SetWindowPosition(mWindow, l, t);
+	SDL_SetWindowSize(mWindow, w, h);
+	return true;
+}
+// ⚠ SDL にウィンドウの移動を止める口は無い (WM に任せているため)。
+//    値は保持して返すが効果は無い。枠なし (bsNone) なら WM はそもそも動かさない
+void SDL3WindowForm::SetMoveDisabled(bool b)
+{
+	mMoveDisabled = b;
+}
+void SDL3WindowForm::SetResizeDisabled(bool b)
+{
+	mResizeDisabled = b;
+	ApplyResizable();
+}
+// borderStyle が許していて、かつ disableResize でないときだけリサイズ可
+void SDL3WindowForm::ApplyResizable()
+{
+	if (!mWindow) return;
+	bool resizable = (mBorderStyle == bsSizeable || mBorderStyle == bsSizeToolWin);
+	SDL_SetWindowResizable(mWindow, resizable && !mResizeDisabled);
+}
+// onDeviceChanged(arrival) を投げる。入力デバイスの抜き差し
+void SDL3WindowForm::FireDeviceChanged(bool arrival)
+{
+	if (!mDeviceChangeEnabled || !TJSNativeInstance) return;
+	iTJSDispatch2 *obj = TJSNativeInstance->GetOwnerNoAddRef();
+	if (!obj) return;
+	tTJSVariant args[1] = { arrival };
+	static ttstr evname(TJS_W("onDeviceChanged"));
+	TVPPostEvent(obj, obj, evname, 0, TVP_EPT_POST | TVP_EPT_DISCARDABLE, 1, args);
+}
+// 拡張イベントを投げる。registerExEvent() していなければ何もしない
+void SDL3WindowForm::FireExEvent(const tjs_char *name, int argc, int a0, int a1)
+{
+	if (!mExEventEnabled || !TJSNativeInstance) return;
+	iTJSDispatch2 *obj = TJSNativeInstance->GetOwnerNoAddRef();
+	if (!obj) return;
+	tTJSVariant args[2];
+	args[0] = (tjs_int)a0;
+	args[1] = (tjs_int)a1;
+	ttstr evname(name);
+	TVPPostEvent(obj, obj, evname, 0, TVP_EPT_POST, argc, args);
+}
+
 void
 SDL3WindowForm::SetStayOnTop(bool b)
 {
@@ -804,12 +931,20 @@ SDL3WindowForm::GetFullScreenMode() const
 void
 SDL3WindowForm::GetCursorPos(tjs_int &x, tjs_int &y)
 {
+	// 仮想カーソルが有効ならそちらが真実 (doc/VirtualCursor.md)。 キー / パッドの
+	// ナビで動かした位置も実マウスの位置もここに集約されている。
+	if (VirtualCursor.Get(x, y)) return;
+
 	float xpos = 0, ypos = 0;
 	if (mWindow) {
 		SDL_GetMouseState(&xpos, &ypos);
 	}
-	x = (tjs_int)xpos;
-	y = (tjs_int)ypos;
+	// SDL_GetMouseState はウィンドウクライアント座標。 この関数の契約は
+	// 「描画矩形内の座標」なので destRect オフセットを引く (SetCursorPos の逆)。
+	tjs_int cx = (tjs_int)xpos, cy = (tjs_int)ypos;
+	TranslateWindowToDrawArea(cx, cy);
+	x = cx;
+	y = cy;
 }
 
 void
@@ -824,6 +959,8 @@ SDL3WindowForm::SetCursorVisible(bool visible)
 void
 SDL3WindowForm::SetCursorPos(tjs_int x, tjs_int y)
 {
+	// 実カーソルを動かす経路。 仮想位置も揃えておく。
+	VirtualCursor.Set(x, y);
 	if (mWindow) {
 		// 引数は「描画矩形内の座標」(iTVPWindow::SetCursorPos の契約。 入力側の
 		// OnMouse* が TranslateWindowToDrawArea で destRect オフセットを引いた
@@ -876,17 +1013,6 @@ SDL3WindowForm::AppEvent(const SDL_Event& event)
 		}
 		case SDL_EVENT_KEY_DOWN:
 		case SDL_EVENT_KEY_UP: {
-#ifdef KRKRZ_HAS_ELEMENTS
-			// F12 で Elements テストダイアログをトグル (Phase 3 MVP デバッグ用)。
-			// KEY_DOWN でトグル、KEY_UP は KEY_DOWN とペアで Layer に流れない
-			// よう同様に消費する。
-			if (event.key.key == SDLK_F12) {
-				if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat) {
-					TVPShowElementsTestDialog();
-				}
-				return true;
-			}
-#endif
 			int message = (event.type == SDL_EVENT_KEY_UP) ? AM_KEY_UP : AM_KEY_DOWN;
 			int key = TVPTransSDLKeyToVirtualKey(event.key.key);
 			// キーの取りこぼし / 変換ミスの切り分け用。 SDL が何を渡してきて
@@ -1016,8 +1142,46 @@ SDL3WindowForm::AppEvent(const SDL_Event& event)
 			int h = event.window.data2;
 			TVPLOG_DEBUG("Window resized: {}x{}", w, h);
 			SendMessage(AM_DISPLAY_RESIZE, w, h);
+			UpdateNormalRect();
 			break;
 		}
+		//-- 拡張イベント (doc/WindowState.md)。registerExEvent() したときだけ飛ぶ
+		case SDL_EVENT_WINDOW_MOVED: {
+			UpdateNormalRect();
+			FireExEvent(TJS_W("onMove"), 2, event.window.data1, event.window.data2);
+			break;
+		}
+		case SDL_EVENT_WINDOW_RESTORED:
+			UpdateNormalRect();
+			break;
+		case SDL_EVENT_WINDOW_MINIMIZED:
+			FireExEvent(TJS_W("onMinimize"));
+			break;
+		case SDL_EVENT_WINDOW_MAXIMIZED:
+			FireExEvent(TJS_W("onMaximize"));
+			break;
+		case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED: {
+			// SDL は倍率で持っているので 96dpi 基準へ直して渡す (Win32 版と揃える)
+			float sc = mWindow ? SDL_GetWindowDisplayScale(mWindow) : 1.0f;
+			int dpi = (int)(96.0f * (sc > 0.0f ? sc : 1.0f));
+			FireExEvent(TJS_W("onDPIChanged"), 2, dpi, dpi);
+			break;
+		}
+		case SDL_EVENT_WINDOW_DISPLAY_CHANGED:
+		case SDL_EVENT_DISPLAY_ADDED:
+		case SDL_EVENT_DISPLAY_REMOVED:
+		case SDL_EVENT_DISPLAY_DESKTOP_MODE_CHANGED:
+			FireExEvent(TJS_W("onDisplayChanged"));
+			break;
+		//-- 入力デバイスの抜き差し (registerDeviceChange() したときだけ飛ぶ)
+		case SDL_EVENT_JOYSTICK_ADDED:
+		case SDL_EVENT_GAMEPAD_ADDED:
+			FireDeviceChanged(true);
+			break;
+		case SDL_EVENT_JOYSTICK_REMOVED:
+		case SDL_EVENT_GAMEPAD_REMOVED:
+			FireDeviceChanged(false);
+			break;
 		case SDL_EVENT_WINDOW_LEAVE_FULLSCREEN: {
 			// スタイル復元で最大化ボタンが戻るのを抑える (SetFullScreenMode 参照)
 			ApplyMaximizeBoxOption();

@@ -315,8 +315,81 @@ void TVPHeapDump()
 
 
 //---------------------------------------------------------------------------
+// System.choice(caption, text, choices [, default = 0]) の引数を読む。
+//   choices は文字列の配列 (1 個以上)。default は範囲外なら 0 に丸める。
+static tjs_error TVPReadChoiceArgs(tjs_int numparams, tTJSVariant **param,
+	ttstr &caption, ttstr &text, std::vector<ttstr> &choices, int &def)
+{
+	if(numparams < 3) return TJS_E_BADPARAMCOUNT;
+	caption = (param[0]->Type() != tvtVoid) ? ttstr(*param[0]) : ttstr(TJS_W("Choice"));
+	text = *param[1];
+	if(param[2]->Type() != tvtObject) return TJS_E_INVALIDPARAM;
+	iTJSDispatch2 *arr = param[2]->AsObjectNoAddRef();
+	if(!arr) return TJS_E_INVALIDPARAM;
+	tTJSVariant cnt;
+	if(TJS_FAILED(arr->PropGet(0, TJS_W("count"), NULL, &cnt, arr))) return TJS_E_INVALIDPARAM;
+	tjs_int n = (tjs_int)cnt;
+	for(tjs_int i = 0; i < n; i++) {
+		tTJSVariant v;
+		arr->PropGetByNum(0, i, &v, arr);
+		choices.push_back(ttstr(v));
+	}
+	if(choices.empty()) return TJS_E_INVALIDPARAM;
+	def = (numparams >= 4 && param[3]->Type() != tvtVoid) ? (int)(tjs_int)*param[3] : 0;
+	if(def < 0 || def >= (int)choices.size()) def = 0;
+	return TJS_S_OK;
+}
+//---------------------------------------------------------------------------
 // TVPCreateNativeClass_System
 //---------------------------------------------------------------------------
+static void TVPSetMonRect(iTJSDispatch2 *dic, const tjs_char *name,
+	tjs_int x, tjs_int y, tjs_int w, tjs_int h)
+{
+	iTJSDispatch2 *r = TJSCreateDictionaryObject();
+	try {
+		tTJSVariant v;
+		v = x; r->PropSet(TJS_MEMBERENSURE, TJS_W("x"), NULL, &v, r);
+		v = y; r->PropSet(TJS_MEMBERENSURE, TJS_W("y"), NULL, &v, r);
+		v = w; r->PropSet(TJS_MEMBERENSURE, TJS_W("w"), NULL, &v, r);
+		v = h; r->PropSet(TJS_MEMBERENSURE, TJS_W("h"), NULL, &v, r);
+		tTJSVariant rv(r, r);
+		dic->PropSet(TJS_MEMBERENSURE, name, NULL, &rv, dic);
+	} catch(...) {
+		r->Release();
+		throw;
+	}
+	r->Release();
+}
+static iTJSDispatch2 * TVPCreateMonitorInfoDic(const tTVPApplication::tTVPMonitorInfo &info)
+{
+	iTJSDispatch2 *dic = TJSCreateDictionaryObject();
+	try {
+		tTJSVariant v;
+		v = ttstr(info.name.c_str());  dic->PropSet(TJS_MEMBERENSURE, TJS_W("name"), NULL, &v, dic);
+		v = (tjs_int)(info.primary ? 1 : 0);
+		dic->PropSet(TJS_MEMBERENSURE, TJS_W("primary"), NULL, &v, dic);
+		TVPSetMonRect(dic, TJS_W("monitor"), info.mx, info.my, info.mw, info.mh);
+		TVPSetMonRect(dic, TJS_W("work"),    info.wx, info.wy, info.ww, info.wh);
+	} catch(...) {
+		dic->Release();
+		throw;
+	}
+	return dic;
+}
+// Window オブジェクトから外形矩形を読む (TJS の left/top/width/height)
+static bool TVPGetRectFromWindowVariant(tTJSVariant *v, tjs_int &x, tjs_int &y,
+	tjs_int &w, tjs_int &h)
+{
+	if(!v || v->Type() != tvtObject) return false;
+	iTJSDispatch2 *dsp = v->AsObjectNoAddRef();
+	if(!dsp) return false;
+	tTJSVariant t;
+	if(TJS_FAILED(dsp->PropGet(0, TJS_W("left"),   NULL, &t, dsp))) return false; x = (tjs_int)t;
+	if(TJS_FAILED(dsp->PropGet(0, TJS_W("top"),    NULL, &t, dsp))) return false; y = (tjs_int)t;
+	if(TJS_FAILED(dsp->PropGet(0, TJS_W("width"),  NULL, &t, dsp))) return false; w = (tjs_int)t;
+	if(TJS_FAILED(dsp->PropGet(0, TJS_W("height"), NULL, &t, dsp))) return false; h = (tjs_int)t;
+	return true;
+}
 tTJSNativeClass * TVPCreateNativeClass_System()
 {
 	tTJSNC_System *cls = new tTJSNC_System();
@@ -386,6 +459,33 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/confirm)
 TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
 	/*func. name*/confirm)
 //----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/choice)
+{
+	// 選択肢から 1 つ選ぶモーダル。選ばれた index を返す (閉じた / Esc は default)。
+	// REPL (-replfile) 駆動中はモーダル応答チャネルに type:"choice" で出す
+	// (confirm と同じ方針。チャネルの無い REPL は実 UI を出す)。
+	ttstr caption, text;
+	std::vector<ttstr> choices;
+	int def = 0;
+	tjs_error er = TVPReadChoiceArgs(numparams, param, caption, text, choices, def);
+	if(TJS_FAILED(er)) return er;
+	int index = def;
+	bool handled = false;
+#ifdef KRKRZ_USE_REPL_FILECHANNEL
+	if (TVPReplActive) {
+		if (TVPReplChoice(caption, text, choices, def, index)) handled = true;
+	}
+#endif
+	if (!handled && Application) {
+		std::vector<tjs_string> c;
+		for (auto &s : choices) c.push_back(s.AsStdString());
+		index = Application->Choose(text.AsStdString(), caption.AsStdString(), c, def);
+	}
+	if(result) *result = (tjs_int)index;
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
+	/*func. name*/choice)
 TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/inputString)
 {
 	// System.inputString(caption, prompt, default="") -> 入力文字列 / キャンセルで void
@@ -885,6 +985,109 @@ TJS_BEGIN_NATIVE_PROP_DECL(title)
 }
 TJS_END_NATIVE_STATIC_PROP_DECL_OUTER(cls, title)
 //----------------------------------------------------------------------
+//----------------------------------------------------------------------
+// モニタ情報 (doc/WindowState.md)
+//   windowEx プラグインが Win32 で提供していた System.getMonitorInfo /
+//   getDisplayMonitors と**同じ形の辞書**を返す:
+//     %[ name, primary, monitor:%[x,y,w,h], work:%[x,y,w,h] ]
+//   実体は tTVPApplication の仮想関数なので、モニタの概念が無いホスト
+//   (常にフルスクリーンの CS 機等) では 0 台になり void / 空配列を返す。
+//----------------------------------------------------------------------
+//----------------------------------------------------------------------
+// System.getMonitorInfo([nearest[, window | x, y | x, y, w, h]])
+//   引数なし        … プライマリモニタ
+//   (nearest, win)  … そのウィンドウのあるモニタ
+//   (nearest, x, y) … その点のあるモニタ
+//   (nearest, x,y,w,h) … その矩形と重なるモニタ
+//   nearest が偽で重なるモニタが無ければ void
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/getMonitorInfo)
+{
+	tjs_int index = -1;
+	if(numparams == 0) {
+		index = Application->GetPrimaryMonitorIndex();
+	} else {
+		bool nearest = numparams >= 1 ? param[0]->operator bool() : true;
+		tjs_int x = 0, y = 0, w = 1, h = 1;
+		switch(numparams) {
+		case 2:
+			if(!TVPGetRectFromWindowVariant(param[1], x, y, w, h)) return TJS_E_INVALIDPARAM;
+			break;
+		case 3:
+			x = (tjs_int)*param[1]; y = (tjs_int)*param[2]; w = h = 1;
+			break;
+		case 5:
+			x = (tjs_int)*param[1]; y = (tjs_int)*param[2];
+			w = (tjs_int)*param[3]; h = (tjs_int)*param[4];
+			break;
+		default:
+			return TJS_E_BADPARAMCOUNT;
+		}
+		index = Application->FindMonitorForRect(x, y, w, h, nearest);
+	}
+	tTVPApplication::tTVPMonitorInfo info;
+	if(index < 0 || !Application->GetMonitorInfoAt(index, info)) {
+		if(result) result->Clear();
+		return TJS_S_OK;
+	}
+	if(result) {
+		iTJSDispatch2 *dic = TVPCreateMonitorInfoDic(info);
+		*result = tTJSVariant(dic, dic);
+		dic->Release();
+	}
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
+	/*func. name*/getMonitorInfo)
+//----------------------------------------------------------------------
+// System.getDisplayMonitors([x, y, w, h])
+//   全モニタの配列。矩形を渡すと、重なるモニタだけを返し、重なりを intersect に入れる
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/getDisplayMonitors)
+{
+	const bool hasRect = (numparams >= 4);
+	tjs_int rx = 0, ry = 0, rw = 0, rh = 0;
+	if(hasRect) {
+		rx = (tjs_int)*param[0]; ry = (tjs_int)*param[1];
+		rw = (tjs_int)*param[2]; rh = (tjs_int)*param[3];
+	}
+	iTJSDispatch2 *arr = TJSCreateArrayObject();
+	try {
+		const tjs_int count = Application->GetMonitorCount();
+		tjs_int n = 0;
+		for(tjs_int i = 0; i < count; i++) {
+			tTVPApplication::tTVPMonitorInfo info;
+			if(!Application->GetMonitorInfoAt(i, info)) continue;
+			tjs_int ix = 0, iy = 0, iw = 0, ih = 0;
+			if(hasRect) {
+				// 重なり
+				const tjs_int l = (rx > info.mx) ? rx : info.mx;
+				const tjs_int t = (ry > info.my) ? ry : info.my;
+				const tjs_int r = ((rx + rw) < (info.mx + info.mw)) ? (rx + rw) : (info.mx + info.mw);
+				const tjs_int b = ((ry + rh) < (info.my + info.mh)) ? (ry + rh) : (info.my + info.mh);
+				if(l >= r || t >= b) continue;   // 重ならないものは返さない
+				ix = l; iy = t; iw = r - l; ih = b - t;
+			}
+			iTJSDispatch2 *dic = TVPCreateMonitorInfoDic(info);
+			try {
+				if(hasRect) TVPSetMonRect(dic, TJS_W("intersect"), ix, iy, iw, ih);
+				tTJSVariant v(dic, dic);
+				arr->PropSetByNum(TJS_MEMBERENSURE, n++, &v, arr);
+			} catch(...) {
+				dic->Release();
+				throw;
+			}
+			dic->Release();
+		}
+		if(result) *result = tTJSVariant(arr, arr);
+	} catch(...) {
+		arr->Release();
+		throw;
+	}
+	arr->Release();
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL_OUTER(/*object to register*/cls,
+	/*func. name*/getDisplayMonitors)
+//----------------------------------------------------------------------
 TJS_BEGIN_NATIVE_PROP_DECL(screenWidth)
 {
 	TJS_BEGIN_NATIVE_PROP_GETTER
@@ -1152,14 +1355,28 @@ TJS_BEGIN_NATIVE_PROP_DECL(padStyle)
 TJS_END_NATIVE_STATIC_PROP_DECL_OUTER(cls, padStyle)
 
 
+// System.addFont(storage) : フォントファイルを登録し、実 face 名の配列を返す
+//   WINVER 側の System.addFont と戻り値をそろえてある。
 TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/addFont)
 {
-	// show simple message box
 	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
 
 	ttstr storage = *param[0];
 	std::vector<tjs_string> faces;
 	TVPAddFontToFreeType( storage, &faces);
+
+	if(result)
+	{
+		iTJSDispatch2 *dsp = TJSCreateArrayObject();
+		tTJSVariant tmp(dsp, dsp);
+		*result = tmp;
+		dsp->Release();
+		for(tjs_uint i = 0; i < faces.size(); i++)
+		{
+			tmp = ttstr(faces[i].c_str());
+			dsp->PropSetByNum(TJS_MEMBERENSURE, i, &tmp, dsp);
+		}
+	}
 
 	return TJS_S_OK;
 }

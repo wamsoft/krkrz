@@ -336,6 +336,22 @@ public:
 	virtual tjs_int DesktopWidth() const { return ScreenWidth(); }
 	virtual tjs_int DesktopHeight() const { return ScreenHeight(); }
 
+	// モニタ情報 (TJS: System.getMonitorInfo / getDisplayMonitors)。
+	// 「どのモニタに、どの範囲で出すか」はエンジンの責務なので本体に持つ
+	// (doc/WindowState.md)。 モニタの概念が無いホストは既定のまま (0 台) でよい。
+	struct tTVPMonitorInfo {
+		tjs_string name;
+		bool primary = false;
+		tjs_int mx = 0, my = 0, mw = 0, mh = 0;   //!< モニタ全体
+		tjs_int wx = 0, wy = 0, ww = 0, wh = 0;   //!< 作業領域 (タスクバー等を除く)
+	};
+	virtual tjs_int GetMonitorCount() const { return 0; }
+	virtual bool GetMonitorInfoAt(tjs_int index, tTVPMonitorInfo &info) const { return false; }
+	virtual tjs_int GetPrimaryMonitorIndex() const { return -1; }
+	//! 矩形と重なるモニタ。nearest なら重ならないときいちばん近いものを返す。-1 = 無し
+	virtual tjs_int FindMonitorForRect(tjs_int x, tjs_int y, tjs_int w, tjs_int h,
+									   bool nearest) const { return -1; }
+
 	// アクティブかどうか
 	virtual bool GetActivating() const = 0;
 	virtual bool GetNotMinimizing() const = 0;
@@ -355,6 +371,15 @@ public:
 	virtual bool ConfirmYesNo( const tjs_string& string, const tjs_string& caption ) {
 		MessageDlg( string, caption, 0, 0 );
 		return true;
+	}
+
+	// 複数の選択肢から 1 つ選ぶモーダル (System.choice)。選ばれた index を返す
+	// (閉じた / 選ばなかったときは def)。既定は MessageDlg を出して def を返すだけの
+	// フォールバック。SDL3Application 等が override する。
+	virtual int Choose( const tjs_string& string, const tjs_string& caption,
+		const std::vector<tjs_string>& choices, int def ) {
+		MessageDlg( string, caption, 0, 0 );
+		return def;
 	}
 
 	// テキスト入力モーダル (System.inputString)。OK なら true (result に入力文字列)、

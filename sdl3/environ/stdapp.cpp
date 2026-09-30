@@ -140,8 +140,12 @@ bool MySDL3Application::InitPath()
 	char delimiter = appPath.back();
 
 	// 引数でプロジェクトパスを明示指定
+	// ⚠ acceptfilenameargument が 0 以外 (1 / 2) のときはオプション以外の引数を
+	//   プロジェクトパスにしない (ファイル引数として -argN へ渡す)。WINVER と同じ
+	extern int GetSystemSecurityOption(const char *name);
+	const bool acceptFileArgument = GetSystemSecurityOption("acceptfilenameargument") != 0;
 	std::string projectPath;
-	if (_nargs.size() > 1 &&
+	if (!acceptFileArgument && _nargs.size() > 1 &&
 	    (_nargs[1].rfind(TJS_W("web://"), 0) == 0 || _nargs[1].rfind(TJS_W("webnc://"), 0) == 0)) {
 		// web:// / webnc:// メディアをプロジェクトパスに指定 (wasm のオンデマンド
 		// バラファイル配信)。fetch ベースのメディアなのでローカル filesystem 処理は
@@ -149,7 +153,7 @@ bool MySDL3Application::InitPath()
 		tjs_string proj = _nargs[1];
 		if (!proj.empty() && proj.back() != TJS_W('/')) proj += TJS_W('/');
 		TVPUtf16ToUtf8(projectPath, proj);
-	} else if (_nargs.size() > 1) {
+	} else if (!acceptFileArgument && _nargs.size() > 1) {
 		std::filesystem::path p(_nargs[1].c_str());
 		// C++20 以降 std::filesystem::path::u8string() は std::u8string を返すため
 		// std::string にそのまま代入・連結できない。バイト列は UTF-8 のまま

@@ -77,6 +77,32 @@ tTJSNC_WebServer::tTJSNC_WebServer() : inherited(TJS_W("WebServer"))
 	}
 	TJS_END_NATIVE_METHOD_DECL(/*func. name*/unserveStatic)
 	//---------------------------------------------------------------------------
+	// registerPanel(id, label, path)  — 組み込みブラウザ UI へタブを 1 枚足す。
+	//   中身は path を iframe で読み込む (通常は serveStatic のマウント配下)。
+	//   同じ id で呼び直すと上書き。開いているページへ即反映される。
+	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/registerPanel)
+	{
+		if (numparams < 3) return TJS_E_BADPARAMCOUNT;
+		ttstr id(*param[0]);
+		ttstr label(*param[1]);
+		ttstr path(*param[2]);
+		TVPReplWeb::RegisterPanel(id, label, path);
+		if (result) *result = (tjs_int)1;
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_METHOD_DECL(/*func. name*/registerPanel)
+	//---------------------------------------------------------------------------
+	// unregisterPanel(id)  — パネルを外す。あったら 1 / 無ければ 0。
+	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/unregisterPanel)
+	{
+		if (numparams < 1) return TJS_E_BADPARAMCOUNT;
+		ttstr id(*param[0]);
+		bool found = TVPReplWeb::UnregisterPanel(id);
+		if (result) *result = (tjs_int)(found ? 1 : 0);
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_METHOD_DECL(/*func. name*/unregisterPanel)
+	//---------------------------------------------------------------------------
 	// broadcast(channel, text)  — SSE /sub/<channel> の購読者へ text を配信。
 	//   text は改行を含んでよい (SSE 複数 data 行に整形される)。
 	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/broadcast)

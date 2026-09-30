@@ -687,7 +687,20 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/doGrayScale)
 		}
 	}
 
-	dst->GetBitmap()->DoGrayScale(clipRect);
+	// 第 3〜5 引数で R/G/B の重みを指定できる (省略時は従来どおり BT.709)。
+	// 重みは相対値で、 内部で合計 1 に正規化する。
+	if( numparams >= 5 ) {
+		tjs_real rw = (tjs_real)*param[2];
+		tjs_real gw = (tjs_real)*param[3];
+		tjs_real bw = (tjs_real)*param[4];
+		if( rw < 0 || gw < 0 || bw < 0 || (rw + gw + bw) <= 0 )
+			return TJS_E_INVALIDPARAM;
+		dst->GetBitmap()->DoGrayScale(clipRect, rw, gw, bw);
+	} else if( numparams >= 3 ) {
+		return TJS_E_BADPARAMCOUNT;
+	} else {
+		dst->GetBitmap()->DoGrayScale(clipRect);
+	}
 	if( result ) {
 		iTJSDispatch2 *ret = TVPCreateRectObject( clipRect.left, clipRect.top, clipRect.right, clipRect.bottom );
 		*result = tTJSVariant(ret, ret);

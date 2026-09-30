@@ -375,6 +375,10 @@ public:
 extern tjs_int TJSObjectHashBitsLimit;
 	// this limits hash table size
 
+// メンバ名を文字列から作る。グローバル文字列マップで同じ名前を共有する
+// (C 文字列で PropSet されるたびに別の文字列を確保しないように)。
+extern tTJSVariantString * TJSAllocMemberName(const tjs_char *name);
+
 
 #define TJS_SYMBOL_USING	0x1
 #define TJS_SYMBOL_INIT     0x2
@@ -414,7 +418,7 @@ public:
 			if(Name) Name->Release(), Name = NULL;
 			if(!name) TJS_eTJSError(TJSIDExpected);
 			if(!name[0]) TJS_eTJSError(TJSIDExpected);
-			Name = TJSAllocVariantString(name);
+			Name = TJSAllocMemberName(name);
 		}
 
 		void SetName(const tjs_char * name, tjs_uint32 hash)

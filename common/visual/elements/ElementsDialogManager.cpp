@@ -25,7 +25,7 @@
 #include "SysInitIntf.h"    // tTVPAtExit (終了時の ThorVG 後始末)
 #include "StorageIntf.h"    // TVPReadStream
 #include "Application.h"    // Application, MainWindowForm() / ResourcePath()
-#include "WindowIntf.h"     // iTVPWindow (cursor-warp: SetCursorPos) / mcs enum
+#include "WindowIntf.h"     // iTVPWindow (cursor-warp: 仮想カーソル位置) / mcs enum
 #include "WindowImpl.h"     // tTJSNI_Window::SetMouseCursorState (cursor-warp hide)
 #ifndef __WINVER__
 #include "WindowForm.h"     // TTVPWindowForm::NativeWindowHandle() (SDL/generic host)
@@ -67,6 +67,11 @@
 #include <string>
 #include <type_traits>
 #include <vector>
+
+// ナビ診断ログ (-navlog)。 実体はファイル後半 (TVPGetCommandLine を使うため
+// SysInitIntf.h の取り込み位置に合わせてある) なので、 前方宣言だけ置く。
+static bool NavLogEnabled();
+static void NavLog(const std::string &msg);
 
 //---------------------------------------------------------------------------
 // 内部: krkrz ttstr ⇔ utf-8、 value_t → tTJSVariant 変換 + handler ブリッジ
@@ -112,6 +117,16 @@ inline bool HostHasScreenKeyboard() { return false; }
 inline void HostStartTextInput() {}
 inline void HostStopTextInput()  {}
 
+// IME の変換 / 変換候補ウィンドウを入力欄へ寄せる (クライアント座標 px)。
+// WINVER は Window → TTVPWindowForm → ImeControl と降りて Imm を直接叩く。
+inline void HostSetTextInputArea(iTVPWindow* win,
+                                 tjs_int x, tjs_int y, tjs_int w, tjs_int h,
+                                 tjs_int cursor)
+{
+	if (!win) return;
+	static_cast<tTJSNI_Window*>(win)->SetOverlayTextInputArea(x, y, w, h, cursor);
+}
+
 #else
 
 inline bool HostHasScreenKeyboard() { return SDL_HasScreenKeyboardSupport(); }
@@ -125,6 +140,30 @@ inline SDL_Window* HostMainWindow()
 }
 inline void HostStartTextInput() { if (auto* w = HostMainWindow()) SDL_StartTextInput(w); }
 inline void HostStopTextInput()  { if (auto* w = HostMainWindow()) SDL_StopTextInput(w); }
+
+// IME の変換 / 変換候補ウィンドウを入力欄へ寄せる。 SDL3 は
+// SDL_SetTextInputArea が各バックエンドの実装 (Windows なら
+// ImmSetCompositionWindow / ImmSetCandidateWindow) を呼んでくれる。
+// 渡す矩形は「ウィンドウ座標」なので、 クライアント px から換算する
+// (HiDPI で SDL_GetWindowSize と SDL_GetWindowSizeInPixels がずれる環境向け)。
+inline void HostSetTextInputArea(iTVPWindow* /*win*/,
+                                 tjs_int x, tjs_int y, tjs_int w, tjs_int h,
+                                 tjs_int cursor)
+{
+	SDL_Window* sw = HostMainWindow();
+	if (!sw) return;
+	int lw = 0, lh = 0, pw = 0, ph = 0;
+	SDL_GetWindowSize(sw, &lw, &lh);
+	SDL_GetWindowSizeInPixels(sw, &pw, &ph);
+	const float sx = (pw > 0) ? (float)lw / (float)pw : 1.0f;
+	const float sy = (ph > 0) ? (float)lh / (float)ph : 1.0f;
+	SDL_Rect r;
+	r.x = (int)(x * sx);
+	r.y = (int)(y * sy);
+	r.w = (int)(w * sx);
+	r.h = (int)(h * sy);
+	SDL_SetTextInputArea(sw, &r, (int)(cursor * sx));
+}
 
 #endif
 
@@ -440,19 +479,17 @@ struct tTVPElementsDialogManager::Impl
 
 	// --- cursor-warp ナビ ("input":{"cursor_warp":true}) ---
 	// 直近に入力を転送してきた window (NoteInputWindow で更新、 非所有)。
-	// キー/パッドでフォーカスが動いたとき、 この window の実カーソルを
-	// フォーカス先へ SetCursorPos し、 mcsTempHidden で隠す。
+	// キー/パッドでフォーカスが動いたとき、 この window の **仮想カーソル位置**
+	// をフォーカス先へ置き (SetVirtualCursorPos)、 実カーソルは mcsTempHidden で
+	// 隠す。 **実 OS カーソルは動かさない** (doc/VirtualCursor.md)。
 	iTVPWindow* input_window = nullptr;
-	// warp が生む合成 mouse move を実マウスと区別する期待座標 (layer 座標)。
-	// 一致 move はカーソル再表示させず (再 hide)、 不一致 = 実マウスで解除。
 	// 入力フォーカス (キーボード/パッドの届き先) の直近の持ち主。 上に載って
 	// いたダイアログが閉じて下の画面へ戻ったときに、 フォーカス表示と実カーソル
 	// を合わせ直すために使う。
 	void*   last_focus_owner = nullptr;
 
-	bool    warp_expect_active = false;
-	tjs_int warp_expect_x = 0;
-	tjs_int warp_expect_y = 0;
+	// -navlog 用: warp 要求の通し番号 (ログの追跡用)。
+	tjs_int warp_seq = 0;
 
 	// --- helpers ---
 
@@ -644,6 +681,7 @@ struct tTVPElementsDialogManager::Impl
 				HostStopTextInput();
 			}
 			ime_focus_active = false;
+			SetImeOpenForFocus(false);
 		}
 	}
 
@@ -695,6 +733,128 @@ struct tTVPElementsDialogManager::Impl
 			}
 			vk_dismissed_for = nullptr;   // focus が外れたらラッチ解除
 		}
+	}
+
+	// === デスクトップ (WINVER) 用: テキスト欄 focus 中だけ IME を開く ===
+	//
+	// Elements のオーバレイはレイヤツリーの外にいるので、 フォーカスレイヤ連動
+	// (Layer.imeMode → LayerManager → DrawDevice → Window) の経路に乗らない。
+	// ウィンドウの既定 IME モードは imClose (英数) なので、 そのままでは
+	// 入力欄にキャレットが立っていても半角/全角キーを叩くまで日本語が打てない。
+	// テキスト欄が編集フォーカスを持っている間だけ imOpen にし、 外れたら
+	// ResetImeMode() でウィンドウの既定 (Window.imeMode) へ戻す。
+	//
+	// 確定文字は従来どおり WM_CHAR → ForwardText で届く。 未確定文字列の
+	// インライン表示と変換候補ウィンドウのキャレット追従は未対応 (候補窓は
+	// IME 既定位置に出る)。
+	//
+	// SDL ホストは SDL_StartTextInput 側 (UpdateFocusDrivenTextInput) が
+	// テキスト入力の有効化を受け持つのでここでは何もしない。
+	iTVPWindow* ime_open_window = nullptr;   // 開いた対象 (非所有。 nullptr = 未オープン)
+
+	// まだ生きているウィンドウか (破棄済みポインタを掴んだままにしない)。
+	// input_window / ime_open_window はどちらも非所有の生ポインタなので、
+	// 使う直前にウィンドウリストと突き合わせる。 台数は 1〜2 なので線形で充分。
+	static bool IsLiveWindow(iTVPWindow* w)
+	{
+		if (!w) return false;
+		const tjs_int n = TVPGetWindowCount();
+		for (tjs_int i = 0; i < n; i++) {
+			if (static_cast<iTVPWindow*>(TVPGetWindowListAt(i)) == w) return true;
+		}
+		return false;
+	}
+
+	// IME を開く/戻す対象ウィンドウ。 入力を転送してきたウィンドウを優先し、
+	// 無ければメインウィンドウ (スクリプトから focus を当てた直後など)。
+	iTVPWindow* ImeTargetWindow() const
+	{
+		if (IsLiveWindow(input_window)) return input_window;
+		return TVPMainWindow;
+	}
+
+	void SetImeOpenForFocus(bool open)
+	{
+#ifdef __WINVER__
+		if (open == (ime_open_window != nullptr)) return;
+		if (open) {
+			iTVPWindow* win = ImeTargetWindow();
+			if (!win) return;
+			ime_open_window = win;
+			// 一時上書き。 握っている間はレイヤ側の imeMode 更新 (KAG の
+			// メッセージレイヤのフォーカス移動等) を保留させる。 単に
+			// SetImeMode すると、 編集中に別レイヤへフォーカスが移った拍子に
+			// imDisable/imClose で上書きされて IME が閉じてしまう。
+			static_cast<tTJSNI_Window*>(win)->SetOverlayImeMode(::imOpen);
+		} else {
+			iTVPWindow* win = ime_open_window;
+			ime_open_window = nullptr;
+			if (IsLiveWindow(win))
+				static_cast<tTJSNI_Window*>(win)->ClearOverlayImeMode();
+		}
+#else
+		(void)open;
+#endif
+	}
+
+	// PaintOverlay 末尾から毎フレーム呼ぶ。
+	void UpdateImeFollowFocus()
+	{
+#ifdef __WINVER__
+		Instance* owner = TopmostKeyboardFocus();
+		SetImeOpenForFocus(owner && owner->active && owner->session &&
+		                   owner->session->focus_consumes_text());
+#endif
+	}
+
+	// === IME の変換 / 変換候補ウィンドウをキャレット位置へ寄せる ===
+	//
+	// 何もしないと候補窓は IME 既定位置 (画面/ウィンドウの左上隅) に出る。
+	// 編集中のテキスト要素のキャレット矩形を session から取り、 surface 論理座標
+	// → ウィンドウクライアント px へ直してホストへ渡す。 WINVER は
+	// ImmSetCompositionWindow / ImmSetCandidateWindow、 SDL は
+	// SDL_SetTextInputArea (各バックエンドが同等のことをする)。
+	//
+	// 値はキャレット点滅や文字入力のたびに動くので、 変化したときだけ送る。
+	tjs_int ime_area_x = -1, ime_area_y = -1, ime_area_w = -1, ime_area_h = -1;
+	tjs_int ime_area_cursor = -1;
+	bool    ime_area_valid = false;
+
+	void UpdateTextInputArea()
+	{
+		Instance* owner = TopmostKeyboardFocus();
+		if (!owner || !owner->active || !owner->session ||
+		    !owner->session->focus_consumes_text()) {
+			ime_area_valid = false;
+			return;
+		}
+		elements_modal::overlay_session::render_rect caret{}, area{};
+		if (!owner->session->focus_text_caret(caret, area)) return;
+
+		// surface 論理座標 → window client px (ToSurfaceX/Y の逆変換)。
+		auto toClientX = [&](float sx) {
+			return (tjs_int)(sx * owner->present_scale + owner->present_off_x);
+		};
+		auto toClientY = [&](float sy) {
+			return (tjs_int)(sy * owner->present_scale + owner->present_off_y);
+		};
+		const tjs_int ax = toClientX((float)area.x);
+		const tjs_int ay = toClientY((float)area.y);
+		const tjs_int aw = (tjs_int)(area.w * owner->present_scale);
+		const tjs_int ah = (tjs_int)(area.h * owner->present_scale);
+		tjs_int cursor = toClientX((float)caret.x) - ax;
+		if (cursor < 0) cursor = 0;
+		if (aw > 0 && cursor > aw) cursor = aw;
+
+		if (ime_area_valid && ax == ime_area_x && ay == ime_area_y &&
+		    aw == ime_area_w && ah == ime_area_h && cursor == ime_area_cursor)
+			return;
+		ime_area_x = ax; ime_area_y = ay;
+		ime_area_w = aw; ime_area_h = ah;
+		ime_area_cursor = cursor;
+		ime_area_valid = true;
+
+		HostSetTextInputArea(ImeTargetWindow(), ax, ay, aw, ah, cursor);
 	}
 
 	// === 内蔵仮想キーボード (物理キーボード非接続時の入力手段) ===
@@ -836,6 +996,7 @@ struct tTVPElementsDialogManager::Impl
 		instances.clear();
 		HostStopTextInput();
 		ime_focus_active = false;
+		SetImeOpenForFocus(false);
 		for (auto& [handler, action] : closed) handler->OnClosed(action);
 	}
 
@@ -1629,6 +1790,26 @@ void tTVPElementsDialogManager::Impl::RenderInstance(
 	    && inst.cache_area_x == area_x && inst.cache_area_y == area_y
 	    && inst.cache_area_w == area_w && inst.cache_area_h == area_h;
 
+	if (!allow_partial && render_cache && partial_redraw && NavLogEnabled()) {
+		// -navlog: 部分再描画を諦めた理由を出す (どの一致条件が崩れたか)。
+		// 画面生成直後の 1 フレーム目は valid=0 で出るのが正常。
+		char ab[256];
+		snprintf(ab, sizeof(ab),
+			"no-partial: trans=%d valid=%d dev=%d buf=%d(%dx%d vs %dx%d)"
+			" render=%d(%dx%d vs %dx%d) surf=%d fit=%d area=%d",
+			inst.trans_effect.empty() ? 0 : 1, inst.cache_valid ? 1 : 0,
+			(inst.cache_device == device) ? 1 : 0,
+			(inst.cache_buf_w == w_pixels && inst.cache_buf_h == h_pixels) ? 1 : 0,
+			(int)inst.cache_buf_w, (int)inst.cache_buf_h, (int)w_pixels, (int)h_pixels,
+			(inst.cache_sw == render_sw && inst.cache_sh == render_sh) ? 1 : 0,
+			(int)inst.cache_sw, (int)inst.cache_sh, (int)render_sw, (int)render_sh,
+			(inst.cache_surf_w == sw && inst.cache_surf_h == sh) ? 1 : 0,
+			(inst.cache_fit == fit) ? 1 : 0,
+			(inst.cache_area_x == area_x && inst.cache_area_y == area_y &&
+			 inst.cache_area_w == area_w && inst.cache_area_h == area_h) ? 1 : 0);
+		NavLog(ab);
+	}
+
 	const auto t_raster = std::chrono::steady_clock::now();
 	elements_modal::overlay_session::render_rect rect{};
 	elements_modal::overlay_session::render_rect updated{};
@@ -1775,6 +1956,7 @@ tTVPElementsDialogManager& tTVPElementsDialogManager::Instance()
 namespace elements_modal {
 using em_log_sink = void (*)(const char* line);
 void em_set_log_sink(em_log_sink sink);
+void em_set_nav_log(bool enable);
 }
 
 tTVPElementsDialogManager::tTVPElementsDialogManager()
@@ -1992,11 +2174,44 @@ bool tTVPElementsDialogManager::GetRenderCache() const
 	return _impl->render_cache;
 }
 
+#include "SysInitIntf.h"   // TVPGetCommandLine (-navlog)
+// ナビ診断ログ (-navlog 起動オプションで有効)。 フォーカス移動 / cursor-warp /
+// パッド方向キーの到着を ms 時刻付きで出す (長押し時の説明文とハイライトの
+// ずれ調査用)。 既定は無効で挙動に影響しない。
+static bool NavLogEnabled()
+{
+	static int enabled = -1;
+	if (enabled < 0) {
+		tTJSVariant v;
+		enabled = TVPGetCommandLine(TJS_W("-navlog"), &v) ? 1 : 0;
+		// session (elements_modal) 側のナビ診断ログも同じフラグで動かす。
+		// コマンドラインが解析済みの最初の呼び出し (描画/入力) で確定する。
+		elements_modal::em_set_nav_log(enabled == 1);
+	}
+	return enabled == 1;
+}
+static void NavLog(const std::string &msg)
+{
+	if (!NavLogEnabled()) return;
+	static const auto t0 = std::chrono::steady_clock::now();
+	auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+		std::chrono::steady_clock::now() - t0).count();
+	char buf[64];
+	snprintf(buf, sizeof(buf), "[nav %6lld] ", (long long)ms);
+	ttstr line(buf);
+	TVPAddLog(line + Utf8ToTtstr(msg));
+}
+
 // pad_icon テーマの自動選択 (setPadTheme("auto"))。
 //   接続中のパッドの系統 (xbox / ps / switch) をそのままテーマにする。
 //   パッドが無い / 判らないときは動作プラットフォームで決める
-//   (Switch 本体なら switch、 PS5 なら ps、 それ以外は xbox)。
+//   (Switch 本体なら switch、 PS5 なら ps)。 それ以外 (Windows 等) は
+//   パッドが 1 つでもつながっていれば xbox、 1 つも無ければ keyboard
+//   (パッド無しで Xbox の絵を出しても操作できるキーが判らないため)。
 static bool TVPPadThemeAuto = false;
+// PollAutoPadTheme 用: 前回見たパッドの接続数と系統。 変化したときだけ決め直す。
+static tjs_int    TVPPadThemeSeenCount = -1;
+static tjs_string TVPPadThemeSeenStyle;
 
 void tTVPElementsDialogManager::SetPadThemeAuto(bool enable)
 {
@@ -2013,7 +2228,10 @@ void tTVPElementsDialogManager::ResolveAutoPadTheme()
 {
 	if (!TVPPadThemeAuto || !Application) return;
 
+	const tjs_int count = Application->GetJoypadCount();
 	tjs_string style = Application->GetJoypadStyle(0);
+	TVPPadThemeSeenCount = count;
+	TVPPadThemeSeenStyle = style;
 	if (style.empty()) {
 		const std::vector<tjs_string> &tags = Application->GetPlatformTags();
 		for (const tjs_string &t : tags) {
@@ -2021,13 +2239,27 @@ void tTVPElementsDialogManager::ResolveAutoPadTheme()
 			if (t == TJS_W("ps5"))    { style = TJS_W("ps");     break; }
 		}
 	}
-	if (style.empty()) style = TJS_W("xbox");
+	if (style.empty()) style = (count > 0) ? TJS_W("xbox") : TJS_W("keyboard");
 
 	std::string utf8;
 	TVPUtf16ToUtf8(utf8, style);
 	auto t = cycfi::elements::parse_pad_theme(utf8);
-	if (t != cycfi::elements::pad_theme::none)
-		cycfi::elements::set_pad_theme(t);
+	if (t == cycfi::elements::pad_theme::none) return;
+	if (t == cycfi::elements::get_pad_theme()) return;
+	cycfi::elements::set_pad_theme(t);
+	// 出ている画面の pad_icon は次の描画で新しい theme の絵に差し替わる。
+	InvalidateOverlays();
+}
+
+void tTVPElementsDialogManager::PollAutoPadTheme()
+{
+	if (!TVPPadThemeAuto || !Application) return;
+	const tjs_int count = Application->GetJoypadCount();
+	if (count == TVPPadThemeSeenCount) {
+		if (count == 0) return;
+		if (Application->GetJoypadStyle(0) == TVPPadThemeSeenStyle) return;
+	}
+	ResolveAutoPadTheme();
 }
 
 void tTVPElementsDialogManager::SetPartialRedraw(bool enable)
@@ -2417,7 +2649,10 @@ tTVPElementsDialogManager::DescribeInstances() const
 		info.modal  = inst->modal;
 		info.active = inst->active;
 		if (inst->nav) info.screen = Utf8ToTtstr(inst->nav->current());
-		if (inst->session) info.focused = Utf8ToTtstr(inst->session->focused_id());
+		if (inst->session) {
+			info.focused   = Utf8ToTtstr(inst->session->focused_id());
+			info.textFocus = inst->session->focus_consumes_text();
+		}
 		if (inst->has_rect) {
 			info.x = inst->last_rect.x;
 			info.y = inst->last_rect.y;
@@ -2427,6 +2662,18 @@ tTVPElementsDialogManager::DescribeInstances() const
 		out.push_back(std::move(info));
 	}
 	return out;
+}
+
+bool tTVPElementsDialogManager::GetTextInputArea(tjs_int& x, tjs_int& y,
+	tjs_int& w, tjs_int& h, tjs_int& cursor) const
+{
+	if (!_impl->ime_area_valid) return false;
+	x = _impl->ime_area_x;
+	y = _impl->ime_area_y;
+	w = _impl->ime_area_w;
+	h = _impl->ime_area_h;
+	cursor = _impl->ime_area_cursor;
+	return true;
 }
 
 bool tTVPElementsDialogManager::SetVar(iTVPDialogEventHandler* handler,
@@ -2588,7 +2835,6 @@ void tTVPElementsDialogManager::ForceClose()
 	// window 破棄経路でも呼ばれるので、 記録済み入力 window は失効させる
 	// (cursor-warp のダングリング防止)。
 	_impl->input_window = nullptr;
-	_impl->warp_expect_active = false;
 	if (_impl->instances.empty()) return;
 	_impl->TeardownAll();
 	TVPAddLog(TJS_W("ElementsDialog: force-closed (all)"));
@@ -2645,11 +2891,30 @@ void tTVPElementsDialogManager::PaintOverlay(iTVPDrawDevice* device)
 	// フレーム数。 複数 DrawDevice 登録時はデバイス毎に 1 カウントされる。
 	_impl->stats.frames++;
 	struct TotalGuard {
-		tjs_uint64& acc;
+		tTVPElementsRenderStats& st;
+		tTVPElementsRenderStats  before;
 		std::chrono::steady_clock::time_point t0 =
 			std::chrono::steady_clock::now();
-		~TotalGuard() { acc += ElapsedUs(t0); }
-	} total_guard{ _impl->stats.totalUs };
+		TotalGuard(tTVPElementsRenderStats& s) : st(s), before(s) {}
+		~TotalGuard() {
+			tjs_uint64 us = ElapsedUs(t0);
+			st.totalUs += us;
+			// -navlog: 100ms を超えた提示フレームは段ごとの内訳を出す
+			// (どこで固まっているかの切り分け用。 既定は無効)
+			if (us >= 100000 && NavLogEnabled()) {
+				char buf[200];
+				snprintf(buf, sizeof(buf),
+					"slow frame %llu ms: update=%llu raster=%llu acquire=%llu upload=%llu present=%llu (ms)",
+					(unsigned long long)(us / 1000),
+					(unsigned long long)((st.updateUs  - before.updateUs)  / 1000),
+					(unsigned long long)((st.rasterUs  - before.rasterUs)  / 1000),
+					(unsigned long long)((st.acquireUs - before.acquireUs) / 1000),
+					(unsigned long long)((st.uploadUs  - before.uploadUs)  / 1000),
+					(unsigned long long)((st.presentUs - before.presentUs) / 1000));
+				NavLog(buf);
+			}
+		}
+	} total_guard{ _impl->stats };
 
 	// 提示デバイスが切り替わったら (GL デモの drawDevice 差し替え等)、既存の
 	// パネルを現在提示中のデバイスへ移設する。 パネルは create() 内で GL 有効化
@@ -2668,6 +2933,10 @@ void tTVPElementsDialogManager::PaintOverlay(iTVPDrawDevice* device)
 	//   以外の device が提示していても host は動かさない。
 	iTVPDrawDevice* main_device = TVPMainWindow ? TVPMainWindow->GetDrawDevice() : nullptr;
 	const bool device_is_main = (main_device == nullptr || device == main_device);
+
+	// パッドの抜き差しに pad_icon のテーマを追従させる (setPadTheme("auto"))。
+	if (device_is_main) PollAutoPadTheme();
+
 	if (_impl->active_device != device && device_is_main) {
 		for (auto& up : _impl->instances) {
 			Impl::Instance* inst = up.get();
@@ -2755,8 +3024,21 @@ void tTVPElementsDialogManager::PaintOverlay(iTVPDrawDevice* device)
 	if (!renderer) return;
 	// パッド軸ナビ (dpad/スティック) は入力対象の最前面セッションだけが行う。
 	// 背面セッションで方向キーを押しっぱなしのまま上に別画面を開くと、 背面が
-	// リピートでフォーカスを動かし続ける (SGOCT-227)。 update() 前に設定する。
+	// リピートでフォーカスを動かし続ける。 update() 前に設定する。
 	Impl::Instance* pad_target = _impl->TopmostKeyboardFocus();
+	if (NavLogEnabled() && pad_target && pad_target->session) {
+		static std::string s_last_focus;
+		size_t pt_idx = 0;
+		for (size_t i = 0; i < _impl->instances.size(); ++i)
+			if (_impl->instances[i].get() == pad_target) { pt_idx = i; break; }
+		const std::string &fid = pad_target->session->focused_id();
+		std::string cur = "#" + std::to_string(pt_idx) + " "
+		                  + (fid.empty() ? std::string("(none)") : fid);
+		if (cur != s_last_focus) {
+			s_last_focus = cur;
+			NavLog("focus -> " + cur);
+		}
+	}
 	for (auto& up : _impl->instances) {
 		if (up->session) up->session->set_pad_nav_active(up.get() == pad_target);
 	}
@@ -2769,6 +3051,10 @@ void tTVPElementsDialogManager::PaintOverlay(iTVPDrawDevice* device)
 
 	// 3) portable: テキスト欄への focus 状態に追従してソフトキーボードを出し入れ。
 	_impl->UpdateFocusDrivenTextInput();
+	//    デスクトップ (WINVER): 同じ focus 状態に追従して IME を開閉する。
+	_impl->UpdateImeFollowFocus();
+	//    変換 / 変換候補ウィンドウをキャレット位置へ寄せる (WINVER / SDL 共通)。
+	_impl->UpdateTextInputArea();
 
 	// 4) cursor-warp ナビ: キー/パッド由来のフォーカス移動があれば、 実マウス
 	//    カーソルをフォーカス先の hot point へ warp してカーソルを一時非表示に
@@ -2790,7 +3076,7 @@ void tTVPElementsDialogManager::PaintOverlay(iTVPDrawDevice* device)
 			float sx = 0.0f, sy = 0.0f;
 			if (f->session->take_key_focus_move(sx, sy)) {
 				// session 座標 → 描画領域基準 (ToSurfaceX/Y の逆変換)。
-				// SetCursorPos は「描画矩形内の座標」を受ける契約
+				// 仮想カーソル位置は「描画矩形内の座標」を受ける契約
 				// (実装側で DestRect 原点を足し戻す) ため、 window client へ
 				// 直したあと DestRect 原点を引いて渡す。
 				tjs_int lx = static_cast<tjs_int>(
@@ -2799,10 +3085,31 @@ void tTVPElementsDialogManager::PaintOverlay(iTVPDrawDevice* device)
 				tjs_int ly = static_cast<tjs_int>(
 					sy * f->present_scale + f->present_off_y + 0.5f)
 					- f->dest_offset_y;
-				_impl->warp_expect_active = true;
-				_impl->warp_expect_x = lx;
-				_impl->warp_expect_y = ly;
-				_impl->input_window->SetCursorPos(lx, ly);
+				_impl->warp_seq++;
+				if (NavLogEnabled()) {
+					size_t f_idx = 0;
+					for (size_t i = 0; i < _impl->instances.size(); ++i)
+						if (_impl->instances[i].get() == f) { f_idx = i; break; }
+					char wb[240];
+					snprintf(wb, sizeof(wb),
+						"warp request -> %d,%d (#%zu surface %.1f,%.1f"
+						" scale=%.4f off=%.1f,%.1f dest=%d,%d for %s)",
+						(int)lx, (int)ly, f_idx, sx, sy,
+						f->present_scale, f->present_off_x, f->present_off_y,
+						(int)f->dest_offset_x, (int)f->dest_offset_y,
+						f->session->focused_id().c_str());
+					NavLog(std::string("#") + std::to_string(_impl->warp_seq)
+					       + " " + wb);
+				}
+				// **実 OS カーソルは動かさない**。 仮想カーソル位置だけを
+				// フォーカス先へ置く (doc/VirtualCursor.md)。 hover 判定も
+				// Layer.cursorX/Y もこの位置を見るので、 OS を一往復させずに
+				// 「カーソルがフォーカス先に乗っている」状態が作れる。
+				// これにより「返ってきた mouse move は自分の warp の echo か」
+				// という推測判定そのものが不要になった。
+				static_cast<tTJSNI_Window*>(
+					static_cast<tTJSNI_BaseWindow*>(_impl->input_window))
+					->SetVirtualCursorPos(lx, ly);
 				// パッド/キー操作モード: カーソルは隠す。 warp が生む合成
 				// mouse move による再表示は ForwardMouseMove 側で抑止する。
 				static_cast<tTJSNI_Window*>(
@@ -2876,24 +3183,13 @@ bool tTVPElementsDialogManager::ForwardMouseUp(
 bool tTVPElementsDialogManager::ForwardMouseMove(
 	tjs_int x, tjs_int y, tjs_uint32 flags)
 {
-	// cursor-warp ガード: 自分の SetCursorPos が生んだ合成 move は「実マウス
-	// が動いた」と見なさない。 window 層が move で mcsTempHidden→visible に
-	// 復帰させるので、 一致 move では再 hide して非表示を維持する (move 自体
-	// は session へ流す = hover/hilite がフォーカス先に付く)。 warp 直後は
-	// 同座標の move が複数届きうる (SetCursorPos の折返し + OS motion) ため、
-	// 不一致 move が来るまで期待座標は保持する。
-	if (_impl->warp_expect_active) {
-		if (std::abs(x - _impl->warp_expect_x) <= 2 &&
-		    std::abs(y - _impl->warp_expect_y) <= 2) {
-			if (_impl->input_window) {
-				static_cast<tTJSNI_Window*>(
-					static_cast<tTJSNI_BaseWindow*>(_impl->input_window))
-					->SetMouseCursorState(mcsTempHidden);
-			}
-		} else {
-			_impl->warp_expect_active = false;   // 実マウス: 通常挙動へ復帰
-		}
+	if (NavLogEnabled()) {
+		NavLog(std::string("mouse move ") + std::to_string(x) + "," + std::to_string(y));
 	}
+	// 仮想カーソル位置の導入により、 ここへ来る mouse move は **常に実マウス**
+	// になった (キー / パッドのナビは実 OS カーソルを動かさず仮想位置だけを
+	// 更新する)。 かつては「自分が出した warp の折返しか」を座標で推測して
+	// いたが、 その判定ごと不要になっている。 doc/VirtualCursor.md 参照。
 
 	bool consumed = false;
 	Impl::Instance* hit = nullptr;
@@ -2904,7 +3200,13 @@ bool tTVPElementsDialogManager::ForwardMouseMove(
 		float sx = Impl::ToSurfaceX(*inst, x);
 		float sy = Impl::ToSurfaceY(*inst, y);
 		if (!hit && (inst->modal || Impl::RectContains(*inst, sx, sy))) {
+			if (NavLogEnabled())
+				NavLog("  hover -> #" + std::to_string(
+					_impl->instances.size() - 1 - (size_t)(it - _impl->instances.rbegin()))
+					+ " surface " + std::to_string((int)sx) + "," + std::to_string((int)sy));
 			inst->session->on_mouse_move(sx, sy, FlagsToElementsMods(flags));
+			if (NavLogEnabled())
+				NavLog("    after hover focus = " + inst->session->focused_id());
 			inst->cursor_inside = true;
 			hit = inst;
 			consumed = true;
@@ -2978,13 +3280,20 @@ bool tTVPElementsDialogManager::ForwardKeyDown(tjs_uint key, tjs_uint32 shift)
 	// ダイアログ表示前から押しっぱなしのキーはリピートしか届かない。 新規
 	// 押下を見ていない VK のリピートは配送しない (一度離すまで効かない)。
 	// 長押しスキップ中に自動で開くソフトキーボードへ決定ボタンが即入力される
-	// 誤爆 (SGOCT-152) の防止。 非モーダルは素通し (ゲーム側の長押し継続)。
+	// 誤爆の防止。 非モーダルは素通し (ゲーム側の長押し継続)。
 	if (shift & TVP_SS_REPEAT) {
 		if (!f->armed_vks.count(key)) return f->modal ? true : false;
 	} else {
 		f->armed_vks.insert(key);
 	}
 	auto r = RouteVk(key);
+	if (NavLogEnabled() && r.k != vk_routing::kind::none) {
+		char kb[80];
+		snprintf(kb, sizeof(kb), "key down vk=0x%X %s%s", (unsigned)key,
+		         (r.k == vk_routing::kind::pad_button) ? "pad" : "key",
+		         (shift & TVP_SS_REPEAT) ? " (repeat)" : "");
+		NavLog(kb);
+	}
 	bool handled = false;
 	switch (r.k) {
 		case vk_routing::kind::key: {
@@ -3010,6 +3319,11 @@ bool tTVPElementsDialogManager::ForwardKeyUp(tjs_uint key, tjs_uint32 shift)
 	Impl::Instance* f = _impl->TopmostKeyboardFocus();
 	if (!f || !f->session) return false;
 	auto r = RouteVk(key);
+	if (NavLogEnabled() && r.k != vk_routing::kind::none) {
+		char kb[64];
+		snprintf(kb, sizeof(kb), "key up   vk=0x%X", (unsigned)key);
+		NavLog(kb);
+	}
 	bool handled = false;
 	switch (r.k) {
 		case vk_routing::kind::key: {
@@ -3019,6 +3333,20 @@ bool tTVPElementsDialogManager::ForwardKeyUp(tjs_uint key, tjs_uint32 shift)
 		}
 		case vk_routing::kind::pad_button:
 			handled = f->session->on_pad_button(r.pad, /*down=*/false);
+			// 「離し」は背面のインスタンスにも配る。
+			//
+			// ⚠ この配送**単体では**「覆われている間ずっと押したまま戻る」
+			//    ケースを防げない (離しが発生しないため)。それを防いでいるのは
+			//    elements 側の「suspend 中は軸の押下値も消す」(view.cpp) の方。
+			//    ここは「離しが届くのが suspend フラグの適用より前」という
+			//    狭いレースを埋める二重化として置いてある。
+			//    実測の内訳は doc/ElementsAudit.md §5 を参照。
+			// 離しはどの view に届いても状態を戻すだけなので副作用は無い。
+			for (auto& up : _impl->instances) {
+				Impl::Instance* inst = up.get();
+				if (inst == f || !inst->active || !inst->session) continue;
+				inst->session->on_pad_button(r.pad, /*down=*/false);
+			}
 			break;
 		case vk_routing::kind::none:
 			handled = false;

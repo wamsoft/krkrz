@@ -13,6 +13,14 @@
 #include "tjsNative.h"
 
 //---------------------------------------------------------------------------
+// 多重起動の抑止 (System.createAppLock)。
+//   WINVER は名前付き Mutex、generic は Application 実装へ委譲する
+//   (SDL3 はテンポラリ領域のロックファイル)。
+//   既に同じ lockname のプロセスが動いていれば false。
+extern bool TVPCreateAppLock(const ttstr &lockname);
+//---------------------------------------------------------------------------
+
+//---------------------------------------------------------------------------
 // tTJSNC_System : TJS System class
 //---------------------------------------------------------------------------
 class tTJSNC_System : public tTJSNativeClass

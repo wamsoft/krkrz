@@ -15,7 +15,7 @@ extern "C" {
 #include <cstdlib> // std::atof (ReplayGain タグ)
 #include <memory>
 
-static bool FloatExtraction = false; // true if output format is IEEE 32-bit float
+static bool gVorbisFloatExtraction = false; // true if output format is IEEE 32-bit float
 static double gVorbisGlobalGainDb = 0.0; // -ogg_gain / -vorbis_gain (全体ゲイン, dB)
 static int    gVorbisReplayGainMode = 0; // 0=none(既定) / 1=track / 2=album
 static bool TVPVorbisOptionsInit = false;
@@ -50,15 +50,15 @@ static void TVPInitVorbisOptions() {
 			TVPAddLog( TJS_W("ogg: ReplayGain enabled (") + sval + TJS_W(")") );
 	}
 
-/*
+	// 出力 PCM 形式: -ogg_pcm_format=f32 で IEEE 32bit float 出力。
+	// 既定は 16bit 整数 (従来どおり)。
 	if( TVPGetCommandLine(TJS_W("-ogg_pcm_format"), &val) ) {
 		ttstr sval(val);
 		if( sval == TJS_W("f32") ) {
-			FloatExtraction = true;
+			gVorbisFloatExtraction = true;
 			TVPAddLog(TJS_W("ogg: IEEE 32bit float output enabled."));
 		}
 	}
-*/
 
 	TVPVorbisOptionsInit = true;
 }
@@ -107,17 +107,19 @@ public:
 		memset( &Format, 0, sizeof(Format) );
 		Format.SamplesPerSec = vi->rate;
 		Format.Channels = vi->channels;
-		Format.BitsPerSample = FloatExtraction ? (0x10000 + 32) :  16;
+		// float でも 32 を入れる (フラグ付きの値は誰も解釈しない。判別は IsFloat)
+		Format.BitsPerSample = gVorbisFloatExtraction ? 32 :  16;
 		Format.BytesPerSample = Format.BitsPerSample / 8;
 		Format.SpeakerConfig = 0;
-		Format.IsFloat = FloatExtraction;
+		Format.IsFloat = gVorbisFloatExtraction;
 		Format.Seekable = true;
 
 		ogg_int64_t pcmtotal = ov_pcm_total(&InputFile, -1); // PCM total samples
 		if( pcmtotal < 0 ) pcmtotal = 0;
 		Format.TotalSamples = pcmtotal;
 
-		double timetotal = (double)pcmtotal / 48000.0;
+		// ファイルのサンプリングレートで割る (48000 決め打ちだった)
+		double timetotal = (double)pcmtotal / (double)vi->rate;
 		if( timetotal < 0 ) {
 			Format.TotalTime = 0;
 		} else {
@@ -164,7 +166,7 @@ public:
 		// --- ゲイン適用経路: float でデコード→線形スケール→int16 変換 (clamp) ---
 		// GainFactor==1 (既定) の通常時はこの分岐を通らないので追加コスト無し。
 		// float 域で乗算してから量子化するため gain>1 でも適切に clip する。
-		if( !FloatExtraction && GainFactor != 1.0f ) {
+		if( !gVorbisFloatExtraction && GainFactor != 1.0f ) {
 			const int ch = Format.Channels;
 			const float g = GainFactor;
 			tjs_uint done = 0;            // 書き込んだサンプル (per channel)
@@ -188,33 +190,45 @@ public:
 			return done >= bufsamplelen;
 		}
 
-		int pcmsize = FloatExtraction ? 4 : 2;
+		// --- float 出力経路 ---
+		// ov_read_float が返すのは「チャンネル別 (プレーナ) の内部バッファへの
+		// ポインタ」で、ov_read のように出力先へインターリーブして書いてはくれない。
+		// ここで自前でインターリーブする。ゲインは float のまま掛けるので、
+		// 16bit へ量子化する経路と違って clamp が要らない。
+		if( gVorbisFloatExtraction ) {
+			const int ch = Format.Channels;
+			const float g = GainFactor;
+			tjs_uint done = 0;            // 書き込んだサンプル (per channel)
+			float *out = (float*)buf;
+			while( done < bufsamplelen ) {
+				float **pcm = nullptr;
+				long ns = ov_read_float(&InputFile, &pcm, (int)(bufsamplelen - done), &CurrentSection);
+				if( ns < 0 ) continue;   // デコード未準備。リトライ
+				if( ns == 0 ) break;     // 終端
+				for(long i = 0; i < ns; i++) {
+					for(int c = 0; c < ch; c++) *out++ = pcm[c][i] * g;
+				}
+				done += (tjs_uint)ns;
+			}
+			rendered = done;
+			return done >= bufsamplelen;
+		}
+
+		// --- 16bit 整数出力経路 (既定) ---
+		const int pcmsize = 2;
 		int res;
 		int pos = 0; // decoded PCM (in bytes)
 		const int ch = Format.Channels;
 		int remain = bufsamplelen * ch * pcmsize;
 
-		if( FloatExtraction ) {
-			/*
-			while( remain ) {
-				do {
-					res = ov_read_float(&InputFile, (float*)((char*)buf + pos), remain, &CurrentSection );
-				} while( res < 0 );
-				if( res == 0 ) break;
-				pos += res * ch * pcmsize;
-				remain -= res * ch;
-			}
-			*/
-		} else {
-			while( remain ) {
-				do {
-					res = ov_read(&InputFile, (char*)buf + pos, remain, 0, pcmsize, 1, &CurrentSection );
-				} while( res < 0 ); // ov_read would return a negative number
-								// if the decoding is not ready
-				if( res == 0 ) break;
-				pos += res;
-				remain -= res;
-			}
+		while( remain ) {
+			do {
+				res = ov_read(&InputFile, (char*)buf + pos, remain, 0, pcmsize, 1, &CurrentSection );
+			} while( res < 0 ); // ov_read would return a negative number
+							// if the decoding is not ready
+			if( res == 0 ) break;
+			pos += res;
+			remain -= res;
 		}
 
 		pos /= (ch * pcmsize); // convert to PCM position

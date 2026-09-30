@@ -15,6 +15,7 @@
 #include "tjsHashSearch.h"
 #include <vector>
 #include <memory>
+#include <functional>
 
 //---------------------------------------------------------------------------
 // archive delimiter
@@ -236,6 +237,22 @@ extern tjs_uint64 TVPLastModifiedFileTime(const ttstr &name);
 extern tjs_uint64 TVPFileSize(const ttstr &name);
 	// returns file size in bytes.
 	// "name" is a local *native* name. if the file does not exist or size cannot be determined, return 0.
+
+extern bool TVPCheckExistentLocalFolder(const ttstr &name);
+	// "name" must be an OS's NATIVE folder name
+
+extern bool TVPCheckExistentLocalFile(const ttstr &name);
+	// "name" must be an OS's NATIVE file name
+
+extern void TVPGetLocalFolderListAt(const ttstr &name,
+	const std::function<void(const tjs_char *name, bool isDir)> &lister, bool withDir);
+	// ローカルの実フォルダを「ディレクトリかどうか」付きで列挙する。
+	// "name" is a local *native* folder name (末尾は区切り文字であること)。
+	// withDir が false ならディレクトリは lister に渡さない。
+	// "." / ".." は渡らない。 generic は iTVPLocalFileSystem::GetListAt、
+	// WINVER は FindFirstFileW へ落ちる。
+	// (iTVPStorageLister を使う TVPGetStorageListAt と違い isDir が要る用途向け。
+	//  こちらはアーカイブ内は扱わない)
 
 //---------------------------------------------------------------------------
 

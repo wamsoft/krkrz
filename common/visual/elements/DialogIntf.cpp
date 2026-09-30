@@ -497,6 +497,49 @@ bool TVPConfirmElements(const ttstr& caption, const ttstr& text, bool& yes)
 	yes = (mr.Action == ttstr(TJS_W("yes")));
 	return true;
 }
+
+bool TVPChoiceElements(const ttstr& caption, const ttstr& text,
+	const std::vector<ttstr>& choices, int def, int& index)
+{
+	std::string c8, t8;
+	{ tjs_string t(caption.c_str()); TVPUtf16ToUtf8(c8, t); }
+	{ tjs_string t(text.c_str());    TVPUtf16ToUtf8(t8, t); }
+
+	// ボタン id は "c<index>"。 既定のボタンに initial_focus を置く (Enter で選ばれる)
+	std::string extra =
+		"{\"type\":\"align_center\",\"child\":"
+		"{\"type\":\"htile\",\"children\":[";
+	for (size_t i = 0; i < choices.size(); i++) {
+		std::string l8;
+		{ tjs_string t(choices[i].c_str()); TVPUtf16ToUtf8(l8, t); }
+		if (i) extra += "{\"type\":\"hspacer\",\"width\":8},";
+		extra += "{\"type\":\"button\",\"id\":\"c" + std::to_string(i) +
+			"\",\"text\":\"" + InputJsonEscape(l8) + "\",\"close_on_click\":true";
+		if ((int)i == def) extra += ",\"initial_focus\":true";
+		extra += "}";
+		if (i + 1 < choices.size()) extra += ",";
+	}
+	extra += "]}}";
+	std::string json = MessageDialogJson(c8, t8, extra);
+
+	tTVPNoopDialogHandler h;
+	tTVPElementsModalResult mr;
+	if (!TVPRunElementsModalOverlay(json, &h, mr))
+		return false;
+	// Esc / close は action 空 = 既定 (def)
+	index = def;
+	tjs_string a(mr.Action.c_str());
+	if (a.size() >= 2 && a[0] == TJS_W('c')) {
+		int n = 0;
+		bool ok = true;
+		for (size_t i = 1; i < a.size(); i++) {
+			if (a[i] < TJS_W('0') || a[i] > TJS_W('9')) { ok = false; break; }
+			n = n * 10 + (int)(a[i] - TJS_W('0'));
+		}
+		if (ok && n >= 0 && n < (int)choices.size()) index = n;
+	}
+	return true;
+}
 //---------------------------------------------------------------------------
 iTJSDispatch2* tTJSNI_Dialog::ShowModalJson(const ttstr& json_utf16,
 	const ttstr& title, int width, int height)
@@ -1154,13 +1197,18 @@ tTJSNC_Dialog::tTJSNC_Dialog() : inherited(TJS_W("ElementsDialog"))
 	//
 	// 指定ディレクトリ配下の .ttf / .otf を全て列挙して登録する (内部で
 	// ファイル名から family / weight / slant / stretch を推定)。 dir は
-	// krkrz storage パス、 XP3 内のディレクトリでも OK。
+	// krkrz storage パス。 XP3 内のディレクトリは "data.xp3>font/" の形
+	// (アーカイブ明示) で指定する。
+	// 戻り値 = 登録できた本数 (0 なら 1 本も登録できていない)。
 	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/registerFontDir)
 	{
 		if (numparams < 1) return TJS_E_BADPARAMCOUNT;
 		ttstr dir(*param[0]);
-		TVPRegisterElementsFontsFromStorageDir(dir);
-		if (result) *result = true;
+		// 戻り値は登録できた本数。 0 本 = 事故 (パッケージ後にフォントが
+		// 見つからない等) を呼び出し側で検知できるようにするため。
+		// 「1 本以上なら真」なので従来の真偽判定はそのまま通る。
+		tjs_int count = TVPRegisterElementsFontsFromStorageDir(dir);
+		if (result) *result = count;
 		return TJS_S_OK;
 	}
 	TJS_END_NATIVE_METHOD_DECL(/*func. name*/registerFontDir)
@@ -1659,6 +1707,80 @@ tTJSNC_Dialog::tTJSNC_Dialog() : inherited(TJS_W("ElementsDialog"))
 	}
 	TJS_END_NATIVE_PROP_DECL(renderStats)
 	//---------------------------------------------------------------------------
+	// atlasCacheStats プロパティ (static 相当、 読取専用):
+	//   アトラスのデコードキャッシュ (プロセス全体で 1 つ) の常駐量を辞書で返す。
+	//   %[ bytes (RGBA 展開後の合計), count (エントリ数), budget (現在の予算) ]
+	//
+	//   アトラス画像は path + scale をキーにデコード済み pixmap を抱え、 画面を
+	//   切り替えても手放さない (長時間プレイでヒープが断片化したあと大きな連続
+	//   領域が取れずデコードが失敗するのを避けるため)。 どれだけ抱えているかを
+	//   場面の切れ目で確認する用。
+	TJS_BEGIN_NATIVE_PROP_DECL(atlasCacheStats)
+	{
+		TJS_BEGIN_NATIVE_PROP_GETTER
+		{
+			std::size_t bytes = 0, count = 0, budget = 0;
+			elements_modal::atlas_cache_stats(bytes, count, budget);
+			iTJSDispatch2* dict = TJSCreateDictionaryObject();
+			tTJSVariant tv;
+			tv = (tjs_int64)bytes;  dict->PropSet(TJS_MEMBERENSURE, TJS_W("bytes"),  nullptr, &tv, dict);
+			tv = (tjs_int64)count;  dict->PropSet(TJS_MEMBERENSURE, TJS_W("count"),  nullptr, &tv, dict);
+			tv = (tjs_int64)budget; dict->PropSet(TJS_MEMBERENSURE, TJS_W("budget"), nullptr, &tv, dict);
+			*result = tTJSVariant(dict, dict);
+			dict->Release();
+			return TJS_S_OK;
+		}
+		TJS_END_NATIVE_PROP_GETTER
+
+		TJS_DENY_NATIVE_PROP_SETTER
+	}
+	TJS_END_NATIVE_PROP_DECL(atlasCacheStats)
+	//---------------------------------------------------------------------------
+	// trimAtlasCache(budget = 0)
+	//   アトラスのデコードキャッシュを budget バイトまで切り詰める。
+	//   0 (既定) で「使われていないものを全部」手放す。 戻り値 = 解放バイト数。
+	//
+	//   ⚠ **表示中の画面が使っているアトラスは参照が残るので捨てられない**。
+	//      場面の切れ目 (画面を閉じた後) に呼ぶこと。
+	//   予算そのものは変えない (一時的な切り詰め)。 恒久的に下げるなら
+	//   atlasCacheBudget へ代入する。
+	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/trimAtlasCache)
+	{
+		tjs_int64 budget = 0;
+		if (numparams >= 1 && param[0]->Type() != tvtVoid) budget = (tjs_int64)*param[0];
+		if (budget < 0) budget = 0;
+		const std::size_t freed =
+			elements_modal::trim_atlas_cache((std::size_t)budget);
+		if (result) *result = (tjs_int64)freed;
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_METHOD_DECL(/*func. name*/trimAtlasCache)
+	//---------------------------------------------------------------------------
+	// atlasCacheBudget プロパティ (static 相当):
+	//   アトラスのデコードキャッシュの予算 (バイト)。 代入すると恒久的に変わり、
+	//   下げた場合はその場で切り詰める。 0 にするとキャッシュ無効 (毎回デコード)。
+	TJS_BEGIN_NATIVE_PROP_DECL(atlasCacheBudget)
+	{
+		TJS_BEGIN_NATIVE_PROP_GETTER
+		{
+			std::size_t bytes = 0, count = 0, budget = 0;
+			elements_modal::atlas_cache_stats(bytes, count, budget);
+			*result = (tjs_int64)budget;
+			return TJS_S_OK;
+		}
+		TJS_END_NATIVE_PROP_GETTER
+
+		TJS_BEGIN_NATIVE_PROP_SETTER
+		{
+			tjs_int64 v = (tjs_int64)*param;
+			if (v < 0) v = 0;
+			elements_modal::set_atlas_cache_budget((std::size_t)v);
+			return TJS_S_OK;
+		}
+		TJS_END_NATIVE_PROP_SETTER
+	}
+	TJS_END_NATIVE_PROP_DECL(atlasCacheBudget)
+	//---------------------------------------------------------------------------
 	// renderStatsReset()
 	//   renderStats の累積カウンタを 0 クリアする (計測区間の開始に呼ぶ)。
 	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/renderStatsReset)
@@ -1712,11 +1834,52 @@ tTJSNC_Dialog::tTJSNC_Dialog() : inherited(TJS_W("ElementsDialog"))
 		mgr.SetPadThemeAuto(false);
 		auto t = cycfi::elements::parse_pad_theme(utf8);
 		bool ok = (t != cycfi::elements::pad_theme::none) || (utf8 == "none");
-		if (ok) cycfi::elements::set_pad_theme(t);
+		if (ok) {
+			cycfi::elements::set_pad_theme(t);
+			// pad_icon は描画時に theme を見るので、 出ている画面も再描画で追従する。
+			mgr.InvalidateOverlays();
+		}
 		if (result) *result = ok;
 		return TJS_S_OK;
 	}
 	TJS_END_NATIVE_METHOD_DECL(/*func. name*/setPadTheme)
+	//---------------------------------------------------------------------------
+	// setPadIconAlias(theme, name, basename)
+	//
+	// pad_icon の名前解決 (論理名 → Kenney のファイル名) をテーマ単位で
+	// 上書きする。 既定表 (a=Enter / b=Esc / dpad=矢印 …) がタイトルの
+	// 実キー割り当てと違うときに使う。 例: キャンセルが BackSpace の
+	// タイトルなら setPadIconAlias("keyboard", "b", "keyboard_backspace")。
+	// basename に空文字を渡すとその名前の上書きを解除、 name に空文字を渡すと
+	// そのテーマの上書きを全解除。 既に出ている画面にも次の描画から効く。
+	// 戻り値はテーマ名を解釈できたかどうか。
+	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/setPadIconAlias)
+	{
+		if (numparams < 2) return TJS_E_BADPARAMCOUNT;
+		std::string theme, name, basename;
+		{
+			tjs_string ts(ttstr(*param[0]).c_str());
+			TVPUtf16ToUtf8(theme, ts);
+		}
+		{
+			tjs_string ts(ttstr(*param[1]).c_str());
+			TVPUtf16ToUtf8(name, ts);
+		}
+		if (numparams >= 3 && param[2]->Type() != tvtVoid) {
+			tjs_string ts(ttstr(*param[2]).c_str());
+			TVPUtf16ToUtf8(basename, ts);
+		}
+		auto t = cycfi::elements::parse_pad_theme(theme);
+		bool ok = (t != cycfi::elements::pad_theme::none);
+		if (ok) {
+			if (name.empty()) cycfi::elements::clear_pad_icon_aliases(t);
+			else              cycfi::elements::set_pad_icon_alias(t, name, basename);
+			tTVPElementsDialogManager::Instance().InvalidateOverlays();
+		}
+		if (result) *result = ok;
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_METHOD_DECL(/*func. name*/setPadIconAlias)
 	//---------------------------------------------------------------------------
 	// registerImage(name, path)
 	//

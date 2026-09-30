@@ -47,7 +47,7 @@ TJS から見えるクラスは 3 つだが、ピクセルの実体は `tTVPBase
 つまり**描画アルゴリズムは既に完全共有されていて、分裂しているのは「引数を誰が決めるか」と
 「どのクラスにメンバが生えているか」だけ**である。
 
-利用者向けの説明は umbrella の [doc/guide/LayerAndBitmap.md](../../doc/guide/LayerAndBitmap.md) にある。
+利用者向けの説明は umbrella の [doc/guide/LayerAndBitmap.md](https://wamsoft.github.io/krkrz_dev/guide/LayerAndBitmap/) にある。
 
 ## 3. A案 — 共通アクセス口を tp_stub に用意する
 

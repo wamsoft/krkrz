@@ -9,7 +9,8 @@ Alt+Enter のフルスクリーン切替や Esc の終了確認のように 「�
 起動ランチャー (モーダル) やタイトルの入力欄にフォーカスがある間は届かなかった。
 
 実装: [`common/environ/HotKeyIntf.{h,cpp}`](../common/environ/HotKeyIntf.h) +
-TJS 束縛 `common/base/SystemIntf.cpp` + フック `sdl3/environ/app.cpp`。
+TJS 束縛 `common/base/SystemIntf.cpp` + フック `sdl3/environ/app.cpp` (SDL3) /
+`win32/environ/WindowFormUnit.cpp` (WINVER)。
 
 ## API
 
@@ -84,6 +85,7 @@ System.registerHotKey(VK_ESCAPE, 0, function(key, shift) {
 
 ## 制限
 
-- **フックは SDL3 系ビルド (`sdl3/environ/app.cpp` の `AppEvent` 入口) のみ**。
-  WINVER ビルドは未配線で、 登録しても発火しない。
+- フックは SDL3 系ビルドが `sdl3/environ/app.cpp` の `AppEvent` 入口、 WINVER ビルドが
+  `TTVPWindowForm::Proc` のキー分岐の先頭 (2026-09-26 に配線。 それまで WINVER では
+  登録しても発火しなかった)。 消費されたキーは Windows へも通常 dispatch へも渡さない。
 - 印字キーの登録は非推奨 (文字入力イベントまでは抑止しない)。

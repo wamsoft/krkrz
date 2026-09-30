@@ -104,6 +104,9 @@ const char* kHtmlPage = R"HTMLPAGE(<!doctype html>
   #pstatus { font-size:12px; color:#808080; white-space:nowrap; }
   #pstatus.err { color:#f48771; }
 
+  /* --- 案件パネル (WebServer.registerPanel で足されたタブ) --- */
+  .panel > iframe { flex:1; min-height:0; width:100%; border:0; background:#1e1e1e; }
+
   /* --- 本体が終了したときの受け皿 (window.close() が効かない場合) --- */
   #gone { position:fixed; inset:0; background:rgba(30,30,30,.96); z-index:9999;
     display:flex; align-items:center; justify-content:center; text-align:center; }
@@ -121,70 +124,70 @@ R"HTMLPAGE(<body><div id="app">
       <button class="tab" data-tab="pad">Pad</button>
     </div>
     <div id="ctl">
-      <button id="cEvent" class="subtle" title="System.eventDisabled の切替 (吉里吉里2 コントローラの Event 相当)">イベント: —</button>
-      <button id="cExit" title="アプリを終了する">終了</button>
+      <select id="cLang" title="UI language"></select>
+      <button id="cEvent" class="subtle" data-i18n-title="ctl.event.title">イベント: —</button>
+      <button id="cExit" data-i18n-title="ctl.exit.title" data-i18n="ctl.exit">終了</button>
       <span id="status">connecting...</span>
     </div>
   </div>
 
   <section class="panel" id="panel-console">
     <div class="toolbar">
-      <input id="filter" class="grow" type="search" placeholder="フィルタ (ログを絞り込み)">
+      <input id="filter" class="grow" type="search" data-i18n-ph="con.filter">
       <button id="clear" class="subtle">Clear</button>
     </div>
     <div id="log"></div>
     <div id="bottom">
       <span id="prompt">krkrz&gt;</span>
       <input id="cmd" autocomplete="off" spellcheck="false"
-        placeholder="TJS 式/文を入力 (Enter=実行, .help=コマンド一覧, ↑↓=履歴)">
+        data-i18n-ph="con.input">
     </div>
   </section>
 
   <section class="panel" id="panel-watch" hidden>
     <div class="toolbar">
       <input id="wexpr" class="grow" type="text" autocomplete="off" spellcheck="false"
-        placeholder="監視する式 (Enter=追加)">
-      <button id="wadd">追加</button>
+        data-i18n-ph="watch.expr">
+      <button id="wadd" data-i18n="watch.add">追加</button>
       <span class="sep"></span>
-      <label>自動更新</label>
+      <label data-i18n="watch.auto">自動更新</label>
       <select id="wauto">
-        <option value="-1">オフ</option>
-        <option value="0">毎フレーム</option>
-        <option value="100">0.1 秒</option>
-        <option value="200">0.2 秒</option>
-        <option value="500">0.5 秒</option>
-        <option value="1000">1 秒</option>
-        <option value="3000">3 秒</option>
-        <option value="5000">5 秒</option>
-        <option value="9000">9 秒</option>
+        <option value="-1" data-i18n="watch.off">オフ</option>
+        <option value="0" data-i18n="watch.everyframe">毎フレーム</option>
+        <option value="100" data-i18n="watch.ms100">0.1 秒</option>
+        <option value="200" data-i18n="watch.ms200">0.2 秒</option>
+        <option value="500" data-i18n="watch.ms500">0.5 秒</option>
+        <option value="1000" data-i18n="watch.s1">1 秒</option>
+        <option value="3000" data-i18n="watch.s3">3 秒</option>
+        <option value="5000" data-i18n="watch.s5">5 秒</option>
+        <option value="9000" data-i18n="watch.s9">9 秒</option>
       </select>
-      <button id="weval" class="subtle">更新</button>
-      <button id="wclear" class="subtle">全消し</button>
+      <button id="weval" class="subtle" data-i18n="watch.update">更新</button>
+      <button id="wclear" class="subtle" data-i18n="watch.clear">全消し</button>
       <span id="wstatus"></span>
     </div>
     <div id="wwrap"><table id="wtable">
       <thead><tr>
-        <th class="c-id">#</th><th class="c-expr">式</th><th class="c-val">値</th><th class="c-del"></th>
+        <th class="c-id">#</th><th class="c-expr" data-i18n="watch.col.expr">式</th><th class="c-val" data-i18n="watch.col.value">値</th><th class="c-del"></th>
       </tr></thead>
       <tbody id="wbody"></tbody>
     </table>
-    <div id="wempty">監視式はまだありません。上の欄に式を入れて Enter。
-      式が例外を投げても「(error) …」が値として並ぶだけで、アプリは止まりません。</div>
+    <div id="wempty" data-i18n="watch.empty"></div>
     </div>
   </section>
 
   <section class="panel" id="panel-pad" hidden>
     <div class="toolbar">
-      <button id="pRun">実行 (Ctrl+Enter)</button>
+      <button id="pRun" data-i18n="pad.run">実行 (Ctrl+Enter)</button>
       <span class="sep"></span>
       <input id="pPath" class="grow" type="text" autocomplete="off" spellcheck="false"
-        placeholder="ストレージパス (例 test.tjs)">
-      <button id="pLoad" class="subtle">読込</button>
-      <button id="pSave" class="subtle">保存</button>
+        data-i18n-ph="pad.path">
+      <button id="pLoad" class="subtle" data-i18n="pad.load">読込</button>
+      <button id="pSave" class="subtle" data-i18n="pad.save">保存</button>
       <span id="pstatus"></span>
     </div>
     <textarea id="pText" spellcheck="false" autocomplete="off"
-      placeholder="TJS スクリプト (複数行可)。Ctrl+Enter で実行。&#10;内容はこのブラウザに自動保存されます (保存ボタンはストレージへの書き出し)。"></textarea>
+      data-i18n-ph="pad.placeholder"></textarea>
     <div id="pout"></div>
   </section>
 </div>
@@ -192,23 +195,263 @@ R"HTMLPAGE(<body><div id="app">
 R"HTMLPAGE(<script>
 (function(){
   //-------------------------------------------------------------------------
+  // 文言 (i18n)
+  //
+  // **既定の言語は本体の言語設定に従う**。 /state が返す langs が本体の
+  // 決定結果 (優先順) で、 -language= も OS 言語もそこに反映されている。
+  // ここに表がある言語のうち、 先に見つかったものを使う (例: zh-Hant の環境で
+  // cht の表が無ければ en へ落ちる)。 ブラウザ側で明示的に選ぶこともでき、
+  // その選択は localStorage に残る。
+  //
+  // 表はページに同梱する。 -replweb だけで完結させる方針なので資材を外から
+  // 読まない。 切替が即時なのもこのおかげ。
+  // **言語を足すときはここに 1 ブロック増やすだけ** (キーが無ければ ja へ落ちる)。
+  //-------------------------------------------------------------------------
+  var I18N = {
+    ja: {
+      'lang.name':          '日本語',
+      'ctl.event':          'イベント:',
+      'ctl.event.on':       '有効',
+      'ctl.event.off':      '停止中',
+      'ctl.event.title':    'System.eventDisabled の切替 (吉里吉里2 コントローラの Event 相当)',
+      'ctl.exit':           '終了',
+      'ctl.exit.title':     'アプリを終了する',
+      'ctl.exit.confirm':   'アプリを終了します。よろしいですか?',
+      'con.filter':         'フィルタ (ログを絞り込み)',
+      'con.input':          'TJS 式/文を入力 (Enter=実行, .help=コマンド一覧, ↑↓=履歴)',
+      'watch.expr':         '監視する式 (Enter=追加)',
+      'watch.add':          '追加',
+      'watch.auto':         '自動更新',
+      'watch.off':          'オフ',
+      'watch.everyframe':   '毎フレーム',
+      'watch.ms100':        '0.1 秒',
+      'watch.ms200':        '0.2 秒',
+      'watch.ms500':        '0.5 秒',
+      'watch.s1':           '1 秒',
+      'watch.s3':           '3 秒',
+      'watch.s5':           '5 秒',
+      'watch.s9':           '9 秒',
+      'watch.update':       '更新',
+      'watch.clear':        '全消し',
+      'watch.clear.confirm':'監視式をすべて削除します。よろしいですか?',
+      'watch.col.expr':     '式',
+      'watch.col.value':    '値',
+      'watch.del':          '削除',
+      'watch.empty':        '監視式はまだありません。上の欄に式を入れて Enter。式が例外を投げても「(error) …」が値として並ぶだけで、アプリは止まりません。',
+      'pad.run':            '実行 (Ctrl+Enter)',
+      'pad.path':           'ストレージパス (例 test.tjs)',
+      'pad.load':           '読込',
+      'pad.save':           '保存',
+      'pad.placeholder':    'TJS スクリプト (複数行可)。Ctrl+Enter で実行。\n内容はこのブラウザに自動保存されます (保存ボタンはストレージへの書き出し)。',
+      'pad.running':        '実行中...',
+      'pad.needpath':       'パスを入れてください',
+      'pad.loaded':         '読込みました',
+      'pad.loadfail':       '読み込めません',
+      'pad.saved':          '保存しました',
+      'pad.savefail':       '保存できません',
+      'err.network':        '通信できません',
+      'gone.disconnected':  '本体との接続が切れました',
+      'gone.exited':        '吉里吉里Z が終了しました',
+      'gone.body':          '吉里吉里Z が終了したため、このページは操作できません。',
+      'gone.close':         'このタブは閉じて構いません。'
+    },
+    en: {
+      'lang.name':          'English',
+      'ctl.event':          'Events:',
+      'ctl.event.on':       'enabled',
+      'ctl.event.off':      'stopped',
+      'ctl.event.title':    'Toggle System.eventDisabled (the Event button of the kirikiri2 controller)',
+      'ctl.exit':           'Exit',
+      'ctl.exit.title':     'Terminate the application',
+      'ctl.exit.confirm':   'Terminate the application. Are you sure?',
+      'con.filter':         'Filter (narrow the log)',
+      'con.input':          'TJS expression/statement (Enter=run, .help=commands, Up/Down=history)',
+      'watch.expr':         'Expression to watch (Enter=add)',
+      'watch.add':          'Add',
+      'watch.auto':         'Auto update',
+      'watch.off':          'off',
+      'watch.everyframe':   'every frame',
+      'watch.ms100':        '0.1 s',
+      'watch.ms200':        '0.2 s',
+      'watch.ms500':        '0.5 s',
+      'watch.s1':           '1 s',
+      'watch.s3':           '3 s',
+      'watch.s5':           '5 s',
+      'watch.s9':           '9 s',
+      'watch.update':       'Update',
+      'watch.clear':        'Clear all',
+      'watch.clear.confirm':'Remove all watch expressions. Are you sure?',
+      'watch.col.expr':     'Expression',
+      'watch.col.value':    'Value',
+      'watch.del':          'Remove',
+      'watch.empty':        'No watch expressions yet. Type one above and press Enter. An expression that throws just shows "(error) ..." as its value - the application keeps running.',
+      'pad.run':            'Run (Ctrl+Enter)',
+      'pad.path':           'Storage path (e.g. test.tjs)',
+      'pad.load':           'Load',
+      'pad.save':           'Save',
+      'pad.placeholder':    'TJS script (multiple lines allowed). Ctrl+Enter to run.\nThe text is kept in this browser automatically (Save writes it to storage).',
+      'pad.running':        'running...',
+      'pad.needpath':       'Enter a path',
+      'pad.loaded':         'Loaded',
+      'pad.loadfail':       'Cannot load',
+      'pad.saved':          'Saved',
+      'pad.savefail':       'Cannot save',
+      'err.network':        'Cannot reach the server',
+      'gone.disconnected':  'Lost connection to the application',
+      'gone.exited':        'Kirikiri Z has exited',
+      'gone.body':          'Kirikiri Z has exited, so this page can no longer be used.',
+      'gone.close':         'You can close this tab.'
+    }
+  };
+
+)HTMLPAGE"
+R"HTMLPAGE(  var kLangKey = 'krkrz.repl.lang';
+  var lang = 'ja';          // 実効言語
+  var engineLangs = ['ja']; // 本体が返した優先順
+
+  function t(key){
+    var tbl = I18N[lang] || I18N.ja;
+    var v = tbl[key];
+    if(v === undefined) v = I18N.ja[key];    // 未訳は日本語へ落とす
+    return v === undefined ? key : v;
+  }
+
+  //! data-i18n / -ph / -title を今の言語で塗り直す (切替でも呼ぶ)
+  function applyI18n(){
+    document.documentElement.lang = (lang === 'ja') ? 'ja' : lang;
+    var n = document.querySelectorAll('[data-i18n]');
+    for(var i=0;i<n.length;i++) n[i].textContent = t(n[i].getAttribute('data-i18n'));
+    n = document.querySelectorAll('[data-i18n-ph]');
+    for(i=0;i<n.length;i++) n[i].placeholder = t(n[i].getAttribute('data-i18n-ph'));
+    n = document.querySelectorAll('[data-i18n-title]');
+    for(i=0;i<n.length;i++) n[i].title = t(n[i].getAttribute('data-i18n-title'));
+  }
+
+  //! 本体の優先順のうち、表を持っている最初の言語を採る
+  function pickLang(list){
+    for(var i=0;i<list.length;i++) if(I18N[list[i]]) return list[i];
+    return 'ja';
+  }
+
+  function setLang(code, remember){
+    if(!I18N[code]) return;
+    lang = code;
+    if(remember){ try { localStorage.setItem(kLangKey, code); } catch(_) {} }
+    var sel = document.getElementById('cLang');
+    if(sel) sel.value = code;
+    applyI18n();
+    if(typeof onLangChanged === 'function') onLangChanged();
+  }
+
+  // 言語セレクタ (表にあるものを並べる)
+  (function initLangSelect(){
+    var sel = document.getElementById('cLang');
+    for(var code in I18N){
+      var o = document.createElement('option');
+      o.value = code;
+      o.textContent = I18N[code]['lang.name'] || code;
+      sel.appendChild(o);
+    }
+    sel.addEventListener('change', function(){ setLang(sel.value, true); });
+  })();
+
+  // 起動時: ブラウザ側の明示指定があればそれ、無ければ後で /state の langs に従う
+  var saved = null;
+  try { saved = localStorage.getItem(kLangKey); } catch(_) {}
+  setLang(saved && I18N[saved] ? saved : 'ja', false);
+
+  //-------------------------------------------------------------------------
   // タブ
   //-------------------------------------------------------------------------
   var panels = { console: document.getElementById('panel-console'),
                  watch:   document.getElementById('panel-watch'),
                  pad:     document.getElementById('panel-pad') };
   var focusOn = { console: 'cmd', watch: 'wexpr', pad: 'pText' };
-  var tabs = document.querySelectorAll('.tab');
+  var tabsEl = document.getElementById('tabs');
+  var appEl  = document.getElementById('app');
+  var current = 'console';
+
+  function allTabs(){ return document.querySelectorAll('.tab'); }
   function selectTab(name){
+    if(!panels[name]) return;
+    current = name;
+    var tabs = allTabs();
     for(var i=0;i<tabs.length;i++)
       tabs[i].classList.toggle('active', tabs[i].getAttribute('data-tab') === name);
     for(var k in panels) panels[k].hidden = (k !== name);
-    var f = document.getElementById(focusOn[name]);
-    if(f) f.focus();
+    // 案件パネルは初めて開いたときに読み込む (重いツールを起動時に抱えない)
+    var p = panels[name];
+    if(p.dataset && p.dataset.src && !p.firstElementChild){
+      var f = document.createElement('iframe');
+      f.src = p.dataset.src;
+      p.appendChild(f);
+    }
+    var el = document.getElementById(focusOn[name]);
+    if(el) el.focus();
   }
-  for(var i=0;i<tabs.length;i++) (function(t){
-    t.addEventListener('click', function(){ selectTab(t.getAttribute('data-tab')); });
-  })(tabs[i]);
+  tabsEl.addEventListener('click', function(e){
+    var t = e.target.closest ? e.target.closest('.tab') : null;
+    if(t) selectTab(t.getAttribute('data-tab'));
+  });
+
+  //-------------------------------------------------------------------------
+  // 案件パネル (WebServer.registerPanel)
+  //
+  // 組み込みタブの右へ、案件が登録したパネルをタブとして並べる。中身は
+  // iframe で読む — こちらの内部 DOM に依存させないため。登録/解除は
+  // /sub/panels の push で開いているページにも反映される。
+  //-------------------------------------------------------------------------
+  function applyPanels(list){
+    if(!list || !list.length){ removeExtTabs({}); return; }
+    var seen = {};
+    for(var i=0;i<list.length;i++){
+      var d = list[i];
+      if(!d || !d.id || !d.path) continue;
+      var key = 'x-' + d.id;
+      seen[key] = true;
+      var tab = document.querySelector('.tab[data-tab="' + key + '"]');
+      if(!tab){
+        tab = document.createElement('button');
+        tab.className = 'tab ext';
+        tab.setAttribute('data-tab', key);
+        tabsEl.appendChild(tab);
+        var sec = document.createElement('section');
+        sec.className = 'panel';
+        sec.id = 'panel-' + key;
+        sec.hidden = true;
+        appEl.appendChild(sec);
+        panels[key] = sec;
+      }
+      tab.textContent = d.label || d.id;
+      var sec2 = panels[key];
+      // path が変わったら中身を作り直す
+      if(sec2.dataset.src !== d.path){
+        sec2.dataset.src = d.path;
+        if(sec2.firstElementChild) sec2.removeChild(sec2.firstElementChild);
+        if(current === key) selectTab(key);   // 表示中なら即読み直す
+      }
+    }
+    removeExtTabs(seen);
+  }
+  function removeExtTabs(seen){
+    var ext = document.querySelectorAll('.tab.ext');
+    for(var i=0;i<ext.length;i++){
+      var key = ext[i].getAttribute('data-tab');
+      if(seen[key]) continue;
+      ext[i].parentNode.removeChild(ext[i]);
+      if(panels[key]){
+        if(panels[key].parentNode) panels[key].parentNode.removeChild(panels[key]);
+        delete panels[key];
+      }
+      if(current === key) selectTab('console');   // 消えたタブを見ていたら戻す
+    }
+  }
+  fetch('/panels').then(function(r){ return r.json(); })
+    .then(applyPanels).catch(function(){});
+  var pes = new EventSource('/sub/panels');
+  pes.onmessage = function(e){
+    try { applyPanels(JSON.parse(e.data)); } catch(_) {}
+  };
 
   //-------------------------------------------------------------------------
   // 本体が居なくなったらこのページも閉じる
@@ -228,7 +471,7 @@ R"HTMLPAGE(<script>
   }
   function markDead(){
     if(closing || deadTimer) return;
-    deadTimer = setTimeout(function(){ closeSelf('本体との接続が切れました'); }, kDeadMs);
+    deadTimer = setTimeout(function(){ closeSelf(t('gone.disconnected')); }, kDeadMs);
   }
   function closeSelf(reason){
     if(closing) return;
@@ -242,9 +485,12 @@ R"HTMLPAGE(<script>
     if(document.getElementById('gone')) return;
     var d = document.createElement('div');
     d.id = 'gone';
-    d.innerHTML = '<div><h1>' + reason + '</h1>' +
-      '<p>吉里吉里Z が終了したため、このページは操作できません。</p>' +
-      '<p>このタブは閉じて構いません。</p></div>';
+    var h1 = document.createElement('h1'); h1.textContent = reason;
+    var p1 = document.createElement('p'); p1.textContent = t('gone.body');
+    var p2 = document.createElement('p'); p2.textContent = t('gone.close');
+    var box = document.createElement('div');
+    box.appendChild(h1); box.appendChild(p1); box.appendChild(p2);
+    d.appendChild(box);
     document.body.appendChild(d);
   }
 
@@ -333,7 +579,7 @@ R"HTMLPAGE(<script>
         if(res.ok) { wnote(''); applyWatch(res.j); }
         else wnote(res.j && res.j.error ? res.j.error : 'error');
       })
-      .catch(function(){ wnote('通信できません'); });
+      .catch(function(){ wnote(t('err.network')); });
   }
   function wload(){
     fetch('/watch').then(function(r){ return r.json(); })
@@ -366,7 +612,7 @@ R"HTMLPAGE(<script>
     var vac = document.createElement('td'); vac.className = 'c-val';
     var dec = document.createElement('td'); dec.className = 'c-del';
     var del = document.createElement('button');
-    del.type = 'button'; del.textContent = '×'; del.title = '削除';
+    del.type = 'button'; del.textContent = '×'; del.title = t('watch.del');
     dec.appendChild(del);
     tr.appendChild(idc); tr.appendChild(exc); tr.appendChild(vac); tr.appendChild(dec);
     var row = { tr:tr, exprCell:exc, valCell:vac, editing:false };
@@ -416,7 +662,7 @@ R"HTMLPAGE(<script>
   wauto.addEventListener('change', function(){ wsend({ op:'interval', ms:wauto.value }); });
   document.getElementById('weval').addEventListener('click', function(){ wsend({ op:'eval' }); });
   document.getElementById('wclear').addEventListener('click', function(){
-    if(window.confirm('監視式をすべて削除します。よろしいですか?')) wsend({ op:'clear' });
+    if(window.confirm(t('watch.clear.confirm'))) wsend({ op:'clear' });
   });
 
   // 自動更新の push。値が変わったときと、評価を伴わない変更 (削除 / 全消し /
@@ -468,7 +714,7 @@ R"HTMLPAGE(  //-----------------------------------------------------------------
   function padRun(){
     var src = pText.value;
     if(!src.replace(/^\s+|\s+$/g, '')) return;
-    pOut.textContent = '実行中...';
+    pOut.textContent = t('pad.running');
     pOut.className = '';
     fetch('/pad/exec', { method:'POST', body: src })
       .then(function(r){ return r.json(); })
@@ -476,7 +722,7 @@ R"HTMLPAGE(  //-----------------------------------------------------------------
         if(j.ok){ pOut.textContent = '=> ' + j.result; pOut.className = 'result'; }
         else    { pOut.textContent = j.error;          pOut.className = 'error'; }
       })
-      .catch(function(){ pOut.textContent = '通信できません'; pOut.className = 'error'; });
+      .catch(function(){ pOut.textContent = t('err.network'); pOut.className = 'error'; });
   }
   document.getElementById('pRun').addEventListener('click', padRun);
   pText.addEventListener('keydown', function(e){
@@ -486,27 +732,27 @@ R"HTMLPAGE(  //-----------------------------------------------------------------
 
   document.getElementById('pLoad').addEventListener('click', function(){
     var path = pPath.value.replace(/^\s+|\s+$/g, '');
-    if(!path){ pnote('パスを入れてください', true); return; }
+    if(!path){ pnote(t('pad.needpath'), true); return; }
     fetch('/pad/file?path=' + encodeURIComponent(path))
       .then(function(r){
         if(!r.ok) throw new Error(String(r.status));
         return r.text();
       })
-      .then(function(t){ pText.value = t; padSaveDraft(); pnote('読込みました'); })
-      .catch(function(e){ pnote('読み込めません (' + e.message + ')', true); });
+      .then(function(t){ pText.value = t; padSaveDraft(); pnote(t('pad.loaded')); })
+      .catch(function(e){ pnote(t('pad.loadfail') + ' (' + e.message + ')', true); });
   });
 
   document.getElementById('pSave').addEventListener('click', function(){
     var path = pPath.value.replace(/^\s+|\s+$/g, '');
-    if(!path){ pnote('パスを入れてください', true); return; }
+    if(!path){ pnote(t('pad.needpath'), true); return; }
     fetch('/pad/file?path=' + encodeURIComponent(path),
           { method:'POST', body: pText.value })
       .then(function(r){ return r.json().then(function(j){ return { ok:r.ok, j:j }; }); })
       .then(function(res){
-        if(res.ok) pnote('保存しました');
-        else pnote(res.j && res.j.error ? res.j.error : '保存できません', true);
+        if(res.ok) pnote(t('pad.saved'));
+        else pnote(res.j && res.j.error ? res.j.error : t('pad.savefail'), true);
       })
-      .catch(function(){ pnote('通信できません', true); });
+      .catch(function(){ pnote(t('err.network'), true); });
   });
 
   //-------------------------------------------------------------------------
@@ -547,16 +793,31 @@ R"HTMLPAGE(  //-----------------------------------------------------------------
   var cEvent = document.getElementById('cEvent');
   var cExit  = document.getElementById('cExit');
 
+  var lastState = null;
   function applyState(st){
     if(!st) return;
     // 本体が «これから終了する» と言ってきた → 待たずに閉じる
-    if(st.exiting){ closeSelf('吉里吉里Z が終了しました'); return; }
+    if(st.exiting){ closeSelf(t('gone.exited')); return; }
+    // 既定の言語は本体の設定に従う (ブラウザ側で明示指定していないときだけ)。
+    if(st.langs && st.langs.length){
+      engineLangs = st.langs;
+      var saved = null;
+      try { saved = localStorage.getItem(kLangKey); } catch(_) {}
+      if(!saved) setLang(pickLang(engineLangs), false);
+    }
     if(typeof st.eventDisabled !== 'boolean') return;
-    var off = st.eventDisabled;            // true = イベント配送が止まっている
-    cEvent.textContent = 'イベント: ' + (off ? '停止中' : '有効');
+    lastState = st;
+    renderState();
+  }
+  function renderState(){
+    if(!lastState) return;
+    var off = lastState.eventDisabled;     // true = イベント配送が止まっている
+    cEvent.textContent = t('ctl.event') + ' ' + (off ? t('ctl.event.off') : t('ctl.event.on'));
     cEvent.classList.toggle('off', off);
     cEvent.classList.toggle('on', !off);
   }
+  // 言語を切り替えたら、data-i18n で塗れない動的表示も作り直す
+  function onLangChanged(){ renderState(); }
   function statePost(params){
     return fetch('/state', { method:'POST', body: new URLSearchParams(params) })
       .then(function(r){ return r.json(); })
@@ -567,7 +828,7 @@ R"HTMLPAGE(  //-----------------------------------------------------------------
     statePost({ op:'event', value:'toggle' });
   });
   cExit.addEventListener('click', function(){
-    if(!window.confirm('アプリを終了します。よろしいですか?')) return;
+    if(!window.confirm(t('ctl.exit.confirm'))) return;
     // 終了させるので閉じる合図は要らない (二重に落としにいかない)
     byeSent = true;
     statePost({ op:'exit' }).then(function(){

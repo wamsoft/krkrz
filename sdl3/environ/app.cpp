@@ -7,6 +7,13 @@
 #include "DebugIntf.h"
 #include "DisplaySelect.h"
 #include "HotKeyIntf.h"
+#include "md5.h"             // CreateAppLock (ロックファイル名)
+#ifndef _WIN32
+#include <fcntl.h>           // CreateAppLock (open)
+#include <unistd.h>          // CreateAppLock (close)
+#include <sys/file.h>        // CreateAppLock (flock)
+#include <cerrno>
+#endif
 #include "tvpinputdefs.h"
 #include "app.h"
 
@@ -392,6 +399,100 @@ SDL3Application::ScreenHeight() const
 	return 0;
 }
 
+//---------------------------------------------------------------------------
+// モニタ情報 (System.getMonitorInfo / getDisplayMonitors)。
+//   SDL_GetDisplays が返す並びをそのまま index にする。
+//   ⚠ SDL の display id は不定なので、index は「今この瞬間の並び」でしかない。
+//     抜き差しで変わるので保存しないこと。
+//---------------------------------------------------------------------------
+tjs_int
+SDL3Application::GetMonitorCount() const
+{
+	int count = 0;
+	SDL_DisplayID *ids = SDL_GetDisplays(&count);
+	if (!ids) return 0;
+	SDL_free(ids);
+	return (tjs_int)count;
+}
+
+// index 番目の SDL_DisplayID を返す (0 = 無い)
+static SDL_DisplayID TVPSDLDisplayAt(tjs_int index)
+{
+	int count = 0;
+	SDL_DisplayID *ids = SDL_GetDisplays(&count);
+	if (!ids) return 0;
+	SDL_DisplayID id = (index >= 0 && index < count) ? ids[index] : 0;
+	SDL_free(ids);
+	return id;
+}
+
+bool
+SDL3Application::GetMonitorInfoAt(tjs_int index, tTVPMonitorInfo &info) const
+{
+	SDL_DisplayID id = TVPSDLDisplayAt(index);
+	if (!id) return false;
+	SDL_Rect bounds, usable;
+	if (!SDL_GetDisplayBounds(id, &bounds)) return false;
+	if (!SDL_GetDisplayUsableBounds(id, &usable)) usable = bounds;
+	info.mx = bounds.x; info.my = bounds.y; info.mw = bounds.w; info.mh = bounds.h;
+	info.wx = usable.x; info.wy = usable.y; info.ww = usable.w; info.wh = usable.h;
+	info.primary = (id == SDL_GetPrimaryDisplay());
+	const char *name = SDL_GetDisplayName(id);
+	info.name.clear();
+	if (name) {
+		// 表示名は UTF-8。tjs_string へ素直に移す
+		tjs_string wide;
+		TVPUtf8ToUtf16(wide, name);
+		info.name = wide;
+	}
+	return true;
+}
+
+tjs_int
+SDL3Application::GetPrimaryMonitorIndex() const
+{
+	SDL_DisplayID primary = SDL_GetPrimaryDisplay();
+	int count = 0;
+	SDL_DisplayID *ids = SDL_GetDisplays(&count);
+	if (!ids) return -1;
+	tjs_int found = -1;
+	for (int i = 0; i < count; ++i) {
+		if (ids[i] == primary) { found = (tjs_int)i; break; }
+	}
+	SDL_free(ids);
+	return found;
+}
+
+tjs_int
+SDL3Application::FindMonitorForRect(tjs_int x, tjs_int y, tjs_int w, tjs_int h,
+									bool nearest) const
+{
+	int count = 0;
+	SDL_DisplayID *ids = SDL_GetDisplays(&count);
+	if (!ids) return -1;
+	tjs_int hit = -1;
+	tjs_int best = -1;
+	tjs_int bestDist = 0;
+	const tjs_int rx2 = x + (w > 0 ? w : 1);
+	const tjs_int ry2 = y + (h > 0 ? h : 1);
+	for (int i = 0; i < count; ++i) {
+		SDL_Rect b;
+		if (!SDL_GetDisplayBounds(ids[i], &b)) continue;
+		const tjs_int bx2 = b.x + b.w, by2 = b.y + b.h;
+		if (x < bx2 && rx2 > b.x && y < by2 && ry2 > b.y) { hit = (tjs_int)i; break; }
+		if (!nearest) continue;
+		// 重ならないときの距離 (矩形間のマンハッタン距離)
+		tjs_int dx = (x >= bx2) ? (x - bx2) : (b.x >= rx2 ? b.x - rx2 : 0);
+		tjs_int dy = (y >= by2) ? (y - by2) : (b.y >= ry2 ? b.y - ry2 : 0);
+		tjs_int d = dx + dy;
+		if (best < 0 || d < bestDist) { best = (tjs_int)i; bestDist = d; }
+	}
+	SDL_free(ids);
+	if (hit >= 0) return hit;
+	return nearest ? best : -1;
+}
+//---------------------------------------------------------------------------
+
 // デスクトップ (作業領域) の矩形 (System.desktop*)。 win32 版互換。
 // SDL_GetDisplayUsableBounds はタスクバー等を除いた作業領域をグローバル座標で
 // 返す。 取得できない環境 (フルスクリーン専用機等) はスクリーン全体へ
@@ -546,6 +647,56 @@ SDL3Application::ConfirmYesNo(const tjs_string& string, const tjs_string& captio
 		return false; // 表示失敗時は No 扱い
 	}
 	return buttonid == 1;
+}
+
+// ---------------------------------------------------------------------------
+// 選択肢から 1 つ選ぶダイアログ (System.choice)。 confirm と同じく overlay を優先し、
+// 失敗時のみネイティブ (SDL_ShowMessageBox はボタンを任意個並べられる) へ。
+// ---------------------------------------------------------------------------
+int
+SDL3Application::Choose(const tjs_string& string, const tjs_string& caption,
+	const std::vector<tjs_string>& choices, int def)
+{
+#ifdef KRKRZ_HAS_ELEMENTS
+	{
+		std::vector<ttstr> c;
+		for (auto& s : choices) c.push_back(ttstr(s.c_str()));
+		int index = def;
+		if (TVPChoiceElements(ttstr(caption.c_str()), ttstr(string.c_str()), c, def, index))
+			return index;
+	}
+#endif
+	std::string str_utf8, cap_utf8;
+	TVPUtf16ToUtf8(str_utf8, string);
+	TVPUtf16ToUtf8(cap_utf8, caption);
+
+	SDL_Window* parent = nullptr;
+	if (auto* mainForm = (SDL3WindowForm*)MainWindowForm()) {
+		parent = static_cast<SDL_Window*>(mainForm->NativeWindowHandle());
+	}
+
+	// buttonid = index。 既定のボタンに Enter / Esc の両方を割り当てる
+	std::vector<std::string> labels(choices.size());
+	std::vector<SDL_MessageBoxButtonData> buttons(choices.size());
+	for (size_t i = 0; i < choices.size(); i++) {
+		TVPUtf16ToUtf8(labels[i], choices[i]);
+		buttons[i].flags = ((int)i == def)
+			? (SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT | SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT) : 0;
+		buttons[i].buttonID = (int)i;
+		buttons[i].text = labels[i].c_str();
+	}
+	SDL_MessageBoxData data = {};
+	data.flags = SDL_MESSAGEBOX_INFORMATION;
+	data.window = parent;
+	data.title = cap_utf8.c_str();
+	data.message = str_utf8.c_str();
+	data.numbuttons = (int)buttons.size();
+	data.buttons = buttons.data();
+
+	int buttonid = -1;
+	if (!SDL_ShowMessageBox(&data, &buttonid)) return def; // 表示失敗
+	if (buttonid < 0 || buttonid >= (int)choices.size()) return def; // 閉じた
+	return buttonid;
 }
 
 // ---------------------------------------------------------------------------
@@ -756,6 +907,93 @@ SDL3Application::ShellExecute(const tjs_char *target, const tjs_char * /*param*/
 	std::string url_utf8;
 	TVPUtf16ToUtf8(url_utf8, tjs_string(target));
 	return SDL_OpenURL(url_utf8.c_str());
+}
+
+// ---------------------------------------------------------------------------
+// 多重起動の抑止 (System.createAppLock)
+//
+//   ⚠ SDL の同期プリミティブ (SDL_Mutex / SDL_RWLock / SDL_Semaphore /
+//     SDL_Condition) は**どれもプロセス内専用**で、Win32 の名前付き Mutex に
+//     あたる「プロセス間で共有できる名前付きの錠」が無い。
+//     そこでテンポラリ領域にロックファイルを作り、OS の排他ロックで掴む。
+//
+//   掴んだハンドルはプロセスが終わるまで持ちっぱなしにする (意図的に閉じない)。
+//   OS がプロセス終了時に必ず解放するので、異常終了しても錠が残らない。
+//
+//   ファイル名は lockname の MD5 にする。 lockname はスクリプトが決める任意の
+//   文字列 (GUID 等) なので、そのままだとファイル名に使えない文字が入りうる。
+// ---------------------------------------------------------------------------
+bool
+SDL3Application::CreateAppLock(const ttstr &lockname)
+{
+	if(lockname.IsEmpty()) return true;
+
+	// lockname -> ファイル名 (MD5 の 16 進 32 文字)
+	std::string name_utf8;
+	TVPUtf16ToUtf8(name_utf8, tjs_string(lockname.c_str()));
+	md5_state_t md5;
+	md5_init(&md5);
+	md5_append(&md5, (const md5_byte_t *)name_utf8.c_str(), (int)name_utf8.size());
+	md5_byte_t digest[16];
+	md5_finish(&md5, digest);
+
+	static const char *HEX = "0123456789abcdef";
+	char hex[33];
+	for(int i = 0; i < 16; i++)
+	{
+		hex[i * 2    ] = HEX[(digest[i] >> 4) & 0x0f];
+		hex[i * 2 + 1] = HEX[ digest[i]       & 0x0f];
+	}
+	hex[32] = 0;
+
+	tjs_string path(TempPath());
+	std::string suffix = std::string("krkr_applock_") + hex + ".lock";
+	tjs_string wsuffix;
+	TVPUtf8ToUtf16(wsuffix, suffix);
+	path += wsuffix;
+
+#ifdef _WIN32
+	// 共有を一切許さずに開く。 FILE_FLAG_DELETE_ON_CLOSE で終了時に消える。
+	static HANDLE lockHandle = INVALID_HANDLE_VALUE;
+	if(lockHandle != INVALID_HANDLE_VALUE) return true;   // 既に取得済み
+	lockHandle = ::CreateFileW(reinterpret_cast<const wchar_t *>(path.c_str()),
+		GENERIC_READ | GENERIC_WRITE,
+		0,                        // 共有しない = 2 個目は開けない
+		nullptr, OPEN_ALWAYS,
+		FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE,
+		nullptr);
+	// ⚠ GetLastError は直後に採ること。 間に何か挟むと (ログ出力でも) 消える。
+	const DWORD err = (lockHandle == INVALID_HANDLE_VALUE) ? ::GetLastError() : 0;
+	if(lockHandle == INVALID_HANDLE_VALUE)
+	{
+		if(err == ERROR_SHARING_VIOLATION || err == ERROR_ACCESS_DENIED)
+			return false;         // 既に起動している
+		// 作れない (テンポラリが書けない等) なら抑止しない
+		TVPLOG_DEBUG("CreateAppLock: cannot open lock file (err={}), no lock", (int)err);
+		return true;
+	}
+	return true;
+#else
+	// flock は fd を閉じた時点 / プロセス終了時に必ず外れる
+	static int lockFd = -1;
+	if(lockFd >= 0) return true;                          // 既に取得済み
+	std::string path_utf8;
+	TVPUtf16ToUtf8(path_utf8, path);
+	int fd = ::open(path_utf8.c_str(), O_CREAT | O_RDWR, 0600);
+	if(fd < 0)
+	{
+		const int e = errno;      // ⚠ errno も直後に採る
+		TVPLOG_DEBUG("CreateAppLock: cannot open lock file (errno={}), no lock", e);
+		return true;              // 作れないなら抑止しない
+	}
+	if(::flock(fd, LOCK_EX | LOCK_NB) != 0)
+	{
+		::close(fd);
+		return false;             // 既に起動している
+	}
+	lockFd = fd;                  // 意図的に持ちっぱなし
+	return true;
+#endif
 }
 
 #ifdef __EMSCRIPTEN__
@@ -1022,7 +1260,16 @@ SDL3Application::AppEvent(const SDL_Event& event)
 	case SDL_EVENT_KEYBOARD_ADDED:
 	case SDL_EVENT_KEYBOARD_REMOVED:
 	case SDL_EVENT_MOUSE_ADDED:
-	case SDL_EVENT_MOUSE_REMOVED: {
+	case SDL_EVENT_MOUSE_REMOVED:
+	// パッドの抜き差しとディスプレイの増減も window に紐付かない。
+	// スクリプトへ onDeviceChanged / onDisplayChanged を渡すため全 form へ配る
+	case SDL_EVENT_JOYSTICK_ADDED:
+	case SDL_EVENT_JOYSTICK_REMOVED:
+	case SDL_EVENT_GAMEPAD_ADDED:
+	case SDL_EVENT_GAMEPAD_REMOVED:
+	case SDL_EVENT_DISPLAY_ADDED:
+	case SDL_EVENT_DISPLAY_REMOVED:
+	case SDL_EVENT_DISPLAY_DESKTOP_MODE_CHANGED: {
 		int count = 0;
 		if (SDL_Window** windows = SDL_GetWindows(&count)) {
 			for (int i = 0; i < count; ++i) {

@@ -8,10 +8,12 @@
 #include "ViewportConfig.h"
 
 #include "TVPWindow.h"
+#include "ImeStatus.h"   // tTVPImeStatus (Agent.imeStatus() の診断用)
 #include "MouseCursor.h"
 #include "TouchPoint.h"
 #include "TVPTimer.h"
 #include "VelocityTracker.h"
+#include "VirtualCursor.h"
 
 enum {
 	crDefault = 0x0,
@@ -127,6 +129,9 @@ private:
 	int LastMouseDownX, LastMouseDownY; // in Layer coodinates
 	
 	POINT LastMouseMovedPos;  // in Layer coodinates
+	//! 仮想カーソル位置 (描画矩形内の座標)。 hover 判定と Layer.cursorX/Y が
+	//! 見るのはこちら。 詳細は common/visual/VirtualCursor.h / doc/VirtualCursor.md
+	tTVPVirtualCursor VirtualCursor;
 	//-- full screen managemant related
 	int InnerWidthSave;
 	int InnerHeightSave;
@@ -145,6 +150,16 @@ private:
 	
 	tTVPImeMode LastSetImeMode;
 	tTVPImeMode DefaultImeMode;
+
+	// オーバレイ UI (Elements のテキスト欄) が IME を一時的に握っている間の状態。
+	// 握っている間、 レイヤ側から届く SetImeMode / ResetImeMode は「保留」して
+	// ImeSavedMode に溜めるだけにし、 解除時にまとめて適用する。 こうしないと、
+	// 入力欄の編集中にレイヤのフォーカス移動 (KAG のメッセージレイヤ等) が
+	// 起きるたびに imDisable/imClose で上書きされ、 IME が閉じてしまう。
+	bool ImeOverrideActive;
+	tTVPImeMode ImeSavedMode;
+	// 上書きのために入力コンテキストを結び直したか (解除時に巻き戻す)
+	bool ImeContextForced;
 
 	bool TrapKeys;
 	bool CanReceiveTrappedKeys;
@@ -312,6 +327,32 @@ public:
 	//-- close action related
 	bool Closing;
 	bool ProgramClosing;
+
+	//-- 拡張イベント (doc/WindowState.md)。windowEx プラグインから移した。
+	//   registerExEvent() を呼ぶまでは投げない (windowEx と同じ)
+	bool ExEventEnabled = false;
+	//! ウィンドウ枠の操作を禁じる (枠なし表示のときに掴んで動かされないように)
+	bool MoveDisabled = false;
+	bool ResizeDisabled = false;
+	void SetMoveDisabled( bool b )   { MoveDisabled = b; }
+	bool GetMoveDisabled() const     { return MoveDisabled; }
+	void SetResizeDisabled( bool b ) { ResizeDisabled = b; }
+	bool GetResizeDisabled() const   { return ResizeDisabled; }
+	//! 入力デバイスの抜き差しを通知するか (registerDeviceChange() で有効化)
+	bool DeviceChangeEnabled = false;
+	void SetDeviceChangeEnabled( bool b ) { DeviceChangeEnabled = b; }
+	bool GetDeviceChangeEnabled() const { return DeviceChangeEnabled; }
+	void SetExEventEnabled( bool b ) { ExEventEnabled = b; }
+	bool GetExEventEnabled() const { return ExEventEnabled; }
+	//! 引数なし / 数値引数の拡張イベントを**同期で**投げる。戻り値は真偽として解釈
+	bool FireExEvent( const tjs_char *name, tjs_int argc = 0, tjs_int a0 = 0, tjs_int a1 = 0 );
+	//! onMaximizeQuery の返事。onCloseQuery と同じで、ハンドラが
+	//! super.onMaximizeQuery(false) を呼び返すと最大化を止める
+	bool MaximizeQueryResult = true;
+	void OnMaximizeQueryCalled( bool b ) { MaximizeQueryResult = b; }
+	//! 矩形を渡す拡張イベント (onMoving / onResizing)。
+	//! ハンドラが書き換えた値を RECT へ**書き戻す**ので同期でなければならない
+	bool FireExEventRect( const tjs_char *name, RECT *prc, bool hasEdge, tjs_int edge );
 	bool CanCloseWork;
 	void Close();
 	void InvalidateClose();
@@ -343,12 +384,27 @@ public:
 
 	void GetCursorPos(tjs_int &x, tjs_int &y);
 	void SetCursorPos(tjs_int x, tjs_int y);
+	//! @brief 仮想カーソル位置だけを動かす (実 OS カーソルは触らない)。
+	//!        キー / パッドのナビ (Elements の cursor-warp 等) 用。
+	void SetVirtualCursorPos(tjs_int x, tjs_int y) { VirtualCursor.Set(x, y); }
 
 	void SetHintText(iTJSDispatch2* sender, const ttstr &text);
 	void UpdateHint();
 
 	void SetImeMode(tTVPImeMode mode);
 	void SetDefaultImeMode(tTVPImeMode mode, bool reset);
+	//! @brief オーバレイ UI 用に IME モードを一時的に握る (解除まで他を保留)
+	void SetImeOverride(tTVPImeMode mode);
+	//! @brief 一時上書きを解除し、 保留していたモードへ戻す
+	void ClearImeOverride();
+
+	//! @brief IME 関連の状態スナップショットを埋める (診断用。 Agent.imeStatus())
+	void GetImeStatus( tTVPImeStatus &out );
+
+	//! @brief 変換 / 変換候補ウィンドウを入力欄へ寄せる (クライアント座標 px)。
+	//!        オーバレイ UI (Elements のテキスト欄) が毎フレーム呼ぶ。
+	//! @param cursor テキスト領域左端からのキャレットの相対 x
+	void SetImeTextInputArea( tjs_int x, tjs_int y, tjs_int w, tjs_int h, tjs_int cursor );
 	tTVPImeMode GetDefaultImeMode() const { return  DefaultImeMode; }
 	void ResetImeMode();
 	
@@ -387,6 +443,10 @@ public:
 	virtual bool OnSetCursor( HWND hContainsCursorWnd, WORD hitTestCode, WORD MouseMsg );
 	virtual void OnEnable( bool enabled );
 	virtual void OnDeviceChange( UINT_PTR event, void *data );
+	virtual void OnCancelMode();
+	virtual void OnPaste();
+	//! onDeviceChanged(arrival) を投げる
+	void FireDeviceChanged( bool arrival );
 	virtual void OnNonClientMouseDown( int button, UINT_PTR hittest, int x, int y );
 	virtual void OnMouseEnter();
 	virtual void OnMouseLeave();

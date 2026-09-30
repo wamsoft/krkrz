@@ -344,6 +344,6 @@ P3 で「未指定なら OS 既定の最小 (`SM_CXMINTRACK`) を残さない」
 - ~~**`Window.width` の非推奨化**~~ ✅ リファレンス (`width` / `height` /
   `setSize`) に「内側基準の API を推奨」の注記を追加済み。仕様上は残す。
 - ~~**`viewportFit = "none"` の案内**~~ ✅ `viewportFit` / `setViewport` の
-  リファレンスと [ビューポート](../../doc/topics/core/viewport.md) の
+  リファレンスと [ビューポート](https://wamsoft.github.io/krkrz_dev/topics/core/viewport/) の
   トピックページに、旧来 (吉里吉里2 / 吉里吉里Z) と同じ表示にする指定
   (`setViewport("none", 1.0, 0, 0)`) を明記済み。

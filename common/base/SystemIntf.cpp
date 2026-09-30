@@ -33,6 +33,9 @@
 #include "ScreenCapture.h"     // TVPRequestScreenCapture / TVPGetLastScreenCapture
 #endif
 #include "HotKeyIntf.h"        // TVPRegisterHotKey / TVPUnregisterHotKey
+#include "CharacterSet.h"      // TVPUtf16ToUtf8 / TVPUtf8ToUtf16
+#include <cstdlib>             // getenv / setenv (System.readEnvValue)
+#include <string>
 
 #ifdef TVP_USE_OPENGL
 extern int TVPGetOpenGLESVersion();
@@ -227,6 +230,97 @@ void TVPFireOnJoypadChange(int no, const tjs_char *name)
 
 
 
+
+//---------------------------------------------------------------------------
+// 環境変数と URL エンコード (旧 systemEx プラグイン由来)
+//
+//   どちらも Win32 に依存する理由が無いので本体へ移した。
+//   環境変数は CRT 経由で読み書きする (Windows では _wgetenv / _wputenv_s が
+//   Win32 側の環境ブロックにも反映されるので、GetEnvironmentVariableW で
+//   読んでも一致する)。
+//---------------------------------------------------------------------------
+namespace {
+
+// 環境変数を読む。 未設定なら false。
+static bool TVPGetEnvValue(const ttstr &name, ttstr &out)
+{
+	if(name.IsEmpty()) return false;
+#ifdef _WIN32
+	const wchar_t *v = ::_wgetenv(reinterpret_cast<const wchar_t *>(name.c_str()));
+	if(!v) return false;
+	out = ttstr(reinterpret_cast<const tjs_char *>(v));
+	return true;
+#else
+	std::string n;
+	tjs_string ns(name.c_str());
+	TVPUtf16ToUtf8(n, ns);
+	const char *v = ::getenv(n.c_str());
+	if(!v) return false;
+	tjs_string ws;
+	TVPUtf8ToUtf16(ws, std::string(v));
+	out = ttstr(ws.c_str());
+	return true;
+#endif
+}
+
+// 環境変数を書く。 空文字列を渡すと消す。
+static bool TVPSetEnvValue(const ttstr &name, const ttstr &value)
+{
+	if(name.IsEmpty()) return false;
+#ifdef _WIN32
+	return ::_wputenv_s(reinterpret_cast<const wchar_t *>(name.c_str()),
+	                    reinterpret_cast<const wchar_t *>(value.c_str())) == 0;
+#else
+	std::string n, v;
+	tjs_string ns(name.c_str()), vs(value.c_str());
+	TVPUtf16ToUtf8(n, ns);
+	TVPUtf16ToUtf8(v, vs);
+	if(v.empty()) return ::unsetenv(n.c_str()) == 0;
+	return ::setenv(n.c_str(), v.c_str(), 1) == 0;
+#endif
+}
+
+// "%NAME%" を展開する。 対応する変数が無ければ %NAME% のまま残す
+// (ExpandEnvironmentStrings と同じ挙動)。 "%%" は "%" 1 個。
+static ttstr TVPExpandEnvString(const ttstr &src)
+{
+	const tjs_char *p = src.c_str();
+	tjs_string out;
+	while(*p)
+	{
+		if(*p != TJS_W('%')) { out += *p++; continue; }
+		const tjs_char *close = TJS_strchr(p + 1, TJS_W('%'));
+		if(!close) { out += *p++; continue; }          // 閉じが無ければそのまま
+		if(close == p + 1) { out += TJS_W('%'); p += 2; continue; }  // "%%"
+		ttstr name(p + 1, (int)(close - p - 1));
+		ttstr value;
+		if(TVPGetEnvValue(name, value)) out += value.c_str();
+		else { out += TJS_W('%'); out += name.c_str(); out += TJS_W('%'); }
+		p = close + 1;
+	}
+	return ttstr(out.c_str());
+}
+
+// URL エンコードの非変換文字 (RFC 3986 の unreserved)
+static inline bool TVPIsUrlUnreserved(char c)
+{
+	return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+	       (c >= '0' && c <= '9') ||
+	       c == '-' || c == '_' || c == '.' || c == '~';
+}
+
+
+// 16 進 1 桁 -> 値。 16 進でなければ -1
+static inline tjs_int TVPHexDigit(tjs_char c)
+{
+	if(c >= TJS_W('0') && c <= TJS_W('9')) return (tjs_int)(c - TJS_W('0'));
+	if(c >= TJS_W('a') && c <= TJS_W('f')) return (tjs_int)(c - TJS_W('a')) + 10;
+	if(c >= TJS_W('A') && c <= TJS_W('F')) return (tjs_int)(c - TJS_W('A')) + 10;
+	return -1;
+}
+
+} // anonymous namespace
+
 //---------------------------------------------------------------------------
 // tTJSNC_System
 //---------------------------------------------------------------------------
@@ -267,6 +361,16 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/exit)
 	return TJS_S_OK;
 }
 TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/exit)
+//---------------------------------------------------------------------------
+// 長い処理の途中でウィンドウのメッセージだけを回す (無反応に見えないように)。
+//   windowEx プラグインが提供していたものを本体へ移した。ツール類 (xp3pack など) が使う。
+//   ⚠ 回している間 TVPEventDisabled が立つので、TJS のイベントは動かない
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/breathe)
+{
+	TVPBreathe();
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/breathe)
 //---------------------------------------------------------------------------
 TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/addContinuousHandler)
 {
@@ -535,6 +639,21 @@ TJS_BEGIN_NATIVE_PROP_DECL(versionString)
 	TJS_DENY_NATIVE_PROP_SETTER
 }
 TJS_END_NATIVE_STATIC_PROP_DECL(versionString)
+//----------------------------------------------------------------------
+// REPL (-repl / -replfile / -replweb) で駆動されているか (読み取り専用)。
+//   TVPReplActive をそのまま返す。 REPL 無効ビルドでは常に偽。
+TJS_BEGIN_NATIVE_PROP_DECL(replActive)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		if (result) *result = (tjs_int)(TVPReplActive ? 1 : 0);
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_DENY_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_STATIC_PROP_DECL(replActive)
 //----------------------------------------------------------------------
 TJS_BEGIN_NATIVE_PROP_DECL(versionInformation)
 {
@@ -868,6 +987,157 @@ TJS_BEGIN_NATIVE_PROP_DECL(texUploadUsePBO)
 }
 TJS_END_NATIVE_STATIC_PROP_DECL(texUploadUsePBO)
 #endif
+//----------------------------------------------------------------------
+//----------------------------------------------------------------------
+// 以下 旧 systemEx プラグイン由来。 Win32 依存の無いものだけを本体へ置いてある
+// (レジストリ / DPI / DLL 検索パス / OS バージョン / 既知フォルダ /
+//  メッセージポンプ / 多重起動ロックはプラグイン側に残る)。
+//----------------------------------------------------------------------
+// System.getAboutString() : -about で出るのと同じ版情報
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/getAboutString)
+{
+	if(result) *result = TVPGetAboutString();
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/getAboutString )
+//----------------------------------------------------------------------
+// System.readEnvValue(name) : 未設定なら void
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/readEnvValue)
+{
+	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
+	if(param[0]->Type() != tvtString) return TJS_E_INVALIDPARAM;
+
+	if(result)
+	{
+		ttstr value;
+		if(TVPGetEnvValue(ttstr(*param[0]), value)) *result = value;
+		else result->Clear();
+	}
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/readEnvValue )
+//----------------------------------------------------------------------
+// System.writeEnvValue(name, value) : 以前の値を返す (未設定なら void)。
+//   value が空文字列なら消す。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/writeEnvValue)
+{
+	if(numparams < 2) return TJS_E_BADPARAMCOUNT;
+	if(param[0]->Type() != tvtString) return TJS_E_INVALIDPARAM;
+
+	ttstr name(*param[0]);
+	if(result)
+	{
+		ttstr prev;
+		if(TVPGetEnvValue(name, prev)) *result = prev;
+		else result->Clear();
+	}
+	TVPSetEnvValue(name, ttstr(*param[1]));
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/writeEnvValue )
+//----------------------------------------------------------------------
+// System.expandEnvString(str) : "%NAME%" を展開する。
+//   対応する変数が無ければ %NAME% のまま残る。 "%%" は "%" 1 個。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/expandEnvString)
+{
+	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
+	if(result) *result = TVPExpandEnvString(ttstr(*param[0]));
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/expandEnvString )
+//----------------------------------------------------------------------
+// System.urlencode(str [, utf8 = true]) : RFC 3986 の unreserved 以外を %XX に
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/urlencode)
+{
+	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
+	if(!result) return TJS_S_OK;
+
+	bool utf8 = !(numparams > 1 && (tjs_int)*param[1] == 0);
+	ttstr str(*param[0]);
+
+	std::string src;
+	if(utf8)
+	{
+		tjs_string ws(str.c_str());
+		TVPUtf16ToUtf8(src, ws);
+	}
+	else
+	{
+		tjs_int len = str.GetNarrowStrLen();
+		src.resize((size_t)len);
+		if(len) str.ToNarrowStr(&src[0], len + 1);
+	}
+
+	static const char *HEX = "0123456789ABCDEF";
+	tjs_string out;
+	for(size_t i = 0; i < src.size(); i++)
+	{
+		char c = src[i];
+		if(TVPIsUrlUnreserved(c)) out += (tjs_char)(tjs_uint8)c;
+		else
+		{
+			out += TJS_W('%');
+			out += (tjs_char)HEX[((tjs_uint8)c >> 4) & 0x0f];
+			out += (tjs_char)HEX[ (tjs_uint8)c       & 0x0f];
+		}
+	}
+	*result = ttstr(out.c_str());
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/urlencode )
+//----------------------------------------------------------------------
+// System.urldecode(str [, utf8 = true]) : %XX を戻す
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/urldecode)
+{
+	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
+	if(!result) return TJS_S_OK;
+
+	bool utf8 = !(numparams > 1 && (tjs_int)*param[1] == 0);
+	ttstr str(*param[0]);
+	tjs_int len = (tjs_int)str.GetLen();
+	const tjs_char *s = str.c_str();
+
+	std::string out;
+	for(tjs_int i = 0; i < len; i++)
+	{
+		tjs_int ch = (tjs_int)s[i];
+		if(ch > 0xff) return TJS_E_INVALIDPARAM;
+		if(ch == '%')
+		{
+			if(i + 2 >= len) return TJS_E_INVALIDPARAM;
+			tjs_int hi = TVPHexDigit(s[i + 1]), lo = TVPHexDigit(s[i + 2]);
+			if(hi < 0 || lo < 0) return TJS_E_INVALIDPARAM;
+			out += (char)((hi << 4) | lo);
+			i += 2;
+		}
+		else out += (char)ch;
+	}
+
+	if(utf8)
+	{
+		tjs_string ws;
+		TVPUtf8ToUtf16(ws, out);
+		*result = ttstr(ws.c_str());
+	}
+	else *result = ttstr(out.c_str());
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/urldecode )
+//----------------------------------------------------------------------
+//----------------------------------------------------------------------
+// System.createAppLock(lockname) : 多重起動の抑止。
+//   既に同じ lockname のプロセスが動いていれば 0、取れたら 1。
+//   WINVER は名前付き Mutex、generic は Application 実装へ委譲する
+//   (SDL3 はテンポラリ領域のロックファイルを OS の排他ロックで掴む)。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/createAppLock)
+{
+	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
+	if(!result) return TJS_S_OK;
+
+	*result = (tjs_int)TVPCreateAppLock(ttstr(*param[0]));
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/createAppLock )
 //----------------------------------------------------------------------
 	TJS_END_NATIVE_MEMBERS
 

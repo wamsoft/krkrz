@@ -1,0 +1,982 @@
+// -*- mode:tjs2 -*-
+// ======================================================================
+//  elements_audit シーン (ElementsAuditScene)
+//  doc/ElementsAudit.md で挙げた 6 項目を、修正の前後で同じ手順で確認する。
+//
+//  シナリオ:
+//    1: warp echo   … cursor-warp グリッドでフォーカス往復 (振動) を数える (§1)
+//    2: list 描画   … 多行 list + キャレット点滅のラスタ時間 (§2)
+//    3: atlas 常駐  … アトラス画面の開閉と常駐量 (§3)
+//    4: metrics     … text_metrics キャッシュ全 clear のスパイク (§4)
+//    5: 押しっぱなし … 背面パネルのフォーカスが動き続けないか (§5)
+//    6: リピート周期 … 長押し中のフォーカス送り間隔 (ms) (§6)
+//
+//  各シナリオは機械可読の "@audit ..." 行もログへ出す (before/after の比較用)。
+// ======================================================================
+
+// パネル: onAction をシーンへ中継するだけ
+class AuditDialog extends ElementsDialog
+{
+    var owner;
+    var tag;
+    function AuditDialog(o, t) { super.ElementsDialog(); owner = o; tag = t; }
+    function onAction(id, payload) {
+        if (owner !== void) owner.onAuditAction(tag, id, payload);
+    }
+}
+
+class ElementsAuditScene extends DemoScene
+{
+    var available = false;
+    var scenario = 1;
+    var retryWait = 0;
+
+    // 表示中のパネル
+    var mainDlg;               // 主パネル (フォーカス観測対象)
+    var subDlg;                // 上に重ねるパネル (シナリオ 5)
+
+    // --- フォーカス観測 (シナリオ 1 / 5 / 6) ---
+    var lastFocus = "";        // 直近のフォーカス id
+    var prevFocus = "";        // その 1 つ前
+    var lastFocusTick = 0;
+    var prevFocusTick = 0;
+    var oscCount = 0;          // A->B->A の往復 (振動) 回数
+    var moveCount = 0;         // フォーカス移動の総数
+    var bgMoveCount = 0;       // 背面パネルが動いた回数 (シナリオ 5)
+    var lastBgFocus = "";
+    var intervalSum = 0, intervalNum = 0;   // 送り間隔 (シナリオ 6)
+    var intervalMin = 0;                    // 最小間隔 = 定常のリピート周期
+    var firstInterval = 0;                  // 初回の間隔 = リピート遅延の目安
+
+    // --- renderStats 観測 (シナリオ 2 / 4) ---
+    var statTick = 0;
+    var statSnap;
+    var rasterUsPerFrame = 0.0;
+    var rasterCount = 0;       // 区間内のラスタ回数
+    var partialCount = 0;      // うち部分再描画で済んだ回数
+    var rasterUsPerRaster = 0.0;
+    var updateUsPerFrame = 0.0;
+    var updateSpikeMax = 0.0;
+    var fps = 0.0;
+
+    // --- シナリオ別パラメータ ---
+    var listRows = 8;          // シナリオ 2 の行数 (+/- で変更)
+    var atlasOpens = 0;        // シナリオ 3 の開閉回数
+    var atlasPhase = 0;        // シナリオ 3 の進行段
+    var atlasBytesOpen = 0;    // 画面を開いている間の常駐量
+    var atlasBytesClosed = 0;  // 画面を閉じた後の常駐量
+    var atlasBytesTrimmed = 0; // trim 後の常駐量
+    var atlasFreed = 0;        // trim で解放できたバイト数
+    var atlasReady = false;    // 資材があるか
+    var metricsSeq = 0;        // シナリオ 4 の文字列通し番号
+    var shotDir;               // -auditshot=<dir> 指定時の保存先 (末尾 / 付き)
+    var shotDone = false;      // この区間で撮影済みか
+    var mouseMoves = 0;        // 実マウスの移動回数 (シナリオ 1 の汚染検出)
+    var keyInjectAt = 0;       // シナリオ 1 の自動キー注入タイマ
+    var keyInjectCount = 0;
+    var listUseCanvas = true;  // シナリオ 2 のレイアウト (true=canvas / false=vtile)
+    var listTickAt = 0;        // シナリオ 2 の小変化タイマ
+    var listTickSeq = 0;
+
+    var zoomNum = 1, zoomDen = 1;
+
+    // 自動巡回 (-audittest): 全シナリオを順に立ててログへ結果を出して終了する。
+    // 「パネルが組めるか」の回帰確認と、before/after の基準値取りに使う。
+    var autoMode = false;
+    var autoList = [];          // [scenario, rows] の並び
+    var autoIdx = 0;
+    var autoT0 = 0;
+    var autoOpened = false;     // シナリオ 5 で前面パネルを開いたか
+    var AUTO_MS = 2000;
+
+    var GRID_COLS = 4, GRID_ROWS = 4;
+    var METRICS_STATIC = 120;  // シナリオ 4: 内容固定のラベル数 (キャッシュヒット側)
+    var METRICS_CHURN  = 40;   // シナリオ 4: 毎フレーム変わるラベル数 (埋める側)
+
+    // 1 フレームあたりのラスタ時間の最大値 (シナリオ 4 のスパイク検出)。
+    // 500ms 平均だと 1 フレームだけの停止が薄まって見えないので、毎フレーム差分で取る。
+    var frameSnap;
+    var frameSpikeUs = 0.0;
+    var spikeFrom = 0;         // スパイク計測のウォームアップ起点
+    var padHeld = false;       // シナリオ 6: 十字を押しっぱなしにしているか
+    var padDone = false;       // その区間で離し終えたか (押し直さないため)
+    // シナリオ 6: 画面 JSON 側でリピートを指定するか (CLI より優先される確認用)
+    var gridScreenRepeat = false;
+    // シナリオ 5 の小ケース (0 = 覆われている間に離す / 1 = ずっと押したまま)
+    var holdCase = 0;
+    var restoredAt = 0;        // 前面パネルを閉じた tick (0 = まだ)
+    var movesAfterRestore = 0; // 戻った後に背面のフォーカスが動いた回数
+
+    function ElementsAuditScene() { super.DemoScene("Elements 仕様精査の確認"); }
+
+    // ------------------------------------------------------------------
+    //  ライフサイクル
+    // ------------------------------------------------------------------
+
+    function create()
+    {
+        available = typeof global.ElementsDialog != "undefined"
+                 && typeof global.ElementsDialog.renderStats != "undefined";
+        atlasReady = Storages.isExistentStorage("image/audit_atlas_0.png")
+                  || Storages.isExistentStorage("elements_audit/image/audit_atlas_0.png");
+        drawStatic();
+        if (!available) return;
+
+        // シナリオ切替キーはホストホットキー登録 (パネル focus 中でも効く)
+        for (var k = 0x30; k <= 0x36; k++) ElementsDialog.registerHotKey(k, 0, true);
+        ElementsDialog.registerHotKey(0x43, 0, true);   // C
+        ElementsDialog.registerHotKey(0x5A, 0, true);   // Z
+        ElementsDialog.registerHotKey(0x58, 0, true);   // X
+        ElementsDialog.registerHotKey(0xBB, 0, true);   // +;
+        ElementsDialog.registerHotKey(0xBD, 0, true);   // -
+        ElementsDialog.registerHotKey(0x4F, 0, true);   // O (シナリオ 3/5 の開閉)
+
+        // -auditshot=<dir>: 各シナリオの区間末で実画面を PNG 保存する
+        // (描画経路を触ったときの目視確認用)。
+        var sd = System.getArgument("-auditshot");
+        if (sd !== void && sd != "" && sd != "no") {
+            shotDir = sd;
+            if (shotDir.substr(shotDir.length - 1) != "/") shotDir += "/";
+        }
+        autoMode = (System.getArgument("-audittest") !== void);
+        if (autoMode) {
+            // シナリオ 2 は行数を変えて 4 点取る (§2 は「行数に比例して伸びるか」
+            // が判定条件なので、1 点では before/after を比べられない)
+            // [scenario, rows, partialRedraw] — シナリオ 2 は行数 4 点 +
+            // 部分再描画 ON/OFF の A/B (ダーティ矩形が本当に小さいかの切り分け)
+            // [scenario, rows, partialRedraw, canvas レイアウトか]
+            // [scenario, rows, partialRedraw, canvas か, 倍率 index]
+            // 倍率 index: 0=1/2  1=2/3  2=1/1  3=3/2 (setZoomIndex 参照)
+            // シナリオ 1 は倍率 1/1 と 1/2 の 2 本 — 倍率 != 1 が §1 の条件
+            autoList = [[1, 8, 1, 1, 2], [1, 8, 1, 1, 0],
+                        [2, 8, 1, 1, 2], [2, 16, 1, 1, 2],
+                        [2, 32, 1, 1, 2], [2, 64, 1, 1, 2],
+                        [2, 64, 0, 1, 2],              // 部分再描画 OFF (A/B)
+                        [2, 8, 1, 0, 2], [2, 64, 1, 0, 2],   // vtile 版 (A/B)
+                        [3, 8, 1, 1, 2], [4, 8, 1, 1, 2],
+                        [5, 8, 1, 1, 2, 0], [5, 8, 1, 1, 2, 1],
+                        [6, 8, 1, 1, 2],
+                        [6, 8, 1, 1, 2, 1]];   // 画面 JSON でリピート指定
+            autoIdx = 0; autoT0 = 0; autoOpened = false;
+            dm("@audit auto start (" + autoList.count + " steps, "
+               + AUTO_MS + "ms each)");
+            listRows = autoList[0][1];
+            applyPartial(autoList[0][2]);
+            listUseCanvas = (autoList[0][3] != 0);
+            setZoomIndex(autoList[0][4]);
+            // 6 番目の要素はシナリオごとに意味が違う
+            //   シナリオ 6 … 画面 JSON 側でリピートを指定するか
+            //   シナリオ 5 … 押しっぱなしの小ケース (0/1)
+            gridScreenRepeat = (autoList[0][0] == 6 && autoList[0].count > 5
+                                && autoList[0][5] != 0);
+            holdCase = (autoList[0][0] == 5 && autoList[0].count > 5)
+                       ? autoList[0][5] : 0;
+        }
+
+        switchScenario(autoMode ? autoList[0][0] : 1);
+        setInfo(autoMode
+            ? "自動巡回 (-audittest): 結果は @audit 行でログに出ます"
+            : "1-6: シナリオ  0: 全消去  C: リセット  Z/X: 倍率  +/-: 行数  O: 開閉");
+    }
+
+    function onExit()
+    {
+        if (!available) return;
+        closeAll();
+        for (var k = 0x30; k <= 0x36; k++) ElementsDialog.unregisterHotKey(k, 0);
+        ElementsDialog.unregisterHotKey(0x43, 0);
+        ElementsDialog.unregisterHotKey(0x5A, 0);
+        ElementsDialog.unregisterHotKey(0x58, 0);
+        ElementsDialog.unregisterHotKey(0xBB, 0);
+        ElementsDialog.unregisterHotKey(0xBD, 0);
+        ElementsDialog.unregisterHotKey(0x4F, 0);
+        if (zoomNum != 1 || zoomDen != 1) window.setZoom(1, 1);
+    }
+
+    function onAuditAction(tag, id, payload) { }   // 精査用: 操作には反応しない
+
+    // シナリオ 1 (cursor-warp) は実マウスが動いていると測定にならない:
+    // key でフォーカスを動かした直後に実マウスの移動が来るとナビ種別が mouse へ
+    // 倒れ、warp の条件 (直近のナビ入力がキー/パッド) から外れて warp 自体が
+    // 発火しなくなる。
+    //
+    // ⚠ このカウンタは弱い指標でしかない。パネルが出ている間はオーバーレイが
+    // マウス移動を消費するので、ここまで届かない (0 のままでも実マウスは動いて
+    // いることがある)。**確実な判定は -navlog の "warp guard: MISMATCH"**:
+    // warp の往復は本来 d=0,0 で一致するので、MISMATCH が出ていたらその回は
+    // 実マウスが動いている。
+    function onMouseMove(x, y, shift) { mouseMoves++; }
+
+    // ------------------------------------------------------------------
+    //  シナリオ管理
+    // ------------------------------------------------------------------
+
+    function closeAll()
+    {
+        if (mainDlg !== void)  { mainDlg.close();  mainDlg = void; }
+        if (subDlg !== void)   { subDlg.close();   subDlg = void; }
+    }
+
+    function switchScenario(n)
+    {
+        closeAll();
+        scenario = n;
+        retryWait = 0;
+        resetCounters();
+        if (!applyScenario()) {
+            // DrawDevice 未登録等で失敗したら少し待ってリトライ (demolib の定石)
+            closeAll();
+            retryWait = 20;
+        }
+        drawStatic();
+    }
+
+    function applyScenario()
+    {
+        switch (scenario) {
+        case 0: return true;
+        case 1: return makeGrid("warp", true);           // cursor_warp 有効
+        case 2: return makeListPanel();
+        case 3: return makeAtlasPanel();
+        case 4: return makeMetricsPanel();
+        case 5: return makeGrid("base", false);          // O で上に重ねる
+        case 6: return makeGrid("repeat", false);
+        }
+        return true;
+    }
+
+    function resetCounters()
+    {
+        lastFocus = ""; prevFocus = "";
+        lastFocusTick = 0; prevFocusTick = 0;
+        oscCount = 0; moveCount = 0;
+        bgMoveCount = 0; lastBgFocus = "";
+        restoredAt = 0; movesAfterRestore = 0;
+        intervalSum = 0; intervalNum = 0; firstInterval = 0; intervalMin = 0;
+        updateSpikeMax = 0.0;
+        rasterCount = 0; partialCount = 0; rasterUsPerRaster = 0.0;
+        frameSnap = void; frameSpikeUs = 0.0; spikeFrom = 0;
+        metricsSeq = 0;
+        listTickAt = 0; listTickSeq = 0;
+        keyInjectAt = 0; keyInjectCount = 0;
+        mouseMoves = 0;
+        padHeld = false; padDone = false;
+        atlasPhase = 0; atlasBytesOpen = 0; atlasBytesClosed = 0;
+        atlasBytesTrimmed = 0; atlasFreed = 0;
+        statSnap = void; statTick = 0;
+        if (available) ElementsDialog.renderStatsReset();
+    }
+
+    // ------------------------------------------------------------------
+    //  パネル構築
+    // ------------------------------------------------------------------
+
+    // 4x4 のボタングリッド。各ボタンは focus したとき "focusid" へ自分の id を書く
+    // (= ホストからフォーカス移動を観測できる)。
+    function makeGrid(tag, warp)
+    {
+        var rows = [];
+        for (var r = 0; r < GRID_ROWS; r++) {
+            var cols = [];
+            for (var c = 0; c < GRID_COLS; c++) {
+                var id = "g" + r + "_" + c;
+                var btn = %[ type: "button", id: id, text: id,
+                             vars_on_focus: %[ focusid: id ] ];
+                if (r == 0 && c == 0) btn.initial_focus = 1;
+                cols.add(btn);
+                if (c < GRID_COLS - 1) cols.add(%[ type: "hspacer", width: 10 ]);
+            }
+            rows.add(%[ type: "htile", children: cols ]);
+            if (r < GRID_ROWS - 1) rows.add(%[ type: "vspacer", height: 10 ]);
+        }
+        var d = new AuditDialog(this, tag);
+        var ok = d.showDict(%[
+            size: [520, 360], background: [24, 30, 46, 242],
+            align: "right", margin: 40,
+            vars: %[ focusid: "g0_0" ],
+            // focus_wrap は必須: 端で clamp するとフォーカスが右端で止まり、
+            // 「押しっぱなしでフォーカスが回り続ける」暴走が起きても
+            // 画面上の変化として現れず、検出できない (実際にこれで陽性対照が
+            // 空振りした)。ラップさせて «回り続ける» を観測可能にする。
+            input: gridScreenRepeat
+                   ? %[ arrow_focus_nav: true, focus_wrap: true,
+                        cursor_warp: warp ? 1 : 0,
+                        repeat_delay_ms: 300, repeat_rate_ms: 120 ]
+                   : %[ arrow_focus_nav: true, focus_wrap: true,
+                        cursor_warp: warp ? 1 : 0 ],
+            content: %[ type: "margin", padding: 20, child: %[
+                type: "vtile", children: rows ] ]
+        ]);
+        if (!ok) return false;
+        mainDlg = d;
+        return true;
+    }
+
+    // シナリオ 5: 上に重ねるパネル (背面が動き続けないかを見る)
+    function openSub()
+    {
+        if (subDlg !== void) { subDlg.close(); subDlg = void; return true; }
+        var d = new AuditDialog(this, "sub");
+        var ok = d.showDict(%[
+            size: [360, 200], background: [50, 24, 32, 248],
+            align: "left", margin: 40,
+            vars: %[ subfocus: "s0" ],
+            input: %[ arrow_focus_nav: true ],
+            content: %[ type: "margin", padding: 20, child: %[
+                type: "vtile", gap: 10, children: [
+                    %[ type: "label", text: "前面パネル (O で開閉)", size_scale: 1.2 ],
+                    %[ type: "button", id: "s0", text: "s0",
+                       initial_focus: 1, vars_on_focus: %[ subfocus: "s0" ] ],
+                    %[ type: "button", id: "s1", text: "s1",
+                       vars_on_focus: %[ subfocus: "s1" ] ]
+                ] ] ]
+        ]);
+        if (!ok) return false;
+        subDlg = d;
+        return true;
+    }
+
+    // シナリオ 2: 多行 list + 「同じパネル内の小さく変化するラベル」。
+    // 部分再描画はセッション (パネル) 単位なので、ダーティ矩形を小さくするには
+    // list と同じパネルの中で変化させる必要がある。ここで raster 時間が行数に
+    // 比例して伸びるなら、list が draw_bounds を無視して全行描いている (§2)。
+    function makeListPanel()
+    {
+        var rowH = 34;
+        var listH = rowH * listRows;
+        if (!listUseCanvas) return makeListPanelTile(rowH, listH);
+        var d = new AuditDialog(this, "list");
+        var vars = %[];
+        for (var i = 0; i < listRows; i++) vars["name" + i] = "行 " + i + " のテキスト";
+        vars["n"] = "" + listRows;
+        vars["top"] = "0";
+        vars["tick"] = "tick 0";
+        var ok = d.showDict(%[
+            size: [560, listH + 80], background: [24, 30, 46, 242],
+            align: "right", margin: 40,
+            vars: vars,
+            content: %[ type: "margin", padding: 16, child: %[
+                type: "canvas", children: [
+                    // 小さく変化する部分 (ダーティ矩形はここだけのはず)
+                    %[ at: [0, 0, 240, 28],
+                       type: "label", text_var: "tick" ],
+                    %[ at: [0, 40, 520, listH],
+                       type: "list", id: "lst",
+                       rows: listRows, pitch: [0, rowH], row_size: [520, rowH - 4],
+                       count_var: "n", index_offset_var: "top",
+                       row: %[ type: "label", text_var: "name#index" ] ]
+                ] ] ]
+        ]);
+        if (!ok) return false;
+        mainDlg = d;
+        return true;
+    }
+
+    // 同じ中身を vtile (相対配置) で組んだ版。canvas (絶対配置) との A/B で、
+    // ダーティ矩形の全面昇格が canvas 固有かどうかを切り分ける。
+    function makeListPanelTile(rowH, listH)
+    {
+        var d = new AuditDialog(this, "list");
+        var vars = %[];
+        for (var i = 0; i < listRows; i++) vars["name" + i] = "行 " + i + " のテキスト";
+        vars["n"] = "" + listRows;
+        vars["top"] = "0";
+        vars["tick"] = "tick 0";
+        var ok = d.showDict(%[
+            size: [560, listH + 80], background: [24, 30, 46, 242],
+            align: "right", margin: 40,
+            vars: vars,
+            content: %[ type: "margin", padding: 16, child: %[
+                type: "vtile", gap: 12, children: [
+                    %[ type: "label", text_var: "tick" ],
+                    %[ type: "vsize", height: listH, child: %[
+                        type: "list", id: "lst",
+                        rows: listRows, pitch: [0, rowH], row_size: [520, rowH - 4],
+                        count_var: "n", index_offset_var: "top",
+                        row: %[ type: "label", text_var: "name#index" ] ] ]
+                ] ] ]
+        ]);
+        if (!ok) return false;
+        mainDlg = d;
+        return true;
+    }
+
+    // シナリオ 2: 同一パネル内の小さな変化を 500ms ごとに起こす
+    function feedTick(tick)
+    {
+        // 100ms ごと: 1 区間 (AUTO_MS) で 10 回以上ラスタさせて標本数を稼ぐ。
+        // 500ms 間隔だと 2 サンプルしか取れず、実行ごとのブレで A/B が判定できない。
+        if (tick - listTickAt < 100) return;
+        listTickAt = tick;
+        listTickSeq++;
+        mainDlg.setVar("tick", "tick " + listTickSeq);
+    }
+
+    // シナリオ 3: アトラスを持つ画面 (開閉で常駐量の推移を見る)
+    function makeAtlasPanel()
+    {
+        if (!atlasReady) return true;   // 資材なし: 画面上に案内だけ出す
+        var atlases = %[];
+        var imgs = [];
+        for (var i = 0; i < 8; i++) {
+            atlases["a" + i] = "image/audit_atlas_" + i + ".png";
+            imgs.add(%[ type: "atlas_image", atlas: "a" + i,
+                        rect: [0, 0, 240, 72] ]);
+            if (i < 7) imgs.add(%[ type: "vspacer", height: 4 ]);
+        }
+        var d = new AuditDialog(this, "atlas");
+        var ok = d.showDict(%[
+            size: [320, 680], background: [24, 30, 46, 242],
+            align: "right", margin: 40,
+            atlases: atlases,
+            content: %[ type: "margin", padding: 12, child: %[
+                type: "vtile", children: imgs ] ]
+        ]);
+        if (!ok) return false;
+        mainDlg = d;
+        atlasOpens++;
+        return true;
+    }
+
+    // シナリオ 4: text_metrics キャッシュの上限 (4096 件) を跨いだときの
+    // «全 clear» の影響を見る。
+    //
+    //   安定ラベル (METRICS_STATIC 個) … 毎フレーム同じ文字列。キャッシュが
+    //       効くので通常フレームでは計測し直さない
+    //   変動ラベル (METRICS_CHURN 個)  … 毎フレーム新しい文字列。キャッシュを
+    //       埋め続け、上限を跨がせる役
+    //
+    // 全 clear だと、跨いだ次のフレームで **安定ラベルまで全部測り直し**に
+    // なるので 1 フレームだけ跳ねる。LRU で古いぶんだけ捨てるなら跳ねない。
+    // measure_text は limits() から呼ばれ、limits は view::draw が毎フレーム
+    // 木全体に走らせるので、(安定 + 変動) x fps のペースで呼ばれる。
+    // ⚠ measure_text が呼ばれるのは «ラスタしたフレーム» だけ。この画面は
+    //   毎フレーム全面ラスタになるが実測で約 20 ラスタ/秒なので、新規キーは
+    //   変動ラベル数 x 20/秒 のペースでしか増えない。
+    //   このラベル数だと実測で 9 ラスタ/秒ほどなので、変動 40 で約 360 件/秒。
+    //   4096 件に届くまで約 11 秒かかるため、この区間だけ長め (AUTO_MS x 8) に
+    //   回す。到達したかどうかは rasters x METRICS_CHURN が 4096 を超えたかで判る。
+    function makeMetricsPanel()
+    {
+        var d = new AuditDialog(this, "metrics");
+        var vars = %[];
+        var children = [%[ type: "label",
+                           text: "text_metrics キャッシュの上限跨ぎ",
+                           size_scale: 1.15 ]];
+        // 安定ラベル: 内容は固定 (キャッシュヒットする側)
+        for (var i = 0; i < METRICS_STATIC; i++) {
+            children.add(%[ type: "label",
+                            text: "安定した行 " + i + " / 固定テキスト" ]);
+        }
+        // 変動ラベル: 毎フレーム新しい文字列 (キャッシュを埋める側)
+        for (var j = 0; j < METRICS_CHURN; j++) {
+            vars["t" + j] = "-";
+            children.add(%[ type: "label", text_var: "t" + j ]);
+        }
+        var ok = d.showDict(%[
+            size: [560, 700], background: [24, 30, 46, 242],
+            align: "right", margin: 20,
+            vars: vars,
+            content: %[ type: "margin", padding: 12, child: %[
+                type: "vtile", children: children ] ]
+        ]);
+        if (!ok) return false;
+        mainDlg = d;
+        return true;
+    }
+
+    // ------------------------------------------------------------------
+    //  毎フレーム処理
+    // ------------------------------------------------------------------
+
+    function onDemoFrame(tick)
+    {
+        if (!available) return;
+        if (retryWait > 0) {
+            if (--retryWait == 0) { applyScenario(); drawStatic(); }
+            return;
+        }
+
+        if (scenario == 2 && mainDlg !== void) feedTick(tick);
+        if (scenario == 4 && mainDlg !== void) { feedMetrics(tick); pollFrameSpike(tick); }
+        pollFocus(tick);
+        pollStats(tick);
+        if (autoMode) stepAuto(tick);
+    }
+
+    // -audittest: 各シナリオを AUTO_MS だけ立てて結果行を出し、次へ進む
+    function stepAuto(tick)
+    {
+        if (autoT0 == 0) { autoT0 = tick; return; }
+        // シナリオ 3: アトラスの常駐量の推移を測る。
+        //   0%   画面を開く (applyScenario 済み)
+        //   40%  画面を閉じる      -> 閉じただけでは減らない (= 従来の問題)
+        //   70%  trimAtlasCache(0) -> 使われていないぶんが解放される
+        // 各段で ElementsDialog.atlasCacheStats を控える。
+        if (scenario == 3 && atlasReady
+            && typeof global.ElementsDialog.atlasCacheStats != "undefined") {
+            var t3 = tick - autoT0;
+            if (atlasPhase == 0) {
+                atlasBytesOpen = ElementsDialog.atlasCacheStats.bytes;
+                atlasPhase = 1;
+            } else if (atlasPhase == 1 && t3 > (AUTO_MS * 4 \ 10)) {
+                if (mainDlg !== void) { mainDlg.close(); mainDlg = void; }
+                atlasPhase = 2;
+            } else if (atlasPhase == 2 && t3 > (AUTO_MS * 6 \ 10)) {
+                atlasBytesClosed = ElementsDialog.atlasCacheStats.bytes;
+                atlasPhase = 3;
+            } else if (atlasPhase == 3 && t3 > (AUTO_MS * 7 \ 10)) {
+                atlasFreed = ElementsDialog.trimAtlasCache(0);
+                atlasBytesTrimmed = ElementsDialog.atlasCacheStats.bytes;
+                atlasPhase = 4;
+            }
+        }
+
+        // シナリオ 1: 矢印キーを注入してフォーカスを動かし、cursor-warp 経路を
+        // 実際に通す。warp が効いていればフォーカスは注入のたびに 1 つ進み、
+        // nav 種別が mouse へ倒れてしまうと途中で止まる/振動する。
+        // ※ warp は実マウスカーソルを動かすので、実行中はポインタがウィンドウ内を飛ぶ。
+        if (scenario == 1 && (tick - keyInjectAt) >= 150) {
+            keyInjectAt = tick;
+            if (typeof global.Agent != "undefined") {
+                // 右だけだと 4 列目で止まってしまう (arrow_focus_nav は端で
+                // clamp)。右→右→右→下 を繰り返してグリッドを回し続ける。
+                var vk = ((keyInjectCount % 4) == 3) ? VK_DOWN : VK_RIGHT;
+                Agent.keyDown(vk, 0);
+                Agent.keyUp(vk, 0);
+                keyInjectCount++;
+            }
+        }
+
+        // シナリオ 6: 十字右を **押しっぱなし** にして、フォーカスの送り間隔を
+        // 実測する。dpad は on_pad_button で «軸値» になり、その後の送りは
+        // elements 側のタイマ (view::process_pad_axes) が作るので、押し続けて
+        // いれば追加のキー入力なしで送られ続ける。
+        // -paddelay / -padinterval を指定した回はその値に追従するのが正。
+        if (scenario == 6 && !padDone && typeof global.Agent != "undefined") {
+            if (!padHeld) { padHeld = true; Agent.keyDown(VK_PADRIGHT, 0); }
+            else if ((tick - autoT0) > (AUTO_MS - 200)) {
+                padHeld = false; padDone = true; Agent.keyUp(VK_PADRIGHT, 0);
+            }
+        }
+
+        // シナリオ 5: 十字を押しっぱなしにしたまま前面パネルを開閉し、
+        // 背面のフォーカスが動き続けないかを見る。2 つの小ケースを分けて測る:
+        //
+        //   holdCase 0 … 覆われている **間に離す**
+        //       前面にしか «離し» が届かないと、戻った瞬間から押しっぱなし扱いで
+        //       背面のフォーカスが回り続ける。engine の「離しの全インスタンス
+        //       配送」が効いていれば戻っても動かない。
+        //   holdCase 1 … 覆われている間ずっと **押したまま**
+        //       戻った瞬間に背面が勝手に送り始めないか。elements の
+        //       「suspend 中は軸の押下値も消す」が効いていれば動かない。
+        //
+        // 時間割 (AUTO_MS を 10 とした比): 0 押す / 3 前面を開く /
+        //   holdCase 0 は 5 で離す / 7 前面を閉じる / 9 で (まだなら) 離す
+        if (scenario == 5 && typeof global.Agent != "undefined") {
+            var t = tick - autoT0;
+            if (!padHeld && !padDone && t < (AUTO_MS \ 10)) {
+                padHeld = true; Agent.keyDown(VK_PADRIGHT, 0);
+            }
+            if (!autoOpened && t > (AUTO_MS * 3 \ 10)) {
+                openSub(); autoOpened = true;
+            }
+            if (holdCase == 0 && padHeld && t > (AUTO_MS * 5 \ 10)) {
+                padHeld = false; padDone = true; Agent.keyUp(VK_PADRIGHT, 0);
+            }
+            if (autoOpened && subDlg !== void && t > (AUTO_MS * 7 \ 10)) {
+                subDlg.close(); subDlg = void;
+                restoredAt = tick;      // ここから «戻った後» の移動を数える
+            }
+            if (padHeld && t > (AUTO_MS * 9 \ 10)) {
+                padHeld = false; padDone = true; Agent.keyUp(VK_PADRIGHT, 0);
+            }
+        }
+        // 実画面の保存は区間末の手前で投げる。 captureScreen は «次フレームの
+        // present 込み» で効くので、 区間の最後に投げると次シナリオへ切り替えた
+        // 後の画面が撮れてしまう。
+        if (shotDir !== void && !shotDone
+            && (tick - autoT0) > (((scenario == 4) ? (AUTO_MS * 8) : AUTO_MS) - 500)
+            && typeof global.Agent != "undefined") {
+            shotDone = true;
+            var p = shotDir + "audit_s" + scenario + "_r" + listRows
+                  + "_" + (listUseCanvas ? "canvas" : "vtile") + ".png";
+            Agent.captureScreen(p);
+            dm("@audit shot " + p);
+        }
+        // シナリオ 4 は text_metrics の上限 (4096 件) を跨ぐまで時間が要る
+        var step_ms = (scenario == 4) ? (AUTO_MS * 8) : AUTO_MS;
+        if (tick - autoT0 < step_ms) return;
+
+        dm("@audit scen=" + scenario
+           + " name=" + scenarioSlug(scenario)
+           + " panel=" + ((mainDlg !== void) ? 1 : 0)
+           + " zoom=" + zoomNum + "/" + zoomDen
+           + " rows=" + listRows
+           + " layout=" + (listUseCanvas ? "canvas" : "vtile")
+           + " keys=" + keyInjectCount + " mousemoves=" + mouseMoves
+           + " moves=" + moveCount + " osc=" + oscCount
+           + " bgmoves=" + bgMoveCount
+           + " atlas_open=" + atlasBytesOpen
+           + " atlas_closed=" + atlasBytesClosed
+           + " atlas_trimmed=" + atlasBytesTrimmed
+           + " atlas_freed=" + atlasFreed
+           + " holdcase=" + holdCase
+           + " after_restore=" + movesAfterRestore
+           + " first_ms=" + firstInterval
+           + " avg_ms=" + ((intervalNum > 1)
+                           ? ("%.0f".sprintf(intervalSum / (intervalNum - 1))) : 0)
+           + " min_ms=" + intervalMin
+           + " screenrep=" + (gridScreenRepeat ? 1 : 0)
+           + " partial=" + ((typeof global.ElementsDialog.partialRedraw != "undefined")
+                             ? (ElementsDialog.partialRedraw ? 1 : 0) : -1)
+           + " rasters=" + rasterCount + " partials=" + partialCount
+           + " raster_us_f=" + "%.0f".sprintf(rasterUsPerFrame)
+           + " raster_us_r=" + "%.0f".sprintf(rasterUsPerRaster)
+           + " update_us_f=" + "%.0f".sprintf(updateUsPerFrame)
+           + " update_spike_us=" + "%.0f".sprintf(updateSpikeMax)
+           + " frame_spike_us=" + "%.0f".sprintf(frameSpikeUs));
+
+        autoIdx++;
+        autoT0 = 0;
+        autoOpened = false;
+        shotDone = false;
+        if (padHeld && typeof global.Agent != "undefined") {
+            padHeld = false; Agent.keyUp(VK_PADRIGHT, 0);   // 取りこぼし防止
+        }
+        if (autoIdx >= autoList.count) {
+            dm("@audit auto done");
+            System.exit(0);
+            return;
+        }
+        listRows = autoList[autoIdx][1];
+        applyPartial(autoList[autoIdx][2]);
+        listUseCanvas = (autoList[autoIdx][3] != 0);
+        setZoomIndex(autoList[autoIdx][4]);
+        gridScreenRepeat = (autoList[autoIdx][0] == 6 && autoList[autoIdx].count > 5
+                            && autoList[autoIdx][5] != 0);
+        holdCase = (autoList[autoIdx][0] == 5 && autoList[autoIdx].count > 5)
+                   ? autoList[autoIdx][5] : 0;
+        switchScenario(autoList[autoIdx][0]);
+    }
+
+    function applyPartial(on)
+    {
+        if (typeof global.ElementsDialog.partialRedraw != "undefined")
+            ElementsDialog.partialRedraw = (on != 0);
+    }
+
+    // @audit ログ用 ASCII スラッグ (ログ収集経路が日本語で化けることがあるため)
+    function scenarioSlug(n)
+    {
+        switch (n) {
+        case 0: return "none";
+        case 1: return "warp";
+        case 2: return "list";
+        case 3: return "atlas";
+        case 4: return "metrics";
+        case 5: return "hold";
+        case 6: return "repeat";
+        }
+        return "?";
+    }
+
+    // フォーカス移動の観測 (振動 / 送り間隔 / 背面移動)
+    function pollFocus(tick)
+    {
+        if (mainDlg === void) return;
+        var f;
+        try { f = mainDlg.getVar("focusid"); } catch (e) { return; }
+        if (f === void || f == "") return;
+
+        // 背面 (シナリオ 5 で上に subDlg がいる間) の移動はそれとして数える
+        if (scenario == 5 && subDlg !== void) {
+            if (lastBgFocus != "" && f != lastBgFocus) bgMoveCount++;
+            lastBgFocus = f;
+            return;
+        }
+        lastBgFocus = f;
+
+        if (f == lastFocus) return;
+
+        // 前面パネルを閉じて «戻った後» に背面が動いたか (シナリオ 5 の本命)
+        if (scenario == 5 && restoredAt != 0) movesAfterRestore++;
+
+        moveCount++;
+        // 送り間隔 (長押し中のリピート周期の実測)
+        if (lastFocusTick != 0) {
+            var d = tick - lastFocusTick;
+            // 2 秒以上空いたら「長押しの連続」ではないので数えない
+            if (d > 0 && d < 2000) {
+                if (intervalNum == 0) { firstInterval = d; intervalNum = 1; }
+                else { intervalSum += d; intervalNum++; }
+                if (intervalMin == 0 || d < intervalMin) intervalMin = d;
+            }
+        }
+        // A -> B -> A の往復 = 振動
+        if (f == prevFocus && (tick - prevFocusTick) < 400) {
+            oscCount++;
+            dm("@audit osc scen=" + scenario + " id=" + f
+               + " dt=" + (tick - prevFocusTick) + "ms zoom="
+               + zoomNum + "/" + zoomDen);
+        }
+        prevFocus = lastFocus; prevFocusTick = lastFocusTick;
+        lastFocus = f;         lastFocusTick = tick;
+    }
+
+    // 1 フレーム単位のラスタ時間を見てスパイクの最大値を控える。
+    // パネル生成直後は初回レイアウトで当然重いので、最初の 1 秒は数えない
+    // (計測したいのは «定常状態で突然跳ねる» フレーム)。
+    function pollFrameSpike(tick)
+    {
+        if (spikeFrom == 0) { spikeFrom = tick; return; }
+        if (tick - spikeFrom < 1000) { frameSnap = void; return; }
+        var s = ElementsDialog.renderStats;
+        if (frameSnap !== void) {
+            var dR = s.rasters - frameSnap.rasters;
+            if (dR > 0) {
+                var us = (s.rasterUs - frameSnap.rasterUs) / dR;
+                if (us > frameSpikeUs) frameSpikeUs = us;
+            }
+        }
+        frameSnap = s;
+    }
+
+    // renderStats の 500ms 平均
+    function pollStats(tick)
+    {
+        if (statTick == 0) { statTick = tick; statSnap = ElementsDialog.renderStats; return; }
+        if (tick - statTick < 500) return;
+        var s = ElementsDialog.renderStats;
+        var ms = tick - statTick;
+        var dF = s.frames - statSnap.frames;
+        var dR = s.rasters - statSnap.rasters;
+        rasterCount += dR;
+        partialCount += (s.partials - statSnap.partials);
+        if (dR > 0) rasterUsPerRaster = (s.rasterUs - statSnap.rasterUs) / dR;
+        if (dF > 0) {
+            rasterUsPerFrame = (s.rasterUs - statSnap.rasterUs) / dF;
+            updateUsPerFrame = (s.updateUs - statSnap.updateUs) / dF;
+            if (updateUsPerFrame > updateSpikeMax) updateSpikeMax = updateUsPerFrame;
+            fps = dF * 1000.0 / ms;
+        }
+        statTick = tick; statSnap = s;
+        drawStats();
+    }
+
+    // シナリオ 4: 毎フレーム 4 本の新しい文字列を流し込む
+    function feedMetrics(tick)
+    {
+        for (var i = 0; i < METRICS_CHURN; i++) {
+            mainDlg.setVar("t" + i, "metrics " + metricsSeq + "-" + i
+                           + " / " + tick + " / 異なる文字列 " + (metricsSeq * 4 + i));
+        }
+        metricsSeq++;
+    }
+
+    // ------------------------------------------------------------------
+    //  入力
+    // ------------------------------------------------------------------
+
+    function onKeyDown(key, shift)
+    {
+        if (!available || autoMode) return;
+        switch (key) {
+        case 0x30: switchScenario(0); break;
+        case 0x31: switchScenario(1); break;
+        case 0x32: switchScenario(2); break;
+        case 0x33: switchScenario(3); break;
+        case 0x34: switchScenario(4); break;
+        case 0x35: switchScenario(5); break;
+        case 0x36: switchScenario(6); break;
+        case 0x43:                     // C: 計測リセット
+            resetCounters(); drawStatic(); break;
+        case 0x5A:                     // Z: 縮小 (present_scale != 1 を作る)
+            setZoomStep(-1); break;
+        case 0x58:                     // X: 拡大
+            setZoomStep(+1); break;
+        case 0xBB:                     // + : 行数を増やす (シナリオ 2)
+            if (scenario == 2) { listRows = listRows * 2; if (listRows > 64) listRows = 64;
+                                 switchScenario(2); }
+            break;
+        case 0xBD:                     // - : 行数を減らす
+            if (scenario == 2) { listRows = listRows \ 2; if (listRows < 4) listRows = 4;
+                                 switchScenario(2); }
+            break;
+        case 0x4F:                     // O: 重ねパネル / アトラス画面の開閉
+            if (scenario == 5) openSub();
+            else if (scenario == 3) {
+                if (mainDlg !== void) { mainDlg.close(); mainDlg = void; }
+                else makeAtlasPanel();
+                drawStatic();
+            }
+            break;
+        }
+    }
+
+    // 倍率の 4 段 (present_scale を 1 以外にするのが目的)
+    function zoomSteps() { return [[1,2],[2,3],[1,1],[3,2]]; }
+
+    function setZoomStep(d)
+    {
+        var steps = zoomSteps();
+        var cur = 2;
+        for (var i = 0; i < steps.count; i++)
+            if (steps[i][0] == zoomNum && steps[i][1] == zoomDen) cur = i;
+        cur += d;
+        if (cur < 0) cur = 0;
+        if (cur >= steps.count) cur = steps.count - 1;
+        setZoomIndex(cur);
+        drawStatic();
+    }
+
+    function setZoomIndex(i)
+    {
+        var steps = zoomSteps();
+        if (i < 0) i = 0;
+        if (i >= steps.count) i = steps.count - 1;
+        if (zoomNum == steps[i][0] && zoomDen == steps[i][1]) return;
+        zoomNum = steps[i][0]; zoomDen = steps[i][1];
+        window.setZoom(zoomNum, zoomDen);
+    }
+
+    // ------------------------------------------------------------------
+    //  画面表示
+    // ------------------------------------------------------------------
+
+    function head(x, y, text)
+    {
+        var f = stage.font;
+        f.face = ""; f.bold = false; f.underline = false; f.emojiMode = 0;
+        f.height = 18;
+        stage.drawText(x, y, "■ " + text, 0x8fb8e8, 255);
+    }
+
+    function scenarioName(n)
+    {
+        switch (n) {
+        case 0: return "なし";
+        case 1: return "warp echo (§1)";
+        case 2: return "list 描画 (§2)";
+        case 3: return "atlas 常駐 (§3)";
+        case 4: return "metrics スパイク (§4)";
+        case 5: return "押しっぱなしガード (§5)";
+        case 6: return "リピート周期 (§6)";
+        }
+        return "?";
+    }
+
+    function scenarioHint(n)
+    {
+        switch (n) {
+        case 1: return "Z/X で倍率を変え、十字/矢印を長押し。振動が増えなければ OK";
+        case 2: return "+/- で行数を変え、ラスタ時間が横ばいなら OK";
+        case 3: return "O で開閉。閉じた後に常駐量が減れば OK";
+        case 4: return "update スパイクが出なければ OK";
+        case 5: return "十字を押したまま O で前面を開く。背面移動 0 なら OK";
+        case 6: return "-paddelay/-padinterval を変えて送り間隔が追従すれば OK";
+        }
+        return "";
+    }
+
+    function drawStatic()
+    {
+        var s = stage;
+        s.fillRect(0, 0, 1280, 720, 0xff181c24);
+        s.font.face = ""; s.font.height = 32;
+        s.drawText(40, 20, "Elements 仕様精査の確認 (doc/ElementsAudit.md)",
+                   0xffffff, 255, true);
+        if (!available) {
+            s.font.height = 24;
+            s.drawText(40, 88, "この環境では ElementsDialog が使えません (Elements 無効ビルド)",
+                       0xf0a0a0, 255);
+            s.update();
+            return;
+        }
+        s.font.height = 18;
+        var y = 72;
+        s.drawText(48, y,      "1: warp echo   2: list 描画   3: atlas 常駐   4: metrics   5: 押しっぱなし   6: リピート周期   0: 全消去",
+                   0xc4ccda, 255);
+        s.drawText(48, y + 26, "C: 計測リセット   Z/X: ウィンドウ倍率   +/-: 行数 (2)   O: 開閉 (3/5)",
+                   0xc4ccda, 255);
+
+        y = 140;
+        head(40, y, "現在: " + scenarioName(scenario));
+        s.font.face = ""; s.font.height = 16;
+        s.drawText(56, y + 26, scenarioHint(scenario), 0x9aa4b8, 255);
+        s.drawText(56, y + 48, "ウィンドウ倍率 " + zoomNum + "/" + zoomDen
+                   + "  (倍率 != 1/1 が §1 の再現条件)", 0x9aa4b8, 255);
+        if (scenario == 2)
+            s.drawText(56, y + 70, "行数 " + listRows, 0x9aa4b8, 255);
+        if (scenario == 3) {
+            if (!atlasReady) {
+                s.drawText(56, y + 70, "資材がありません: -genassets で生成してください",
+                           0x9aa4b8, 255);
+            } else {
+                s.drawText(56, y + 70, "開閉回数 " + atlasOpens
+                           + "   アトラス常駐 "
+                           + ((typeof global.ElementsDialog.atlasCacheStats != "undefined")
+                              ? ("%.1f".sprintf(ElementsDialog.atlasCacheStats.bytes / 1048576.0) + " MB")
+                              : "(API なし)"), 0x9aa4b8, 255);
+            }
+        }
+
+        head(40, 300, "計測 (500ms ごと更新)");
+        drawStats();
+    }
+
+    function drawStats()
+    {
+        var s = stage;
+        s.fillRect(40, 330, 700, 250, 0xff181c24);
+        s.font.face = ""; s.font.height = 18;
+        var y = 336;
+        s.drawText(56, y, "fps " + "%.1f".sprintf(fps), 0xd8dee8, 255); y += 26;
+        s.drawText(56, y, "ラスタ  " + "%.0f".sprintf(rasterUsPerFrame) + " us/frame  ("
+                   + "%.0f".sprintf(rasterUsPerRaster) + " us/raster)", 0xd8dee8, 255); y += 26;
+        s.drawText(56, y, "ラスタ回数 " + rasterCount + "  うち部分再描画 " + partialCount,
+                   0xd8dee8, 255); y += 26;
+        s.drawText(56, y, "update  " + "%.0f".sprintf(updateUsPerFrame)
+                   + " us/frame  (最大 " + "%.0f".sprintf(updateSpikeMax) + ")",
+                   0xd8dee8, 255); y += 32;
+
+        s.drawText(56, y, "フォーカス移動 " + moveCount
+                   + "   振動 (A->B->A) " + oscCount,
+                   oscCount > 0 ? 0xffa0a0 : 0xa0e0a0, 255); y += 26;
+        s.drawText(56, y, "背面フォーカス移動 " + bgMoveCount,
+                   bgMoveCount > 0 ? 0xffa0a0 : 0xa0e0a0, 255); y += 26;
+        var avg = (intervalNum > 1) ? (intervalSum / (intervalNum - 1)) : 0;
+        s.drawText(56, y, "送り間隔 平均 " + "%.0f".sprintf(avg)
+                   + " ms  (初回 " + firstInterval + " ms)", 0xd8dee8, 255); y += 26;
+        s.drawText(56, y, "現在のフォーカス " + lastFocus, 0x9aa4b8, 255); y += 26;
+        if (scenario == 1)
+            s.drawText(56, y, "実マウス移動 " + mouseMoves
+                       + (mouseMoves > 0 ? "  ← マウスに触れていると測定になりません"
+                                         : "  (この回の数値は有効)"),
+                       mouseMoves > 0 ? 0xffa0a0 : 0xa0e0a0, 255);
+        s.update();
+    }
+
+    // -demotest 用: 終了前に機械可読の要約を出す
+    function onDemoTest()
+    {
+        dm("@audit summary scen=" + scenario
+           + " zoom=" + zoomNum + "/" + zoomDen
+           + " rows=" + listRows
+           + " layout=" + (listUseCanvas ? "canvas" : "vtile")
+           + " moves=" + moveCount + " osc=" + oscCount
+           + " bgmoves=" + bgMoveCount
+           + " atlas_open=" + atlasBytesOpen
+           + " atlas_closed=" + atlasBytesClosed
+           + " atlas_trimmed=" + atlasBytesTrimmed
+           + " atlas_freed=" + atlasFreed
+           + " holdcase=" + holdCase
+           + " after_restore=" + movesAfterRestore
+           + " first_ms=" + firstInterval
+           + " avg_ms=" + ((intervalNum > 1) ? (intervalSum / (intervalNum - 1)) : 0)
+           + " raster_us_f=" + "%.0f".sprintf(rasterUsPerFrame)
+           + " update_us_f=" + "%.0f".sprintf(updateUsPerFrame)
+           + " update_spike_us=" + "%.0f".sprintf(updateSpikeMax)
+           + " frame_spike_us=" + "%.0f".sprintf(frameSpikeUs));
+    }
+}

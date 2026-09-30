@@ -80,6 +80,7 @@ typedef void (FP_CALL *Fn_dst_src_len)(tjs_uint32*, const tjs_uint32*, tjs_int);
 typedef void (FP_CALL *Fn_dst_src_len_opa)(tjs_uint32*, const tjs_uint32*, tjs_int, tjs_int);
 typedef void (FP_CALL *Fn_dst_len)(tjs_uint32*, tjs_int);
 typedef void (FP_CALL *Fn_dst_len_val)(tjs_uint32*, tjs_int, tjs_uint32);
+typedef void (FP_CALL *Fn_dst_len_w3)(tjs_uint32*, tjs_int, tjs_int, tjs_int, tjs_int);
 
 /* LinTrans (アフィン変換): src は 2D、(sx, sy) を起点に (stepx, stepy) ずつ
    サンプリング位置を進めて len pixel ぶん dst に書き込む。固定小数 16.16。 */
@@ -185,6 +186,9 @@ struct Snapshot {
 	/* (dest, len) */
 	Fn_dst_len DoGrayScale;
 
+	/* (dest, len, rw, gw, bw) */
+	Fn_dst_len_w3 DoGrayScaleWeight;
+
 	/* (dest, len, value) */
 	Fn_dst_len_val FillARGB;
 	Fn_dst_len_val FillColor;
@@ -284,6 +288,7 @@ static void snapshot(Snapshot& s) {
 	TAKE(ScreenBlend_HDA_o,      TVPScreenBlend_HDA_o);
 
 	TAKE(DoGrayScale,            TVPDoGrayScale);
+	TAKE(DoGrayScaleWeight,      TVPDoGrayScaleWeight);
 
 	TAKE(FillARGB,               TVPFillARGB);
 	TAKE(FillColor,              TVPFillColor);
@@ -735,6 +740,25 @@ struct Runner {
 		tally(name, compare(name));
 	}
 
+	/* (dest, len, rw, gw, bw) — 重み指定グレースケール。
+	   重みの合計は 256 (8bit 固定小数) でなければならない。 */
+	void test_dl_w3(const char* name, Fn_dst_len_w3 ref_fn, Fn_dst_len_w3 test_fn,
+	                tjs_int rw, tjs_int gw, tjs_int bw) {
+		if (!ref_fn || !test_fn) {
+			printf("  skip %-32s (null pointer)\n", name);
+			return;
+		}
+		if (ref_fn == test_fn) {
+			printf("  skip %-32s (same as C reference)\n", name);
+			return;
+		}
+		ref_buf = dst_init;
+		test_buf = dst_init;
+		ref_fn (ref_buf.data(),  TEST_LEN, rw, gw, bw);
+		test_fn(test_buf.data(), TEST_LEN, rw, gw, bw);
+		tally(name, compare(name));
+	}
+
 	/* ApplyColorMap: (dest, src[u8], len, color)
 	   use_65: true なら 0..64 範囲の src65 を使う。 */
 	void test_applycolormap(const char* name,
@@ -879,6 +903,10 @@ void run_suite(Runner& r, const Snapshot& ref, const Snapshot& t) {
 	}
 
 	r.test_dl("TVPDoGrayScale", ref.DoGrayScale, t.DoGrayScale);
+	/* BT.601 (76/149/29 = 254 なので G へ 2 足して 256 に揃えたもの) と
+	   既定の BT.709 相当 (54/183/19) の 2 通りで比較する。 */
+	r.test_dl_w3("TVPDoGrayScaleWeight(601)", ref.DoGrayScaleWeight, t.DoGrayScaleWeight, 76, 151, 29);
+	r.test_dl_w3("TVPDoGrayScaleWeight(709)", ref.DoGrayScaleWeight, t.DoGrayScaleWeight, 54, 183, 19);
 
 	r.test_dlv("TVPFillARGB",  ref.FillARGB,  t.FillARGB,  0x80112233u);
 	r.test_dlv("TVPFillColor", ref.FillColor, t.FillColor, 0x00445566u);

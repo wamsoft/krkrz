@@ -11,6 +11,8 @@
 #include "tjsCommHead.h"
 
 #include "ClipboardIntf.h"
+#include "LayerIntf.h"
+#include "MsgIntf.h"
 
 
 //---------------------------------------------------------------------------
@@ -31,6 +33,23 @@ tTJSNI_BaseClipboard::Invalidate()
 
 
 //---------------------------------------------------------------------------
+//----------------------------------------------------------------------
+// 引数の Layer から native instance を取り出す
+//   もとは clipboardEx.dll (吉里吉里2 の標準プラグイン) が提供していた機能。
+//   使われていたのは画像の出し入れだけなので、本体の Clipboard クラスへ移した。
+//----------------------------------------------------------------------
+static tTJSNI_BaseLayer * TVPGetLayerFromVariant(tTJSVariant * param)
+{
+	tTJSVariantClosure clo = param->AsObjectClosureNoAddRef();
+	tTJSNI_BaseLayer * lay = NULL;
+	if(!clo.Object ||
+		TJS_FAILED(clo.Object->NativeInstanceSupport(TJS_NIS_GETINSTANCE,
+			tTJSNC_Layer::ClassID, (iTJSNativeInstance**)&lay)) || !lay)
+		TVPThrowExceptionMessage(TJS_W("Clipboard: Layer を渡してください"));
+	return lay;
+}
+//----------------------------------------------------------------------
+
 tjs_uint32 tTJSNC_Clipboard::ClassID = -1;
 //---------------------------------------------------------------------------
 tTJSNC_Clipboard::tTJSNC_Clipboard(): inherited(TJS_W("Clipboard"))
@@ -64,6 +83,60 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/hasFormat)
 	return TJS_S_OK;
 }
 TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/hasFormat)
+//----------------------------------------------------------------------
+
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/setAsBitmap)
+{
+	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
+
+	tTJSNI_BaseLayer * lay = TVPGetLayerFromVariant(param[0]);
+
+	const void * bits = lay->GetMainImagePixelBuffer();
+	tjs_int pitch = lay->GetMainImagePixelBufferPitch();
+	tjs_int w = (tjs_int)lay->GetImageWidth();
+	tjs_int h = (tjs_int)lay->GetImageHeight();
+
+	bool done = false;
+	if(bits && w > 0 && h > 0)
+		done = TVPClipboardSetBitmap(bits, w, h, pitch);
+
+	if(result) *result = done;
+
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/setAsBitmap)
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/getAsBitmap)
+{
+	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
+
+	tTJSNI_BaseLayer * lay = TVPGetLayerFromVariant(param[0]);
+
+	std::vector<tjs_uint32> src;
+	tjs_int w = 0, h = 0;
+	bool got = TVPClipboardGetBitmap(src, w, h);
+
+	if(got && w > 0 && h > 0)
+	{
+		lay->SetImageSize((tjs_uint)w, (tjs_uint)h);
+		tjs_uint8 * dest = (tjs_uint8*)lay->GetMainImagePixelBufferForWrite();
+		tjs_int pitch = lay->GetMainImagePixelBufferPitch();
+		if(dest)
+		{
+			for(tjs_int y = 0; y < h; y++)
+				memcpy(dest + (tjs_int64)pitch * y, &src[(size_t)w * y],
+					(size_t)w * sizeof(tjs_uint32));
+			lay->Update();
+		}
+		else got = false;
+	}
+	else got = false;
+
+	if(result) *result = got;
+
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/getAsBitmap)
 //----------------------------------------------------------------------
 
 //-- events

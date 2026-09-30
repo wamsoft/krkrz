@@ -26,6 +26,7 @@
 
 #include <map>
 #include <string>
+#include <vector>
 
 //! @brief モーダル実行結果。
 struct tTVPElementsModalResult
@@ -63,6 +64,13 @@ bool TVPInformElements(const ttstr& caption, const ttstr& text);
 //! @param yes  [out] はい = true / いいえ・Esc = false (戻り値 true のときのみ有効)
 //! @return true = 表示して閉じた / false = 起動失敗 (ネイティブへフォールバック)
 bool TVPConfirmElements(const ttstr& caption, const ttstr& text, bool& yes);
+
+//! @brief System.choice の overlay 実装 (SDL host)。 choices のボタンを横に並べる。
+//! @param def    既定の index (initial_focus を置く。 Esc / close でもこれを返す)
+//! @param index  [out] 選ばれた index (戻り値 true のときのみ有効)
+//! @return true = 表示して閉じた / false = 起動失敗 (ネイティブへフォールバック)
+bool TVPChoiceElements(const ttstr& caption, const ttstr& text,
+	const std::vector<ttstr>& choices, int def, int& index);
 
 //! @brief 独立ウィンドウを立ててモーダルダイアログを実行する。
 //!        ダイアログが閉じるまでブロックする。

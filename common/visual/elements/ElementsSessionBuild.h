@@ -73,6 +73,13 @@ struct SessionOptions
 
 	//! 表示言語 (画面 JSON の `"strings"` を引く言語)。 空なら JSON の既定。
 	std::string language;
+
+	//! 軸ナビ (パッド十字 / スティック) のリピート既定。 `-paddelay` /
+	//! `-padinterval` が**明示指定されたときだけ**入れる (既定は「指定なし」で
+	//! elements 側の既定 400ms / magnitude 連動のまま)。 画面 JSON の
+	//! `"input": { "repeat_delay_ms", "repeat_rate_ms" }` があればそちらが優先。
+	int padRepeatDelayMs = 0;    //!< <=0 で指定なし
+	int padRepeatRateMs  = -1;   //!< <0 で指定なし (0 は「magnitude 連動」の意味)
 };
 
 //! @brief 画面 JSON から session を作り、 通知を handler へ橋渡しする。

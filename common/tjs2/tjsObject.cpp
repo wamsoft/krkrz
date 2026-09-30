@@ -369,6 +369,14 @@ void TJSDoRehash() { TJSGlobalRebuildHashMagic ++; }
 // tTJSCustomObject
 //---------------------------------------------------------------------------
 tjs_int TJSObjectHashBitsLimit = 32;
+//---------------------------------------------------------------------------
+tTJSVariantString * TJSAllocMemberName(const tjs_char *name)
+{
+	ttstr shared = TJSMapGlobalStringMap(ttstr(name));
+	tTJSVariantString *vs = shared.AsVariantStringNoAddRef();
+	if(vs) vs->AddRef();
+	return vs;
+}
 static ttstr FinalizeName;
 static ttstr MissingName;
 //---------------------------------------------------------------------------

@@ -37,6 +37,7 @@ constexpr int kTaskBudgetPerDrain = 32;
 // request slot (worker → main)
 std::mutex g_req_mtx;
 ttstr g_req_script;
+TVPReplMainQueue::ExecMode g_req_mode = TVPReplMainQueue::ExecMode::Expression;
 bool g_req_pending = false;
 
 // response slot (main → worker)
@@ -58,7 +59,7 @@ void Reset()
 	g_terminating.store(false, std::memory_order_release);
 }
 
-bool Submit(const ttstr& script, tTJSVariant& out, ttstr& error)
+bool Submit(const ttstr& script, tTJSVariant& out, ttstr& error, ExecMode mode)
 {
 	// 同時提出を 1 件に制限 (console と file channel が競合しても安全)。
 	std::lock_guard<std::mutex> submit_lk(g_submit_mtx);
@@ -68,6 +69,7 @@ bool Submit(const ttstr& script, tTJSVariant& out, ttstr& error)
 	{
 		std::lock_guard<std::mutex> lk(g_req_mtx);
 		g_req_script = script;
+		g_req_mode = mode;
 		g_req_pending = true;
 	}
 
@@ -120,20 +122,46 @@ public:
 	void TJS_INTF_METHOD Destruct() override {}   // スタック上で使うため何もしない
 };
 
-// script が「式」としてパース可能かを、実行せずにコンパイルだけで判定する。
-bool ParsesAsExpression(const ttstr& script)
+// script がパース可能かを、実行せずにコンパイルだけで判定する。
+// isexpression=true なら «式» として、false なら «文» としての判定。
+//
+// 判定に失敗する方は「想定内の外れ」なので、 パーサが吐くエラー
+// (「文法エラーです」) をコンソールへ出さない。 TJS コンソールを一時的に
+// 外す手は TVPExecuteExpression と同じ (ScriptMgnIntf.cpp)。
+bool ParsesAs(const ttstr& script, bool isexpression)
 {
 	tTJS* engine = TVPGetScriptEngine();
-	if (!engine) return true;   // 判定不能なら従来どおり式として扱う
+	if (!engine) return false;   // 判定不能 (呼び出し側が既定へフォールバック)
 	tNullBinaryStream sink;
+	iTJSConsoleOutput* console = engine->GetConsoleOutput();
+	engine->SetConsoleOutput(NULL);
+	bool ok = false;
 	try {
 		engine->CompileScript(script.c_str(), &sink,
 		                      true /*isresultneeded*/, false /*outputdebug*/,
-		                      true /*isexpression*/);
-		return true;
+		                      isexpression);
+		ok = true;
 	} catch (...) {
-		return false;
+		ok = false;
 	}
+	engine->SetConsoleOutput(console);
+	return ok;
+}
+
+// script を «式» として実行すべきかを ExecMode に従って決める。
+//
+// Expression (console / -replfile / /cmd): 式として通るなら式。 1 行入力なので
+//   結果を表示できる方が便利で、これが従来からの挙動。
+// Script (/pad/exec): 文として通るなら文。 CompileScript(isexpression=true) は
+//   `式; 残り...` でも **先頭の式だけ読んで成功を返す** ため、式優先で判定すると
+//   複数文スクリプトの 2 文目以降が黙って捨てられる。 文優先ならまるごと実行され、
+//   `1+2` のような «文にならない単発の式» だけが式パスへ落ちる。
+bool ShouldRunAsExpression(const ttstr& script, ExecMode mode)
+{
+	if (!TVPGetScriptEngine()) return true;   // 判定不能なら従来どおり式
+	if (mode == ExecMode::Script)
+		return !ParsesAs(script, false /*isexpression*/);
+	return ParsesAs(script, true /*isexpression*/);
 }
 
 // タスクを予算内で処理 (script slot の後に呼ばれる)。
@@ -164,10 +192,12 @@ void Drain()
 	DrainTasks();
 
 	ttstr script;
+	ExecMode mode;
 	{
 		std::lock_guard<std::mutex> lk(g_req_mtx);
 		if (!g_req_pending) return;
 		script = g_req_script;
+		mode = g_req_mode;
 		g_req_pending = false;
 		g_req_script.Clear();
 	}
@@ -175,15 +205,15 @@ void Drain()
 	tTJSVariant result;
 	ttstr error;
 	bool ok = false;
-	// 「式としてパース可能か」を実行せずに事前判定してから、式 or 文の
-	// どちらか一方だけを実行する。以前は「式として評価 → 例外なら文として
-	// 再実行」というフォールバックだったため、
+	// 式か文かを実行せずに事前判定してから、式 or 文のどちらか一方だけを
+	// 実行する (どちらを優先するかは ExecMode)。以前は「式として評価 →
+	// 例外なら文として再実行」というフォールバックだったため、
 	//   - 式の実行時例外 (メンバ無し/引数不正等) でも文として再パースされ、
 	//     末尾 ';' 無しの入力が文法エラー扱いになり実際の例外メッセージが
 	//     「文法エラーです(syntax error)」に化ける
 	//   - 副作用のある式が途中まで実行された後もう一度実行される
 	// という問題があった。
-	if (ParsesAsExpression(script)) {
+	if (ShouldRunAsExpression(script, mode)) {
 		try {
 			// 式として評価 (結果を表示できる)。実行時例外はそのまま報告する。
 			TVPExecuteExpression(script, &result);

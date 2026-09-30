@@ -30,7 +30,9 @@ void TVPInstallElementsResourceLoader();
 //!        family / weight / slant / stretch はファイル名 (CamelCase + `-Style`)
 //!        からヒューリスティックに推定する (元の Elements 側ロジックの移植)。
 //!        directory が存在しないか空の場合は no-op。
-void TVPRegisterElementsFontsFromStorageDir(const ttstr& dir);
+//! @return 実際に登録できたフォントの本数。 0 本のときは警告ログも出す
+//!         (パッケージ後にフォントが見つからない事故が無言で通り抜けないように)。
+tjs_int TVPRegisterElementsFontsFromStorageDir(const ttstr& dir);
 
 #ifdef __WINVER__
 //! @brief WINVER host: exe に埋め込まれた ("BINARY" 型リソース) .ttf / .otf を

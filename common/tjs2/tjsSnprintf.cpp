@@ -102,6 +102,8 @@
 #include <string.h>
 #include <limits.h>
 #include <errno.h>
+#include <stdio.h>
+#include <locale.h>
 
 #define LDOUBLE long double
 #define LLONG tjs_int64
@@ -160,7 +162,7 @@ static int fmtstr(tjs_char *buffer, size_t *currlen, size_t maxlen,
 static int fmtint(tjs_char *buffer, size_t *currlen, size_t maxlen,
     intmax_t value, int base, int min, int max, int flags);
 static int fmtfp(tjs_char *buffer, size_t *currlen, size_t maxlen,
-    LDOUBLE fvalue, int min, int max, int flags);
+    LDOUBLE fvalue, int min, int max, int flags, int cflags, tjs_char conv);
 
 static int
 dopr(tjs_char *buffer, size_t maxlen, const tjs_char *format, va_list args_in)
@@ -372,34 +374,17 @@ dopr(tjs_char *buffer, size_t maxlen, const tjs_char *format, va_list args_in)
 					return -1;
 				break;
 			case TJS_W('f'):
-				if (cflags == DP_C_LDOUBLE)
-					fvalue = va_arg (args, LDOUBLE);
-				else
-					fvalue = va_arg (args, double);
-				if (fmtfp(buffer, &currlen, maxlen, fvalue,
-				    min, max, flags) == -1)
-					return -1;
-				break;
-			case TJS_W('E'):
-				flags |= DP_F_UP;
+			case TJS_W('F'):
 			case TJS_W('e'):
-				if (cflags == DP_C_LDOUBLE)
-					fvalue = va_arg (args, LDOUBLE);
-				else
-					fvalue = va_arg (args, double);
-				if (fmtfp(buffer, &currlen, maxlen, fvalue,
-				    min, max, flags) == -1)
-					return -1;
-				break;
-			case TJS_W('G'):
-				flags |= DP_F_UP;
+			case TJS_W('E'):
 			case TJS_W('g'):
+			case TJS_W('G'):
 				if (cflags == DP_C_LDOUBLE)
 					fvalue = va_arg (args, LDOUBLE);
 				else
 					fvalue = va_arg (args, double);
 				if (fmtfp(buffer, &currlen, maxlen, fvalue,
-				    min, max, flags) == -1)
+				    min, max, flags, cflags, ch) == -1)
 					return -1;
 				break;
 			case TJS_W('c'):
@@ -614,232 +599,81 @@ fmtint(tjs_char *buffer, size_t *currlen, size_t maxlen,
 	return 0;
 }
 
-static LDOUBLE abs_val(LDOUBLE value)
-{
-	LDOUBLE result = value;
-
-	if (value < 0)
-		result = -value;
-	
-	return result;
-}
-
-static LDOUBLE POW10(int val)
-{
-	LDOUBLE result = 1;
-	
-	while (val) {
-		result *= 10;
-		val--;
-	}
-  
-	return result;
-}
-
-static tjs_int64 ROUND(LDOUBLE value)
-{
-	tjs_int64 intpart;
-
-	intpart = (tjs_int64)value;
-	value = value - intpart;
-	if (value >= 0.5) intpart++;
-	
-	return intpart;
-}
-
-/* a replacement for modf that doesn't need the math library. Should
-   be portable, but slow */
-static double my_modf(double x0, double *iptr)
-{
-	int i;
-	long l;
-	double x = x0;
-	double f = 1.0;
-
-	for (i=0;i<100;i++) {
-		l = (long)x;
-		if (l <= (x+1) && l >= (x-1)) break;
-		x *= 0.1;
-		f *= 10.0;
-	}
-
-	if (i == 100) {
-		/*
-		 * yikes! the number is beyond what we can handle.
-		 * What do we do?
-		 */
-		(*iptr) = 0;
-		return 0;
-	}
-
-	if (i != 0) {
-		double i2;
-		double ret;
-
-		ret = my_modf(x0-l*f, &i2);
-		(*iptr) = l*f + i2;
-		return ret;
-	} 
-
-	(*iptr) = l;
-	return x - (*iptr);
-}
-
-
+/*
+ * 浮動小数点の変換 (%f %e %E %g %G) は C ランタイムの snprintf に委ねる。
+ * 旧実装の fmtfp は %f 相当しか持たず、%e / %g も %f として出力していた
+ * (例: "%.15lg" で 2.0 -> "2.000000000000000")。以前の Windows 版は
+ * _vsnwprintf を使っていたため問題が表に出ていなかった。
+ * C99 準拠の snprintf (UCRT / glibc / musl / emscripten 等) で narrow 文字列を
+ * 作り、ASCII のまま tjs_char へ広げる。
+ */
 static int
 fmtfp (tjs_char *buffer, size_t *currlen, size_t maxlen,
-    LDOUBLE fvalue, int min, int max, int flags)
+    LDOUBLE fvalue, int min, int max, int flags, int cflags, tjs_char conv)
 {
-	int signvalue = 0;
-	double ufvalue;
-	tjs_char iconvert[311];
-	tjs_char fconvert[311];
-	int iplace = 0;
-	int fplace = 0;
-	int padlen = 0; /* amount to pad */
-	int zpadlen = 0; 
-	int caps = 0;
-	int idx;
-	double intpart;
-	double fracpart;
-	double temp;
-  
-	/* 
-	 * AIX manpage says the default is 0, but Solaris says the default
-	 * is 6, and sprintf on AIX defaults to 6
-	 */
-	if (max < 0)
-		max = 6;
+	char fmt[48];
+	char *f = fmt;
+	char sbuf[512];
+	char *out = sbuf;
+	char *heap = NULL;
+	int len, i;
+	char dp;
 
-	ufvalue = abs_val (fvalue);
+	/* '*' で負の幅が渡された場合は左寄せ扱い (C99) */
+	if (min < 0) {
+		flags |= DP_F_MINUS;
+		min = -min;
+	}
 
-	if (fvalue < 0) {
-		signvalue = TJS_W('-');
-	} else {
-		if (flags & DP_F_PLUS) { /* Do a sign (+/i) */
-			signvalue = TJS_W('+');
-		} else {
-			if (flags & DP_F_SPACE)
-				signvalue = TJS_W(' ');
+	*f++ = '%';
+	if (flags & DP_F_MINUS) *f++ = '-';
+	if (flags & DP_F_PLUS)  *f++ = '+';
+	if (flags & DP_F_SPACE) *f++ = ' ';
+	if (flags & DP_F_NUM)   *f++ = '#';
+	if (flags & DP_F_ZERO)  *f++ = '0';
+	*f++ = '*';
+	*f++ = '.';
+	*f++ = '*';
+	if (cflags == DP_C_LDOUBLE) *f++ = 'L';
+	*f++ = (char)conv;
+	*f = '\0';
+
+	/* 負の精度は「精度指定なし」= 既定の 6 (C99) */
+	if (max < 0) max = 6;
+
+	if (cflags == DP_C_LDOUBLE)
+		len = snprintf(sbuf, sizeof(sbuf), fmt, min, max, fvalue);
+	else
+		len = snprintf(sbuf, sizeof(sbuf), fmt, min, max, (double)fvalue);
+	if (len < 0)
+		return -1;
+	if ((size_t)len >= sizeof(sbuf)) {
+		heap = (char *)malloc((size_t)len + 1);
+		if (!heap)
+			return -1;
+		if (cflags == DP_C_LDOUBLE)
+			snprintf(heap, (size_t)len + 1, fmt, min, max, fvalue);
+		else
+			snprintf(heap, (size_t)len + 1, fmt, min, max, (double)fvalue);
+		out = heap;
+	}
+
+	/* ロケールの小数点が '.' 以外に設定されていても TJS の表記は '.' */
+	dp = localeconv()->decimal_point[0];
+
+	for (i = 0; i < len; i++) {
+		char c = out[i];
+		if (dp != '.' && c == dp) c = '.';
+		if (*currlen + 1 >= INT_MAX) {
+			free(heap);
+			errno = ERANGE;
+			return -1;
 		}
+		if (*currlen < maxlen && buffer)
+			buffer[*currlen] = (tjs_char)(unsigned char)c;
+		(*currlen)++;
 	}
-
-#if 0
-	if (flags & DP_F_UP) caps = 1; /* Should characters be upper case? */
-#endif
-
-#if 0
-	 if (max == 0) ufvalue += 0.5; /* if max = 0 we must round */
-#endif
-
-	/* 
-	 * Sorry, we only support 16 digits past the decimal because of our 
-	 * conversion method
-	 */
-	if (max > 16)
-		max = 16;
-
-	/* We "cheat" by converting the fractional part to integer by
-	 * multiplying by a factor of 10
-	 */
-
-	temp = ufvalue;
-	my_modf(temp, &intpart);
-
-	fracpart = static_cast<double>(ROUND((POW10(max)) * (ufvalue - intpart)));
-	
-	if (fracpart >= POW10(max)) {
-		intpart++;
-		fracpart -= POW10(max);
-	}
-
-	/* Convert integer part */
-	do {
-		temp = intpart*0.1;
-		my_modf(temp, &intpart);
-		idx = (int) ((temp -intpart +0.05)* 10.0);
-		/* idx = (int) (((double)(temp*0.1) -intpart +0.05) *10.0); */
-		/* printf ("%llf, %f, %x\n", temp, intpart, idx); */
-		iconvert[iplace++] =
-			(caps? TJS_W("0123456789ABCDEF"):TJS_W("0123456789abcdef"))[idx];
-	} while (intpart && (iplace < 311));
-	if (iplace == 311) iplace--;
-	iconvert[iplace] = 0;
-
-	/* Convert fractional part */
-	if (fracpart)
-	{
-		do {
-			temp = fracpart*0.1;
-			my_modf(temp, &fracpart);
-			idx = (int) ((temp -fracpart +0.05)* 10.0);
-			/* idx = (int) ((((temp/10) -fracpart) +0.05) *10); */
-			/* printf ("%lf, %lf, %ld\n", temp, fracpart, idx ); */
-			fconvert[fplace++] =
-			(caps? TJS_W("0123456789ABCDEF"):TJS_W("0123456789abcdef"))[idx];
-		} while(fracpart && (fplace < 311));
-		if (fplace == 311) fplace--;
-	}
-	fconvert[fplace] = 0;
-  
-	/* -1 for decimal point, another -1 if we are printing a sign */
-	padlen = min - iplace - max - 1 - ((signvalue) ? 1 : 0); 
-	zpadlen = max - fplace;
-	if (zpadlen < 0) zpadlen = 0;
-	if (padlen < 0) 
-		padlen = 0;
-	if (flags & DP_F_MINUS) 
-		padlen = -padlen; /* Left Justifty */
-	
-	if ((flags & DP_F_ZERO) && (padlen > 0)) {
-		if (signvalue) {
-			DOPR_OUTCH(buffer, *currlen, maxlen, signvalue);
-			--padlen;
-			signvalue = 0;
-		}
-		while (padlen > 0) {
-			DOPR_OUTCH(buffer, *currlen, maxlen, TJS_W('0'));
-			--padlen;
-		}
-	}
-	while (padlen > 0) {
-		DOPR_OUTCH(buffer, *currlen, maxlen, TJS_W(' '));
-		--padlen;
-	}
-	if (signvalue) 
-		DOPR_OUTCH(buffer, *currlen, maxlen, signvalue);
-	
-	while (iplace > 0) {
-		--iplace;
-		DOPR_OUTCH(buffer, *currlen, maxlen, iconvert[iplace]);
-	}
-
-#ifdef DEBUG_SNPRINTF
-	printf("fmtfp: fplace=%d zpadlen=%d\n", fplace, zpadlen);
-#endif
-
-	/*
-	 * Decimal point.  This should probably use locale to find the correct
-	 * char to print out.
-	 */
-	if (max > 0) {
-		DOPR_OUTCH(buffer, *currlen, maxlen, TJS_W('.'));
-		
-		while (zpadlen > 0) {
-			DOPR_OUTCH(buffer, *currlen, maxlen, TJS_W('0'));
-			--zpadlen;
-		}
-
-		while (fplace > 0) {
-			--fplace;
-			DOPR_OUTCH(buffer, *currlen, maxlen, fconvert[fplace]);
-		}
-	}
-
-	while (padlen < 0) {
-		DOPR_OUTCH(buffer, *currlen, maxlen, TJS_W(' '));
-		++padlen;
-	}
+	free(heap);
 	return 0;
 }
 

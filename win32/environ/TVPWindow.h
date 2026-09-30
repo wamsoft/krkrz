@@ -184,6 +184,30 @@ public:
 	bool GetEnable() const;
 	void SetEnable( bool s );
 
+	//-- 最大化 / 最小化 / 復帰 (doc/WindowState.md)
+	//   windowEx プラグインが持っていた機能を本体へ移したもの。
+	//   TJS からは Window.maximized / maximize() / minimize() / showRestore() /
+	//   getNormalRect() で使う。
+	//   ⚠ IsMaximized / IsMinimized という名前は **windowsx.h の関数形式マクロ**と
+	//     衝突する (IsMaximized(hwnd) → IsZoomed(hwnd))。引数ゼロでも空引数として
+	//     展開されるので、この名前は使わない
+	bool GetMaximized() const;
+	bool GetMinimized() const;
+	void Maximize();
+	void Minimize();
+	//! 最大化 / 最小化から元のサイズへ戻す
+	void ShowRestore();
+	//! 最大化 / 最小化していないときの外形矩形 (復元用)。取れなければ false
+	bool GetNormalRect( int& l, int& t, int& w, int& h ) const;
+
+	//-- 画面座標での矩形 (doc/WindowState.md)
+	//! 外形 (装飾込み) の矩形。取れなければ false
+	bool GetWindowRectScreen( int& l, int& t, int& w, int& h ) const;
+	//! クライアント (描画領域) の矩形を**画面座標で**。取れなければ false
+	bool GetClientRectScreen( int& l, int& t, int& w, int& h ) const;
+	//! クライアントが指定の画面座標矩形になるようにウィンドウを動かす
+	bool SetClientRectScreen( int l, int t, int w, int h );
+
 	void GetCaption( tjs_string& v ) const;
 	void SetCaption( const tjs_string& v );
 	
@@ -299,6 +323,10 @@ public:
 	virtual void OnEnterMenuLoop( bool entered ) {}
 	virtual void OnExitMenuLoop( bool isShortcutMenu ) {}
 	virtual void OnDeviceChange( UINT_PTR event, void *data ) {}
+	//! キャプチャなどのモードが打ち切られた (WM_CANCELMODE)
+	virtual void OnCancelMode() {}
+	//! 外から貼り付けを指示された (WM_PASTE)
+	virtual void OnPaste() {}
 	virtual void OnNonClientMouseDown( int button, UINT_PTR hittest, int x, int y ){}
 	virtual void OnMouseEnter() {}
 	virtual void OnMouseLeave() {}

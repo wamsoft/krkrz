@@ -10,6 +10,7 @@
 #include "WindowFormEvent.h"
 #include "ObjectList.h"
 #include "ViewportConfig.h"
+#include "VirtualCursor.h"
 
 //! ShowWindowAsModal のループ終了要求値 (0 = 継続)
 enum tTVPModalResult {
@@ -179,6 +180,14 @@ public:
 	void SetMouseCursorState(tTVPMouseCursorState mcs);
 	tTVPMouseCursorState GetMouseCursorState() const;
 
+	//! 仮想カーソル位置 (描画矩形内の座標)。 hover 判定と Layer.cursorX/Y が
+	//! 見るのはこちら。 詳細は common/visual/VirtualCursor.h / doc/VirtualCursor.md
+	tTVPVirtualCursor VirtualCursor;
+
+	//! @brief 仮想カーソル位置だけを動かす (実 OS カーソルは触らない)。
+	//!        キー / パッドのナビ (Elements の cursor-warp 等) 用。
+	void SetVirtualCursorPos(tjs_int x, tjs_int y) { VirtualCursor.Set(x, y); }
+
 	// カーソル位置制御
 	virtual void GetCursorPos(tjs_int &x, tjs_int &y);
 	virtual void SetCursorPos(tjs_int x, tjs_int y);
@@ -274,6 +283,33 @@ public:
 	// フルスクリーン。 既定は「常に全画面」(モバイル/コンソール想定)
 	virtual void SetFullScreenMode(bool b) {}
 	virtual bool GetFullScreenMode() const { return true; }
+
+	// 最大化 / 最小化 / 復帰 (doc/WindowState.md)。
+	// SDL / CS 版はウィンドウ状態を持たない (常にフルスクリーン相当) ので何もしない。
+	// SetFullScreenMode と同じ扱い
+	virtual bool GetMaximized() const { return false; }
+	virtual bool GetMinimized() const { return false; }
+	virtual void Maximize() {}
+	virtual void Minimize() {}
+	virtual void ShowRestore() {}
+	virtual bool GetNormalRect( int& l, int& t, int& w, int& h ) const { return false; }
+	//-- 拡張イベント。SDL / CS 版はウィンドウ枠の操作が無いので投げない
+	virtual void OnMaximizeQueryCalled( bool b ) {}
+	//! 枠の操作禁止。SDL / CS 版は枠が無いので何もしない
+	virtual void SetMoveDisabled( bool b ) {}
+	virtual bool GetMoveDisabled() const { return false; }
+	virtual void SetResizeDisabled( bool b ) {}
+	virtual bool GetResizeDisabled() const { return false; }
+	//! 入力デバイスの抜き差し通知。SDL / CS 版は本体の入力が自分で追従するので何もしない
+	virtual void SetDeviceChangeEnabled( bool b ) {}
+	virtual bool GetDeviceChangeEnabled() const { return false; }
+	virtual void SetExEventEnabled( bool b ) {}
+	virtual bool GetExEventEnabled() const { return false; }
+
+	//-- 画面座標での矩形。SDL / CS 版は装飾が無いので扱わない
+	virtual bool GetWindowRectScreen( int& l, int& t, int& w, int& h ) const { return false; }
+	virtual bool GetClientRectScreen( int& l, int& t, int& w, int& h ) const { return false; }
+	virtual bool SetClientRectScreen( int l, int t, int w, int h ) { return false; }
 
 	//マウスキー(キーボードでのマウスカーソル操作)は無効
 	void SetUseMouseKey(bool b) {}

@@ -235,7 +235,10 @@ public:
 		std::memset(&Format, 0, sizeof(Format));
 		Format.SamplesPerSec  = 48000;  // Opus 出力は常に 48 kHz
 		Format.Channels       = Head.channel_count;
-		Format.BitsPerSample  = gOpusFloatExtraction ? (0x10000 + 32) : 16;
+		// float 出力でも素直に 32 を入れる (旧実装は 0x10000+32 というフラグ付きの
+		// 値を入れていたが、これを解釈する側はどこにも無く、WaveSoundBuffer.bits に
+		// そのまま漏れていた。float かどうかは IsFloat で判別する)。
+		Format.BitsPerSample  = gOpusFloatExtraction ? 32 : 16;
 		Format.BytesPerSample = gOpusFloatExtraction ? 4 : 2;
 		Format.SpeakerConfig  = 0;
 		Format.IsFloat        = gOpusFloatExtraction;
@@ -743,15 +746,17 @@ private:
 		}
 		ogg_sync_clear(&probe);
 
+		// 末尾の走査には専用の sync (probe) を使っており、本体の Sync /
+		// Stream0 には触れていない。よってファイル位置さえ戻せば、呼び出し前と
+		// 完全に同じ状態に戻る。
+		//
+		// ★ここで ogg_sync_reset(&Sync) をしてはいけない。FeedSync は 4096 バイト
+		//   単位で読むので、OpusHead / OpusTags を読み終えた時点で「同じチャンクに
+		//   入っていた最初のオーディオページ」が Sync のバッファに残っている。
+		//   reset するとそれが捨てられ、ファイル位置は既にその先にあるため、
+		//   先頭の数百ミリ秒がまるごと欠落する (最大 4096 バイトぶん)。
 		Stream->Seek((tjs_int64)saved_pos, TJS_BS_SEEK_SET);
 		ReachedEof = false;
-		ogg_sync_reset(&Sync);
-		if (StreamInited) ogg_stream_reset(&Stream0);
-
-		// 再オープンせず、本来の sync 位置から packet を再供給するには
-		// OpenFirstLink 直後の状態に戻すのが簡単。ここでは sync_reset のみで
-		// 済ませているが、Render の次呼び出しが新たに pages を pull できるので
-		// 機能上は問題ない。
 		if (last_g < 0) return -1;
 		tjs_int64 total = last_g - (tjs_int64)Head.pre_skip;
 		return (total > 0) ? total : -1;

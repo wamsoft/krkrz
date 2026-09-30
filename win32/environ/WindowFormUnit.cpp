@@ -1,7 +1,9 @@
 
 #include "tjsCommHead.h"
+#include "tjsDictionary.h"   // TJSCreateDictionaryObject (拡張イベントの矩形)
 
 #include <dbt.h> // for WM_DEVICECHANGE
+#include "HotKeyIntf.h" // for TVPProcessHotKey (System.registerHotKey)
 
 #include <algorithm>
 #include "WindowFormUnit.h"
@@ -232,6 +234,9 @@ TTVPWindowForm::TTVPWindowForm( tTJSNI_Window* ni, tTJSNI_Window* parent ) : tTV
 
 	DefaultImeMode = imClose;
 	LastSetImeMode = imClose;
+	ImeOverrideActive = false;
+	ImeSavedMode = imClose;
+	ImeContextForced = false;
 	::PostMessage( GetHandle(), TVP_WM_ACQUIREIMECONTROL, 0, 0);
 
 
@@ -367,6 +372,20 @@ LRESULT WINAPI TTVPWindowForm::Proc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM 
 	Message.Result = 0;
 	if( DeliverMessageToReceiver( Message) ) return Message.Result;
 
+	// 枠の操作禁止 (disableMove / disableResize)。枠なし表示のときに
+	// タイトルバーのドラッグやシステムメニューから動かされるのを止める
+	if( MoveDisabled || ResizeDisabled ) {
+		if( Message.Msg == WM_SYSCOMMAND ) {
+			const long sub = Message.WParam & 0xfff0;
+			if( MoveDisabled   && sub == SC_MOVE ) return 0;
+			if( ResizeDisabled && sub == SC_SIZE ) return 0;
+		} else if( Message.Msg == WM_NCLBUTTONDOWN || Message.Msg == WM_NCLBUTTONDBLCLK ) {
+			const WPARAM ht = Message.WParam;
+			if( MoveDisabled && ht == HTCAPTION ) return 0;
+			if( ResizeDisabled && ht >= HTLEFT && ht <= HTBOTTOMRIGHT ) return 0;
+		}
+	}
+
 	if( Message.Msg == WM_SYSCOMMAND ) {
 		long subcom = Message.WParam & 0xfff0;
 		bool ismain = false;
@@ -383,6 +402,21 @@ LRESULT WINAPI TTVPWindowForm::Proc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM 
 		}
 	} else if(!InReceivingTrappedKeys // to prevent infinite recursive call
 		&& Message.Msg >= WM_KEYFIRST && Message.Msg <= WM_KEYLAST ) {
+		// 最上位ホットキー (System.registerHotKey)。common/environ/HotKeyIntf.h
+		//   フォーカスの位置にも System.eventDisabled にも関係なく、通常の
+		//   dispatch より前にコールバックを直接呼ぶ。消費されたら Windows へも返さない
+		switch( Message.Msg ) {
+		case WM_KEYDOWN: case WM_SYSKEYDOWN:
+		case WM_KEYUP:   case WM_SYSKEYUP: {
+			const bool down   = (Message.Msg == WM_KEYDOWN || Message.Msg == WM_SYSKEYDOWN);
+			const bool repeat = down && (Message.LParam & (1<<30)) != 0;
+			if( TVPProcessHotKey( (tjs_uint)Message.WParam,
+								  TVP_TShiftState_To_uint32( GetShiftState() ), down, repeat ) )
+				return 0;
+			break;
+		}
+		}
+
 		// hide popups when alt key is pressed
 		if(Message.Msg == WM_SYSKEYDOWN && !CanSendPopupHide())
 			DeliverPopupHide();
@@ -392,6 +426,41 @@ LRESULT WINAPI TTVPWindowForm::Proc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM 
 		if(FindKeyTrapper(res, Message.Msg, Message.WParam, Message.LParam)) {
 			Message.Result = res;
 			return res;
+		}
+	}
+	// 拡張イベント (doc/WindowState.md)。registerExEvent() を呼んだときだけ投げる
+	if( ExEventEnabled ) {
+		switch( msg ) {
+		case WM_ENTERSIZEMOVE: FireExEvent( TJS_W("onMoveSizeBegin") ); break;
+		case WM_EXITSIZEMOVE:  FireExEvent( TJS_W("onMoveSizeEnd")   ); break;
+		case WM_DISPLAYCHANGE: FireExEvent( TJS_W("onDisplayChanged")); break;
+		case WM_MOVE:
+			FireExEvent( TJS_W("onMove"), 2, (tjs_int)(short)LOWORD(lParam), (tjs_int)(short)HIWORD(lParam) );
+			break;
+		case WM_MOVING:
+			if( FireExEventRect( TJS_W("onMoving"), reinterpret_cast<RECT*>(lParam), false, 0 ) )
+				return TRUE;   // 書き換えたら TRUE を返す約束 (Win32)
+			break;
+		case WM_SIZING:
+			if( FireExEventRect( TJS_W("onResizing"), reinterpret_cast<RECT*>(lParam), true, (tjs_int)wParam ) )
+				return TRUE;
+			break;
+		case WM_DPICHANGED:
+			FireExEvent( TJS_W("onDPIChanged"), 2, (tjs_int)LOWORD(wParam), (tjs_int)HIWORD(wParam) );
+			break;   // 既定のジオメトリ追従は下の tTVPWindow::Proc が行う
+		case WM_SIZE:
+			if( wParam == SIZE_MINIMIZED )      FireExEvent( TJS_W("onMinimize") );
+			else if( wParam == SIZE_MAXIMIZED ) FireExEvent( TJS_W("onMaximize") );
+			break;
+		case WM_SYSCOMMAND:
+			if( (wParam & 0xFFF0) == SC_MAXIMIZE ) {
+				// onCloseQuery と同じ形。ハンドラが super.onMaximizeQuery(false) を
+				// 呼び返したら最大化を止める (同期で投げているので戻り時には決まっている)
+				MaximizeQueryResult = true;
+				FireExEvent( TJS_W("onMaximizeQuery") );
+				if( !MaximizeQueryResult ) return 0;
+			}
+			break;
 		}
 	}
 	switch( msg ) {
@@ -411,6 +480,73 @@ LRESULT WINAPI TTVPWindowForm::Proc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM 
 		return tTVPWindow::Proc( hWnd, msg, wParam, lParam );
 	}
 }
+//---------------------------------------------------------------------------
+// 拡張イベント (doc/WindowState.md)
+//   windowEx プラグインが投げていた onMove / onMoving / onResizing /
+//   onMoveSizeBegin / onMoveSizeEnd / onDPIChanged / onDisplayChanged /
+//   onMinimize / onMaximize / onMaximizeQuery を本体から投げる。
+//   ⚠ **同期 (TVP_EPT_IMMEDIATE)** で投げる。onResizing / onMoving は
+//      ハンドラが矩形を書き換えるので、戻ってから読み直す必要がある
+//---------------------------------------------------------------------------
+bool TTVPWindowForm::FireExEvent( const tjs_char *name, tjs_int argc, tjs_int a0, tjs_int a1 )
+{
+	if(!ExEventEnabled || !TJSNativeInstance) return false;
+	iTJSDispatch2 *obj = TJSNativeInstance->GetOwnerNoAddRef();
+	if(!obj) return false;
+	tTJSVariant args[2];
+	args[0] = a0;
+	args[1] = a1;
+	ttstr evname(name);
+	// ⚠ TVPPostEvent は戻り値を受け取れない。windowEx は「ハンドラが真を返したら
+	//    既定処理を抑制」していたが、本体では抑制せず常に既定処理へ流す
+	TVPPostEvent(obj, obj, evname, 0, TVP_EPT_IMMEDIATE, argc, args);
+	return false;
+}
+bool TTVPWindowForm::FireExEventRect( const tjs_char *name, RECT *prc, bool hasEdge, tjs_int edge )
+{
+	if(!ExEventEnabled || !TJSNativeInstance || !prc) return false;
+	iTJSDispatch2 *obj = TJSNativeInstance->GetOwnerNoAddRef();
+	if(!obj) return false;
+
+	iTJSDispatch2 *dic = TJSCreateDictionaryObject();
+	bool changed = false;
+	try {
+		tTJSVariant v;
+		v = (tjs_int)prc->left;                  dic->PropSet(TJS_MEMBERENSURE, TJS_W("x"), NULL, &v, dic);
+		v = (tjs_int)prc->top;                   dic->PropSet(TJS_MEMBERENSURE, TJS_W("y"), NULL, &v, dic);
+		v = (tjs_int)(prc->right  - prc->left);  dic->PropSet(TJS_MEMBERENSURE, TJS_W("w"), NULL, &v, dic);
+		v = (tjs_int)(prc->bottom - prc->top);   dic->PropSet(TJS_MEMBERENSURE, TJS_W("h"), NULL, &v, dic);
+
+		tTJSVariant args[2];
+		args[0] = tTJSVariant(dic, dic);
+		args[1] = edge;
+		ttstr evname(name);
+		TVPPostEvent(obj, obj, evname, 0, TVP_EPT_IMMEDIATE, hasEdge ? 2 : 1, args);
+
+		// ハンドラが書き換えた値を RECT へ戻す
+		tjs_int x = prc->left, y = prc->top;
+		tjs_int w = prc->right - prc->left, h = prc->bottom - prc->top;
+		tTJSVariant t;
+		if(TJS_SUCCEEDED(dic->PropGet(0, TJS_W("x"), NULL, &t, dic)) && t.Type() != tvtVoid) x = (tjs_int)t;
+		if(TJS_SUCCEEDED(dic->PropGet(0, TJS_W("y"), NULL, &t, dic)) && t.Type() != tvtVoid) y = (tjs_int)t;
+		if(TJS_SUCCEEDED(dic->PropGet(0, TJS_W("w"), NULL, &t, dic)) && t.Type() != tvtVoid) w = (tjs_int)t;
+		if(TJS_SUCCEEDED(dic->PropGet(0, TJS_W("h"), NULL, &t, dic)) && t.Type() != tvtVoid) h = (tjs_int)t;
+		if(x != prc->left || y != prc->top ||
+		   w != (prc->right - prc->left) || h != (prc->bottom - prc->top)) {
+			prc->left   = (LONG)x;
+			prc->top    = (LONG)y;
+			prc->right  = (LONG)(x + w);
+			prc->bottom = (LONG)(y + h);
+			changed = true;
+		}
+	} catch(...) {
+		dic->Release();
+		throw;
+	}
+	dic->Release();
+	return changed;
+}
+//---------------------------------------------------------------------------
 void TTVPWindowForm::WMShowVisible() {
 	SetVisible(true);
 }
@@ -1203,9 +1339,13 @@ void TTVPWindowForm::InternalKeyUp(WORD key, tjs_uint32 shift) {
 	if( TJSNativeInstance ) {
 		if( UseMouseKey /*&& PaintBox*/ ) {
 			if( key == VK_RETURN || key == VK_SPACE || key == VK_ESCAPE || key == VK_PAD1 || key == VK_PAD2) {
-				POINT p;
-				::GetCursorPos(&p);
-				::ScreenToClient( GetHandle(), &p );
+				// 位置は **仮想カーソル** を見る (doc/VirtualCursor.md)。 実カーソルを
+				// 読むと、 キー / パッドのナビで動かした位置ではなく «物理ポインタが
+				// 置かれている場所» をクリックしてしまう。
+				tjs_int vx = 0, vy = 0;
+				GetCursorPos( vx, vy );
+				TranslateDrawAreaToWindow( vx, vy );
+				POINT p; p.x = (LONG)vx; p.y = (LONG)vy;
 				if( p.x >= 0 && p.y >= 0 && p.x < GetInnerWidth() && p.y < GetInnerHeight() ) {
 					if( key == VK_RETURN || key == VK_SPACE || key == VK_PAD1 ) {
 						OnMouseClick( mbLeft, 0, p.x, p.y );
@@ -1234,9 +1374,11 @@ void TTVPWindowForm::InternalKeyDown(WORD key, tjs_uint32 shift) {
 	if( TJSNativeInstance ) {
 		if(UseMouseKey /*&& PaintBox*/ ) {
 			if(key == VK_RETURN || key == VK_SPACE || key == VK_ESCAPE || key == VK_PAD1 || key == VK_PAD2) {
-				POINT p;
-				::GetCursorPos(&p);
-				::ScreenToClient( GetHandle(), &p );
+				// 位置は **仮想カーソル** を見る (上と同じ理由)。
+				tjs_int vx = 0, vy = 0;
+				GetCursorPos( vx, vy );
+				TranslateDrawAreaToWindow( vx, vy );
+				POINT p; p.x = (LONG)vx; p.y = (LONG)vy;
 				if( p.x >= 0 && p.y >= 0 && p.x < GetInnerWidth() && p.y < GetInnerHeight() ) {
 					if( key == VK_RETURN || key == VK_SPACE || key == VK_PAD1 ) {
 						MouseLeftButtonEmulatedPushed = true;
@@ -1341,9 +1483,19 @@ void TTVPWindowForm::GenerateMouseEvent(bool fl, bool fr, bool fu, bool fd) {
 	}
 
 	if(flags) {
+		// キーボードでカーソルを動かす機能。 実カーソルを動かすのが目的なので
+		// そのまま動かし、 **仮想位置も揃える** (doc/VirtualCursor.md)。
+		// 揃えないと hover / Layer.cursorX/Y が古い位置を指したままになる。
 		POINT pt;
 		if(::GetCursorPos(&pt)) {
-			::SetCursorPos( pt.x + (MouseKeyXAccel>>1), pt.y + (MouseKeyYAccel>>1)); 
+			const LONG nx = pt.x + (MouseKeyXAccel>>1);
+			const LONG ny = pt.y + (MouseKeyYAccel>>1);
+			::SetCursorPos( nx, ny );
+			POINT cp = { nx, ny };
+			::ScreenToClient( GetHandle(), &cp );
+			tjs_int vx = (tjs_int)cp.x, vy = (tjs_int)cp.y;
+			TranslateWindowToDrawArea( vx, vy );
+			VirtualCursor.Set( vx, vy );
 		}
 		LastMouseMoved = true;
 	}
@@ -1383,6 +1535,12 @@ void TTVPWindowForm::OffsetClientPoint( int &x, int &y ) {
 }
 // Layer.cursorX/cursorYで呼ばれる
 void TTVPWindowForm::GetCursorPos(tjs_int &x, tjs_int &y) {
+	// 仮想カーソルが有効ならそちらが真実 (doc/VirtualCursor.md)。
+	// キー / パッドのナビで動かした位置も、 実マウスで動かした位置もここに
+	// 集約されている。 無効なのは «起動してから一度も実マウスが動いておらず、
+	// ホストも置いていない» 間だけで、 そのときは実カーソルへフォールバックする。
+	if (VirtualCursor.Get(x, y)) return;
+
 	// get mouse cursor position in client
 	POINT origin = {0,0};
 	::ClientToScreen( GetHandle(), &origin );
@@ -1393,6 +1551,10 @@ void TTVPWindowForm::GetCursorPos(tjs_int &x, tjs_int &y) {
 	TranslateWindowToDrawArea( x, y );
 }
 void TTVPWindowForm::SetCursorPos(tjs_int x, tjs_int y) {
+	// 実カーソルを動かす経路 (Layer.setCursorPos 等)。 仮想位置も揃えておく
+	// — 「ポインタをここへ置く」という意図なので hover もそこへ来るのが正。
+	VirtualCursor.Set(x, y);
+
 	TranslateDrawAreaToWindow( x, y );
 
 	POINT pt = {x,y};
@@ -1467,7 +1629,19 @@ TTVPWindowForm * TTVPWindowForm::GetKeyTrapperWindow() {
 
 int TTVPWindowForm::ConvertImeMode( tTVPImeMode mode ) {
 	switch( mode ) {
-	case ::imDisable   : return ImeControl::ModeClose   ; // (*)
+	// imDisable は「ユーザの操作でも IME を有効にできない」 (doc/reference/Layer.md)。
+	// ModeDisable が ImmAssociateContext(hWnd,0) で入力コンテキストを外して実現する。
+	// ⚠ 以前はここが ModeClose で、 imClose と区別が無かった。 そのため
+	//    windowEx プラグインが Window.resetImeContext(false) という代替を持ち、
+	//    KAGEX 系は初期化時にそれを呼んでいた (windowEx 自身の仕様書に
+	//    「imDisable が再実装された場合……競合する可能性あり」と書かれている)。
+	//    windowEx 廃止にあわせて本来の意味に戻した。
+	// Layer.imeMode の既定は imDisable なので、 これは「既定では IME を出さず、
+	// imeMode を設定したレイヤに focus がある間だけ使える」を意味する。
+	// SDL3 側は以前からこの意味で動いている (imeMode != imDisable のときだけ
+	// SDL_StartTextInput)。
+	// 逃げ道: 起動引数 -controlime=no で IME 制御ごと切れる (TVPControlImeState)。
+	case ::imDisable   : return ImeControl::ModeDisable ;
 	case ::imClose     : return ImeControl::ModeClose   ;
 	case ::imOpen      : return ImeControl::ModeOpen    ;
 	case ::imDontCare  : return ImeControl::ModeDontCare;
@@ -1510,8 +1684,60 @@ void TTVPWindowForm::AcquireImeControl() {
 	}
 }
 void TTVPWindowForm::SetImeMode(tTVPImeMode mode) {
+	if( ImeOverrideActive ) {
+		// オーバレイ UI が握っている間は適用しない (解除時に効かせる)
+		ImeSavedMode = mode;
+		return;
+	}
 	LastSetImeMode = mode;
 	AcquireImeControl();
+}
+void TTVPWindowForm::SetImeOverride(tTVPImeMode mode) {
+	if( !ImeOverrideActive ) {
+		ImeOverrideActive = true;
+		ImeSavedMode = LastSetImeMode;
+		// 入力コンテキストが外されていると ImmSetOpenStatus は成功したように
+		// 見えて何も起きず、 ユーザの 半角/全角 も効かない。 外し得るのは
+		// 本体外 (windowEx の Window.resetImeContext(false) 等) で、 本体の
+		// ImeControl::Enable() は自分で外したときしか戻さない。 テキスト欄を
+		// 編集している間だけ既定コンテキストを結び直し、 解除時に元へ戻す。
+		ImeContextForced = GetIME()->AttachDefaultContext();
+	}
+	LastSetImeMode = mode;
+	AcquireImeControl();
+}
+void TTVPWindowForm::ClearImeOverride() {
+	if( !ImeOverrideActive ) return;
+	ImeOverrideActive = false;
+	LastSetImeMode = ImeSavedMode;
+	AcquireImeControl();
+	if( ImeContextForced ) {
+		GetIME()->DetachContext();
+		ImeContextForced = false;
+	}
+}
+void TTVPWindowForm::SetImeTextInputArea( tjs_int x, tjs_int y, tjs_int w, tjs_int h, tjs_int cursor ) {
+	if( !TVPControlImeState ) return;
+	GetIME()->SetTextInputArea( (int)x, (int)y, (int)w, (int)h, (int)cursor );
+}
+void TTVPWindowForm::GetImeStatus( tTVPImeStatus &out ) {
+	ImeControl * ime = GetIME();
+	out.visible          = GetVisible();
+	out.hasFocus         = HasFocus();
+	out.trapKeys         = TrapKeys;
+	out.keyTrapperIsSelf = ( GetKeyTrapperWindow() == this );
+	out.attentionPoint   = AttentionPointEnabled;
+	out.controlImeState  = TVPControlImeState;
+	out.contextAttached  = ime->HasContext();
+	out.disabledBySelf   = ime->IsDisabledBySelf();
+	out.imeAvailable     = ime->IsEnableThisLocale();
+	out.open             = ime->IsOpen();
+	out.overrideActive   = ImeOverrideActive;
+	out.contextForced    = ImeContextForced;
+	out.lastSetImeMode   = (tjs_int)LastSetImeMode;
+	out.defaultImeMode   = (tjs_int)DefaultImeMode;
+	out.savedImeMode     = (tjs_int)ImeSavedMode;
+	ime->GetConversion( out.conversion, out.sentence );
 }
 void TTVPWindowForm::SetDefaultImeMode(tTVPImeMode mode, bool reset) {
 	DefaultImeMode = mode;
@@ -1656,7 +1882,13 @@ HDWP TTVPWindowForm::ShowTop(HDWP hdwp) {
 	return hdwp;
 }
 void TTVPWindowForm::OnMouseMove( int shift, int x, int y ) {
+	// -ignoremouse: 実マウスの入力を捨てる (Agent の注入だけ通す)。
+	if (TVPShouldDropRealMouse()) return;
 	TranslateWindowToDrawArea(x, y);
+	// 実マウスの移動は常に仮想位置を上書きする (実移動が勝つ)。 ここへ来るのは
+	// ウィンドウ内の移動 (とキャプチャ中のドラッグ) だけなので、 「ウィンドウ外の
+	// 実マウスは無視して現状維持」が自動的に成り立つ。
+	VirtualCursor.Set(x, y);
 	MouseVelocityTracker.addMovement( TVPGetRoughTickCount32(), (float)x, (float)y );
 	if( TJSNativeInstance ) {
 		tjs_uint32 s = TVP_TShiftState_To_uint32(shift);
@@ -1673,6 +1905,13 @@ void TTVPWindowForm::OnMouseMove( int shift, int x, int y ) {
 	LastMouseMovedPos.y = y;
 }
 void TTVPWindowForm::OnMouseDown( int button, int shift, int x, int y ) {
+	// -ignoremouse: 実マウスの入力を捨てる (Agent の注入だけ通す)。
+	if (TVPShouldDropRealMouse()) return;
+	// クリックは**実座標が勝つ**: ユーザは見えているポインタの位置を押している
+	// ので、 仮想位置をそこへ合わせてから配送する (doc/VirtualCursor.md)。
+	// キー / パッドのナビが仮想位置を別の場所へ置いていても、 クリックで
+	// 揃うのでヒット判定と hover が食い違わない。
+	VirtualCursor.Set(x, y);
 	if( !CanSendPopupHide() ) DeliverPopupHide();
 
 	TranslateWindowToDrawArea( x, y);
@@ -1690,6 +1929,13 @@ void TTVPWindowForm::OnMouseDown( int button, int shift, int x, int y ) {
 	}
 }
 void TTVPWindowForm::OnMouseUp( int button, int shift, int x, int y ) {
+	// -ignoremouse: 実マウスの入力を捨てる (Agent の注入だけ通す)。
+	if (TVPShouldDropRealMouse()) return;
+	// クリックは**実座標が勝つ**: ユーザは見えているポインタの位置を押している
+	// ので、 仮想位置をそこへ合わせてから配送する (doc/VirtualCursor.md)。
+	// キー / パッドのナビが仮想位置を別の場所へ置いていても、 クリックで
+	// 揃うのでヒット判定と hover が食い違わない。
+	VirtualCursor.Set(x, y);
 	TranslateWindowToDrawArea(x, y);
 	ReleaseMouseCapture();
 	MouseVelocityTracker.addMovement( TVPGetRoughTickCount32(), (float)x, (float)y );
@@ -1701,18 +1947,29 @@ void TTVPWindowForm::OnMouseUp( int button, int shift, int x, int y ) {
 	}
 }
 void TTVPWindowForm::OnMouseDoubleClick( int button, int x, int y ) {
+	// -ignoremouse: 実マウスの入力を捨てる (Agent の注入だけ通す)。
+	if (TVPShouldDropRealMouse()) return;
 	// fire double click event
 	if( TJSNativeInstance ) {
 		TVPPostInputEvent( new tTVPOnDoubleClickInputEvent(TJSNativeInstance, LastMouseDownX, LastMouseDownY));
 	}
 }
 void TTVPWindowForm::OnMouseClick( int button, int shift, int x, int y ) {
+	// -ignoremouse: 実マウスの入力を捨てる (Agent の注入だけ通す)。
+	if (TVPShouldDropRealMouse()) return;
+	// クリックは**実座標が勝つ**: ユーザは見えているポインタの位置を押している
+	// ので、 仮想位置をそこへ合わせてから配送する (doc/VirtualCursor.md)。
+	// キー / パッドのナビが仮想位置を別の場所へ置いていても、 クリックで
+	// 揃うのでヒット判定と hover が食い違わない。
+	VirtualCursor.Set(x, y);
 	// fire click event
 	if( TJSNativeInstance ) {
 		TVPPostInputEvent( new tTVPOnClickInputEvent(TJSNativeInstance, LastMouseDownX, LastMouseDownY));
 	}
 }
 void TTVPWindowForm::OnMouseWheel( int delta, int shift, int x, int y ) {
+	// -ignoremouse: 実マウスの入力を捨てる (Agent の注入だけ通す)。
+	if (TVPShouldDropRealMouse()) return;
 	TranslateWindowToDrawArea( x, y);
 	if( TVPWheelDetectionType == wdtWindowMessage ) {
 		// wheel
@@ -1872,8 +2129,38 @@ void TTVPWindowForm::OnEnable( bool enabled ) {
 	}
 }
 void TTVPWindowForm::OnDeviceChange( UINT_PTR event, void *data ) {
-	// DirectInput 撤去済み。マウスホイールは WM_MOUSEWHEEL、ゲームパッドは
-	// XInput (毎フレームのホットプラグ検出) で扱うため、ここでの再ロードは不要。
+	// 本体の入力 (マウスホイール / XInput パッド) は自前で追従するのでここでは何もしない。
+	// registerDeviceChange() したときだけ、スクリプトへ onDeviceChanged を投げる
+	// (プラグインで列挙しているパッドなどを貼り直すため)
+	if( !DeviceChangeEnabled || !TJSNativeInstance ) return;
+	switch( event ) {
+	case DBT_DEVICEARRIVAL:         FireDeviceChanged( true  ); break;
+	case DBT_DEVICEREMOVECOMPLETE:  FireDeviceChanged( false ); break;
+	case DBT_DEVNODES_CHANGED:      FireDeviceChanged( true  ); break;
+	}
+}
+// onDeviceChanged(arrival) を投げる。通知なので非同期でよい
+void TTVPWindowForm::FireDeviceChanged( bool arrival ) {
+	iTJSDispatch2 *obj = TJSNativeInstance->GetOwnerNoAddRef();
+	if( !obj ) return;
+	tTJSVariant args[1] = { arrival };
+	static ttstr eventname( TJS_W("onDeviceChanged") );
+	TVPPostEvent( obj, obj, eventname, 0, TVP_EPT_POST | TVP_EPT_DISCARDABLE, 1, args );
+}
+// 外から貼り付けを指示された。onPaste をスクリプトへ投げるだけ
+void TTVPWindowForm::OnPaste() {
+	if( !TJSNativeInstance ) return;
+	iTJSDispatch2 *obj = TJSNativeInstance->GetOwnerNoAddRef();
+	if( !obj ) return;
+	static ttstr eventname( TJS_W("onPaste") );
+	TVPPostEvent( obj, obj, eventname, 0, TVP_EPT_POST, 0, NULL );
+}
+// キャプチャの打ち切り。掴んでいるレイヤを放す
+// (これが無いと、メニューなどに横取りされたあと mouseUp が来ず掴みっぱなしになる)
+void TTVPWindowForm::OnCancelMode() {
+	if( TJSNativeInstance ) {
+		TVPPostInputEvent( new tTVPOnReleaseCaptureInputEvent(TJSNativeInstance) );
+	}
 }
 void TTVPWindowForm::OnNonClientMouseDown( int button, UINT_PTR hittest, int x, int y ) {
 	if(!CanSendPopupHide()) {

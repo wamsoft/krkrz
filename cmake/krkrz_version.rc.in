@@ -31,7 +31,7 @@ BEGIN
             VALUE "FileVersion", "@PROJECT_VERSION_MAJOR@.@PROJECT_VERSION_MINOR@.@PROJECT_VERSION_PATCH@.@KRKRZ_VERSION_BUILD@"
             VALUE "InternalName", "tvp2/@KRKRZ_PLATFORM_LABEL@"
             VALUE "LegalCopyright", "(KIRIKIRI core) (C) W.Dee and contributors All Rights Reserved. This software is based in part on the work of Independent JPEG Group. For details: Run this program with '-about' option."
-            VALUE "OriginalFilename", "@EXENAME@.exe"
+            VALUE "OriginalFilename", "@EXE_OUTPUT_NAME@.exe"
             VALUE "ProductName", "@KRKRZ_PRODUCT_NAME@"
             VALUE "ProductVersion", "@PROJECT_VERSION_MAJOR@.@PROJECT_VERSION_MINOR@.@PROJECT_VERSION_PATCH@.@KRKRZ_VERSION_BUILD@"
         END

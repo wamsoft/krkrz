@@ -41,6 +41,8 @@ public:
 	virtual void __stdcall Play();
 	virtual void __stdcall Stop();
 	virtual void __stdcall Pause();
+	//! 音声を開始せずに先頭の 1 コマだけ提示する (engine の prepare)。
+	virtual bool __stdcall PrepareFrame();
 	virtual void __stdcall SetPosition(unsigned __int64 tick);
 	virtual void __stdcall GetPosition(unsigned __int64 *tick);
 	virtual void __stdcall GetStatus(tTVPVideoStatus *status);

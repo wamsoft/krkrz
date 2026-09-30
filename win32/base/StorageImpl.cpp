@@ -399,6 +399,36 @@ tjs_uint64 TVPFileSize(const ttstr &name)
 	}
 	return static_cast<tjs_uint64>(stbuf.st_size);
 }
+//---------------------------------------------------------------------------
+// ローカルの実フォルダを isDir つきで列挙する (common/base/StorageIntf.h)
+//   generic 側は iTVPLocalFileSystem::GetListAt に落ちる。 こちらは FindFirstFileW。
+//   tTVPFileMedia::GetListAt と違い、ディレクトリも (withDir なら) 渡す。
+//---------------------------------------------------------------------------
+void TVPGetLocalFolderListAt(const ttstr &name,
+	const std::function<void(const tjs_char *name, bool isDir)> &lister, bool withDir)
+{
+	ttstr pattern(name);
+	tjs_char last = pattern.IsEmpty() ? 0 : pattern.c_str()[pattern.GetLen() - 1];
+	if(last != TJS_W('\\') && last != TJS_W('/')) pattern += TJS_W("\\");
+	pattern += TJS_W("*.*");
+
+	WIN32_FIND_DATAW ffd;
+	HANDLE handle = ::FindFirstFileW((const wchar_t*)TVPToExtendedLengthPath(pattern).c_str(), &ffd);
+	if(handle == INVALID_HANDLE_VALUE) return;
+
+	do
+	{
+		const tjs_char *fn = reinterpret_cast<const tjs_char*>(ffd.cFileName);
+		// "." / ".." は返さない (generic 側の列挙に揃える)
+		if(fn[0] == TJS_W('.') && (fn[1] == 0 || (fn[1] == TJS_W('.') && fn[2] == 0)))
+			continue;
+		bool isDir = (ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+		if(isDir && !withDir) continue;
+		lister(fn, isDir);
+	} while(::FindNextFileW(handle, &ffd));
+
+	::FindClose(handle);
+}
 
 //---------------------------------------------------------------------------
 // TVPGetAppPath

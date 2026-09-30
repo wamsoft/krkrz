@@ -49,3 +49,18 @@ bool TVPClipboardGetText(ttstr & text)
 	return true;
 }
 //---------------------------------------------------------------------------
+//---------------------------------------------------------------------------
+// ビットマップの受け渡しは未対応 (Windows 版のみ)
+//---------------------------------------------------------------------------
+bool TVPClipboardSetBitmap(const void * bits, tjs_int width, tjs_int height,
+	tjs_int pitch)
+{
+	return false;
+}
+//---------------------------------------------------------------------------
+bool TVPClipboardGetBitmap(std::vector<tjs_uint32> & dest, tjs_int & width,
+	tjs_int & height)
+{
+	return false;
+}
+//---------------------------------------------------------------------------

@@ -32,6 +32,7 @@
 #include "ProcessMemory.h"          // TVPSummarizeProcessMemory
 #include "SystemAllocatorInfo.h"    // TVPSummarizeSystemAllocatorInfo
 #include "GlobalAllocStats.h"       // TVPGlobalAllocStats::Summarize
+#include "AllocSiteStats.h"         // TVPAllocSiteStats::Dump (.memsites)
 #include "SystemImpl.h"             // TVPHeapDump
 #include "MemoryOverlay.h"          // TVPMemoryOverlay::SetEnabled / IsEnabled
 #include "PadOverlay.h"             // TVPPadOverlay::SetEnabled / IsEnabled
@@ -280,6 +281,7 @@ bool tTVPReplThread::ProcessLine(const std::string& input_in,
 			emit(LL_HELP, ReplFmt("  .compact [on|off]- Show/toggle compact mode (current: %s)", g_repl_pp_compact ? "on" : "off"));
 			emit(LL_HELP, "  .mem             - Show one-line memory summary");
 			emit(LL_HELP, "  .memdump         - Dump full memory stats to log (TVPHeapDump)");
+			emit(LL_HELP, "  .memsites [N] [f] - Dump top N live allocation call sites to log (-memstatsite); f filters by function name");
 			emit(LL_HELP, "  .sysalloc        - Show system allocator info (free/allocatable)");
 			emit(LL_HELP, "  .memoverlay [on|off] - Toggle on-screen memory graph (drawn by OGL/SDL draw devices)");
 			emit(LL_HELP, "  .padoverlay [on|off] - Toggle on-screen gamepad button matrix (drawn by OGL/SDL draw devices)");
@@ -316,6 +318,18 @@ bool tTVPReplThread::ProcessLine(const std::string& input_in,
 		if (input == ".memdump") {
 			TVPHeapDump();
 			emit(LL_NORMAL, "(memory stats dumped to log)");
+			return true;
+		}
+		if (input == ".memsites" || input.rfind(".memsites ", 0) == 0) {
+			// .memsites [N] [filter]
+			std::string rest = input.size() > 9 ? input.substr(9) : "";
+			while (!rest.empty() && rest.front() == ' ') rest.erase(rest.begin());
+			int top = std::atoi(rest.c_str());
+			size_t sp = rest.find(' ');
+			std::string filter = (sp != std::string::npos) ? rest.substr(sp + 1) : "";
+			if (top <= 0 && !rest.empty() && !(rest[0] >= '0' && rest[0] <= '9')) filter = rest;
+			TVPAllocSiteStats::Dump(top > 0 ? top : 40, filter.empty() ? nullptr : filter.c_str());
+			emit(LL_NORMAL, "(allocation sites dumped to log)");
 			return true;
 		}
 		if (input == ".mempeakclear") {

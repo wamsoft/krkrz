@@ -33,6 +33,9 @@
 #include "LogIntf.h"
 #include "GraphicsLoaderIntf.h"
 #include "GraphicsLoadThread.h"
+#include <filesystem>
+#include "md5.h"                 // Storages.getMD5HashString
+#include "ScriptMgnIntf.h"       // TVPGetScriptDispatch (Storages.fstat の Date)
 
 #define TVP_DEFAULT_ARCHIVE_CACHE_NUM 64
 #define TVP_DEFAULT_AUTOPATH_CACHE_NUM 256
@@ -1027,10 +1030,6 @@ ttstr TVPGetLocallyAccessibleName(const ttstr &name)
 //---------------------------------------------------------------------------
 
 
-void TVPGetStorageListAt(const ttstr &name, iTVPStorageLister *lister)
-{
-	TVPStorageMediaManager.GetListAt(name, lister);
-}
 
 //---------------------------------------------------------------------------
 // tTVPArchive
@@ -1220,6 +1219,67 @@ private:
 
 } TVPArchiveCache;
 static void TVPClearArchiveCache() { TVPArchiveCache.Clear(); }
+
+//---------------------------------------------------------------------------
+void TVPGetStorageListAt(const ttstr &name, iTVPStorageLister *lister)
+{
+	// 相対 storage 名 ("font/" 等) も受けられるように正規化してから解決する。
+	// これをしないと file media がプロセスの current directory を基準に
+	// FindFirstFile してしまい、「ディレクトリが空」と区別が付かない形で
+	// 静かに 0 件になる。既に正規化済みの名前に対しては no-op。
+	ttstr fullname = TVPNormalizeStorageName(name);
+	if(fullname.IsEmpty()) fullname = name;
+
+	const tjs_char *delim = TJS_strchr(fullname.c_str(), TVPArchiveDelimiter);
+	if(delim)
+	{
+		// アーカイブ内ディレクトリ ("data.xp3>font/") の列挙。
+		// media manager の GetListAt は in-archive 名を扱えない (file media は
+		// 実ディレクトリを FindFirstFile / opendir するだけ) ので、ここで
+		// アーカイブ index から直接列挙する。addAutoPath のアーカイブ処理と
+		// 同じ要領で、index はソート済みという前提で prefix 一致の範囲だけを
+		// 走査する。
+		ttstr arcname(fullname, (int)(delim - fullname.c_str()));
+		ttstr in_arc_name(delim + 1);
+		tTVPArchive::NormalizeInArchiveStorageName(in_arc_name);
+		// ディレクトリ列挙なので末尾を '/' で揃える
+		// (アーカイブ直下 "arc.xp3>" は空のまま = prefix 無し)。
+		if(!in_arc_name.IsEmpty())
+		{
+			tjs_char last = in_arc_name.c_str()[in_arc_name.GetLen() - 1];
+			if(last != TJS_W('/')) in_arc_name += TJS_W("/");
+		}
+		tjs_int in_arc_name_len = in_arc_name.GetLen();
+
+		tTVPArchive *arc = TVPArchiveCache.Get(arcname);
+		try
+		{
+			tjs_uint storagecount = arc->GetCount();
+			tjs_int i = arc->GetFirstIndexStartsWith(in_arc_name);
+			if(i != -1)
+			{
+				for(; i < (tjs_int)storagecount; i++)
+				{
+					ttstr item = arc->GetName(i);
+					// ソート済みなので prefix から外れたらそこで終わり
+					if(!item.StartsWith(in_arc_name)) break;
+					// 直下のみ (さらに下の階層は含めない)
+					if(!TJS_strchr(item.c_str() + in_arc_name_len, TJS_W('/')))
+						lister->Add(TVPExtractStorageName(item));
+				}
+			}
+		}
+		catch(...)
+		{
+			arc->Release();
+			throw;
+		}
+		arc->Release();
+		return;
+	}
+
+	TVPStorageMediaManager.GetListAt(fullname, lister);
+}
 static tTVPAtExit TVPClearArchiveCacheAtExit
 	(TVP_ATEXIT_PRI_SHUTDOWN, TVPClearArchiveCache);
 //---------------------------------------------------------------------------
@@ -2104,6 +2164,197 @@ void TVPClearStorageCaches()
 
 
 //---------------------------------------------------------------------------
+
+//---------------------------------------------------------------------------
+// ローカルファイル操作 (旧 fstat プラグイン由来)
+//
+//   下回りは TVPCreateStream / TVPMoveStorage / TVPRemoveStorage /
+//   TVPCreateFolders / TVPRemoveFolder / TVPFileSize /
+//   TVPLastModifiedFileTime / TVPGetLocalFolderListAt で、すべて
+//   WINVER / generic の両方にあるので実装はここ (common) に 1 つだけ置く。
+//   Win32 の属性ビットやタイムスタンプ書き込みなど、下回りの無いものは
+//   プラグイン (packinoneWin32) 側に残してある。
+//---------------------------------------------------------------------------
+namespace {
+
+// storage 名 -> ローカルの実ファイル名。 実体が無ければ空文字列。
+static ttstr TVPStorageToLocalName(const tTJSVariant &v)
+{
+	ttstr name(TVPNormalizeStorageName(v));
+	TVPGetLocalName(name);
+	return name;
+}
+
+// dirlist 系: 配列へ push する
+static void TVPDirListAdd(iTJSDispatch2 *array, tjs_int index, const ttstr &file)
+{
+	tTJSVariant val(file);
+	array->PropSetByNum(0, index, &val, array);
+}
+
+#ifdef TVP_NO_NORMALIZE_PATH
+static inline ttstr TVPDirListNormalize(const ttstr &file) { return file; }
+#else
+// 本体のストレージ名は小文字で揃っているので列挙結果も小文字にする
+static ttstr TVPDirListNormalize(const ttstr &file)
+{
+	ttstr r(file);
+	tjs_char *p = r.Independ();
+	while(*p)
+	{
+		if(*p >= TJS_W('A') && *p <= TJS_W('Z')) *p += TJS_W('a') - TJS_W('A');
+		p++;
+	}
+	return r;
+}
+#endif
+
+static void TVPDirTreeRecurse(const ttstr &path, const ttstr &subdir,
+	iTJSDispatch2 *array, tjs_int &count, bool dironly)
+{
+	TVPGetLocalFolderListAt(path, [&](const tjs_char *filename, bool isDir) {
+		ttstr file(TVPDirListNormalize(ttstr(filename)));
+		if(isDir)
+		{
+			ttstr name(subdir + file + TJS_W("/"));
+			TVPDirListAdd(array, count++, name);
+			TVPDirTreeRecurse(path + file + TJS_W("/"), name, array, count, dironly);
+		}
+		else if(!dironly)
+		{
+			TVPDirListAdd(array, count++, subdir + file);
+		}
+	}, true);
+}
+
+// ディレクトリ名は末尾が '/' であることを要求する (従来の dirlist と同じ作法)。
+//   戻り値はローカルの実フォルダ名。 ローカルに落とせない場合は空文字列を返し、
+//   呼び出し側はメディアの列挙 (TVPGetStorageListAt) へ回す。
+static ttstr TVPRequireDirectoryName(const tTJSVariant &v, ttstr *outStorage = NULL)
+{
+	ttstr path(v);
+	if(path.GetLastChar() != TJS_W('/'))
+		TVPThrowExceptionMessage(TVPRequireSlashEndOfDirectory);
+	path = TVPNormalizeStorageName(path);
+	if(outStorage) *outStorage = path;
+	return TVPGetLocallyAccessibleName(path);
+}
+
+// iTVPStorageLister -> 配列 (アーカイブやプラグインのメディアを列挙するとき用)
+class tTVPDirListLister : public iTVPStorageLister
+{
+	iTJSDispatch2 *Array;
+	tjs_int Count;
+public:
+	tTVPDirListLister(iTJSDispatch2 *array) : Array(array), Count(0) {}
+	void TJS_INTF_METHOD Add(const ttstr &file)
+	{
+		tTJSVariant val(file);
+		Array->PropSetByNum(0, Count++, &val, Array);
+	}
+};
+
+// storage 名とその正規化名の両方で autopath キャッシュを落とす。
+//   TVPGetPlacedPath は「渡された名前」をキーにキャッシュするので、
+//   正規化名だけ消しても素の名前で引いた結果が残ってしまう。
+static void TVPForgetStoragePath(const ttstr &raw, const ttstr &normalized)
+{
+	TVPClearAutoPathCacheFile(raw);
+	if(normalized != raw) TVPClearAutoPathCacheFile(normalized);
+}
+
+// ローカルの実ファイルを指定サイズへ切り詰める / 伸ばす。
+//   下回りが WINVER / generic で揃わないので std::filesystem を使う
+//   (iTJSBinaryStream::SetEndOfStorage は generic では実ファイルを縮めない)。
+static bool TVPResizeLocalFile(const ttstr &nativeName, tjs_uint64 size)
+{
+#ifdef _WIN32
+	std::filesystem::path path(reinterpret_cast<const wchar_t *>(nativeName.c_str()));
+#else
+	std::string utf8;
+	tjs_string ts(nativeName.c_str());
+	TVPUtf16ToUtf8(utf8, ts);
+	std::filesystem::path path(utf8);
+#endif
+	std::error_code ec;
+	std::filesystem::resize_file(path, (std::uintmax_t)size, ec);
+	return !ec;
+}
+
+// FILETIME 相当 (1601-01-01 UTC 起点・100ns 刻み) を Date オブジェクトにする。
+//   旧 fstat プラグインの storeDate と同じ換算 (UNIX 時刻のミリ秒で setTime)。
+static void TVPStoreFileTimeAsDate(tTJSVariant &store, tjs_uint64 filetime)
+{
+	iTJSDispatch2 *global = TVPGetScriptDispatch();
+	if(!global) return;
+	tTJSVariant cls;
+	global->PropGet(0, TJS_W("Date"), NULL, &cls, global);
+	global->Release();
+	iTJSDispatch2 *dateClass = cls.AsObjectNoAddRef();
+	if(!dateClass) return;
+
+	iTJSDispatch2 *obj = NULL;
+	if(TJS_FAILED(dateClass->CreateNew(0, NULL, NULL, &obj, 0, NULL, dateClass))) return;
+	try
+	{
+		tTJSVariant time((tjs_int64)((filetime - 0x19DB1DED53E8000ULL) / 10000));
+		tTJSVariant *param[] = { &time };
+		obj->FuncCall(0, TJS_W("setTime"), NULL, NULL, 1, param, obj);
+		store = tTJSVariant(obj, obj);
+	}
+	catch(...)
+	{
+		obj->Release();
+		throw;
+	}
+	obj->Release();
+}
+//---------------------------------------------------------------------------
+// プロセスのカレントディレクトリをストレージ名 (末尾 '/') で返す。
+//   カレントディレクトリの概念が無い環境 (CS 機等) では空文字列。
+static ttstr TVPGetCurrentDirectoryStorageName()
+{
+	std::error_code ec;
+	std::filesystem::path path = std::filesystem::current_path(ec);
+	if(ec || path.empty()) return ttstr();
+#ifdef _WIN32
+	ttstr native(reinterpret_cast<const tjs_char *>(path.wstring().c_str()));
+	native += TJS_W("\\");
+#else
+	tjs_string ws;
+	TVPUtf8ToUtf16(ws, path.string());
+	ttstr native(ws.c_str());
+	native += TJS_W("/");
+#endif
+	return TVPNormalizeStorageName(native);
+}
+//---------------------------------------------------------------------------
+// ストリームを 1 本ずつ開いて中身を写す。 from はアーカイブ内でもよい。
+static void TVPCopyStorageContent(const ttstr &from, const ttstr &to)
+{
+	iTJSBinaryStream *in = TVPCreateStream(from, TJS_BS_READ);
+	if(!in) TVPThrowExceptionMessage(TJS_W("cannot open : %1"), from);
+	iTJSBinaryStream *out = NULL;
+	try
+	{
+		out = TVPCreateStream(to, TJS_BS_WRITE);
+		if(!out) TVPThrowExceptionMessage(TJS_W("cannot open : %1"), to);
+		tjs_uint8 buf[1024 * 16];
+		tjs_uint read;
+		while((read = in->Read(buf, sizeof buf)) > 0) out->Write(buf, read);
+	}
+	catch(...)
+	{
+		if(out) out->Destruct();
+		in->Destruct();
+		throw;
+	}
+	out->Destruct();
+	in->Destruct();
+}
+
+} // anonymous namespace
+
 // tTJSNC_Storages
 //---------------------------------------------------------------------------
 tjs_uint32 tTJSNC_Storages::ClassID = -1;
@@ -2558,6 +2809,375 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/isFastCacheLoading) {
 TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/isFastCacheLoading )
 //----------------------------------------------------------------------
 
+//----------------------------------------------------------------------
+//----------------------------------------------------------------------
+// 以下 旧 fstat プラグイン由来のローカルファイル操作。
+// WINVER / generic のどちらでも下回りが揃っているものだけを本体へ置いてある。
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/clearStorageCaches)
+{
+	TVPClearStorageCaches();
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/clearStorageCaches )
+//----------------------------------------------------------------------
+// fstat(storage) : サイズと最終更新時刻を辞書で返す。
+//   mtime は Date (旧 fstat プラグインと同じ形)。 時刻が取れなければ入れない。
+//   アーカイブ内のファイルはサイズだけ返す (実体が無いので時刻は取れない)。
+//   ⚠ fstat プラグインを入れた環境ではプラグイン版 (atime / ctime 付き) で
+//     上書きされる。 本体版は size と mtime だけ。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/fstat)
+{
+	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
+
+	ttstr storage(TVPNormalizeStorageName(*param[0]));
+	// ⚠ TVPGetLocalName は実ファイルに落とせないと例外を投げる。
+	//   アーカイブ内やプラグインのメディア (proxy:// 等) も受けたいので、
+	//   空文字列が返るだけの TVPGetLocallyAccessibleName を使う。
+	ttstr local(TVPGetLocallyAccessibleName(storage));
+
+	tjs_uint64 size = 0, mtime = 0;
+	bool found = false;
+
+	if(!local.IsEmpty())
+	{
+		// 実ファイル
+		if(TVPCheckExistentLocalFile(local) || TVPCheckExistentLocalFolder(local))
+		{
+			size  = TVPFileSize(local);
+			mtime = TVPLastModifiedFileTime(local);
+			found = true;
+		}
+	}
+	if(!found)
+	{
+		// アーカイブ内など。 開けるならサイズだけ拾う
+		iTJSBinaryStream *in = TVPCreateStream(storage, TJS_BS_READ);
+		if(in)
+		{
+			size = in->GetSize();
+			in->Destruct();
+			found = true;
+		}
+	}
+	if(!found) TVPThrowExceptionMessage(TJS_W("cannot open : %1"), ttstr(*param[0]));
+
+	if(result)
+	{
+		iTJSDispatch2 *dict = TJSCreateDictionaryObject();
+		tTJSVariant tmp;
+		tmp = (tjs_int64)size;
+		dict->PropSet(TJS_MEMBERENSURE, TJS_W("size"), NULL, &tmp, dict);
+		if(mtime)
+		{
+			tTJSVariant date;
+			TVPStoreFileTimeAsDate(date, mtime);
+			if(date.Type() == tvtObject)
+				dict->PropSet(TJS_MEMBERENSURE, TJS_W("mtime"), NULL, &date, dict);
+		}
+		*result = tTJSVariant(dict, dict);
+		dict->Release();
+	}
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/fstat )
+//----------------------------------------------------------------------
+// dirlist(dir/) : 直下の名前の配列。 ディレクトリは末尾に '/' が付く
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/dirlist)
+{
+	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
+	ttstr storage;
+	ttstr path(TVPRequireDirectoryName(*param[0], &storage));
+
+	if(result)
+	{
+		iTJSDispatch2 *array = TJSCreateArrayObject();
+		if(path.IsEmpty())
+		{
+			// ローカルの実フォルダではない (アーカイブ内 / プラグインのメディア)
+			tTVPDirListLister lister(array);
+			TVPGetStorageListAt(storage, &lister);
+		}
+		else
+		{
+			tjs_int count = 0;
+			TVPGetLocalFolderListAt(path, [&](const tjs_char *filename, bool isDir) {
+				ttstr file(TVPDirListNormalize(ttstr(filename)));
+				if(isDir) file += TJS_W("/");
+				TVPDirListAdd(array, count++, file);
+			}, true);
+		}
+		*result = tTJSVariant(array, array);
+		array->Release();
+	}
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/dirlist )
+//----------------------------------------------------------------------
+//----------------------------------------------------------------------
+// dirtree(dir [, dironly]) : 再帰列挙。 dir は末尾の '/' が無くてもよい
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/dirtree)
+{
+	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
+	bool dironly = numparams > 1 ? param[1]->operator bool() : false;
+
+	ttstr path(TVPNormalizeStorageName(ttstr(*param[0]) + TJS_W("/")));
+	TVPGetLocalName(path);
+
+	if(result)
+	{
+		iTJSDispatch2 *array = TJSCreateArrayObject();
+		tjs_int count = 0;
+		TVPDirTreeRecurse(path, TJS_W(""), array, count, dironly);
+		*result = tTJSVariant(array, array);
+		array->Release();
+	}
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/dirtree )
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/isExistentDirectory)
+{
+	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
+	ttstr path(TVPRequireDirectoryName(*param[0]));
+	if(result) *result = (!path.IsEmpty() && TVPCheckExistentLocalFolder(path)) ? 1 : 0;
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/isExistentDirectory )
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/isExistentStorageNoSearchNoNormalize)
+{
+	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
+	if(result) *result = TVPIsExistentStorageNoSearchNoNormalize(ttstr(*param[0])) ? 1 : 0;
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/isExistentStorageNoSearchNoNormalize )
+//----------------------------------------------------------------------
+// createDirectory(dir) : 途中の階層も作る (mkdir -p 相当)
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/createDirectory)
+{
+	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
+
+	ttstr path(TVPNormalizeStorageName(*param[0]));
+	TVPGetLocalName(path);
+	bool ret = TVPCreateFolders(path);
+	if(result) *result = ret ? 1 : 0;
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/createDirectory )
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/removeDirectory)
+{
+	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
+
+	ttstr path(TVPNormalizeStorageName(*param[0]));
+	TVPGetLocalName(path);
+	bool ret = TVPRemoveFolder(path);
+	if(result) *result = ret ? 1 : 0;
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/removeDirectory )
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/moveFile)
+{
+	if(numparams < 2) return TJS_E_BADPARAMCOUNT;
+
+	bool ret = false;
+	if(param[0]->Type() == tvtString && param[1]->Type() == tvtString)
+	{
+		ttstr from(TVPNormalizeStorageName(*param[0]));
+		ttstr to  (TVPNormalizeStorageName(*param[1]));
+		if(TVPMoveStorage(from, to))
+		{
+			ret = true;
+			TVPForgetStoragePath(ttstr(*param[0]), from);
+			TVPAddAutoPathCacheFile(to);
+		}
+	}
+	if(result) *result = ret ? 1 : 0;
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/moveFile )
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/deleteFile)
+{
+	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
+
+	bool ret = false;
+	if(param[0]->Type() == tvtString)
+	{
+		ttstr path(TVPNormalizeStorageName(*param[0]));
+		if(TVPRemoveStorage(path))
+		{
+			ret = true;
+			TVPForgetStoragePath(ttstr(*param[0]), path);
+		}
+	}
+	if(result) *result = ret ? 1 : 0;
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/deleteFile )
+//----------------------------------------------------------------------
+// copyFile(from, to [, failIfExist]) : ストレージ空間の中で写す
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/copyFile)
+{
+	if(numparams < 2) return TJS_E_BADPARAMCOUNT;
+
+	ttstr from(TVPNormalizeStorageName(*param[0]));
+	ttstr to  (TVPNormalizeStorageName(*param[1]));
+	bool failIfExist = numparams > 2 ? param[2]->operator bool() : false;
+
+	bool ret = false;
+	if(failIfExist && TVPIsExistentStorageNoSearchNoNormalize(to))
+	{
+		ret = false;
+	}
+	else
+	{
+		TVPCopyStorageContent(from, to);
+		TVPAddAutoPathCacheFile(to);
+		ret = true;
+	}
+	if(result) *result = ret ? 1 : 0;
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/copyFile )
+//----------------------------------------------------------------------
+// exportFile(storage, dest) : ストレージ空間のファイルを取り出す
+//   (アーカイブ内のものを実ファイルとして書き出す用途)
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/exportFile)
+{
+	if(numparams < 2) return TJS_E_BADPARAMCOUNT;
+
+	ttstr from(TVPNormalizeStorageName(*param[0]));
+	ttstr to  (TVPNormalizeStorageName(*param[1]));
+	TVPCopyStorageContent(from, to);
+	TVPAddAutoPathCacheFile(to);
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/exportFile )
+//----------------------------------------------------------------------
+// truncateFile(storage, size) : 指定サイズで切り詰める
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/truncateFile)
+{
+	if(numparams < 2) return TJS_E_BADPARAMCOUNT;
+
+	ttstr name(TVPNormalizeStorageName(*param[0]));
+	tjs_uint64 size = (tjs_uint64)(tjs_int64)*param[1];
+
+	ttstr local(name);
+	TVPGetLocalName(local);
+	bool ret = false;
+	if(!local.IsEmpty())
+	{
+		ret = TVPResizeLocalFile(local, size);
+		if(ret)
+		{
+			// 中身が変わったので読み side のキャッシュを落とす
+			TVPClearStorageCache(name, /*force=*/true);
+			TVPClearGraphicCacheEntry(name);
+		}
+	}
+	if(result) *result = ret ? 1 : 0;
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/truncateFile )
+//----------------------------------------------------------------------
+// getMD5HashString(storage) : 32 文字の小文字 16 進文字列
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/getMD5HashString)
+{
+	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
+
+	ttstr name(TVPNormalizeStorageName(*param[0]));
+	iTJSBinaryStream *in = TVPCreateStream(name, TJS_BS_READ);
+	if(!in) TVPThrowExceptionMessage(TJS_W("cannot open : %1"), ttstr(*param[0]));
+
+	md5_state_t st;
+	md5_init(&st);
+	tjs_uint8 buf[1024];
+	try
+	{
+		tjs_uint read;
+		while((read = in->Read(buf, sizeof buf)) > 0)
+			md5_append(&st, (const md5_byte_t *)buf, (int)read);
+	}
+	catch(...)
+	{
+		in->Destruct();
+		throw;
+	}
+	in->Destruct();
+	md5_finish(&st, (md5_byte_t *)buf);
+
+	if(result)
+	{
+		static const tjs_char *hex = TJS_W("0123456789abcdef");
+		tjs_char ret[33];
+		for(tjs_int i = 0; i < 16; i++)
+		{
+			ret[i * 2    ] = hex[(buf[i] >> 4) & 0xF];
+			ret[i * 2 + 1] = hex[ buf[i]       & 0xF];
+		}
+		ret[32] = 0;
+		*result = ttstr(ret);
+	}
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/getMD5HashString )
+//----------------------------------------------------------------------
+// getTemporaryName() : 一時ファイル用のローカル名を 1 つ払い出す
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/getTemporaryName)
+{
+	if(result) *result = TVPGetTemporaryName();
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/getTemporaryName )
+//----------------------------------------------------------------------
+// getTime(target) : ローカルの実ファイル / フォルダの最終更新時刻を
+//   %[ mtime: Date ] で返す (アーカイブ内は不可)。
+//   ⚠ fstat プラグインを入れた環境ではプラグイン版 (ctime / atime 付き) で
+//     上書きされる。 本体版は mtime だけ (下回りが mtime しか持たない)。
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/getTime)
+{
+	if(numparams < 1) return TJS_E_BADPARAMCOUNT;
+
+	ttstr storage(TVPNormalizeStorageName(*param[0]));
+	ttstr local(TVPGetLocallyAccessibleName(storage));
+	tjs_uint64 mtime = 0;
+	if(!local.IsEmpty() &&
+		(TVPCheckExistentLocalFile(local) || TVPCheckExistentLocalFolder(local)))
+		mtime = TVPLastModifiedFileTime(local);
+	if(!mtime) TVPThrowExceptionMessage(TJS_W("cannot open : %1"), ttstr(*param[0]));
+
+	if(result)
+	{
+		iTJSDispatch2 *dict = TJSCreateDictionaryObject();
+		tTJSVariant date;
+		TVPStoreFileTimeAsDate(date, mtime);
+		if(date.Type() == tvtObject)
+			dict->PropSet(TJS_MEMBERENSURE, TJS_W("mtime"), NULL, &date, dict);
+		*result = tTJSVariant(dict, dict);
+		dict->Release();
+	}
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_STATIC_METHOD_DECL(/*func. name*/getTime )
+//----------------------------------------------------------------------
+// currentPath : プロセスのカレントディレクトリ (読み取り専用、末尾 '/')。
+//   カレントディレクトリの概念が無い環境では空文字列。
+//   ⚠ 変更 (代入) は fstat プラグイン版だけが受け付ける (WINVER)。
+TJS_BEGIN_NATIVE_PROP_DECL(currentPath)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		if(result) *result = TVPGetCurrentDirectoryStorageName();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_DENY_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_STATIC_PROP_DECL(currentPath)
 //----------------------------------------------------------------------
 	TJS_END_NATIVE_MEMBERS
 }

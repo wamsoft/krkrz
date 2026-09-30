@@ -9,6 +9,7 @@
 #include "Application.h"
 #include "WindowForm.h"
 #include "WindowFormEvent.h"   // AM_KEY_DOWN / AM_MOUSE_DOWN 等
+#include "VirtualCursor.h"
 
 namespace {
 // 注入先のフォーム。モーダルウィンドウ表示中はそちらを対象にする
@@ -23,6 +24,8 @@ TTVPWindowForm* AgentMainForm()
 
 bool TVPAgentInjectMouseMove(int shift, int x, int y)
 {
+	// -ignoremouse 中でも Agent の注入は通す (実入力だけを捨てる)。
+	tTVPAgentMouseInjectScope inject_scope;
 	TTVPWindowForm* form = AgentMainForm();
 	if (!form) return false;
 	form->SendMouseMessage(AM_MOUSE_MOVE, 0, shift, x, y);
@@ -31,6 +34,8 @@ bool TVPAgentInjectMouseMove(int shift, int x, int y)
 
 bool TVPAgentInjectMouseButton(bool down, int button, int shift, int x, int y)
 {
+	// -ignoremouse 中でも Agent の注入は通す (実入力だけを捨てる)。
+	tTVPAgentMouseInjectScope inject_scope;
 	TTVPWindowForm* form = AgentMainForm();
 	if (!form) return false;
 	form->SendMouseMessage(down ? AM_MOUSE_DOWN : AM_MOUSE_UP, button, shift, x, y);
@@ -39,6 +44,8 @@ bool TVPAgentInjectMouseButton(bool down, int button, int shift, int x, int y)
 
 bool TVPAgentInjectWheel(int delta, int shift, int x, int y)
 {
+	// -ignoremouse 中でも Agent の注入は通す (実入力だけを捨てる)。
+	tTVPAgentMouseInjectScope inject_scope;
 	TTVPWindowForm* form = AgentMainForm();
 	if (!form) return false;
 	form->SendMouseMessage(AM_MOUSE_WHEEL, delta, shift, x, y);

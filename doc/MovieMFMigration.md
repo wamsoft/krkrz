@@ -523,3 +523,144 @@ pl_mpeg は `IStream` を `plm_buffer` のカスタム read コールバック�
 受け取り、デコード完了フレームを書き込んで `GetFrontBuffer` で提示、コールバックウィンドウへ
 更新通知。ピクセル形式・ストライド(負ピッチ=ボトムアップの可能性)・32bpp 前提を
 現行実装から厳密に踏襲する(実装時に BufferRenderer.cpp / dslayerd.cpp を精読して一致させる)。
+
+## prepare (先頭 1 コマの先出し) の契約 — 2026-09-11
+
+`VideoOverlay.prepare()` (レイヤモード専用) は「1 コマ目だけ描いて止める」機能で、
+KAGEX の `sysmovie` が `preparevideo` → `wp(for="prepare")` で待つ。旧 DirectShow は
+`IMediaControl::Pause()` で音を出さずに 1 枚描けたが、移行後の実装は一度 `Play()` して
+最初のコマが届いたら `Pause()` するという作りだった。
+
+**実際に何が聞こえていたか (実機で耳による確認、2026-09-11)**: 動画の音楽が漏れて
+いたのではなく、`Prepare()` が `Play()` を呼ぶことで `tTVPLayerVideoBase::Play()` の
+`Audio->Start()` が**実再生の前に音声シンクを開始してしまい、その立ち上がりが
+「かんだかいビープ」として聞こえていた**。対象の MPEG-1 は音声 PES が先頭から
+約 390KB 後にしか現れず、prepare は 1 コマ目の映像しか取り出さないので音楽そのものには
+到達していない — 症状と整合する。また**発生は間欠的**で、起動ごとに鳴る/鳴らないが
+変わる (シンク立ち上がりのタイミング依存)。
+
+切り分けの実測 (レイヤ動画のある実タイトルを条件別に多数回起動):
+
+| 条件 | 回数 | 鳴った |
+|---|---|---|
+| `-nostartup` (音声デバイスを開くだけ) | 8 | 0 |
+| `-nostartup` + ogg を 1 本再生 | 6 | 0 |
+| 通常起動・動画オフ | 8 | 0 |
+| 通常起動・動画あり・修正前 | 16 | 7 |
+| 通常起動・動画あり・修正後 | 20 | 0 |
+
+→ **音声デバイス初期化 (`ma_engine_init` 等) は無罪**。prepare が音声シンクを
+開始することだけが原因。
+
+そこでバックエンド側に「音を出さずに 1 コマ」の口を足した。
+**ただし status は従来どおり Play にする** (後述の KAG3 互換制約)。よって
+「ログが `play → pause → play` になるか」は判定に使えない — 判定は
+`Audio->Start()` を通るかどうかで見る。
+
+- `iTVPVideoOverlay::PrepareFrame()` (`win32/visual/krmovie.h`、既定 `false`)
+  — 音声シンクを開始しないまま先頭フレームだけデコード/提示し、**先頭位置へ戻した
+  停止状態**で待機する (直後の `Play()` が頭から始まる)。提示は通常再生と同じ
+  `EC_UPDATE` で通知する。`false` を返す実装には engine が従来どおり `Play()` する。
+- `tTVPLayerVideoBase` (= `Mpeg1Video` / `MFSourceReaderVideo`): `PrepareOnly` フラグを立てて
+  `State = stPlaying` にするが `Audio->Start()` は呼ばない。A/V 同期待ちもせず 1 コマ提示したら
+  デコードスレッド自身が `stPaused` + 先頭へ seek に戻す。
+- `tTVPWebpMovie` (webm): movie-player の `Seek()` は「`STATE_PRELOADING` にして 1 コマ強制
+  デコード → 元の状態へ戻す」実装で、audio sink を `Start()` するのは `STATE_PLAY` のときだけ。
+  つまり `Seek(0)` だけで条件を満たす。
+- engine (`win32/visual/VideoOvlImpl.cpp`): `Prepare()` が `PrepareFrame()` を試し、非対応なら
+  従来の `Play()` へフォールバック。`PrepareFrame()` 経路では Status が `Play` にならないので、
+  `EC_UPDATE` のゲートに `IsPrepare` を追加した。prepare 中に終端へ達した場合 (`EC_COMPLETE`)
+  も `perPrepare` を発火して待ちを解除する。
+
+### SDL / generic 側
+
+`generic/visual/VideoOvlImpl.cpp` の `Prepare()` は**空実装で、`perPrepare` をどこからも
+発火していなかった** (= SDL で `[sysmovie mode=layer]` を通すと `wp(for="prepare")` が
+明けない)。同じ契約を `iTVPMoviePlayer::PrepareFrame()` (`common/visual/MoviePlayer.h`) として
+足し、`tTVPMpeg1MoviePlayer` (pl_mpeg) と movie-player ラッパへ実装、engine 側は
+フレーム到着時 (`Update()`) に `perPrepare` を発火するようにした。
+
+prepare 中はフレーム到着由来の状態更新 (`SetStatusAsync`) を抑止する (`PrepareQuiet`)。
+generic はフレームコールバックで `IsPlaying()` から状態を導いており、movie-player の
+`IsPlaying()` は `STATE_PRELOADING` でも true なので、抑止しないと prepare 中に偽の
+`play` / `stop` がスクリプトへ飛ぶ (seek の flush で 1 回の prepare に複数フレームが
+届くため、`IsPrepare` だけでは取りこぼす)。抑止は次の `play()` / `stop()` / `close()` で解除。
+
+### 検証 (2026-09-11, 実機)
+
+WINVER / SDL3 の両方で、レイヤモードの `prepare()` → `play()` を MPEG-1 (音声 MP2)・webm・
+mp4 (MF SourceReader) で確認:
+
+- 状態遷移が `stop → pause → (perPrepare)` になり、**prepare 中の `play` が消えた**
+- prepare 後にレイヤへ 1 コマ目が入っている (`imageWidth/Height` が動画寸法、画素が取れる)
+- 続けて `play()` すると先頭から最後まで再生される (`position` が 0 から尺ぶん進む)
+- SDL3 でも `perPrepare` が発火するようになった (従来は無発火)
+
+### ★KAG3 互換制約: prepare 中も status は Play でなければならない
+
+prepare 中の status を Play にしない実装にしたところ、**KAGEX の `[sysmovie mode=layer]`
+がロゴ動画で止まる**回帰を出した (2026-09-11、実機で確認・修正済み)。原因は KAG3 の
+`Movie.tjs` / `MainWindow.tjs` 側の作りで、
+
+```tjs
+property canWaitStop { getter { return lastStatus == "play"; } }   // Movie.tjs
+...
+if(!movies[id].canWaitStop) return 0;   // waitMoviePeriod: 再生中でなければ待たない
+```
+
+`wp(for="prepare")` は**待ちに入る前に「再生中か」を status で判定**する。旧実装は
+prepare を実 `Play()` で行っていたため副作用で status が Play になっており、それに
+依存していた。status が Pause のままだと `wp` が待たずに素通りし、
+
+1. スクリプトはそのまま `play_start` → `play()` へ進む
+2. `Play()` の `ClearWndProcMessages()` が prepare の**唯一の** `EC_UPDATE` を食う
+3. `IsPrepare` が下りないまま残り、**本再生の 1 コマ目**が prepare 完了と誤認されて
+   `Pause()` + `Rewind()` される → 動画がフレーム 0 で止まる
+4. `wv`(再生終了待ち) が明けず、クリックでスキップするまで進まない
+
+という連鎖になる。対策:
+
+- `Prepare()` は `PrepareFrame()` 成功時に **`SetStatus(Play)` を明示的に呼ぶ**
+  (音声は開始しないので音は出ない)。準備完了時の `Pause()` で従来どおり Pause へ戻り、
+  観測できる status 列は旧実装と同一 (`stop → pause → play → pause`) になる。
+- `Play()` / `Stop()` の入口で `IsPrepare = false` にする。prepare のフレームを
+  取りこぼしても本再生を殺さないための保険 (単発イベントなので取りこぼしが致命的)。
+
+教訓: **prepare は「音を出さない」だけを変える。スクリプトから見える status 列は
+変えてはいけない** — KAG3 系はそこに依存している。
+
+### 音量: リニアゲイン ↔ volume 単位の取り違え (2026-09-12 修正)
+
+**ムービー音声だけ音量カーブが二重に掛かっていた。** 指定 80% が実測ピークで
+0.541 (期待 0.690) になり、**約 -2.1dB 余計に絞られて**いた。
+
+経路:
+
+1. `tTJSNI_VideoOverlay::SetAudioVolume(v)` — v は 0..100000 の volume 単位。
+   `TVPVolumeToDSAttenuate(v)` で mB (1/100 dB) にする
+2. `tTVPLayerVideoBase::SetAudioVolume(mB)` — `pow(10, mB/2000)` で
+   **リニアゲイン (0.0-1.0)** にして `DecoderSetVolume()` へ
+3. `tTVPMovieAudioSink::ApplyVolume()` が `mVolume * 100000` で
+   `iTVPAudioStream::SetVolume()` へ渡す ← **ここが誤り**
+4. `MiniAudioStream::SetVolume(vol)` は受け取った値を **volume 単位とみなして**
+   知覚カーブ `pow(vol/100000, TVPVolumeLogFactor/2000)` を掛ける
+
+3 でリニアゲインをそのまま 100000 倍したため、4 でカーブがもう一度掛かる。
+**指定 100 のときだけ `1.0^n = 1.0` で露呈しない**ので長く気付かれなかった。
+
+対策: `TVPAudioGainToVolume(float gain)` (`common/sound/AudioStream.{h,cpp}`) を
+足し、リニアゲインを `pow(gain, 2000/Factor) * 100000` で volume 単位へ逆変換
+してから渡す。`common/sound/MovieAudioSinkAdapter.h` と
+`win32/movie/MovieAudioSink.h` の両方が対象。
+
+実測 (`WaveSoundBuffer` 系と同じ曲線になったことの確認。実機で MPEG-1 の
+SE のピーク値を Core Audio のセッションピークメーターで採取):
+
+| 指定 | 修正前 | 修正後 | 期待 (カーブ 1 回) |
+|---:|---:|---:|---:|
+| 80  | 0.533 | **0.708** | 0.690 |
+| 100 | 0.984 | 0.984 | 1.000 |
+
+教訓: **`iTVPAudioStream::SetVolume` は「リニアゲイン × 100000」ではない**。
+知覚カーブが掛かる 0..100000 のスライダ値で、リニアゲインを持っている側は
+`TVPAudioGainToVolume()` を通すこと。

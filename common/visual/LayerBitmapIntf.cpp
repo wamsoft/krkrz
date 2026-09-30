@@ -4058,6 +4058,67 @@ void tTVPBaseBitmap::DoGrayScale(tTVPRect rect)
 	}
 }
 //---------------------------------------------------------------------------
+//! @brief 相対重みを 8bit 固定小数 (合計ちょうど 256) へ正規化する
+//! @return 正規化できたら真。 合計が 0 以下なら偽 (呼出側は何もしない)
+//! @note   合計を厳密に 256 にするのは、 グレースケール化の内部演算が
+//!         「各画素の総和 <= 255*256」を前提に 16bit レーンで加算するため。
+//! @note   端数の配り方は最大剰余法 (小数部の大きいものから 1 ずつ)。 これにより
+//!         BT.709 の実重み (0.2126/0.7152/0.0722) を渡すと 54/183/19 = 既定の
+//!         DoGrayScale と完全に同じ結果になる。
+static bool TVPNormalizeGrayScaleWeight( tjs_real rw, tjs_real gw, tjs_real bw,
+	tjs_int &ri, tjs_int &gi, tjs_int &bi )
+{
+	if(rw < 0) rw = 0;
+	if(gw < 0) gw = 0;
+	if(bw < 0) bw = 0;
+	tjs_real sum = rw + gw + bw;
+	if(sum <= 0) return false;
+
+	tjs_real scaled[3] = { rw * 256.0 / sum, gw * 256.0 / sum, bw * 256.0 / sum };
+	tjs_int  fixed[3];
+	tjs_real frac[3];
+	tjs_int  total = 0;
+	for(int i = 0; i < 3; i++)
+	{
+		fixed[i] = (tjs_int)scaled[i];			// 非負なので truncate = floor
+		if(fixed[i] > 256) fixed[i] = 256;
+		frac[i] = scaled[i] - fixed[i];
+		total += fixed[i];
+	}
+	for(tjs_int rest = 256 - total; rest > 0; rest--)
+	{
+		int best = 0;
+		for(int i = 1; i < 3; i++) if(frac[i] > frac[best]) best = i;
+		fixed[best]++;
+		frac[best] = -1.0;						// 同じ成分へ二度配らない
+	}
+	ri = fixed[0]; gi = fixed[1]; bi = fixed[2];
+	return (ri + gi + bi) == 256;
+}
+//---------------------------------------------------------------------------
+void tTVPBaseBitmap::DoGrayScale(tTVPRect rect, tjs_real rw, tjs_real gw, tjs_real bw)
+{
+	if(!Is32BPP()) return;  // 8bpp is always grayscaled bitmap
+
+	tjs_int ri, gi, bi;
+	if(!TVPNormalizeGrayScaleWeight(rw, gw, bw, ri, gi, bi)) return;
+
+	BOUND_CHECK(RET_VOID);
+
+	tjs_int h = rect.bottom - rect.top;
+	tjs_int w = rect.right - rect.left;
+
+	tjs_int pitch = GetPitchBytes();
+	tjs_uint8 * line = (tjs_uint8*)GetScanLineForWrite(rect.top);
+
+	line += rect.left * sizeof(tjs_uint32);
+	while(h--)
+	{
+		TVPDoGrayScaleWeight((tjs_uint32*)line, w, ri, gi, bi);
+		line += pitch;
+	}
+}
+//---------------------------------------------------------------------------
 void tTVPBaseBitmap::AdjustGamma(tTVPRect rect, const tTVPGLGammaAdjustData & data)
 {
 	if(!Is32BPP()) TVPThrowExceptionMessage(TVPInvalidOperationFor8BPP);

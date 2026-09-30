@@ -1693,10 +1693,26 @@ void TVPEnsureDataPathDirectory()
 static void PushAllCommandlineArguments()
 {
 	// store arguments given by commandline to "TVPProgramArguments"
-	bool acceptfilenameargument = GetSystemSecurityOption("acceptfilenameargument") != 0;
+	// acceptfilenameargument:
+	//   0 … "-name[=value]" をオプションとして読む。単独の "--" より後ろは -argN
+	//   1 … 全引数を -argN (オプションは読まない)
+	//   2 … 単独の "--" があれば、それより前の "-name[=value]" をオプションとして読み、
+	//        前にある非オプション引数と "--" より後ろを (この順で) -argN にする。
+	//        "--" が無ければ 1 と同じ。0 / 1 の挙動は変えない (doc/CommandLinePresets.md)
+	const int acceptfilenameargument = GetSystemSecurityOption("acceptfilenameargument");
 
 	bool argument_stopped = false;
-	if(acceptfilenameargument) argument_stopped = true;
+	bool keep_nonoption = false;	// "--" より前の非オプション引数も -argN にする (値 2)
+	if(acceptfilenameargument == 2)
+	{
+		bool has_stopper = false;
+		for(tjs_int i = 1; i<_argc; i++)
+			if(_wargv[i][0] == TJS_W('-') && _wargv[i][1] == TJS_W('-') && _wargv[i][2] == 0)
+				{ has_stopper = true; break; }
+		if(has_stopper) keep_nonoption = true;
+		else argument_stopped = true;
+	}
+	else if(acceptfilenameargument) argument_stopped = true;
 	int file_argument_count = 0;
 	for(tjs_int i = 1; i<_argc; i++)
 	{
@@ -1723,6 +1739,13 @@ static void PushAllCommandlineArguments()
 						value += TJS_W("=yes");
 					TVPProgramArguments.push_back(TVPParseCommandLineOne(value));
 				}
+			}
+			else if(keep_nonoption)
+			{
+				ttstr arg_name_and_value = TJS_W("-arg") + ttstr(file_argument_count) + TJS_W("=")
+					+ ttstr(_wargv[i]);
+				file_argument_count++;
+				TVPProgramArguments.push_back(arg_name_and_value);
 			}
 		}
 	}

@@ -11,6 +11,7 @@
 #include "tjsVariantString.h"
 #include "CharacterSet.h"          // TVPUtf16ToUtf8
 #include "LogIntf.h"
+#include "MemoryAllocatorStats.h"   // TVPFormatBytes
 
 #include <unordered_set>
 #include <unordered_map>
@@ -120,6 +121,86 @@ const char *const kBinNames[kNumBins] = {
 
 } // namespace
 
+namespace {
+
+// 文字列ヒープ (tTJSVariantString のセル) の生存数・ブロック充填率・同じ内容の重複。
+struct StrGroup {
+	uint64_t count = 0;
+	uint64_t long_bytes = 0;
+};
+struct StrHeapCtx {
+	std::vector<uint32_t> per_block;
+	uint64_t live = 0, refs = 0, long_count = 0, long_bytes = 0;
+	std::unordered_map<std::u16string, StrGroup> groups;
+};
+
+void visit_string(void *p, tjs_uint block, const TJS::tTJSVariantString *vs) {
+	auto &c = *static_cast<StrHeapCtx *>(p);
+	if (block >= c.per_block.size()) c.per_block.resize(block + 1);
+	++c.per_block[block];
+	++c.live;
+	c.refs += (uint64_t)vs->RefCount + 1;
+	uint64_t lb = 0;
+	if (vs->LongString) {
+		++c.long_count;
+		// TJSVS_malloc は確保長 (文字数) をバッファ直前に埋めている
+		lb = ((const size_t *)vs->LongString)[-1] * sizeof(tjs_char) + sizeof(size_t);
+		c.long_bytes += lb;
+	}
+	const tjs_char *str = vs->LongString ? vs->LongString : vs->ShortString;
+	auto &g = c.groups[std::u16string((const char16_t *)str, (size_t)vs->Length)];
+	++g.count;
+	g.long_bytes += lb;
+}
+
+void dump_string_heap() {
+	StrHeapCtx c;
+	tjs_uint nblocks = 0, per = 0;
+	TJS::TJSVisitStringHeap(visit_string, &c, &nblocks, &per);
+	const uint64_t cell = sizeof(TJS::tTJSVariantString);
+	char fill[32];
+	std::snprintf(fill, sizeof(fill), "%.1f%%",
+	              nblocks ? 100.0 * (double)c.live / ((double)nblocks * per) : 0.0);
+	TVPLOG_INFO("TJSObjectStats: string heap: blocks={} ({}) live cells={} ({} full) refs={} long={} ({}) distinct={}",
+	            (unsigned long long)nblocks, TVPFormatBytes((uint64_t)nblocks * per * cell),
+	            (unsigned long long)c.live, fill,
+	            (unsigned long long)c.refs, (unsigned long long)c.long_count,
+	            TVPFormatBytes(c.long_bytes), (unsigned long long)c.groups.size());
+	// ブロック充填率の分布 (空に近いブロックが多ければ断片化)
+	uint64_t occ[11] = {};
+	c.per_block.resize(nblocks);
+	for (uint32_t n : c.per_block) ++occ[per ? (size_t)n * 10 / per : 0];
+	TVPLOG_INFO("TJSObjectStats: string heap block fill (0-9%..100%): {} {} {} {} {} {} {} {} {} {} {}",
+	            occ[0], occ[1], occ[2], occ[3], occ[4], occ[5], occ[6], occ[7], occ[8], occ[9], occ[10]);
+	// 重複の多い内容 (同じ文字列が別セルで何個あるか)
+	uint64_t dup_cells = 0, dup_bytes = 0;
+	std::vector<std::pair<uint64_t, const std::pair<const std::u16string, StrGroup> *>> dups;
+	for (auto const &kv : c.groups) {
+		if (kv.second.count < 2) continue;
+		uint64_t extra = kv.second.count - 1;
+		uint64_t per_long = kv.second.long_bytes / kv.second.count;
+		uint64_t waste = extra * (cell + per_long);
+		dup_cells += extra;
+		dup_bytes += waste;
+		dups.emplace_back(waste, &kv);
+	}
+	TVPLOG_INFO("TJSObjectStats: string heap duplicates: extra cells={} (~{} incl. long buffers)",
+	            (unsigned long long)dup_cells, TVPFormatBytes(dup_bytes));
+	size_t dn = std::min<size_t>(20, dups.size());
+	std::partial_sort(dups.begin(), dups.begin() + dn, dups.end(),
+	                  [](auto const &a, auto const &b) { return a.first > b.first; });
+	for (size_t i = 0; i < dn; ++i) {
+		std::string utf8;
+		TVPUtf16ToUtf8(utf8, (const tjs_char *)dups[i].second->first.c_str());
+		if (utf8.size() > 48) utf8.resize(48);
+		TVPLOG_INFO("TJSObjectStats:   dup[{}] copies={} waste={} [{}]",
+		            (unsigned long long)i, (unsigned long long)dups[i].second->second.count,
+		            TVPFormatBytes(dups[i].first), utf8);
+	}
+}
+
+} // namespace
+
 void TVPDumpTJSObjectStats() noexcept {
 	// snapshot + size 集計 (lock 内で entry 数 / bin / fingerprint まで集める)。
 	std::vector<std::pair<tjs_int, TJS::tTJSDictionaryObject *>> dict_sizes;
@@ -136,7 +217,15 @@ void TVPDumpTJSObjectStats() noexcept {
 
 	// クラス名別の生存数。 ClassNames[0] が最派生クラス名。
 	// (Dictionary / Array / 素の Object はクラス未適用なので "(no class)")
-	std::unordered_map<std::string, size_t> per_class;
+	// クラス別の生存数とメンバ表 (Symbols 配列 + 連鎖ノード) の大きさ。
+	struct ClassStats {
+		size_t   live    = 0;
+		uint64_t members = 0;   // Count の合計
+		uint64_t slots   = 0;   // HashSize の合計 (Symbols 配列の要素数)
+		uint64_t chains  = 0;   // 連鎖ノード (new tTJSSymbolData) の数
+	};
+	std::unordered_map<std::string, ClassStats> per_class;
+	ClassStats all_tables;
 
 	{
 		std::lock_guard<std::mutex> lk(g_mutex);
@@ -147,7 +236,18 @@ void TVPDumpTJSObjectStats() noexcept {
 			std::string key;
 			if (names.empty() || names[0].IsEmpty()) key = "(no class)";
 			else TVPUtf16ToUtf8(key, names[0].c_str());
-			++per_class[key];
+			ClassStats &cs = per_class[key];
+			++cs.live;
+			uint64_t chains = 0;
+			for (tjs_int h = 0; h < o->HashSize; ++h)
+				for (auto *sym = o->Symbols[h].Next; sym; sym = sym->Next) ++chains;
+			uint64_t members = (o->Count > 0 ? (uint64_t)o->Count : 0);
+			cs.members += members;
+			cs.slots   += (uint64_t)o->HashSize;
+			cs.chains  += chains;
+			all_tables.members += members;
+			all_tables.slots   += (uint64_t)o->HashSize;
+			all_tables.chains  += chains;
 		}
 		dict_sizes.reserve(dict_instances);
 		for (auto *d : g_dicts) {
@@ -176,20 +276,46 @@ void TVPDumpTJSObjectStats() noexcept {
 
 	// クラス名別の生存数 上位 (増え続けているクラスを名指しするため)。
 	// 2 回 dump して差分を見ると、 どのクラスが解放されずに溜まっているかが判る。
+	// あわせてメンバ表の大きさ (Symbols 配列 + 連鎖ノード、各 sizeof(tTJSSymbolData)) を出す。
 	{
-		std::vector<std::pair<size_t, std::string>> cls;
+		const uint64_t symsz = sizeof(TJS::tTJSCustomObject::tTJSSymbolData);
+		TVPLOG_INFO("TJSObjectStats: member tables: members={} slots={} ({}) chain nodes={} ({})",
+		            (unsigned long long)all_tables.members,
+		            (unsigned long long)all_tables.slots,
+		            TVPFormatBytes(all_tables.slots * symsz),
+		            (unsigned long long)all_tables.chains,
+		            TVPFormatBytes(all_tables.chains * symsz));
+		std::vector<std::pair<const ClassStats *, const std::string *>> cls;
 		cls.reserve(per_class.size());
-		for (auto const &kv : per_class) cls.emplace_back(kv.second, kv.first);
+		for (auto const &kv : per_class) cls.emplace_back(&kv.second, &kv.first);
 		size_t cn = std::min<size_t>(20, cls.size());
 		std::partial_sort(cls.begin(), cls.begin() + cn, cls.end(),
-		                  [](auto const &a, auto const &b) { return a.first > b.first; });
+		                  [](auto const &a, auto const &b) { return a.first->live > b.first->live; });
 		TVPLOG_INFO("TJSObjectStats: per-class live (top {} of {} classes)",
 		            (unsigned long long)cn, (unsigned long long)cls.size());
-		for (size_t i = 0; i < cn; ++i)
-			TVPLOG_INFO("TJSObjectStats:   class[{}] live={} name={}",
-			            (unsigned long long)i,
-			            (unsigned long long)cls[i].first, cls[i].second);
+		for (size_t i = 0; i < cn; ++i) {
+			const ClassStats &c = *cls[i].first;
+			TVPLOG_INFO("TJSObjectStats:   class[{}] live={} name={} members/inst={} table={} (slots {} + chain {})",
+			            (unsigned long long)i, (unsigned long long)c.live, *cls[i].second,
+			            (unsigned long long)(c.live ? c.members / c.live : 0),
+			            TVPFormatBytes((c.slots + c.chains) * symsz),
+			            TVPFormatBytes(c.slots * symsz), TVPFormatBytes(c.chains * symsz));
+		}
+		// メンバ表の大きい順 (生存数が少なくても表が大きいクラスを拾う)
+		std::partial_sort(cls.begin(), cls.begin() + cn, cls.end(),
+		                  [](auto const &a, auto const &b) {
+		                      return a.first->slots + a.first->chains > b.first->slots + b.first->chains; });
+		TVPLOG_INFO("TJSObjectStats: per-class member table bytes (top {})", (unsigned long long)cn);
+		for (size_t i = 0; i < cn; ++i) {
+			const ClassStats &c = *cls[i].first;
+			TVPLOG_INFO("TJSObjectStats:   table[{}] {} live={} name={} members/inst={}",
+			            (unsigned long long)i, TVPFormatBytes((c.slots + c.chains) * symsz),
+			            (unsigned long long)c.live, *cls[i].second,
+			            (unsigned long long)(c.live ? c.members / c.live : 0));
+		}
 	}
+
+	dump_string_heap();
 
 	if (dict_instances == 0) return;
 

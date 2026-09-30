@@ -258,7 +258,7 @@
 			},
 			{
 				"caption": "Joystick key repeat delay",
-				"description": "Define joystick key repeat delay by milliseconds.",
+				"description": "Define joystick key repeat delay by milliseconds.\n\nWhen given explicitly, this value is also used as the default delay for focus stepping in Elements dialogs (holding the pad). A per-screen setting takes precedence.",
 				"name": "paddelay",
 				"type": "select",
 				"user": true,
@@ -312,7 +312,7 @@
 			},
 			{
 				"caption": "Joystick key repeat interval",
-				"description": "Define joystick key repeat interval by milliseconds. The smaller the value, the faster the repeated input.",
+				"description": "Define joystick key repeat interval by milliseconds. The smaller the value, the faster the repeated input.\n\nWhen given explicitly, this value is also used as the default interval for focus stepping in Elements dialogs (holding the pad). A per-screen setting takes precedence.",
 				"name": "padinterval",
 				"type": "select",
 				"user": true,

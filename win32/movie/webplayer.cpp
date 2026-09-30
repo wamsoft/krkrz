@@ -351,6 +351,20 @@ void __stdcall tTVPWebpMovie::Play()
 	}
 }
 //----------------------------------------------------------------------------
+//! @brief 音を出さずに先頭の 1 コマだけ提示する (engine の VideoOverlay.prepare)
+//! @note movie-player の Seek は「PRELOADING 状態にして 1 コマ強制デコード → 元の
+//!   状態へ戻す」実装で、audio sink を Start するのは STATE_PLAY のときだけ。
+//!   つまり Seek(0) だけで「音を出さずに 1 コマ」がそのまま実現できる。
+//!   フレームは通常再生と同じ経路 (Update / UpdatePlanes / BufferI420) で届き、
+//!   EC_UPDATE として engine へ通知される。
+//----------------------------------------------------------------------------
+bool __stdcall tTVPWebpMovie::PrepareFrame()
+{
+	if (!Player) return false;
+	Player->Seek(0);
+	return true;
+}
+//----------------------------------------------------------------------------
 //! @brief	  	ビデオを停止する
 //----------------------------------------------------------------------------
 void __stdcall tTVPWebpMovie::Stop()

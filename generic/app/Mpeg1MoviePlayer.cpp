@@ -48,6 +48,8 @@ class tTVPMpeg1MoviePlayer : public iTVPMoviePlayer
 
 	// 再生状態 / スレッド
 	std::atomic<State>   mState;
+	//! prepare 再生中 (音声を開始せず 1 コマだけ提示して stPaused へ戻る)。
+	std::atomic<bool>    mPrepareOnly;
 	std::atomic<bool>    mTerminate;
 	std::atomic<bool>    mDoSeek;
 	std::atomic<int64_t> mSeekUs;
@@ -72,7 +74,7 @@ public:
 	tTVPMpeg1MoviePlayer()
 	: mPlm(nullptr), mWidth(0), mHeight(0), mFps(0.0), mDurationUs(0)
 	, mHasAudio(false), mAudioSampleRate(0)
-	, mState(stStopped), mTerminate(false), mDoSeek(false), mSeekUs(0)
+	, mState(stStopped), mPrepareOnly(false), mTerminate(false), mDoSeek(false), mSeekUs(0)
 	, mCurPosUs(0), mLoop(false), mClockValid(false), mAudioEpochMs(0), mPtsEpochMs(0)
 	, mUseYUV(false), mVolume(1.0f)
 	{}
@@ -135,21 +137,36 @@ public:
 		bool fresh = (mState == stStopped || mState == stEnded);
 		if (mState == stEnded) { mDoSeek = true; mSeekUs = 0; }
 		if (fresh) mClockValid = false;   // 新規再生はクロック基準を取り直す
+		mPrepareOnly = false;             // prepare 中に本再生が来たら prepare は打ち切る
 		mState = stPlaying;
 		mSink.Start();
 		mCond.notify_all();
+	}
+	// 音を出さずに先頭の 1 コマだけ提示する。Play() との違いは mSink.Start() を
+	// 呼ばないことと、1 コマ提示した時点でデコードスレッド自身が停止すること。
+	bool PrepareFrame() override
+	{
+		std::lock_guard<std::mutex> lk(mMtx);
+		mSeekUs = 0; mDoSeek = true;   // 先頭のコマを出す
+		mPrepareOnly = true;
+		mClockValid = false;
+		mState = stPlaying;   // デコードスレッドを回すためだけの一時的な状態
+		mCond.notify_all();
+		return true;
 	}
 	void Stop() override
 	{
 		std::lock_guard<std::mutex> lk(mMtx);
 		mState = stStopped;
 		mClockValid = false;
+		mPrepareOnly = false;
 		mSink.Stop();
 		mCond.notify_all();
 	}
 	void Pause() override
 	{
 		std::lock_guard<std::mutex> lk(mMtx);
+		mPrepareOnly = false;   // prepare 中の pause は prepare の打ち切り
 		if (mState == stPlaying) { mState = stPaused; mSink.Stop(); }
 		mCond.notify_all();
 	}
@@ -257,8 +274,11 @@ private:
 			}
 			if (mState.load() != stPlaying) continue;
 
+			// prepare 再生中 (音を出さずに 1 コマだけ) は音声を一切動かさない。
+			const bool prepareOnly = mPrepareOnly.load();
+
 			// 音声を先に供給してシンクを満たす (マスタクロック源)
-			if (mHasAudio) PumpAudio();
+			if (mHasAudio && !prepareOnly) PumpAudio();
 
 			plm_frame_t *frame = plm_decode_video(mPlm);
 			if (!frame) {
@@ -273,12 +293,15 @@ private:
 				}
 				mState = stEnded;
 				mCurPosUs = mDurationUs;
+				mPrepareOnly = false;   // prepare 中の終端は prepare を畳む
 				continue;
 			}
 
 			int64_t ptsMs = (int64_t)(frame->time * 1000.0);
 
-			if (mHasAudio) {
+			if (prepareOnly) {
+				// prepare: 1 コマ出して止まるだけなので提示ペースを作らず即提示。
+			} else if (mHasAudio) {
 				if (!mClockValid) {
 					int64_t played = mSink.GetSamplesPlayed();
 					mAudioEpochMs = (played > 0 && mAudioSampleRate > 0)
@@ -313,6 +336,13 @@ private:
 
 			DeliverFrame(frame);
 			mCurPosUs = ptsMs * 1000;
+			if (prepareOnly) {
+				// 1 コマ出したので停止状態へ戻す。音声は一度も Start していない。
+				// デコード位置は進んでいるので先頭へ戻す (直後の Play() を頭から)。
+				mState = stPaused;
+				mPrepareOnly = false;
+				mSeekUs = 0; mDoSeek = true;
+			}
 		}
 	}
 

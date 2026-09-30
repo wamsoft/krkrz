@@ -222,3 +222,26 @@ LT/RT は 0.00〜+1.00) を 3 行 × 2 列で描画するので、デッドゾ�
   呼ぶ (現状コメントアウトの `SDL_AddGamepadMappingsFromFile` を生かす形でも可)。
 - **WINVER の機種名**: XInput は機種名 API を持たないため一律 `"XInput Controller"`。
   個体名が必要なら RawInput / Windows.Gaming.Input との併用が要る。
+
+---
+
+## キーリピート (`-paddelay` / `-padinterval`)
+
+パッドのキーリピート (`VK_PAD*` を押しっぱなしのあいだ繰り返し投げる) の
+待ち時間と間隔。実体は `common/visual/KeyRepeat.cpp` の
+`tTVPKeyRepeatEmulator` で、十字系とトリガ系で別インスタンスを持つ。
+既定は 500ms / 30ms。
+
+**Elements の画面ナビへの波及** (2026-09-12〜): この 2 つを**明示指定した
+場合に限り**、Elements ダイアログのフォーカス送り (パッド十字 / スティックの
+長押し) の既定にも同じ値が使われる。指定しなければ Elements 側の既定
+(400ms / 押し込み量連動) のまま。
+
+優先順は **画面 JSON の `"input": { "repeat_delay_ms", "repeat_rate_ms" }`
+> 起動オプション > `input_defaults.jsonc` > 組込既定**。
+
+⚠ Elements の十字ナビの「送り」を作っているのは**エンジンのリピートではなく
+elements 側のタイマ** (`view::process_pad_axes`)。エンジンのリピートは
+dpad を «軸値» として立て直すだけなので、上記の流し込みが無いと
+`-paddelay` を変えても UI の送り速度は変わらない。経緯と計測は
+[ElementsAudit.md](ElementsAudit.md) §6。

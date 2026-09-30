@@ -289,7 +289,7 @@ new / TJS_malloc / SDL_malloc → header (16B) 前置
                                 → stats 計上 (tag = TVPCurrentAllocTag())
 ```
 
-### 5.3 Header layout (16B、`KRKRZ_ENABLE_ALLOC_STATS=ON` のみ前置)
+### 5.3 Header layout (16B、`KRKRZ_ENABLE_ALLOC_STATS=ON` のみ前置。診断ビルドは 32B)
 
 ```
 +0:  size_t   size       (8 byte)
@@ -300,6 +300,10 @@ new / TJS_malloc / SDL_malloc → header (16B) 前置
 
 `free` 時は magic で経路振り分け、不一致 (pre-init / プラグイン由来等) は
 素 `std::free` に流す。
+
+`KRKRZ_ENABLE_MEMSTAT_DETAIL=ON` (診断ビルド) だけヘッダを 32 byte にし、
+`+16: uint32_t site` (確保元サイト番号、0 = 記録なし) + pad を持つ。
+呼び出し元別集計 (§8.4) が free 時にどのサイトから引くかを知るため。
 
 ### 5.4 Initialize タイミング
 
@@ -459,6 +463,49 @@ sampler thread 等が用途)。
 
 bin + fingerprint で「小さい Dict が大量に増えてる」リーク (`textlength|speechtext|text`
 パターンのメッセージバックログ等) が一目で見える。
+
+### 8.3 メンバ表と文字列ヒープ (2026-09-30 追加)
+
+オブジェクト数では説明できない確保を見るため、TJSObjectStats に次を足した。
+
+- **クラス別のメンバ表の大きさ** (Symbols 配列 + ハッシュ連鎖ノード)。
+  プラグインが大量の Dictionary を組み立てる構成で、メンバ表そのものが効いているかが分かる
+- **文字列ヒープの充填率と、同じ内容の重複**。文字列ヒープはブロックが丸ごと空かないと
+  返らないので、データを捨てた後に「薄く埋まったブロック」が残っていないかを見る
+
+### 8.4 呼び出し元別集計 (AllocSiteStats、2026-09-30 追加)
+
+`common/utils/AllocSiteStats.{h,cpp}`。診断ビルド + `-memstatsite=<段数>` のときだけ動く。
+**Windows 専用** (WINVER / Windows の SDL3。他 OS では何もしない)。
+
+- Krkrz pool 経由の確保ごとにスタックを取り (`RtlCaptureStackBackTrace`)、サイト番号を
+  ヘッダ (§5.3) に入れて、サイト別に生存バイト / 件数を数える
+- ダンプ時に DbgHelp でシンボル化し、アロケータ内部のフレームを飛ばして
+  「関数別」「呼び出し連鎖別」に出す。PDB の無い DLL はモジュール名を添える
+- 出口は REPL の `.memsites [件数] [関数名の一部]` と `.memdump` の末尾 (上位 40 件)。
+  `.memdump` には生存サイズの分布 (半オクターブ刻み) も出る
+
+### 8.5 TJS オブジェクトのメモリ削減 (2026-09-30)
+
+大きなデータを扱うスクリプトで効いた 2 つ。どちらも観測 (§8.3 / §8.4) で見つけた。
+
+**メンバ名の共有** (`tjsObject.cpp`、常に有効)
+`tTJSCustomObject::Add(const tjs_char *)` は C 文字列のメンバ名をメンバごとに新しく
+確保していた。プラグインが C 文字列の `PropSet` で Dictionary を組み立てると、同じキー名が
+オブジェクトの数だけ文字列ヒープに並ぶ。名前を `TJSMapGlobalStringMap` で引いて共有する
+(`tTJSHashFunc<tjs_char *>` と `<ttstr>` は同じ式なので Hint はそのまま使える)。
+実測で文字列ヒープ 148MB → 5MB。
+
+**Array メンバの遅延結合** (`tjsArray.cpp` / `tjsNative.cpp`、`-lazyarraymember=yes` のときだけ)
+Array は作るたびにクラスのメンバ (add / count 等、プラグインが足したものを含む) を
+インスタンスへコピーしていて、空配列でも 1 個 約 3KB だった。有効時は Array クラスが直接
+作ったインスタンスにはコピーせず (`tTJSNativeClass::BindMembersLazily`)、インスタンスに
+無い名前をクラスから引いてそのインスタンスを `this` に結び付ける。
+
+- Array を継承したスクリプトクラスのインスタンスは従来どおりコピーする
+- ⚠ 挙動差 1 点: インスタンスに設定したメソッドを `delete` したあと、従来は呼べなく
+  なっていたが、有効時はクラスのメソッドが呼ばれる
+- 実測: 空配列 20 万個の生成 807ms → 140ms、実アプリの本体ヒープ 740MB → 538MB
 
 ---
 

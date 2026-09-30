@@ -63,6 +63,9 @@ tTJSNI_VideoOverlay::tTJSNI_VideoOverlay()
 , Layer2(nullptr)
 , currentSurface(0)
 , updateSurface(false)
+, IsPrepare(false)
+, PrepareFallback(false)
+, PrepareQuiet(false)
 , Presenter(nullptr)
 , PresenterRegistered(false)
 , mUseYUV(false)
@@ -106,6 +109,9 @@ bool tTJSNI_VideoOverlay::IsMixerPlaying() const
 void
 tTJSNI_VideoOverlay::CheckUpdate()
 {
+	// prepare 中 (音を出さずに 1 コマだけ出している最中) は「再生中」ではないので
+	// 状態を動かさない。動かすと play → stop の偽の状態変化がスクリプトへ飛ぶ。
+	if (PrepareQuiet) return;
 	if (Status == tTVPVideoOverlayStatus::Play || Status == tTVPVideoOverlayStatus::Pause) {
 		SetStatusAsync( mPlayer->IsPlaying() ? tTVPVideoOverlayStatus::Play : tTVPVideoOverlayStatus::Stop );
 	}
@@ -152,6 +158,21 @@ tTJSNI_VideoOverlay::Update()
 		updateSurface = false;
 		// XXX フレーム番号がとれるのが理想
 		FireFrameUpdateEvent(0);
+
+		if (IsPrepare) {
+			// prepare() の 1 コマが届いた。PrepareFrame() は先頭へ戻した停止状態で
+			// 待機しているので、ここで止め直す必要は無い (余計な seek を出すと
+			// バックエンドによっては新しいフレーム = 偽の状態変化が飛ぶ)。
+			IsPrepare = false;
+			FirePeriodEvent(perPrepare);
+			if (PrepareFallback) {
+				// 実再生でのフォールバックだったので、ここで止めて巻き戻す。
+				PrepareFallback = false;
+				Pause();
+				Rewind();
+			}
+			SetStatus( tTVPVideoOverlayStatus::Pause );   // WINVER と同じ落ち着き先
+		}
 	}
 }
 
@@ -204,7 +225,8 @@ void tTJSNI_VideoOverlay::Open(const ttstr &name)
 		// YUV plane 経路: presenter へ plane を渡し、GPU で YUV→RGB。
 		mPlayer->SetOnVideoDecodedPlanes([this](const iTVPMoviePlayer::VideoPlaneFrame &frame) {
 			if (Presenter) Presenter->UpdateFrameYUV(frame);
-			SetStatusAsync( mPlayer->IsPlaying() ? tTVPVideoOverlayStatus::Play : tTVPVideoOverlayStatus::Stop );
+			if (!PrepareQuiet)   // prepare 〜 play の間は偽の play/stop を飛ばさない
+				SetStatusAsync( mPlayer->IsPlaying() ? tTVPVideoOverlayStatus::Play : tTVPVideoOverlayStatus::Stop );
 		});
 	}
 	if (mPlayer && !mUseYUV) {
@@ -250,7 +272,8 @@ void tTJSNI_VideoOverlay::Open(const ttstr &name)
 				}
 				// else: 前フレーム未消費につき drop (変換せず)
 			}
-			SetStatusAsync( mPlayer->IsPlaying() ? tTVPVideoOverlayStatus::Play : tTVPVideoOverlayStatus::Stop );
+			if (!PrepareQuiet)   // prepare 〜 play の間は偽の play/stop を飛ばさない
+				SetStatusAsync( mPlayer->IsPlaying() ? tTVPVideoOverlayStatus::Play : tTVPVideoOverlayStatus::Stop );
 		});
 	}
 	if (!mPlayer) {
@@ -262,6 +285,9 @@ void tTJSNI_VideoOverlay::Close()
 {
 	// pull 経路を先に解放 (DrawDevice の登録解除 + フレーム/テクスチャ破棄)。
 	ReleasePresenter();
+	IsPrepare = false;
+	PrepareFallback = false;
+	PrepareQuiet = false;
 	if (mPlayer) {
 		Window->DelVideoOverlay(this);
 		delete mPlayer;
@@ -333,6 +359,9 @@ void tTJSNI_VideoOverlay::ReleasePresenter()
 //---------------------------------------------------------------------------
 void tTJSNI_VideoOverlay::Play() {
 	if (mPlayer) {
+		IsPrepare = false;
+		PrepareFallback = false;
+		PrepareQuiet = false;   // 本再生開始: 状態更新を再開する
 		// pull 経路 (presenter) を先に確保してから再生開始 (decode コールバックが即来ても
 		// 最初のフレームから presenter へ渡せるように)。
 		TryRegisterPresenter();
@@ -347,6 +376,9 @@ void tTJSNI_VideoOverlay::Play() {
 //---------------------------------------------------------------------------
 void tTJSNI_VideoOverlay::Stop() {
 	if (mPlayer) {
+		IsPrepare = false;
+		PrepareFallback = false;
+		PrepareQuiet = false;
 		mPlayer->Stop();
 	}
 }
@@ -363,7 +395,31 @@ void tTJSNI_VideoOverlay::Rewind() {
 	}
 }
 //---------------------------------------------------------------------------
-void tTJSNI_VideoOverlay::Prepare() {}
+void tTJSNI_VideoOverlay::Prepare() {
+	// レイヤモードで「音を出さずに先頭 1 コマだけ出す」。KAGEX の sysmovie は
+	// preparevideo() → wp(for="prepare") で perPrepare を待つので、ここが発火
+	// しないとシナリオが進まない。
+	if (!mPlayer || Mode != vomLayer) return;
+	IsPrepare = true;
+	PrepareFallback = false;
+	PrepareQuiet = true;
+	if (!mPlayer->PrepareFrame()) {
+		// prepare 非対応のバックエンド (wasm の <video> 等) はフォールバックで
+		// 実際に再生する (冒頭の音が僅かに漏れるが perPrepare は発火する)。
+		PrepareFallback = true;
+		Pause();
+		Rewind();
+		mPlayer->Play();
+	}
+	// ★音は出さないが status は Play にする。KAG3 の Movie.tjs は wp(for="prepare")
+	//   の待ちに入る前に canWaitStop (= status が "play") を見ており、prepare 中に
+	//   status が Play にならないと「再生中でない」と判断して待たずに素通りする
+	//   (= prepare 待ちが機能しない)。WINVER の旧実装は実際に Play() していたため
+	//   副作用で Play になっていた。準備完了時に Pause へ戻す。
+	SetStatus( tTVPVideoOverlayStatus::Play );
+	// フレームの引き取り (Update) を回してもらうため更新対象へ登録する。
+	if (Window) Window->AddVideoOverlay(this);
+}
 //---------------------------------------------------------------------------
 void tTJSNI_VideoOverlay::SetSegmentLoop( int comeFrame, int goFrame ) {}
 //---------------------------------------------------------------------------

@@ -363,6 +363,10 @@ DEFINE_CONVERT_FUNCTION( convet_premulalpha_to_alpha );
 DEFINE_CONVERT_FUNCTION( convet_alpha_to_premulalpha );
 DEFINE_ALPHA_COPY_FUNCTION( bind_mask_to_main );
 DEFINE_CONVERT_FUNCTION( do_gray_scale );
+static void TVP_do_gray_scale_weight(tjs_uint32 *dest, tjs_int len, tjs_int rw, tjs_int gw, tjs_int bw ) {
+	do_gray_scale_weight_functor func(rw,gw,bw);
+	convert_func_c( dest, len, func );
+}
 static void TVP_red_blue_swap(tjs_uint32 *dest, tjs_int len ) {
 	convert_func_c<red_blue_swap_functor>( dest, len );
 }
@@ -513,6 +517,13 @@ extern void TVP_ch_blur_add_mul_copy65_sse2_c( tjs_uint8 *dest, const tjs_uint8 
 extern void TVP_ch_blur_add_mul_copy_sse2_c( tjs_uint8 *dest, const tjs_uint8 *src, tjs_int len, tjs_int opa );
 extern void TVP_ch_blur_mul_copy65_sse2_c( tjs_uint8 *dest, const tjs_uint8 *src, tjs_int len, tjs_int opa );
 extern void TVP_ch_blur_mul_copy_sse2_c( tjs_uint8 *dest, const tjs_uint8 *src, tjs_int len, tjs_int opa );
+// TVPDoGrayScaleWeight の実体。 tvpgl.c 側の関数ポインタ群は gengl.pl が
+// tvpgl.c 内の "_c" 関数から自動生成しているため、 そこに属さないこのポインタ
+// だけは手書きでここに置く (既定値は下の TVPGL_C_Init が入れる)。
+extern "C" {
+TVP_GL_FUNC_PTR_DECL(void, TVPDoGrayScaleWeight,  (tjs_uint32 *dest, tjs_int len, tjs_int rw, tjs_int gw, tjs_int bw)) = NULL;
+}
+
 /**
  * GL初期化。関数ポインタを設定する
  */
@@ -603,6 +614,7 @@ void TVPGL_C_Init() {
 	TVPReverse8 = TVP_reverse8;
 	TVPReverse32 = TVP_reverse32;
 	TVPDoGrayScale = TVP_do_gray_scale;
+	TVPDoGrayScaleWeight = TVP_do_gray_scale_weight;
 	TVPRedBlueSwap = TVP_red_blue_swap;
 	TVPRedBlueSwapCopy = TVP_red_blue_swap_copy;
 	TVPChBlurMulCopy65 = TVP_ch_blur_mul_copy65;

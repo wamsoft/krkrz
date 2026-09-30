@@ -18,6 +18,8 @@
 #include "AudioStream.h"
 #include "MoviePlayer.h"
 
+#include <atomic>
+
 //---------------------------------------------------------------------------
 // tTJSNI_VideoOverlay : VideoOverlay Native Instance
 //---------------------------------------------------------------------------
@@ -38,6 +40,16 @@ class tTJSNI_VideoOverlay : public tTJSNI_BaseVideoOverlay
 	int currentSurface;
 	tTJSCriticalSection surfaceLock;
 	bool updateSurface;
+	//! prepare() 中 (先頭 1 コマの到着待ち)。到着時に perPrepare を発火して下ろす。
+	//! デコードスレッドのフレームコールバックからも読むので atomic。
+	std::atomic<bool> IsPrepare;
+	//! prepare 非対応バックエンドで実再生へフォールバックした (= 完了時に止める必要がある)。
+	bool PrepareFallback;
+	//! prepare() 〜 次の play()/stop() の間、フレーム到着由来の状態更新を抑止する。
+	//! prepare は「再生」ではないので play/stop の偽イベントを飛ばしてはいけない。
+	//! バックエンドによっては prepare 1 回で複数フレームが届く (seek の flush 分) ため
+	//! IsPrepare だけでは取りこぼす。デコードスレッドからも読むので atomic。
+	std::atomic<bool> PrepareQuiet;
 
 	// overlay 動画 (非 layer) を DrawDevice へ pull 型で渡す presenter。現在の DrawDevice が
 	// 対応 host を公開していれば登録して使い (SDL 等)、無ければ従来 push (UpdateVideo) へ

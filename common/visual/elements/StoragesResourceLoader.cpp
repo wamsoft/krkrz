@@ -346,9 +346,9 @@ void TVPInstallElementsResourceLoader()
 	std::call_once(g_install_once, DoInstall);
 }
 
-void TVPRegisterElementsFontsFromStorageDir(const ttstr& dir)
+tjs_int TVPRegisterElementsFontsFromStorageDir(const ttstr& dir)
 {
-	if (dir.IsEmpty()) return;
+	if (dir.IsEmpty()) return 0;
 
 	// install を保証 (呼出順序にゆるみがあっても安全に動くように)
 	TVPInstallElementsResourceLoader();
@@ -361,13 +361,13 @@ void TVPRegisterElementsFontsFromStorageDir(const ttstr& dir)
 		TVPGetStorageListAt(dir, &lister);
 	} catch (...) {
 		// dir が存在しない / アクセス権なし等は warning だけ出して終了
-		TVPAddLog(ttstr(TJS_W("ElementsResourceLoader: font dir not found: ")) + dir);
-		return;
+		TVPAddImportantLog(ttstr(TJS_W("ElementsResourceLoader: font dir not found: ")) + dir);
+		return 0;
 	}
 
 	if (lister.files.empty()) {
-		TVPAddLog(ttstr(TJS_W("ElementsResourceLoader: no fonts in: ")) + dir);
-		return;
+		TVPAddImportantLog(ttstr(TJS_W("ElementsResourceLoader: no files in: ")) + dir);
+		return 0;
 	}
 
 	// dir の末尾を `/` で揃える (Storages convention)
@@ -400,8 +400,18 @@ void TVPRegisterElementsFontsFromStorageDir(const ttstr& dir)
 		++registered;
 	}
 
-	TVPAddLog(ttstr(TJS_W("ElementsResourceLoader: registered ")) +
-		ttstr((tjs_int)registered) + TJS_W(" font(s) from ") + dir);
+	// 0 本のときは WARNING で出す。 案件のフォントを data/ 配下から供給する
+	// 構成では「パッケージしたらフォントが 1 本も無い」= 文字が一切出ない
+	// ビルドに直結するので、 MASTER (log level=WARNING) でも見えるようにする。
+	if (registered == 0) {
+		TVPAddImportantLog(ttstr(TJS_W("ElementsResourceLoader: no fonts registered from ")) +
+			dir + TJS_W(" (") + ttstr((tjs_int)lister.files.size()) +
+			TJS_W(" entrie(s) scanned, none was .ttf/.otf)"));
+	} else {
+		TVPAddLog(ttstr(TJS_W("ElementsResourceLoader: registered ")) +
+			ttstr((tjs_int)registered) + TJS_W(" font(s) from ") + dir);
+	}
+	return (tjs_int)registered;
 }
 
 #ifdef __WINVER__

@@ -38,6 +38,133 @@
 #endif
 
 //---------------------------------------------------------------------------
+// 破損検知ログの保留バッファ
+//---------------------------------------------------------------------------
+// markCorrupted は mu_ 保持下で呼ばれる。ここでログを出すとログ出力の確保が
+// (Krkrz pool なら) 同じ pool の allocate へ戻り mu_ を再ロックしてしまう。
+// また alloc 経路内なので呼び出し元の途中状態へ再入する危険もある。
+// そのため検知時は確保を伴わない固定長配列へ記録だけ残し、
+// FlushDeferredLog (TVPLog 入口) で出力する。
+// 破損検知は pool ごとに 1 回だけなので、容量は pool 数ぶんあれば足りる。
+namespace {
+
+struct CorruptionRecord {
+	const char *name;   // pool 名 (literal 前提。TVPPooledAllocator もコピーしない)
+	const char *where;  // 検知箇所 (literal)
+	const void *block;
+	size_t      pool_size;
+};
+
+constexpr int kMaxCorruptionRecords = 8;
+std::mutex        g_corruption_mu;  // mu_ → g_corruption_mu の順でのみ取る
+CorruptionRecord  g_corruption_records[kMaxCorruptionRecords];
+int               g_corruption_count = 0;
+int               g_corruption_dropped = 0;
+std::atomic<bool> g_corruption_pending{false};
+
+#if TVP_POOL_VERBOSE_LOG
+// PoolAlloc:/PoolFree: の毎呼出ログも同じ理由で alloc 経路から出さない。
+// さらに Krkrz pool ではログ出力の確保がまたログを生むので、直接出すと
+// ロックに関係なく無限再帰になる。固定長リングへ記録だけ積み、
+// FlushDeferredLog で出力する。出力中のスレッドは t_verbose_flushing を立て、
+// 自分の確保 (= ログ出力由来) は記録しない。溢れた分は件数だけ報告する。
+enum class VerboseKind : uint8_t { PoolAlloc, FallbackAlloc, PoolFree, FallbackFree };
+
+struct VerboseRecord {
+	VerboseKind  kind;
+	TVPAllocTag  tag;
+	const char  *name;
+	const void  *ptr;
+	size_t       size;
+	size_t       req;        // PoolAlloc のみ (要求サイズ)
+	size_t       pool_used;  // PoolAlloc / PoolFree のみ
+};
+
+constexpr size_t  kMaxVerboseRecords = 16384;
+std::mutex        g_verbose_mu;  // 末端ロック (mu_ → g_verbose_mu の順でのみ取る)
+VerboseRecord     g_verbose_records[kMaxVerboseRecords];
+size_t            g_verbose_head = 0;   // 次に出力する位置
+size_t            g_verbose_count = 0;  // 保留件数
+uint64_t          g_verbose_dropped = 0;
+std::atomic<bool> g_verbose_pending{false};
+thread_local bool t_verbose_flushing = false;
+
+void RecordVerbose(const VerboseRecord &r) {
+	if (t_verbose_flushing) return;  // ログ出力自身の確保は記録しない
+	{
+		std::lock_guard<std::mutex> lk(g_verbose_mu);
+		if (g_verbose_count < kMaxVerboseRecords) {
+			g_verbose_records[(g_verbose_head + g_verbose_count) % kMaxVerboseRecords] = r;
+			++g_verbose_count;
+		} else {
+			++g_verbose_dropped;
+		}
+	}
+	g_verbose_pending.store(true, std::memory_order_release);
+}
+
+void FlushVerboseRecords() {
+	if (t_verbose_flushing) return;  // 出力中の TVPLog からの再入
+	if (!g_verbose_pending.load(std::memory_order_acquire)) return;
+	t_verbose_flushing = true;
+	// 開始時点の保留分だけ出す (他スレッドが積み続けても抜けられるように)
+	size_t remaining;
+	uint64_t dropped;
+	{
+		std::lock_guard<std::mutex> lk(g_verbose_mu);
+		remaining = g_verbose_count;
+		dropped = g_verbose_dropped;
+		g_verbose_dropped = 0;
+	}
+	constexpr size_t kChunk = 64;
+	VerboseRecord chunk[kChunk];
+	while (remaining > 0) {
+		size_t n = 0;
+		{
+			std::lock_guard<std::mutex> lk(g_verbose_mu);
+			while (n < kChunk && n < remaining && g_verbose_count > 0) {
+				chunk[n++] = g_verbose_records[g_verbose_head];
+				g_verbose_head = (g_verbose_head + 1) % kMaxVerboseRecords;
+				--g_verbose_count;
+			}
+			if (g_verbose_count == 0 && g_verbose_dropped == 0)
+				g_verbose_pending.store(false, std::memory_order_relaxed);
+		}
+		if (n == 0) break;
+		remaining -= n;
+		for (size_t i = 0; i < n; ++i) {
+			const VerboseRecord &r = chunk[i];
+			switch (r.kind) {
+			case VerboseKind::PoolAlloc:
+				TVPLOG_DEBUG("PoolAlloc:[{}] pool ptr={:p} size={} (req {}) tag={} pool_used={}",
+				             r.name, r.ptr, r.size, r.req, TVPAllocTagName(r.tag), r.pool_used);
+				break;
+			case VerboseKind::FallbackAlloc:
+				TVPLOG_DEBUG("PoolAlloc:[{}] fallback ptr={:p} size={} tag={}",
+				             r.name, r.ptr, r.size, TVPAllocTagName(r.tag));
+				break;
+			case VerboseKind::PoolFree:
+				TVPLOG_DEBUG("PoolFree:[{}] pool ptr={:p} size={} tag={} pool_used={}",
+				             r.name, r.ptr, r.size, TVPAllocTagName(r.tag), r.pool_used);
+				break;
+			case VerboseKind::FallbackFree:
+				TVPLOG_DEBUG("PoolFree:[{}] fallback ptr={:p} size={} tag={}",
+				             r.name, r.ptr, r.size, TVPAllocTagName(r.tag));
+				break;
+			}
+		}
+	}
+	if (dropped > 0) {
+		TVPLOG_WARNING("PooledAllocator: {} verbose alloc/free record(s) dropped (ring full)",
+		               dropped);
+	}
+	t_verbose_flushing = false;
+}
+#endif // TVP_POOL_VERBOSE_LOG
+
+} // anonymous namespace
+
+//---------------------------------------------------------------------------
 // 内部 helpers
 //---------------------------------------------------------------------------
 
@@ -156,10 +283,44 @@ bool TVPPooledAllocator::validateBlock(const Block *b, bool expect_free) const {
 void TVPPooledAllocator::markCorrupted(const char *where, const void *b) {
 	if (pool_corrupted_) return;
 	pool_corrupted_ = true;
-	TVPLOG_CRITICAL("PooledAllocator [{}]: heap corruption detected in {} (block={:p}). "
-	                "Pool disabled; further allocations fall back to system malloc and "
-	                "existing pool blocks are leaked ({} bytes held).",
-	                name_, where, b, pool_size_);
+	// mu_ 保持下なのでここではログを出さない (上の保留バッファ参照)
+	{
+		std::lock_guard<std::mutex> lk(g_corruption_mu);
+		if (g_corruption_count < kMaxCorruptionRecords) {
+			g_corruption_records[g_corruption_count++] = { name_, where, b, pool_size_ };
+		} else {
+			++g_corruption_dropped;
+		}
+	}
+	g_corruption_pending.store(true, std::memory_order_release);
+}
+
+void TVPPooledAllocator::FlushDeferredLog() {
+#if TVP_POOL_VERBOSE_LOG
+	FlushVerboseRecords();
+#endif
+	if (!g_corruption_pending.load(std::memory_order_acquire)) return;
+	CorruptionRecord recs[kMaxCorruptionRecords];
+	int count, dropped;
+	{
+		std::lock_guard<std::mutex> lk(g_corruption_mu);
+		// 先に落としてから出力する (出力中の TVPLog → 本関数の再入は即 return)
+		g_corruption_pending.store(false, std::memory_order_relaxed);
+		count = g_corruption_count;
+		dropped = g_corruption_dropped;
+		for (int i = 0; i < count; ++i) recs[i] = g_corruption_records[i];
+		g_corruption_count = 0;
+		g_corruption_dropped = 0;
+	}
+	for (int i = 0; i < count; ++i) {
+		TVPLOG_CRITICAL("PooledAllocator [{}]: heap corruption detected in {} (block={:p}). "
+		                "Pool disabled; further allocations fall back to system malloc and "
+		                "existing pool blocks are leaked ({} bytes held).",
+		                recs[i].name, recs[i].where, recs[i].block, recs[i].pool_size);
+	}
+	if (dropped > 0) {
+		TVPLOG_CRITICAL("PooledAllocator: {} more heap corruption report(s) dropped", dropped);
+	}
 }
 
 void TVPPooledAllocator::insertFree(Block *b) {
@@ -313,9 +474,8 @@ void *TVPPooledAllocator::allocate(size_t size, TVPAllocTag tag) {
 			stats_.recordAlloc(actual_payload, tag);
 			void *payload = payloadFromBlock(b);
 #if TVP_POOL_VERBOSE_LOG
-			TVPLOG_DEBUG("PoolAlloc:[{}] pool ptr={:p} size={} (req {}) tag={} pool_used={}",
-			             name_, payload, actual_payload, size,
-			             TVPAllocTagName(tag), pool_used_.load(std::memory_order_relaxed));
+			RecordVerbose({ VerboseKind::PoolAlloc, tag, name_, payload, actual_payload, size,
+			                pool_used_.load(std::memory_order_relaxed) });
 #endif
 			firePressureIfNeeded(pool_used_.load(std::memory_order_relaxed));
 			return payload;
@@ -334,8 +494,7 @@ void *TVPPooledAllocator::allocate(size_t size, TVPAllocTag tag) {
 	fallback_bytes_.fetch_add(size, std::memory_order_relaxed);
 	void *payload = static_cast<char *>(raw) + FALLBACK_HEADER_SIZE;
 #if TVP_POOL_VERBOSE_LOG
-	TVPLOG_DEBUG("PoolAlloc:[{}] fallback ptr={:p} size={} tag={}",
-	             name_, payload, size, TVPAllocTagName(tag));
+	RecordVerbose({ VerboseKind::FallbackAlloc, tag, name_, payload, size, 0, 0 });
 #endif
 	return payload;
 }
@@ -401,9 +560,8 @@ void TVPPooledAllocator::free(void *mem) {
 		const TVPAllocTag freed_tag = sf_tag(b->size_and_flags);
 		freePoolBlock(b);
 #if TVP_POOL_VERBOSE_LOG
-		TVPLOG_DEBUG("PoolFree:[{}] pool ptr={:p} size={} tag={} pool_used={}",
-		             name_, mem, freed_size, TVPAllocTagName(freed_tag),
-		             pool_used_.load(std::memory_order_relaxed));
+		RecordVerbose({ VerboseKind::PoolFree, freed_tag, name_, mem, freed_size, 0,
+		                pool_used_.load(std::memory_order_relaxed) });
 #else
 		(void)freed_size; (void)freed_tag;
 #endif
@@ -420,8 +578,7 @@ void TVPPooledAllocator::free(void *mem) {
 	fallback_bytes_.fetch_sub(fb_size, std::memory_order_relaxed);
 	std::free(raw);
 #if TVP_POOL_VERBOSE_LOG
-	TVPLOG_DEBUG("PoolFree:[{}] fallback ptr={:p} size={} tag={}",
-	             name_, mem, fb_size, TVPAllocTagName(fb_tag));
+	RecordVerbose({ VerboseKind::FallbackFree, fb_tag, name_, mem, fb_size, 0, 0 });
 #else
 	(void)fb_size; (void)fb_tag;
 #endif

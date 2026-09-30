@@ -39,6 +39,11 @@
 #include "GraphicsLoadThread.h"
 #ifdef KRKRZ_USE_REPL
 #include "REPL.h"
+#endif
+// DAP (VSCode デバッグアダプタ) は REPL とは独立に有効化できる
+// (KRKRZ_ENABLE_DAP)。MASTER ビルド等で REPL=OFF + DAP=ON になっても
+// TVPCreateDAP/DestroyDAP/DrainDAP の宣言が要る。sdl3/environ/main.cpp と同じ扱い。
+#ifdef KRKRZ_ENABLE_DAP
 #include "tjsDebuggerCore.h"
 #endif
 #include "CharacterSet.h"

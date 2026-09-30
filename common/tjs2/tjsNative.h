@@ -205,6 +205,12 @@ protected:
 
 	virtual iTJSDispatch2 *CreateBaseTJSObject();
 
+	// Called instead of copying the class members into a new instance that
+	// this class created directly (CreateNew). Return true when the instance
+	// resolves the members from the class on demand (lazy member binding);
+	// return false to copy them as usual.
+	virtual bool BindMembersLazily(iTJSDispatch2 *dsp) { return false; }
+
 private:
 
 public:

@@ -9,6 +9,7 @@
 #include "TVPWindow.h"
 #include "SystemControl.h"
 #include "Exception.h"
+#include "DebugIntf.h"   // TVPAddLog (システムキーの到達記録)
 #include "Application.h"
 #include "resource.h"
 // CompatibleNativeFuncs は撤去 (touch/gesture API は Win10 で常在、直接リンク)
@@ -253,6 +254,12 @@ LRESULT WINAPI tTVPWindow::Proc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
 		return DefWindowProc(hWnd, msg, wParam, lParam);
 	case WM_SYSKEYDOWN:
 	case WM_KEYDOWN:
+		// システムキー (ALT / F10 系) が実際に届いているかは外から見えないので記録する。
+		// ネイティブメニューを持つと Windows がメニュー起動に食ってしまい、
+		// アプリに来なくなることがある。通常キーは数が多いので記録しない
+		if(msg == WM_SYSKEYDOWN)
+			TVPAddLog(TJS_W("(info) WM_SYSKEYDOWN vk=") + ttstr((tjs_int)wParam) +
+					  TJS_W(" shift=") + ttstr((tjs_int)GetShiftState()));
 		OnKeyDown( (WORD)wParam, GetShiftState(), lParam&0xffff, (lParam&(1<<30))?true:false );
 		return ::DefWindowProc(hWnd,msg,wParam,lParam);
 	case WM_SYSKEYUP:
@@ -370,6 +377,16 @@ LRESULT WINAPI tTVPWindow::Proc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
 		break;
 	case WM_DEVICECHANGE:
 		OnDeviceChange( wParam, reinterpret_cast<void*>(lParam) );
+		break;
+	case WM_PASTE:
+		// 外のランチャなどから「貼り付け」を指示されることがある (WM_PASTE)。
+		// 何をするかはスクリプト側の判断なのでイベントとして渡すだけ
+		OnPaste();
+		break;
+	case WM_CANCELMODE:
+		// メニューや別ウィンドウに横取りされてキャプチャが打ち切られた。
+		// この後 WM_LBUTTONUP は来ないので、掴みっぱなしを自分で解く
+		OnCancelMode();
 		break;
 	case WM_NCLBUTTONDOWN:
 		OnNonClientMouseDown( mbLeft, wParam, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) );
@@ -587,6 +604,79 @@ bool tTVPWindow::GetEnable() const {
 }
 void tTVPWindow::SetEnable( bool s ) {
 	::EnableWindow( GetHandle(), s ? TRUE : FALSE );
+}
+
+// 最大化 / 最小化 / 復帰 (doc/WindowState.md)
+//   windowEx プラグインが持っていた機能を本体へ移したもの。
+bool tTVPWindow::GetMaximized() const {
+	return ::IsZoomed( GetHandle() ) ? true : false;
+}
+bool tTVPWindow::GetMinimized() const {
+	return ::IsIconic( GetHandle() ) ? true : false;
+}
+void tTVPWindow::Maximize() {
+	::ShowWindow( GetHandle(), SW_MAXIMIZE );
+}
+void tTVPWindow::Minimize() {
+	::ShowWindow( GetHandle(), SW_MINIMIZE );
+}
+void tTVPWindow::ShowRestore() {
+	::ShowWindow( GetHandle(), SW_RESTORE );
+}
+// 最大化 / 最小化していないときの外形矩形。
+// Windows は WINDOWPLACEMENT.rcNormalPosition に「元のサイズ」を持っている。
+// ⚠ rcNormalPosition は**ワークエリア座標**なので、画面座標へ直す必要がある
+// (タスクバーが上や左にあるとずれる)。
+// 画面座標での矩形 (doc/WindowState.md)
+bool tTVPWindow::GetWindowRectScreen( int& l, int& t, int& w, int& h ) const {
+	RECT r;
+	if( !::GetWindowRect( GetHandle(), &r ) ) return false;
+	l = r.left; t = r.top; w = r.right - r.left; h = r.bottom - r.top;
+	return true;
+}
+// GetClientRect はクライアント左上が (0,0) の座標を返すので、ClientToScreen で画面座標へ直す
+bool tTVPWindow::GetClientRectScreen( int& l, int& t, int& w, int& h ) const {
+	RECT r;
+	if( !::GetClientRect( GetHandle(), &r ) ) return false;
+	POINT zero = { 0, 0 };
+	if( !::ClientToScreen( GetHandle(), &zero ) ) return false;
+	l = r.left + zero.x;
+	t = r.top  + zero.y;
+	w = r.right  - r.left;
+	h = r.bottom - r.top;
+	return true;
+}
+// クライアントを指定矩形に合わせる。装飾ぶん (外形 - クライアント) を足して SetWindowPos する
+bool tTVPWindow::SetClientRectScreen( int l, int t, int w, int h ) {
+	int cl, ct, cw, ch, wl, wt, ww, wh;
+	if( !GetClientRectScreen( cl, ct, cw, ch ) ) return false;
+	if( !GetWindowRectScreen( wl, wt, ww, wh ) ) return false;
+	const int x = l + (wl - cl);
+	const int y = t + (wt - ct);
+	const int cx = w + (ww - cw);
+	const int cy = h + (wh - ch);
+	return ::SetWindowPos( GetHandle(), NULL, x, y, cx, cy,
+						   SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOZORDER ) ? true : false;
+}
+bool tTVPWindow::GetNormalRect( int& l, int& t, int& w, int& h ) const {
+	WINDOWPLACEMENT wp;
+	wp.length = sizeof(wp);
+	if( !::GetWindowPlacement( GetHandle(), &wp ) ) return false;
+	RECT r = wp.rcNormalPosition;
+	HMONITOR mon = ::MonitorFromWindow( GetHandle(), MONITOR_DEFAULTTONEAREST );
+	MONITORINFO mi;
+	mi.cbSize = sizeof(mi);
+	if( mon && ::GetMonitorInfo( mon, &mi ) ) {
+		const int dx = mi.rcWork.left - mi.rcMonitor.left;
+		const int dy = mi.rcWork.top  - mi.rcMonitor.top;
+		r.left += dx; r.right  += dx;
+		r.top  += dy; r.bottom += dy;
+	}
+	l = r.left;
+	t = r.top;
+	w = r.right  - r.left;
+	h = r.bottom - r.top;
+	return true;
 }
 
 void tTVPWindow::GetCaption( tjs_string& v ) const {

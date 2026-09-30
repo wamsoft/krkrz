@@ -251,6 +251,24 @@ void TJSDumpStringHeap(void)
 }
 #endif
 //---------------------------------------------------------------------------
+#ifdef KRKRZ_ENABLE_MEMSTAT_DETAIL
+void TJSVisitStringHeap(void (*fn)(void *ctx, tjs_uint block, const tTJSVariantString *vs),
+	void *ctx, tjs_uint *nblocks, tjs_uint *cells_per_block)
+{
+	if(nblocks) *nblocks = 0;
+	if(cells_per_block) *cells_per_block = HEAP_CAPACITY_INC;
+	if(!TJSStringHeapList || !TJSStringHeapCS) return;
+	tTJSCSH csh(*TJSStringHeapCS);
+	if(nblocks) *nblocks = (tjs_uint)TJSStringHeapList->size();
+	for(tjs_uint b = 0; b < TJSStringHeapList->size(); b++)
+	{
+		const tTJSVariantString *h = (*TJSStringHeapList)[b];
+		for(tjs_int i = 0; i < HEAP_CAPACITY_INC; i++)
+			if(h[i].HeapFlag & HEAP_FLAG_USING) fn(ctx, b, h + i);
+	}
+}
+#endif
+//---------------------------------------------------------------------------
 static int TJS_USERENTRY TJSStringHeapSortFunction(const void *a, const void *b)
 {
 	return (int)(*(const tTJSVariantString **)b - *(const tTJSVariantString **)a);

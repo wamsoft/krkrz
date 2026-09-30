@@ -220,6 +220,33 @@ public:
 	void SetFullScreen(bool b);
 	bool GetFullScreen() const;
 
+	//-- 最大化 / 最小化 / 復帰 (doc/WindowState.md)。windowEx プラグインから移した
+	bool GetMaximized() const;
+	bool GetMinimized() const;
+	void Maximize();
+	void Minimize();
+	void ShowRestore();
+	//! 最大化 / 最小化していないときの外形矩形。取れなければ false
+	bool GetNormalRect( tjs_int& l, tjs_int& t, tjs_int& w, tjs_int& h ) const;
+	//! 外形 / クライアントの画面座標矩形。取れなければ false
+	bool GetWindowRectScreen( tjs_int& l, tjs_int& t, tjs_int& w, tjs_int& h ) const;
+	bool GetClientRectScreen( tjs_int& l, tjs_int& t, tjs_int& w, tjs_int& h ) const;
+	bool SetClientRectScreen( tjs_int l, tjs_int t, tjs_int w, tjs_int h );
+	//! 拡張イベント (onMove / onMoving / onResizing / onMoveSizeBegin / onMoveSizeEnd /
+	//! onDPIChanged / onDisplayChanged / onMinimize / onMaximize / onMaximizeQuery) を投げる
+	void RegisterExEvent();
+	bool GetExEventEnabled() const;
+	//! 入力デバイスの抜き差しで onDeviceChanged(arrival) を投げるようにする
+	void RegisterDeviceChange();
+	bool GetDeviceChangeEnabled() const;
+	//! ウィンドウ枠の操作を禁じる
+	void SetMoveDisabled( bool b );
+	bool GetMoveDisabled() const;
+	void SetResizeDisabled( bool b );
+	bool GetResizeDisabled() const;
+	//! onMaximizeQuery ハンドラからの返事 (false で最大化を止める)
+	void SetMaximizeQueryResult( bool b );
+
 	void SetUseMouseKey(bool b);
 	bool GetUseMouseKey() const;
 
@@ -230,6 +257,10 @@ public:
 	//void RemoveMaskRegion();
 
 	void SetMouseCursorState(tTVPMouseCursorState mcs);
+	//! @brief 仮想カーソル位置だけを動かす (実 OS カーソルは触らない)。
+	//!        キー / パッドのナビ (Elements の cursor-warp 等) から使う。
+	//!        詳細は doc/VirtualCursor.md
+	void SetVirtualCursorPos(tjs_int x, tjs_int y);
     tTVPMouseCursorState GetMouseCursorState() const;
 
 	void SetFocusable(bool b);

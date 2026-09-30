@@ -53,6 +53,12 @@ public:
 //---------------------------------------------------------------------------
 extern tjs_int TJSObjectHashBitsLimit;
 
+//---------------------------------------------------------------------------
+// Array objects resolve the Array class members (add, count ...) on demand
+// instead of copying them into every instance (saves about 2.5KB per array)
+//---------------------------------------------------------------------------
+extern bool TJSArrayLazyMemberBinding;
+
 
 
 //---------------------------------------------------------------------------

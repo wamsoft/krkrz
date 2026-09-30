@@ -267,6 +267,61 @@ struct sse2_do_gray_scale {
 	}
 };
 
+// 重み指定版。 lum_ を実行時に組む以外は sse2_do_gray_scale と同じ。
+// rw+gw+bw == 256 が前提 (16bit レーンでの総和が 255*256 = 65280 に収まる)。
+struct sse2_do_gray_scale_weight {
+	const __m128i zero_;
+	const __m128i alphamask_;
+	__m128i lum_;
+	const tjs_uint32 rw_, gw_, bw_;
+	inline sse2_do_gray_scale_weight( tjs_int rw, tjs_int gw, tjs_int bw )
+	 : zero_( _mm_setzero_si128() ), alphamask_(_mm_set1_epi32(0xff000000)),
+	   rw_((tjs_uint32)rw), gw_((tjs_uint32)gw), bw_((tjs_uint32)bw) {
+		// unpacklo_epi8( pixel, zero ) 後のレーン並びは B,G,R,A
+		lum_ = _mm_setr_epi16( (short)bw, (short)gw, (short)rw, 0,
+		                       (short)bw, (short)gw, (short)rw, 0 );
+	}
+	inline tjs_uint32 operator()( tjs_uint32 s ) const {
+		tjs_uint32 d = (s&0xff)*bw_;
+		d += ((s >> 8)&0xff)*gw_;
+		d += ((s >> 16)&0xff)*rw_;
+		d >>= 8;
+		if( d > 255 ) d = 255;
+		d = d * 0x10101 + (s & 0xff000000);
+		return d;
+	}
+	inline __m128i operator()( __m128i ms1 ) const {
+		__m128i ma = ms1;
+		ma = _mm_and_si128( ma, alphamask_ );
+		__m128i ms2 = ms1;
+		ms1 = _mm_unpacklo_epi8( ms1, zero_ );
+		ms2 = _mm_unpackhi_epi8( ms2, zero_ );
+		ms1 = _mm_mullo_epi16( ms1, lum_ );
+		ms2 = _mm_mullo_epi16( ms2, lum_ );
+		__m128i tmp1 = ms1;
+		__m128i tmp2 = ms2;
+		tmp1 = _mm_srli_epi64( tmp1, 32 );	// drop G B
+		tmp2 = _mm_srli_epi64( tmp2, 32 );
+		ms1 = _mm_add_epi16( ms1, tmp1 );	// G R+B
+		ms2 = _mm_add_epi16( ms2, tmp2 );
+		tmp1 = ms1;
+		tmp2 = ms2;
+		tmp1 = _mm_srli_epi64( tmp1, 16 );
+		tmp2 = _mm_srli_epi64( tmp2, 16 );
+		ms1 = _mm_add_epi16( ms1, tmp1 );	// R+G+B
+		ms2 = _mm_add_epi16( ms2, tmp2 );
+		ms1 = _mm_srli_epi16( ms1, 8 );
+		ms1 = _mm_shufflelo_epi16( ms1, _MM_SHUFFLE( 3, 0, 0, 0 )  );
+		ms1 = _mm_shufflehi_epi16( ms1, _MM_SHUFFLE( 3, 0, 0, 0 )  );
+		ms2 = _mm_srli_epi16( ms2, 8 );
+		ms2 = _mm_shufflelo_epi16( ms2, _MM_SHUFFLE( 3, 0, 0, 0 )  );
+		ms2 = _mm_shufflehi_epi16( ms2, _MM_SHUFFLE( 3, 0, 0, 0 )  );
+		ms1 = _mm_packus_epi16( ms1, ms2 );
+		ms1 = _mm_or_si128( ms1, ma );
+		return ms1;
+	}
+};
+
 struct ssse3_do_gray_scale {
 	const __m128i zero_;
 	const __m128i alphamask_;
@@ -1219,6 +1274,10 @@ void TVPMakeAlphaFromKey_sse2_c(tjs_uint32 *dest, tjs_int len, tjs_uint32 key) {
 void TVPDoGrayScale_sse2_c(tjs_uint32 *dest, tjs_int len ) {
 	convert_func_sse2<sse2_do_gray_scale>( dest, len );
 }
+void TVPDoGrayScaleWeight_sse2_c(tjs_uint32 *dest, tjs_int len, tjs_int rw, tjs_int gw, tjs_int bw ) {
+	sse2_do_gray_scale_weight func( rw, gw, bw );
+	convert_func_sse2( dest, len, func );
+}
 #if 0
 void TVPDoGrayScale_ssse3_c(tjs_uint32 *dest, tjs_int len ) {
 	convert_func_sse2<ssse3_do_gray_scale>( dest, len );
@@ -1613,6 +1672,7 @@ void TVPGL_SSE2_Init() {
 			TVPReverse8 = TVPReverse8_sse2_c;
 			TVPDoGrayScale = TVPDoGrayScale_sse2_c;
 		}
+		TVPDoGrayScaleWeight = TVPDoGrayScaleWeight_sse2_c;
 		TVPChBlurMulCopy65 = TVPChBlurMulCopy65_sse2_c;
 		TVPChBlurAddMulCopy65 = TVPChBlurAddMulCopy65_sse2_c;
 		TVPChBlurCopy65 = TVPChBlurCopy65_sse2_c;

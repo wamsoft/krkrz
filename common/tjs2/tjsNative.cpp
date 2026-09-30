@@ -272,6 +272,12 @@ tTJSNativeClassProperty * TJSCreateNativeClassProperty(
 //---------------------------------------------------------------------------
 // tTJSNativeClass
 //---------------------------------------------------------------------------
+// the instance that tTJSNativeClass::CreateNew is initializing right now.
+// member registration (FuncCall with membername == NULL) may skip copying the
+// class members only for this object; objects of script classes that inherit
+// a native class come here with another objthis and are handled as before.
+static iTJSDispatch2 *TJSNativeClassCreatingInstance = NULL;
+//---------------------------------------------------------------------------
 tTJSNativeClass::tTJSNativeClass(const ttstr &name)
 {
 	CallFinalize = false;
@@ -369,6 +375,12 @@ tTJSNativeClass::FuncCall(tjs_uint32 flag, const tjs_char * membername,
 
 	// register members to "objthis"
 
+	if(objthis && objthis == TJSNativeClassCreatingInstance)
+	{
+		TJSNativeClassCreatingInstance = NULL;
+		if(BindMembersLazily(objthis)) return TJS_S_OK;
+	}
+
 	// a class to receive member callback from class
 	class tCallback : public tTJSDispatch
 	{
@@ -436,7 +448,18 @@ tTJSNativeClass::CreateNew(tjs_uint32 flag, const tjs_char * membername,
 			TJSObjectHashSetType(dsp, TJS_W("instance of class ") + ClassName);
 
 		// instance initialization
-		hr = FuncCall(0, NULL, NULL, NULL, 0, NULL, dsp); // add member to dsp
+		iTJSDispatch2 *prevcreating = TJSNativeClassCreatingInstance;
+		TJSNativeClassCreatingInstance = dsp;
+		try
+		{
+			hr = FuncCall(0, NULL, NULL, NULL, 0, NULL, dsp); // add member to dsp
+		}
+		catch(...)
+		{
+			TJSNativeClassCreatingInstance = prevcreating;
+			throw;
+		}
+		TJSNativeClassCreatingInstance = prevcreating;
 
 		if(TJS_FAILED(hr)) return hr;
 

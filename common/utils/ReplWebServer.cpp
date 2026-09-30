@@ -18,7 +18,8 @@
 #include "ReplWatch.h"       // 監視式 (/watch + /sub/watch)
 #include "TickCount.h"       // TVPGetTickCount (アイドル終了の見張り)
 #include "EventIntf.h"       // TVP(Get|Set)SystemEventDisabledState (/state)
-#include "ReplMainQueue.h"   // TVPReplMainQueue::SubmitTask (ハンドラのメインスレッド実行)
+#include "MsgLanguage.h"     // TVPGetMessageResourceSuffixes (UI の言語決定)
+#include "ReplMainQueue.h"   // TVPReplMainQueue::Submit / SubmitTask (メインスレッド実行)
 #include "SysInitIntf.h"     // TVPGetCommandLine
 #include "LogIntf.h"         // TVPLogSetConsoleSink / TVPLogLevel
 #include "DebugIntf.h"       // TVPAddImportantLog
@@ -137,6 +138,26 @@ std::mutex                                        g_routes_mu;
 std::vector<std::string>                          g_handler_prefixes; // utf8
 std::vector<std::pair<std::string, std::string>>  g_static_mounts;    // {prefix, storageDir} utf8
 std::map<std::string, tTJSVariant>                g_handler_closures; // main thread only
+
+//---------------------------------------------------------------------------
+// 案件パネル (組み込み UI へタブを足す口)
+//
+// 組み込みページは Console / Watch / Pad の固定タブだが、 案件が独自の観測 /
+// 操作パネルを «同じページの隣のタブ» として足せるようにする。 自前ページを
+// serveStatic で立てるだけだと、 コンソールも監視式もコントローラも失って
+// しまうため。
+//
+// 中身は **iframe で読み込む** (案件のページをそのまま出す)。 組み込みページ
+// へ外部スクリプトを差し込む形にしないのは、 内部 DOM に依存させないため
+// (こちらの UI を変えるたびに案件が壊れる、を避ける)。 同一オリジンなので
+// パネル側から fetch / EventSource で自由にサーバを叩ける。
+//---------------------------------------------------------------------------
+struct PanelDef {
+	std::string id;      // タブの識別子 (登録の上書き / 解除キー)
+	std::string label;   // タブに出す表示名
+	std::string path;    // 中身の URL パス (通常は serveStatic のマウント配下)
+};
+std::vector<PanelDef>                             g_panels;           // utf8
 
 std::mutex                g_ring_mu;
 std::deque<std::string>   g_ring;            // 直近ログ (JSON) のバックログ
@@ -884,7 +905,10 @@ void HandlePadExec(sock_t s, const std::string& body)
 	tTJSVariant result;
 	ttstr error;
 	// Submit は HTTP スレッドから呼んでよい (メインの Drain が処理して起こす)。
-	bool ok = TVPReplMainQueue::Submit(ttstr(u16.c_str()), result, error);
+	// ExecMode::Script = 文優先。 既定の式優先だと `式; 残り...` が «式» と
+	// 判定されて先頭の文しか実行されない (pad は複数文をまるごと流す場所)。
+	bool ok = TVPReplMainQueue::Submit(ttstr(u16.c_str()), result, error,
+	                                   TVPReplMainQueue::ExecMode::Script);
 	std::string result_utf8, error_utf8;
 	if (ok) {
 		ttstr pp = TVPPrettyPrint(result, 4, false);
@@ -991,6 +1015,44 @@ void HandlePadFile(sock_t s, const std::string& method,
 }
 
 //---------------------------------------------------------------------------
+// GET /panels — 案件が登録したパネルの一覧 (組み込み UI がタブを組むのに使う)
+//---------------------------------------------------------------------------
+std::string PanelsJson()
+{
+	std::string out = "[";
+	std::lock_guard<std::mutex> lk(g_routes_mu);
+	bool first = true;
+	for (const auto& p : g_panels) {
+		if (!first) out += ',';
+		first = false;
+		out += "{\"id\":\"";   out += JsonEscape(p.id);
+		out += "\",\"label\":\""; out += JsonEscape(p.label);
+		out += "\",\"path\":\"";  out += JsonEscape(p.path);
+		out += "\"}";
+	}
+	out += "]";
+	return out;
+}
+
+//! パネル一覧が変わったことを購読者へ知らせる (開いているページのタブを更新)。
+void BroadcastPanels()
+{
+	std::string json = PanelsJson();
+	tjs_string u16;
+	TVPUtf8ToUtf16(u16, json);
+	BroadcastChannel(ttstr(TJS_W("panels")), ttstr(u16.c_str()));
+}
+
+void HandlePanels(sock_t s)
+{
+	WebResp r;
+	r.status = 200;
+	r.mime = "application/json; charset=utf-8";
+	r.body = PanelsJson();
+	SendWebResp(s, r);
+}
+
+//---------------------------------------------------------------------------
 // コントローラ (/state) — 吉里吉里2 の「コントローラ」窓の相当物
 //
 // 原典 (environ/win32/MainFormUnit.cpp) のツールバーは ScriptEditor / Console /
@@ -1005,9 +1067,31 @@ void HandlePadFile(sock_t s, const std::string& method,
 // eventDisabled を変えたときの追従**)。 変化の検出は毎フレーム
 // PublishStateIfChanged() で行う。
 //---------------------------------------------------------------------------
+//! ブラウザ UI が使う言語の優先順を返す。 **本体の言語決定をそのまま流用する**
+//! ので、 エンジンのメッセージと UI の言語がずれない (-language= も効く)。
+//! 資材 suffix ("-en" / "-chs" / "-cht" / "") を UI 側の短いコードへ写す。
+std::string UiLangsJson()
+{
+	std::string out = "[";
+	bool first = true;
+	for (const auto& suf : TVPGetMessageResourceSuffixes()) {
+		const char* code = suf.empty() ? "ja"
+		                 : (suf == "-en")  ? "en"
+		                 : (suf == "-chs") ? "chs"
+		                 : (suf == "-cht") ? "cht" : nullptr;
+		if (!code) continue;
+		if (!first) out += ',';
+		first = false;
+		out += "\""; out += code; out += "\"";
+	}
+	out += "]";
+	return out;
+}
+
 std::string StateJson(bool event_disabled)
 {
-	return std::string("{\"eventDisabled\":") + (event_disabled ? "true" : "false") + "}";
+	return std::string("{\"eventDisabled\":") + (event_disabled ? "true" : "false") +
+	       ",\"langs\":" + UiLangsJson() + "}";
 }
 
 void HandleState(sock_t s, const std::string& method,
@@ -1215,6 +1299,7 @@ void HandleConnection(sock_t s)
 		else if (p == "/state")                  HandleState(s, method, query, body);
 		else if (p == "/pad/exec" && method == "POST") HandlePadExec(s, body);
 		else if (p == "/pad/file")               HandlePadFile(s, method, query, body);
+		else if (p == "/panels" && method == "GET") HandlePanels(s);
 		else if (!DispatchRegistered(s, method, p, query, body))
 		                                         Handle404(s);
 	}
@@ -1487,7 +1572,7 @@ void Stop()
 	{
 		std::string json = std::string("{\"eventDisabled\":") +
 			(TVPGetSystemEventDisabledState() ? "true" : "false") +
-			",\"exiting\":true}";
+			",\"langs\":" + UiLangsJson() + ",\"exiting\":true}";
 		tjs_string u16;
 		TVPUtf8ToUtf16(u16, json);
 		BroadcastChannel(ttstr(TJS_W("state")), ttstr(u16.c_str()));
@@ -1563,6 +1648,51 @@ void RegisterStatic(const ttstr& prefix, const ttstr& storageDir)
 		if (m.first == p8) { m.second = d8; return; }
 	}
 	g_static_mounts.emplace_back(p8, d8);
+}
+
+void RegisterPanel(const ttstr& id, const ttstr& label, const ttstr& path)
+{
+	std::string i8 = TtstrToUtf8(id);
+	std::string l8 = TtstrToUtf8(label);
+	std::string p8 = TtstrToUtf8(path);
+	// 黙って捨てると「登録したのにタブが出ない」で詰まるので理由を出す。
+	// (シェル経由で叩くと path が Windows パスへ変換されて落ちる、が実際にあった)
+	if (i8.empty()) {
+		TVPAddImportantLog(TJS_W("ReplWeb: registerPanel: id が空です"));
+		return;
+	}
+	if (p8.empty() || p8[0] != '/') {
+		TVPAddImportantLog(ttstr(TJS_W("ReplWeb: registerPanel(\"")) + id +
+			ttstr(TJS_W("\"): path は '/' で始まるサーバ上のパスを指定してください: ")) + path);
+		return;
+	}
+	{
+		std::lock_guard<std::mutex> lk(g_routes_mu);
+		bool replaced = false;
+		for (auto& p : g_panels) {
+			if (p.id == i8) { p.label = l8; p.path = p8; replaced = true; break; }
+		}
+		if (!replaced) g_panels.push_back(PanelDef{i8, l8, p8});
+	}
+	BroadcastPanels();   // 開いているページのタブを更新する
+}
+
+bool UnregisterPanel(const ttstr& id)
+{
+	std::string i8 = TtstrToUtf8(id);
+	bool found = false;
+	{
+		std::lock_guard<std::mutex> lk(g_routes_mu);
+		for (size_t i = 0; i < g_panels.size(); ++i) {
+			if (g_panels[i].id == i8) {
+				g_panels.erase(g_panels.begin() + i);
+				found = true;
+				break;
+			}
+		}
+	}
+	if (found) BroadcastPanels();
+	return found;
 }
 
 bool UnregisterStatic(const ttstr& prefix)
@@ -1651,6 +1781,7 @@ void ClearHandlers()
 	std::lock_guard<std::mutex> lk(g_routes_mu);
 	g_handler_prefixes.clear();
 	g_static_mounts.clear();
+	g_panels.clear();
 }
 
 //---------------------------------------------------------------------------

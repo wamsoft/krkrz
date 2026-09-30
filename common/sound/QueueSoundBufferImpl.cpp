@@ -453,12 +453,20 @@ void tTJSNI_QueueSoundBuffer::StartPlay()
 			param.SampleRate = InputFormat.SamplesPerSec;		// サンプリングレート
 			param.BitsPerSample = InputFormat.BitsPerSample;	// サンプル当たりのビット数
 			param.SampleType = astUInt8;
+			// 形式はコンテナのバイト数で決める。WAVEFORMATEXTENSIBLE は
+			// 有効ビット数 (BitsPerSample) がコンテナ幅より小さいことがあり
+			// (24bit を 32bit コンテナに左詰め等)、その場合もコンテナ幅で
+			// 読めば値の並びは正しい。
 			if( InputFormat.IsFloat ) {
 				param.SampleType = astFloat32;	// サンプルの形式
-			} else if( param.BitsPerSample == 8 ) {
-				param.SampleType = astUInt8;
-			} else if( param.BitsPerSample == 16 ) {
+			} else if( InputFormat.BytesPerSample == 1 ) {
+				param.SampleType = astUInt8;	// 8bit は符号無し
+			} else if( InputFormat.BytesPerSample == 2 ) {
 				param.SampleType = astInt16;
+			} else if( InputFormat.BytesPerSample == 3 ) {
+				param.SampleType = astInt24;	// 3 バイト詰め
+			} else if( InputFormat.BytesPerSample == 4 ) {
+				param.SampleType = astInt32;
 			} else {
 				TVPThrowExceptionMessage(TVPInvalidFormatBitsPerSample);
 			}

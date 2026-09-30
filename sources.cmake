@@ -131,6 +131,7 @@ common/utils/ProcessMemory.cpp
 common/utils/SystemAllocatorInfo.cpp
 common/utils/GlobalAllocStats.cpp
 common/utils/AllocTagScope.cpp
+common/utils/AllocSiteStats.cpp
 common/base/MemoryStatPeriodicDump.cpp
 common/base/MemoryOverlay.cpp
 common/base/PadOverlay.cpp

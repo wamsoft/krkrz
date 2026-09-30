@@ -578,6 +578,10 @@ void tTJSNI_VideoOverlay::Play()
 	// start playing
 	if(VideoOverlay)
 	{
+		// prepare の途中で本再生に入ったら prepare は打ち切る。ClearWndProcMessages()
+		// が prepare の EC_UPDATE を食べる可能性があり、IsPrepare が残ると本再生の
+		// 1 コマ目を prepare 完了と誤認して Pause()+Rewind() してしまう。
+		IsPrepare = false;
 		VideoOverlay->Play();
 		ClearWndProcMessages();
 		RegisterPresenter(); // presenter 経路: 稼働開始を DrawDevice に登録
@@ -592,6 +596,7 @@ void tTJSNI_VideoOverlay::Stop()
 	// stop playing
 	if(VideoOverlay)
 	{
+		IsPrepare = false;
 		VideoOverlay->Stop();
 		ClearWndProcMessages();
 		UnregisterPresenter(); // presenter 経路: 停止で登録解除 (以後 present しない)
@@ -628,7 +633,27 @@ void tTJSNI_VideoOverlay::Prepare()
 		Pause();
 		Rewind();
 		IsPrepare = true;
-		Play();
+		// バックエンドが「音を出さずに 1 コマ」を持っていればそれを使う。
+		// 従来どおり Play() してしまうと音声シンクが動き出し、最初のコマが届いて
+		// Pause() するまでの間 (数十〜100ms) 冒頭の音が漏れる。
+		// 対応していないバックエンドは false を返すので従来動作へフォールバックする。
+		if( VideoOverlay->PrepareFrame() )
+		{
+			// ★音は出さないが status は Play にする。KAG3 の Movie.tjs は
+			//   wp(for="prepare") の待ちに入る前に canWaitStop (= status が "play")
+			//   を見ており、prepare 中に status が Play にならないと「再生中でない」
+			//   と判断して待たずに素通りしてしまう (= prepare 待ちが機能しない)。
+			//   旧実装は実際に Play() していたため副作用で Play になっていた。
+			//   準備完了時の Pause() で従来どおり Pause へ戻る。
+			SetStatus(tTVPVideoOverlayStatus::Play);
+		}
+		else
+		{
+			Play();
+			// Play() は「prepare の打ち切り」として IsPrepare を下ろすので立て直す
+			// (このフォールバックでは Play そのものが prepare の手段)。
+			IsPrepare = true;
+		}
 	}
 }
 void tTJSNI_VideoOverlay::SetSegmentLoop( int comeFrame, int goFrame )
@@ -818,6 +843,14 @@ void tTJSNI_VideoOverlay::WndProc( NativeEvent& ev )
 				switch( evcode )
 				{
 					case EC_COMPLETE:
+						if( IsPrepare )
+						{
+							// prepare 中に 1 コマも出せずに終端へ到達した (壊れた/極端に短い
+							// 動画など)。ここで畳まないと prepare 待ちのスクリプトが明けない。
+							IsPrepare = false;
+							FirePeriodEvent(perPrepare);
+							break;
+						}
 						if( Status == tTVPVideoOverlayStatus::Play )
 						{
 							if( Loop )
@@ -839,7 +872,9 @@ void tTJSNI_VideoOverlay::WndProc( NativeEvent& ev )
 						}
 						break;
 					case EC_UPDATE:
-						if( Mode == vomLayer && Status == tTVPVideoOverlayStatus::Play )
+						// prepare 中は再生していない (PrepareFrame 経路では Status が
+						// Play にならない) ので IsPrepare も通す。
+						if( Mode == vomLayer && ( Status == tTVPVideoOverlayStatus::Play || IsPrepare ) )
 						{
 							int		curFrame = (int)p1;
 							if( Layer1 == NULL && Layer2 == NULL )	// nothing to do.

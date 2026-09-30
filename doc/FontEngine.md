@@ -562,6 +562,12 @@ GDI ラスタライザ (WINVER 既定) と旧 FreeType ラスタライザ (非 W
   + モノクロ絵文字 (Noto Emoji) + アイコン (elements_basic)。
 - **data/ 外だし (fonts.json)**: カラー絵文字 (Noto Color Emoji)。案件では
   中国語 (繁/簡) や日本語バリエーション等も data/fonts.json に足す想定。
+- **埋め込みを削る**: 案件が自前フォント一式を data/ 側で供給するなら、
+  ビルド時 `-DKRKRZ_EMBED_BUNDLED_FONTS=OFF` で Noto Sans JP (4.3MB) と
+  Noto Emoji (1.9MB) を埋め込み対象から外せる (exe -6.2MB)。Roboto /
+  elements_basic は既定テーマが参照するので残す。任意ファイルは
+  `-DKRKRZ_RESOURCE_EXCLUDE="名前;名前"`。外すと当然 `resource://` からは
+  引けなくなるので、日本語フォントは案件側で登録すること。
 
 ## 検証手法メモ
 

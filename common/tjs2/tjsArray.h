@@ -71,6 +71,7 @@ public:
 protected:
 	tTJSNativeInstance *CreateNativeInstance();
 	iTJSDispatch2 *CreateBaseTJSObject();
+	bool BindMembersLazily(iTJSDispatch2 *dsp);
 
 private:
 
@@ -150,9 +151,20 @@ class tTJSArrayObject : public tTJSCustomObject
 
 
 
+	// the class that this array resolves its methods/properties from, when the
+	// class members are not copied into the instance (TJSArrayLazyMemberBinding)
+	iTJSDispatch2 *LazyMemberClass;
+
+	iTJSDispatch2 * LazyThis(iTJSDispatch2 *objthis)
+		{ return objthis ? objthis : (iTJSDispatch2*)this; }
+	bool FindLazyProperty(const tjs_char *membername, tjs_uint32 *hint,
+		tTJSVariant &prop);
+
 public:
 	tTJSArrayObject();
 	~tTJSArrayObject();
+
+	void SetLazyMemberClass(iTJSDispatch2 *cls);
 
 protected:
 	void Finalize(); // Finalize override

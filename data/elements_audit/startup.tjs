@@ -1,0 +1,42 @@
+// -*- mode:tjs2 -*-
+// ======================================================================
+//  elements_audit — Elements 仕様精査の確認サンプル (単体起動)
+// ----------------------------------------------------------------------
+//  doc/ElementsAudit.md の 6 項目を、修正の前後で同じ手順で確認するための
+//  シナリオ集。実体は scene.tjs の ElementsAuditScene。
+//
+//  操作: 1-6 = シナリオ / 0 = 全消去 / C = 計測リセット
+//        Z/X = ウィンドウ倍率 / +/- = 行数 (シナリオ 2)
+//
+//  -genassets を付けると シナリオ 3 用のアトラス資材を生成して終了する。
+// ======================================================================
+
+var demolibPath = void;
+{
+    // "demolib/" は datadir=data ルートから呼ばれた場合用。
+    // "../demolib/" は単体起動用。
+    var cands = ["demolib/", "../demolib/", "../core/demolib/",
+                 "../../src/core/data/demolib/"];
+    for (var i = 0; i < cands.count; i++) {
+        if (Storages.isExistentStorage(cands[i] + "demo_common.tjs")) {
+            demolibPath = cands[i];
+            break;
+        }
+    }
+}
+if (demolibPath === void) { System.inform("demolib が見つかりません"); System.exit(1); }
+
+// 資材生成モード: シーンを立てずに生成して終了する
+if (System.getArgument("-genassets") !== void) {
+    Scripts.execStorage(Storages.isExistentStorage("gen_assets.tjs")
+                        ? "gen_assets.tjs" : "elements_audit/gen_assets.tjs");
+    // gen_assets.tjs 側で System.exit する
+}
+
+Scripts.execStorage(demolibPath + "demo_common.tjs");
+// datadir=data ルートからの起動では相対 "scene.tjs" が解決できないため、
+// 自フォルダ名付きへフォールバックする
+Scripts.execStorage(Storages.isExistentStorage("scene.tjs")
+                    ? "scene.tjs" : "elements_audit/scene.tjs");
+
+runDemoShell([new ElementsAuditScene()], "Elements 仕様精査の確認");

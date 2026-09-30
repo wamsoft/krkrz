@@ -276,7 +276,11 @@ var r = dlg.showModalFile("ui/launcher.jsonc",
 ### フォント / pad アイコンのセットアップ (static)
 
 - `ElementsDialog.registerFont(family, path[, weight[, slant[, stretch]]])` /
-  `ElementsDialog.registerFontDir(dir)` — storage パス (XP3 内可) からフォント登録。
+  `ElementsDialog.registerFontDir(dir)` — storage パスからフォント登録。
+  `registerFontDir` の戻り値は**登録できた本数** (0 なら 1 本も無い = 警告ログ
+  も出る)。dir は相対 storage 名 (`"font/"`) でも正規化済みパスでもよいが、
+  XP3 内は `"data.xp3>font/"` と**アーカイブを明示**する (autopath マウントは
+  ファイル検索用でディレクトリ列挙はできない)。OS の生パスは不可。
 - **可変フォントのインスタンス指定**: 画面 JSON の `"font"` にファミリ名 +
   `#tag=val[,tag=val...]` で軸を指定できる (例 `"MyFont#wght=700"`、
   `"MyFont#wght=700,wdth=75"`)。ベースファミリを登録しておけばインスタンスは
@@ -333,14 +337,65 @@ var r = dlg.showModalFile("ui/launcher.jsonc",
     "sc" => %["map" => %["Noto Sans JP" => "Noto Sans SC"]]];
   ElementsDialog.language = "sc";   // 以降 "Noto Sans JP" 指定の label は SC で描かれる
   ```
+- `ElementsDialog.atlasCacheStats` (読取専用) — アトラスのデコードキャッシュの
+  常駐量。 `%[bytes, count, budget]`。 アトラスは「パス + 倍率」をキーに
+  デコード済みの絵を抱え、 **画面を切り替えても手放さない** (長時間プレイで
+  ヒープが断片化したあと大きな連続領域が取れずデコードに失敗するのを避けるため)。
+- `ElementsDialog.trimAtlasCache(budget = 0)` — キャッシュを budget バイトまで
+  切り詰める。 0 で「使われていないものを全部」。 戻り値 = 解放バイト数。
+  ⚠ **表示中の画面が使っているアトラスは参照が残るので捨てられない** —
+  場面の切れ目 (画面を閉じた後) に呼ぶこと。 予算そのものは変わらない。
+- `ElementsDialog.atlasCacheBudget` — 予算 (バイト、 既定 192MB)。 代入すると
+  恒久的に変わり、 下げた場合はその場で切り詰める。 0 でキャッシュ無効。
 - `ElementsDialog.setPadIconBase(dir)` — pad_icon (Kenney input prompts) のベース
   ディレクトリ (storage パス、 配下に xbox/ps/switch/keyboard + vector/*.svg)。
   未設定だと pad_icon は灰色プレースホルダになる。
 - `ElementsDialog.setPadTheme(name)` — "xbox"/"ps"/"switch"/"keyboard"/"none"/"auto"。
-  "auto" は接続パッドの系統 (`System.padStyle`) から自動選択し、 画面を開く
-  たびに決め直す (パッドが無ければ動作プラットフォームで決まる。 途中で
-  コントローラを替えても次に開く画面から追従)。
+  "auto" は接続パッドの系統 (`System.padStyle`) から自動選択する。 系統が判定
+  できないプラットフォーム (Windows 等) では、 **パッドが 1 つでも繋がっていれば
+  "xbox"、 1 つも無ければ "keyboard"** (パッド無しで pad の絵を出しても押せる
+  キーが判らないため)。
+  判定は接続数と系統を見張っていて**変化したその場で決め直す**ので、 抜き差しに
+  画面の開き直しは要らない (表示中の画面も `InvalidateOverlays()` で再描画され、
+  pad_icon は描画時に theme を引くので次の描画から新しい絵になる)。
   画面 JSON の top-level `pad_theme` があればそちらが優先。
+- ⚠ **フェイスボタンは «刻印基準» (`a`/`b`/`x`/`y` = `VK_PAD1..4`) と
+  «位置基準» (`face_*` = `VK_PAD_FACE_*`) の 2 系統があり、 どちらか一方に
+  揃えること。** どの刻印がどの位置かはコントローラ依存 (任天堂系は A が右・
+  B が下) なので両者は別物として並立しており、 **engine は 1 回の物理押下で
+  両系統の VK を投げる**。 同じ物理ボタンに両方を割り当てると 1 押しで 2 回
+  発火する。 画面 JSON で両系統を併用していると build 時に注意ログが出る。
+  系統の詳細は umbrella の `doc/topics/core/gamepad.md`、 VK の振り分けは
+  `common/visual/elements/ElementsInputMap.h` の `RouteVk`。
+- `ElementsDialog.setPadIconAlias(theme, name, basename)` — pad_icon の
+  「論理名 → Kenney basename」の既定表 (a=Enter / b=Esc / dpad=矢印 …) を
+  テーマ単位で上書きする。 タイトルの実キー割り当てが既定表と違うとき用。
+  basename に空文字でその名前の上書きを解除、 name に空文字でそのテーマの
+  上書きを全解除。 表示中の画面にも次の描画から効く。 戻り値 = テーマ名を
+  解釈できたか。
+  ```tjs
+  // キャンセルが Esc ではなく BackSpace のタイトル
+  ElementsDialog.setPadIconAlias("keyboard", "b", "keyboard_backspace");
+  ```
+
+### 診断ログ (`-navlog`)
+
+起動オプション `-navlog` を**指定するだけ**で、Elements の入力とナビ、
+描画の切り分け用ログが出る (既定は無効、 値は見ない)。 出るもの:
+
+- **フォーカス移動 / cursor-warp / パッド方向キーの到着** を起動からの経過 ms 付きで
+  (`[nav 12345] focus -> #0 btn_ok` 等)。 方向キー長押し中に説明文とハイライトが
+  ずれる、 といった入力とナビのタイミング調査用
+- **`slow frame` 行** — 提示に 100ms 以上かかったフレームの段別内訳
+  (`renderStats` と同じ update / raster / acquire / upload / present)
+- **`raster partial=N (allow=.. full=.. rect=.. bufsame=..)`** — ラスタ 1 回ごとに
+  部分再描画にできたか / できなかった理由。 ダーティ矩形・buffer・view・描画密度も出る
+- **`no-partial: trans=.. valid=.. dev=.. buf=.. render=.. surf=.. fit=.. area=..`** —
+  ホスト側が部分再描画を許可しなかったとき、 どの一致条件が崩れたか
+  (画面生成直後の 1 フレーム目は `valid=0` で出るのが正常)
+
+ログ量が多く出力自体が処理時間に影響するので、 調査時のみ使う。
+計測サンプル = `data/elements_audit` (`-audittest` で自動巡回)。
 
 ### 実行時画像の注入 (`registerImage` / `image` ウィジェット)
 
@@ -1055,7 +1110,7 @@ Elements 側はこれを受けて [keyboard / arrow / gamepad ナビゲーショ
 
 | 環境 | 挙動 |
 | --- | --- |
-| デスクトップ (WINVER / Windows SDL) | 何もしない。 text 入力は常時有効 (form 生成時に `SDL_StartTextInput`) |
+| デスクトップ (WINVER / Windows SDL) | ソフトキーボードは出さない。 text 入力は常時有効 (form 生成時に `SDL_StartTextInput`)。 WINVER は別途 IME を focus 追従で開閉する (下記) |
 | 物理キーボードあり (`SDL_HasKeyboard()`) | `SDL_StartTextInput` のみ。 OS のソフトキーボードは SDL の auto 判定で出ない |
 | 物理キーボード無し | **内蔵仮想キーボード**を overlay で表示 (OS のキーボードは出さない) |
 
@@ -1079,6 +1134,104 @@ Elements 側はこれを受けて [keyboard / arrow / gamepad ナビゲーショ
   編集状態にならず実クリックが必要だった問題は、 elements 側の
   `descend_focus_first` 修正で解消済み — プログラム的 focus でもキャレット +
   text 受理になる。)
+
+### IME の focus 追従 (WINVER)
+
+日本語入力そのものは OS の IME が担当する。 overlay はレイヤツリーの外にいるので
+`Layer.imeMode` (フォーカスレイヤ連動) の経路には乗らず、 ウィンドウの既定 IME
+モードは `imClose` (英数) のため、 何もしないとキャレットが立っていても
+半角/全角キーを叩くまで日本語が打てない。
+
+そこで `ElementsDialogManager::Impl::UpdateImeFollowFocus()` (PaintOverlay 末尾。
+`UpdateFocusDrivenTextInput()` の直後) が `focus_consumes_text()` を毎フレーム見て、
+
+- テキスト欄が編集フォーカスを取った → `iTVPWindow::SetImeMode(imOpen)` = IME を開く
+- フォーカスが外れた / ダイアログが閉じた → `iTVPWindow::ResetImeMode()` =
+  ウィンドウの既定 (`Window.imeMode`) へ戻す
+
+を行う。 対象ウィンドウは直近に入力を転送してきたもの (無ければメインウィンドウ)。
+
+- 確定文字は従来どおり `WM_CHAR` → `ForwardKeyPress` で届く。 変換中のキーは
+  IME が食って `VK_PROCESSKEY` になるため、 ダイアログのホットキーとは衝突しない。
+- **握っている間はレイヤ側の `imeMode` 更新を保留する** (`TTVPWindowForm::SetImeOverride`
+  / `ClearImeOverride`)。 保留しないと、 入力欄の編集中にレイヤのフォーカスが動いた
+  拍子に `Layer.imeMode` (既定 `imDisable`) で上書きされて IME が閉じる。
+  KAG のメッセージレイヤのようにフォーカスや `setAttentionPoint` が頻繁に動く構成では
+  「半角/全角 を押しても即座に閉じられて開かない」という形で出る。 保留した値は
+  フォーカスが外れた時点でまとめて適用される。
+- **入力コンテキストが外されていたら結び直す**。 `ImmAssociateContext(hwnd, NULL)`
+  で切られていると `ImmSetOpenStatus` は成功したように見えて何も起きず、 ユーザの
+  半角/全角 キーも効かない (IME が完全に無効)。 本体の `ImeControl::Enable()` は
+  自分で切ったときしか戻さないので、 誰も戻さない。 テキスト欄を編集している間だけ
+  既定コンテキストを結び直し (`ImeContextForced`)、 解除時に元へ戻す。
+  - **これは通常状態**。 `Layer.imeMode` の既定は `imDisable` で、 本体はこれを
+    入力コンテキストの切り離しで実現している (2026-09-28 から。 それ以前は
+    `ModeClose` に潰していて `imClose` と区別が無く、 代わりに windowEx プラグインの
+    `Window.resetImeContext(false)` が同じことをしていた)。 **ゲーム側は意図して
+    切っている**ので、 ウィンドウごと結び直すのは筋が違い、 上のように「握っている
+    間だけ結び直す」のが正しい。
+  - 実測 (2026-09-28): `imDisable` のレイヤに focus → `contextAttached=0` /
+    `disabledBySelf=1`。 そこから `input_box` へ focus → `overrideActive=1` /
+    `contextForced=1` / `contextAttached=1` で編集できる。
+- **`Window.imeMode` の getter では確認できない**。 返るのは既定値 (`DefaultImeMode`)
+  で、 この上書き (`LastSetImeMode`) は現れない。 切り分けには
+  `Agent.dialogs()` の `textFocus` と `Agent.imeStatus()` を使う (下記)。
+- **変換 / 変換候補ウィンドウはキャレット位置へ寄せる** (下記「変換ウィンドウの位置」)。
+- **未対応**: 未確定文字列のインライン表示 (アプリ側で描かず IME の窓に任せている)。
+- SDL3 ビルドはこの経路を通らない (`SDL_StartTextInput` のみ)。 SDL3 の Windows
+  バックエンドも IME を開きはしないので、 同じギャップが残っている。
+
+**切り分け**: `Agent.dialogs()` の **`textFocus`** が、 この開閉判断に使っている
+`focus_consumes_text()` そのものの値。 「入力欄にキャレットは出ているのに日本語が
+打てない」ときは、
+
+| textFocus | 見るところ |
+| --- | --- |
+| `1` なのに IME が開かない | ウィンドウ側 → `Agent.imeStatus()` |
+| `0` | セッション側。 その widget が `consumes_text()` を返す型か、 focus が本当に入っているか (`Agent.dialogTree()`) |
+
+ウィンドウ側は **`Agent.imeStatus()`** (WINVER のみ中身が入る) で一式取れる。
+
+| 項目 | 偽/異常のときの意味 |
+| --- | --- |
+| `contextAttached` | **入力コンテキストが外されている**。 `Window.imeMode` も 半角/全角 も効かない。 `conversion` も 0 になる。 focus 中のレイヤが `imDisable` (既定) なら**これが正常**。 テキスト欄に入っているのに偽なら、 外部 (`windowEx` の `Window.resetImeContext(false)` 等) を疑う |
+| `hasFocus` | ウィンドウがキーボードフォーカスを持っていない。 `AcquireImeControl()` は何もしない |
+| `keyTrapperIsSelf` | `trapKey` が真の別ウィンドウがあり、 そちらのモードが適用されている |
+| `imeMode` / `defaultImeMode` | 前者が実際に適用しているモード、 後者が `Window.imeMode` の返す既定値 |
+| `overrideActive` / `contextForced` | オーバレイが握っているか / そのためにコンテキストを結び直したか |
+
+同じ辞書の `focused` は **id を追跡する仕掛けを持つ画面でしか埋まらない**ので、
+空であることをフォーカス無しの根拠にしないこと (単発の `showDict` でも常に空)。
+
+IME の実際の開閉状態は外部プロセスからも読める:
+`ImmGetDefaultIMEWnd(hwnd)` に `SendMessage(WM_IME_CONTROL, IMC_GETOPENSTATUS)`
+(入力モードは `IMC_GETCONVERSIONMODE`)。 エージェントからの検証はこれが確実。
+
+### 変換ウィンドウの位置 (WINVER / SDL 共通)
+
+何もしないと未確定文字列と変換候補は OS 既定位置 (ウィンドウ左上隅) に出る。
+`ElementsDialogManager::Impl::UpdateTextInputArea()` が PaintOverlay 末尾で
+毎フレーム、
+
+1. `overlay_session::focus_text_caret()` でキャレット矩形とテキスト領域を取り
+   (surface 論理座標)、
+2. `surface * present_scale + present_off` でウィンドウクライアント px へ直し、
+3. 前回と違うときだけホストへ渡す
+
+という流れで位置を追従させる。 渡す形は SDL に合わせて
+**「テキスト領域の矩形 + 領域左端からのキャレット相対 x」**で統一してある。
+
+| 変種 | 渡し先 |
+| --- | --- |
+| WINVER | `ImeControl::SetTextInputArea` → `ImmSetCompositionWindow` (CFS_RECT。 ptCurrentPos = キャレット) + `ImmSetCandidateWindow` (CFS_EXCLUDE。 候補窓がテキスト領域を避ける) |
+| SDL3 | `SDL_SetTextInputArea`。 Windows バックエンドが上とほぼ同じ Imm 呼び出しをする (`SDL_windowskeyboard.c` の `IME_SetTextInputArea`)。 **SDL2 と違い SDL3 は上流でここが実装済みで、 fork は要らない** |
+
+- SDL に渡す矩形は「ウィンドウ座標」なので、 クライアント px から
+  `SDL_GetWindowSize` / `SDL_GetWindowSizeInPixels` の比で換算している。
+- キャレット矩形は elements の描画結果から取るので、 focus した直後の 1 フレームは
+  取れない (その間は前回位置のまま)。
+- 実際に渡した矩形は `Agent.imeStatus()` の `areaX` / `areaY` / `areaW` / `areaH` /
+  `areaCursor` / `areaValid` で確認できる (両変種共通)。
 
 ## elements_modal ライブラリ
 

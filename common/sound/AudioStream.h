@@ -80,6 +80,13 @@ public:
 
 extern iTVPAudioStream* TVPCreateAudioStream(tTVPAudioStreamParam& param);
 
+// リニアゲイン (0.0-1.0) を iTVPAudioStream::SetVolume の 0..100000 へ直す。
+//
+// SetVolume は受け取った値へ知覚カーブ pow(v/100000, Factor/2000) を掛けるので、
+// **既にリニアゲインになっている値**をそのまま渡すとカーブが二重に掛かる。
+// リニアゲインを持っている側 (ムービーの音声シンク等) はこれを通すこと。
+extern tjs_int TVPAudioGainToVolume(float gain);
+
 // -- 3D 定位のリスナ (聴取者)。engine グローバル (listener index 0) を操作する。--
 //    座標系は音源側 (iTVPAudioStream::Set3DPosition 等) と共通 (miniaudio 準拠)。
 extern void TVPSetSoundListenerEnabled(bool enabled);

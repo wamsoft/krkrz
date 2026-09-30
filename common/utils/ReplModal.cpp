@@ -295,3 +295,50 @@ bool TVPReplInputString(const ttstr &caption, const ttstr &prompt, const ttstr &
 	return true;
 }
 //---------------------------------------------------------------------------
+bool TVPReplChoice(const ttstr &caption, const ttstr &text,
+	const std::vector<ttstr> &choices, int def, int &index)
+{
+	// 応答は選んだ要素の文字列か index。空 / 未知の値 = def。
+	if (!TVPReplModalActive()) return false;
+
+	std::string req = "{\"type\":\"choice\",\"caption\":\"" +
+		JsonEscape(TtstrToUtf8Std(caption)) + "\",\"text\":\"" +
+		JsonEscape(TtstrToUtf8Std(text)) + "\",\"choices\":[";
+	for (size_t i = 0; i < choices.size(); i++) {
+		if (i) req += ",";
+		req += "\"" + JsonEscape(TtstrToUtf8Std(choices[i])) + "\"";
+	}
+	req += "],\"default\":" + std::to_string(def) + "}";
+
+	tjs_string req16;
+	TVPUtf8ToUtf16(req16, req);
+	ttstr resp;
+	if (!TVPReplRequestModal(ttstr(req16.c_str()), resp)) return false;
+
+	index = def;
+	tjs_string r(resp.c_str());
+	while (!r.empty() && (r[0] == TJS_W(' ') || r[0] == TJS_W('\t'))) r.erase(0, 1);
+	if (r.empty()) return true;
+
+	// 数字だけなら index
+	bool digits = true;
+	for (tjs_char c : r) if (c < TJS_W('0') || c > TJS_W('9')) { digits = false; break; }
+	if (digits && r.size() < 9) {
+		int n = 0;
+		for (tjs_char c : r) n = n * 10 + (int)(c - TJS_W('0'));
+		if (n >= 0 && n < (int)choices.size()) index = n;
+		return true;
+	}
+	// 要素の文字列 (完全一致を優先、次に大小文字を無視して一致)
+	for (size_t i = 0; i < choices.size(); i++)
+		if (tjs_string(choices[i].c_str()) == r) { index = (int)i; return true; }
+	auto lower = [](tjs_string s) {
+		for (auto &c : s) if (c >= TJS_W('A') && c <= TJS_W('Z')) c = c - TJS_W('A') + TJS_W('a');
+		return s;
+	};
+	tjs_string rl = lower(r);
+	for (size_t i = 0; i < choices.size(); i++)
+		if (lower(tjs_string(choices[i].c_str())) == rl) { index = (int)i; return true; }
+	return true;
+}
+//---------------------------------------------------------------------------

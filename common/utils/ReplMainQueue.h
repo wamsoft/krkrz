@@ -13,9 +13,21 @@
 
 namespace TVPReplMainQueue {
 
-//! @brief worker: 式を提出してメイン実行の結果を待つ (ブロック)。
+//! @brief 提出したスクリプトを «式» と «文» のどちらとして実行するかの方針。
+enum class ExecMode {
+	//! 式として解釈できるなら式 (結果を表示できる)、でなければ文。
+	//! 1 行入力の console / -replfile / /cmd 向け。
+	Expression,
+	//! 文として解釈できるなら文 (複数文をまるごと実行できる)、でなければ式。
+	//! 複数行スクリプトをまるごと流す /pad/exec 向け。
+	Script,
+};
+
+//! @brief worker: スクリプトを提出してメイン実行の結果を待つ (ブロック)。
+//! @param mode 式優先 (既定) か文優先か。 ExecMode を参照。
 //! @return true: 実行された (out/error 有効) / false: シャットダウン中。
-bool Submit(const ttstr& script, tTJSVariant& out, ttstr& error);
+bool Submit(const ttstr& script, tTJSVariant& out, ttstr& error,
+            ExecMode mode = ExecMode::Expression);
 
 //! @brief worker: 任意処理をメインスレッドで実行してもらい完了を待つ (ブロック)。
 //!        script Submit と違い複数件を並行提出でき、Drain が予算内で順次処理する

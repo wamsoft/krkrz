@@ -62,6 +62,45 @@ public:
 		HKL hKl = ::GetKeyboardLayout(0);
 		return 0!=::ImmIsIME(hKl);
 	}
+	/**
+	 ウィンドウに入力コンテキストが結び付いているか。
+	 切り離されていると ImmSetOpenStatus は成功したように見えて何も起きず、
+	 ユーザの 半角/全角 キーも効かない (IME が完全に無効な状態)。
+	 windowEx の Window.resetImeContext(false) 等、 本体外から切られうる。
+	 */
+	bool HasContext() {
+		HIMC hImc = ::ImmGetContext(hWnd_);
+		if( hImc == 0 ) return false;
+		::ImmReleaseContext(hWnd_,hImc);
+		return true;
+	}
+	/**
+	 既定の入力コンテキストを結び直す。
+	 @return 元々切り離されていて実際に結び直したなら真 (巻き戻しの要否)
+	 */
+	bool AttachDefaultContext() {
+		if( HasContext() ) return false;
+		::ImmAssociateContextEx( hWnd_, NULL, IACE_DEFAULT );
+		return true;
+	}
+	/** AttachDefaultContext() の巻き戻し (入力コンテキストを切り離す) */
+	void DetachContext() {
+		::ImmAssociateContextEx( hWnd_, NULL, IACE_IGNORENOCONTEXT );
+	}
+	/** 診断用: この ImeControl 自身が Disable() で切っているか */
+	bool IsDisabledBySelf() const { return hOldImc_ != INVALID_HANDLE_VALUE; }
+	/** 診断用: 現在の変換モード。 コンテキストが無ければ偽を返し 0 を入れる */
+	bool GetConversion( tjs_uint32 &conversion, tjs_uint32 &sentence ) {
+		conversion = sentence = 0;
+		HIMC hImc = ::ImmGetContext(hWnd_);
+		if( hImc == 0 ) return false;
+		DWORD c = 0, s = 0;
+		BOOL r = ::ImmGetConversionStatus( hImc, &c, &s );
+		::ImmReleaseContext(hWnd_,hImc);
+		conversion = (tjs_uint32)c;
+		sentence = (tjs_uint32)s;
+		return r != 0;
+	}
 	// ImmSetStatusWindowPos 関数を呼び出すと、アプリケーションに IMN_SETSTATUSWINDOWPOS メッセージが送信されます。
 	void SetStatusPosition( int x, int y ) {
 		POINT pt = {x,y};
@@ -77,9 +116,19 @@ public:
 		x = pt.x;
 		y = pt.y;
 	}
+	/**
+	 フォーカスを失うときなどに、 自分が外した入力コンテキストを戻す。
+
+	 ⚠ 以前は Open() を呼んでいた (= Enable() + ImmSetOpenStatus(TRUE))。
+	    「戻す」に IME を開くことまでは含まれないうえ、 AcquireImeControl() の
+	    先頭からも呼ばれるので、 ModeDisable を実際に使うとフォーカスが動く
+	    たびに IME が開いてしまう。 ModeDisable は長らく未使用 (imDisable が
+	    ModeClose に潰されていた) で表に出ていなかった。
+	 */
 	void Reset() {
 		if( mode_ == ModeDisable ) {
-			Open();
+			Enable();
+			mode_ = ModeDontCare;
 		}
 	}
 	/**
@@ -102,6 +151,40 @@ public:
 		font->GetFont(&logfont);
 		HIMC hImc = ::ImmGetContext(hWnd_);
 		::ImmSetCompositionFont( hImc, &logfont );
+		::ImmReleaseContext(hWnd_,hImc);
+	}
+	/**
+	 変換ウィンドウ (未確定文字列) と変換候補ウィンドウを入力欄へ寄せる。
+	 rcArea = テキスト領域、 ptCurrentPos = キャレット位置。 候補窓は CFS_EXCLUDE
+	 でテキスト領域を避ける (入力中の文字を隠さない)。 SDL3 の
+	 IME_SetTextInputArea と同じ考え方で、 変種間で見え方を揃えている。
+	 座標はウィンドウクライアント座標 (px)。
+	 @param cursor テキスト領域左端からのキャレットの相対 x
+	 */
+	void SetTextInputArea( int x, int y, int w, int h, int cursor ) {
+		HIMC hImc = ::ImmGetContext(hWnd_);
+		if( hImc == 0 ) return;
+		COMPOSITIONFORM cof = {};
+		cof.dwStyle = CFS_RECT;
+		cof.ptCurrentPos.x = x + cursor;
+		cof.ptCurrentPos.y = y;
+		cof.rcArea.left = x;
+		cof.rcArea.top = y;
+		cof.rcArea.right = x + w;
+		cof.rcArea.bottom = y + h;
+		::ImmSetCompositionWindow( hImc, &cof );
+
+		CANDIDATEFORM caf = {};
+		caf.dwIndex = 0;
+		caf.dwStyle = CFS_EXCLUDE;
+		caf.ptCurrentPos.x = x + cursor;
+		caf.ptCurrentPos.y = y;
+		caf.rcArea.left = x;
+		caf.rcArea.top = y;
+		caf.rcArea.right = x + w;
+		caf.rcArea.bottom = y + h;
+		::ImmSetCandidateWindow( hImc, &caf );
+
 		::ImmReleaseContext(hWnd_,hImc);
 	}
 	void SetCompositionWindow( int x, int y ) {

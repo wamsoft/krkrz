@@ -29,6 +29,10 @@
 // PoolAlloc:/PoolFree: の毎呼出 DEBUG ログをコンパイル時に有効化するスイッチ。
 // 通常 OFF (= 文字列フォーマット自体が消える)。leak 追跡時のみソース側で
 // `#define TVP_POOL_VERBOSE_LOG 1` するか cmake で -DTVP_POOL_VERBOSE_LOG=1 を渡す。
+// 記録は alloc 経路では固定長リングに積むだけで、出力は FlushDeferredLog
+// (TVPLog 入口) で遅延して行う (alloc 経路から直接ログを出すとロック再入 /
+// 無限再帰になるため)。リングが溢れた分は件数のみ報告。TVPLOG_DEBUG なので
+// NDEBUG ビルドでは -DTVPLOG_LEVEL=1 も必要。
 #ifndef TVP_POOL_VERBOSE_LOG
 #define TVP_POOL_VERBOSE_LOG 0
 #endif
@@ -62,6 +66,12 @@ public:
 		return stats_.tagSnapshot(tag);
 	}
 	void   resetPeak() override { stats_.resetPeak(); }
+
+	// alloc/free 経路 (mu_ 保持下) で検知した破損の保留ログを出力する。
+	// mu_ 保持中にログを出すと、ログ出力の確保が同じ pool に戻って mu_ を
+	// 再ロックしてしまう (Krkrz pool の場合) ため、検知時は固定長の記録だけ残し
+	// ここで遅延出力する。TVPGlobalAllocStats::FlushDeferredLog から呼ばれる。
+	static void FlushDeferredLog();
 
 	// Pool 内の空き / 使用バイトと fallback 経由カウンタの取得 (デバッグ用)。
 	size_t poolUsed() const   { return pool_used_.load(std::memory_order_relaxed); }

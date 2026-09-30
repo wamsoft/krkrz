@@ -1037,7 +1037,14 @@ void tTJSNI_Window::SetDefaultImeMode(tTVPImeMode mode)
 	// set default ime mode
 	if(Form)
 	{
-//		Form->SetDefaultImeMode(mode, LayerManager->GetFocusedLayer() == NULL);
+		// フォーカスを持つレイヤが無いときだけ即時反映する。 レイヤに
+		// フォーカスがある間はそのレイヤの imeMode が優先で、 フォーカスが
+		// 外れた時点で ResetImeMode 経由でこの既定値が効く。
+		// (旧実装は Window が直接持っていた LayerManager を見ていたが、
+		//  レイヤツリーオーナ化で DrawDevice 経由の取得に変わっている)
+		iTVPDrawDevice * dev = GetDrawDevice();
+		tTJSNI_BaseLayer * focused = dev ? dev->GetFocusedLayer() : NULL;
+		Form->SetDefaultImeMode(mode, focused == NULL);
 	}
 }
 //---------------------------------------------------------------------------
@@ -1051,6 +1058,28 @@ void TJS_INTF_METHOD tTJSNI_Window::ResetImeMode()
 {
 	// set default ime mode ( default mode is imDisable; IME is disabled )
 	if(Form) Form->ResetImeMode();
+}
+//---------------------------------------------------------------------------
+void tTJSNI_Window::SetOverlayImeMode(tTVPImeMode mode)
+{
+	if(Form) Form->SetImeOverride(mode);
+}
+//---------------------------------------------------------------------------
+void tTJSNI_Window::ClearOverlayImeMode()
+{
+	if(Form) Form->ClearImeOverride();
+}
+//---------------------------------------------------------------------------
+void tTJSNI_Window::SetOverlayTextInputArea( tjs_int x, tjs_int y, tjs_int w, tjs_int h, tjs_int cursor )
+{
+	if(Form) Form->SetImeTextInputArea(x, y, w, h, cursor);
+}
+//---------------------------------------------------------------------------
+bool tTJSNI_Window::GetImeStatus( tTVPImeStatus &out ) const
+{
+	if(!Form) return false;
+	Form->GetImeStatus(out);
+	return true;
 }
 //---------------------------------------------------------------------------
 void tTJSNI_Window::UpdateContent()
@@ -1638,6 +1667,107 @@ bool tTJSNI_Window::GetFullScreen() const
 	return Form->GetFullScreenMode();
 }
 //---------------------------------------------------------------------------
+// 最大化 / 最小化 / 復帰 (doc/WindowState.md)
+bool tTJSNI_Window::GetMaximized() const
+{
+	if(!Form) return false;
+	return Form->GetMaximized();
+}
+bool tTJSNI_Window::GetMinimized() const
+{
+	if(!Form) return false;
+	return Form->GetMinimized();
+}
+void tTJSNI_Window::Maximize()
+{
+	if(!Form) return;
+	Form->Maximize();
+}
+void tTJSNI_Window::Minimize()
+{
+	if(!Form) return;
+	Form->Minimize();
+}
+void tTJSNI_Window::ShowRestore()
+{
+	if(!Form) return;
+	Form->ShowRestore();
+}
+bool tTJSNI_Window::GetNormalRect( tjs_int& l, tjs_int& t, tjs_int& w, tjs_int& h ) const
+{
+	if(!Form) return false;
+	int il = 0, it = 0, iw = 0, ih = 0;
+	if(!Form->GetNormalRect( il, it, iw, ih )) return false;
+	l = il; t = it; w = iw; h = ih;
+	return true;
+}
+bool tTJSNI_Window::GetWindowRectScreen( tjs_int& l, tjs_int& t, tjs_int& w, tjs_int& h ) const
+{
+	if(!Form) return false;
+	int il = 0, it = 0, iw = 0, ih = 0;
+	if(!Form->GetWindowRectScreen( il, it, iw, ih )) return false;
+	l = il; t = it; w = iw; h = ih;
+	return true;
+}
+bool tTJSNI_Window::GetClientRectScreen( tjs_int& l, tjs_int& t, tjs_int& w, tjs_int& h ) const
+{
+	if(!Form) return false;
+	int il = 0, it = 0, iw = 0, ih = 0;
+	if(!Form->GetClientRectScreen( il, it, iw, ih )) return false;
+	l = il; t = it; w = iw; h = ih;
+	return true;
+}
+bool tTJSNI_Window::SetClientRectScreen( tjs_int l, tjs_int t, tjs_int w, tjs_int h )
+{
+	if(!Form) return false;
+	return Form->SetClientRectScreen( (int)l, (int)t, (int)w, (int)h );
+}
+void tTJSNI_Window::RegisterExEvent()
+{
+	if(!Form) return;
+	Form->SetExEventEnabled( true );
+}
+bool tTJSNI_Window::GetExEventEnabled() const
+{
+	if(!Form) return false;
+	return Form->GetExEventEnabled();
+}
+void tTJSNI_Window::SetMaximizeQueryResult( bool b )
+{
+	if(!Form) return;
+	Form->OnMaximizeQueryCalled( b );
+}
+void tTJSNI_Window::RegisterDeviceChange()
+{
+	if(!Form) return;
+	Form->SetDeviceChangeEnabled( true );
+}
+bool tTJSNI_Window::GetDeviceChangeEnabled() const
+{
+	if(!Form) return false;
+	return Form->GetDeviceChangeEnabled();
+}
+void tTJSNI_Window::SetMoveDisabled( bool b )
+{
+	if(!Form) return;
+	Form->SetMoveDisabled( b );
+}
+bool tTJSNI_Window::GetMoveDisabled() const
+{
+	if(!Form) return false;
+	return Form->GetMoveDisabled();
+}
+void tTJSNI_Window::SetResizeDisabled( bool b )
+{
+	if(!Form) return;
+	Form->SetResizeDisabled( b );
+}
+bool tTJSNI_Window::GetResizeDisabled() const
+{
+	if(!Form) return false;
+	return Form->GetResizeDisabled();
+}
+//---------------------------------------------------------------------------
 void tTJSNI_Window::SetUseMouseKey(bool b)
 {
 	if(!Form) return;
@@ -1682,6 +1812,12 @@ void tTJSNI_Window::SetMouseCursorState(tTVPMouseCursorState mcs)
 {
 	if(!Form) return;
 	Form->SetMouseCursorState(mcs);
+}
+//---------------------------------------------------------------------------
+void tTJSNI_Window::SetVirtualCursorPos(tjs_int x, tjs_int y)
+{
+	if(!Form) return;
+	Form->SetVirtualCursorPos(x, y);
 }
 //---------------------------------------------------------------------------
 tTVPMouseCursorState tTJSNI_Window::GetMouseCursorState() const

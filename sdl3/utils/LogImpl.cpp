@@ -1,6 +1,7 @@
 #include "tjsCommHead.h"
 #include "CharacterSet.h"
 #include "LogIntf.h"
+#include "GlobalAllocStats.h"
 
 #include <SDL3/SDL.h>
 #include <string>
@@ -129,6 +130,8 @@ void TVPLogInit(TVPLogLevel logLevel)
 
 void TVPLog(TVPLogLevel logLevel, const char *file, int line, const char *func, const char *format, tvpfmt::format_args args)
 {
+    // alloc 経路で保留されたログ (pool 容量超過など) をここで出す。
+    TVPGlobalAllocStats::FlushDeferredLog();
     SDL_LogPriority priority = TVPLogLevelToSDLPriority(logLevel);
 
     std::string msg;

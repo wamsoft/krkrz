@@ -19,12 +19,15 @@
 // 要求 JSON 例: { "type":"confirm", "caption":"確認", "text":"続行?" }
 // 応答 (type 別のプレーン文字列):
 //   confirm         : "yes" / "no"
+//   inputString     : "ok" + 改行 + 値 / "cancel"
+//   choice          : 選んだ要素の文字列か index (空 / 未知の値 = default)
 //   selectFile/Dir  : 選択パス (空文字列 = キャンセル)
 //---------------------------------------------------------------------------
 #ifndef REPL_MODAL_H
 #define REPL_MODAL_H
 
 #include "tjs.h"   // ttstr
+#include <vector>
 
 //! ReplFileChannel が起動時に監視ディレクトリを登録する (停止時は空文字でクリア)。
 void TVPSetReplModalChannelDir(const ttstr &dir);
@@ -54,5 +57,12 @@ int TVPReplTrySelect(iTJSDispatch2 *params, bool isDir);
 //! inputString。REPL が処理したら true。cancelled=true はキャンセル。
 bool TVPReplInputString(const ttstr &caption, const ttstr &prompt, const ttstr &def,
 	ttstr &result, bool &cancelled);
+
+//! choice (System.choice)。要求 JSON は
+//!   {"type":"choice","caption":..,"text":..,"choices":[..],"default":n}
+//! 応答は選んだ要素の文字列 (大小文字無視も可) か index。空 / 未知の値は def。
+//! REPL が処理したら true を返し index に結果を格納。未処理なら false。
+bool TVPReplChoice(const ttstr &caption, const ttstr &text,
+	const std::vector<ttstr> &choices, int def, int &index);
 
 #endif

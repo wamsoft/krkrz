@@ -20,6 +20,12 @@ public:
   virtual void Play(bool loop = false) = 0;
   virtual void Stop() = 0;
   virtual void Pause()  = 0;
+  // 「音を出さずに 1 コマだけ出す」= prepare 再生。VideoOverlay.prepare() (レイヤ
+  // モード) から呼ばれ、音声を開始しないまま先頭フレームだけをデコードして通常の
+  // フレームコールバックへ流し、その後は先頭位置へ戻した停止状態で待機する
+  // (= 直後の Play() が頭から始まる)。対応した実装のみ true を返す
+  // (既定 false = prepare 非対応)。
+  virtual bool PrepareFrame() { return false; }
   virtual void Resume()  = 0;
   virtual void Seek(int64_t posUs)  = 0;
   virtual void SetLoop(bool loop)  = 0;

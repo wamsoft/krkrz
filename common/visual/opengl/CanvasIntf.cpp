@@ -321,6 +321,21 @@ void tTJSNI_Canvas::BeginDrawing()
 {
 	glGetIntegerv( GL_FRAMEBUFFER_BINDING, &DefaultFrameBufferId );
 
+	// 描画先の確定は clear より前に行う。 後回しにすると、 draw() を呼ぶ前から
+	// renderTarget (Offscreen) が指定されていても、 既定のフレームバッファ
+	// (= ウィンドウサーフェス) の方を clear してしまう。 CS 機ではアウトフォーカス中に
+	// サーフェスのバックバッファを取得できないため、 この clear から戻らなくなる
+	// (HOME メニュー表示中に画面キャプチャを行うと終了処理ごと固まる。 実機で確認)。
+	if( RenderTargetInstance ) {
+		RenderTargetInstance->BindFrameBuffer();
+		CanvasWidth  = RenderTargetInstance->GetWidth();
+		CanvasHeight = RenderTargetInstance->GetHeight();
+	} else {
+		glViewport( 0, 0, SurfaceWidth, SurfaceHeight );
+		CanvasWidth = SurfaceWidth;
+		CanvasHeight = SurfaceHeight;
+	}
+
 	tTVPARGB<tjs_uint32> c;
 	c = ClearColor;
 	glClearColor( c.r/255.0f, c.g/255.0f, c.b/255.0f, c.a/255.0f );
@@ -349,15 +364,6 @@ void tTJSNI_Canvas::BeginDrawing()
 	}
 	SetCulling( EnableCulling );
 	InDrawing = true;
-	if( RenderTargetInstance ) {
-		RenderTargetInstance->BindFrameBuffer();
-		CanvasWidth  = RenderTargetInstance->GetWidth();
-		CanvasHeight = RenderTargetInstance->GetHeight();
-	} else {
-		glViewport( 0, 0, SurfaceWidth, SurfaceHeight );
-		CanvasWidth = SurfaceWidth;
-		CanvasHeight = SurfaceHeight;
-	}
 	StateStack.clear();
 }
 //----------------------------------------------------------------------

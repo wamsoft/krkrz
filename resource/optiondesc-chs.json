@@ -258,7 +258,7 @@
 			},
 			{
 				"caption": "手柄按键连击延迟",
-				"description": "设定游戏手柄判断按键连击需要多少毫秒。",
+				"description": "设定游戏手柄判断按键连击需要多少毫秒。\n\n如果明确指定，该值也会作为 Elements 对话框中焦点移动(长按手柄)的默认等待时间。画面自身的设置优先。",
 				"name": "paddelay",
 				"type": "select",
 				"user": true,
@@ -312,7 +312,7 @@
 			},
 			{
 				"caption": "手柄按键连击间隔",
-				"description": "设定游戏手柄按键连击间隔多少毫秒。数值越小速度越快。",
+				"description": "设定游戏手柄按键连击间隔多少毫秒。数值越小速度越快。\n\n如果明确指定，该值也会作为 Elements 对话框中焦点移动(长按手柄)的默认间隔。画面自身的设置优先。",
 				"name": "padinterval",
 				"type": "select",
 				"user": true,

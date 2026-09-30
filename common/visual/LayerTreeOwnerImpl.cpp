@@ -259,11 +259,14 @@ void tTVPLayerTreeOwner::FireTouchMove( tjs_real x, tjs_real y, tjs_real cx, tjs
 	manager->NotifyTouchMove(x, y, cx, cy, id);
 }
 void tTVPLayerTreeOwner::FireTouchScaling( tjs_real startdist, tjs_real curdist, tjs_real cx, tjs_real cy, tjs_int flag ) {
+	// 中心もタッチ位置と同じくプライマリレイヤ座標へ直す (tTVPDrawDevice と同じ)
+	if(!TransformToPrimaryLayerManager(cx, cy)) return;
 	iTVPLayerManager * manager = GetLayerManagerAt(PrimaryLayerManagerIndex);
 	if(!manager) return;
 	manager->NotifyTouchScaling(startdist, curdist, cx, cy, flag);
 }
 void tTVPLayerTreeOwner::FireTouchRotate( tjs_real startangle, tjs_real curangle, tjs_real dist, tjs_real cx, tjs_real cy, tjs_int flag ) {
+	if(!TransformToPrimaryLayerManager(cx, cy)) return;
 	iTVPLayerManager * manager = GetLayerManagerAt(PrimaryLayerManagerIndex);
 	if(!manager) return;
 	manager->NotifyTouchRotate(startangle, curangle, dist, cx, cy, flag);

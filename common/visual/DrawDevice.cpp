@@ -473,6 +473,10 @@ void TJS_INTF_METHOD tTVPDrawDevice::OnTouchMove( tjs_real x, tjs_real y, tjs_re
 //---------------------------------------------------------------------------
 void TJS_INTF_METHOD tTVPDrawDevice::OnTouchScaling( tjs_real startdist, tjs_real curdist, tjs_real cx, tjs_real cy, tjs_int flag )
 {
+	// 中心 (cx, cy) もタッチ位置と同じくプライマリレイヤ座標へ直す
+	// (以前は描画領域座標のまま渡していて、OnTouchDown / Move と食い違っていた)。
+	// 距離 (startdist / curdist) は比で使う値なので換算しない
+	if(!TransformToPrimaryLayerManager(cx, cy)) return;
 	iTVPLayerManager * manager = GetLayerManagerAt(PrimaryLayerManagerIndex);
 	if(!manager) return;
 
@@ -484,6 +488,8 @@ void TJS_INTF_METHOD tTVPDrawDevice::OnTouchScaling( tjs_real startdist, tjs_rea
 //---------------------------------------------------------------------------
 void TJS_INTF_METHOD tTVPDrawDevice::OnTouchRotate( tjs_real startangle, tjs_real curangle, tjs_real dist, tjs_real cx, tjs_real cy, tjs_int flag )
 {
+	// 中心 (cx, cy) をプライマリレイヤ座標へ直す (OnTouchScaling と同じ)
+	if(!TransformToPrimaryLayerManager(cx, cy)) return;
 	iTVPLayerManager * manager = GetLayerManagerAt(PrimaryLayerManagerIndex);
 	if(!manager) return;
 
