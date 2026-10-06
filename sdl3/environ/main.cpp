@@ -38,7 +38,10 @@
 #endif
 
 #include <algorithm>
+#include <string>
 #include <vector>
+#include <SDL3/SDL_filesystem.h>  // SDL_GetBasePath / SDL_GetPathInfo (ANGLE)
+#include <SDL3/SDL_hints.h>
 
 // 最後に押されたパッドをメインパッドにする
 // 0: 無効 (旧挙動: 最初に認識されたパッドを保持、それが切断されない限り別パッドに
@@ -372,6 +375,11 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
     // 外部要因の QUIT (OS のログオフ等) は従来どおり SDL_AppEvent が処理する。
     SDL_SetHint(SDL_HINT_QUIT_ON_LAST_WINDOW_CLOSE, "0");
 
+#if defined(SDL_PLATFORM_IOS)
+    // タッチ→マウス変換はエンジン側で行う (2 本指タップ = 戻る と両立させるため。
+    // SDL3WindowForm::TouchMouseFinger)。 SDL 標準の変換は止める。
+    SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
+#endif
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_AUDIO)) {
         SDL_Log("SDL_Init failed: %s", SDL_GetError());
         return SDL_APP_FAILURE;
@@ -437,6 +445,27 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
     // これより前の SDL_Init / config 読み出し時の alloc は全部素 malloc 直行
     // (オーバーヘッドゼロ、stats 対象外) で動く。
     TVPGlobalAllocStats::Initialize();
+
+#if defined(TVP_USE_OPENGL) && defined(KRKRZ_ANGLE_GLES_LIB) && defined(KRKRZ_ANGLE_EGL_LIB)
+	// macOS: OpenGL ES は Contents/Frameworks に同梱した ANGLE (Metal) で提供する。
+	// SDL は既定でライブラリ名 (libGLESv2.dylib / libEGL.dylib) だけで dlopen するので、
+	// バンドル内の絶対パスをヒントで渡す (ウィンドウ / コンテキスト生成前に必要)。
+	{
+		const char *base = SDL_GetBasePath();   // .app/Contents/Resources/
+		if (base) {
+			std::string fw = std::string(base) + "../Frameworks/";
+			std::string gles = fw + KRKRZ_ANGLE_GLES_LIB;
+			std::string egl  = fw + KRKRZ_ANGLE_EGL_LIB;
+			if (SDL_GetPathInfo(gles.c_str(), nullptr) && SDL_GetPathInfo(egl.c_str(), nullptr)) {
+				SDL_SetHint(SDL_HINT_OPENGL_LIBRARY, gles.c_str());
+				SDL_SetHint(SDL_HINT_EGL_LIBRARY, egl.c_str());
+				TVPLOG_INFO("ANGLE: {} / {}", gles, egl);
+			} else {
+				TVPLOG_WARNING("ANGLE libraries not found in {}", fw);
+			}
+		}
+	}
+#endif
 
 #ifdef TVP_USE_OPENGL
 	// -forceegl=yes : GLES コンテキストを最初から EGL (Windows では ANGLE の

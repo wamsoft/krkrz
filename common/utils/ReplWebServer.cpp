@@ -44,6 +44,7 @@ extern bool TVPExecuteProgram(const ttstr &exe, const ttstr &args);
 #include <thread>
 #include <chrono>
 #include <cstring>
+#include <cstdlib>
 #include <cctype>
 #include <algorithm>
 
@@ -59,6 +60,23 @@ extern bool TVPExecuteProgram(const ttstr &exe, const ttstr &args);
    typedef int sock_t;
 #  define SOCK_INVALID (-1)
 #  define closesock ::close
+#endif
+
+// 全インタフェース束縛時に IPv6 / IPv4 両方で待ち受ける (デュアルスタック)。
+// iOS 実機へ USB 経由で繋ぐ CoreDevice のトンネル (<name>.coredevice.local) は
+// IPv6 しか持たないため、IPv4 だけの待受だと開発 Mac から到達できない。
+#if defined(__APPLE__) || defined(__linux__)
+#  define KRKRZ_REPL_WEB_DUALSTACK 1
+#endif
+
+// 切断済みソケットへの send() で SIGPIPE を出させない (既定動作はプロセス終了)。
+// ブラウザ / curl が SSE を閉じた直後の送信でアプリごと落ちていた
+// (iOS で顕在化。SIGPIPE 終了はクラッシュレポートも残らない)。
+// Linux は send() の MSG_NOSIGNAL、Apple は接続ソケットの SO_NOSIGPIPE で抑止する。
+#if defined(MSG_NOSIGNAL)
+#  define KRKRZ_SEND_FLAGS MSG_NOSIGNAL
+#else
+#  define KRKRZ_SEND_FLAGS 0
 #endif
 
 namespace TVPReplWeb {
@@ -368,7 +386,7 @@ bool SendAll(sock_t s, const char* buf, size_t len)
 {
 	size_t sent = 0;
 	while (sent < len) {
-		int n = ::send(s, buf + sent, (int)(len - sent), 0);
+		int n = ::send(s, buf + sent, (int)(len - sent), KRKRZ_SEND_FLAGS);
 		if (n <= 0) return false;
 		sent += (size_t)n;
 	}
@@ -1310,13 +1328,19 @@ void HandleConnection(sock_t s)
 void AcceptLoop()
 {
 	while (g_running.load(std::memory_order_acquire)) {
-		sockaddr_in cli;
+		sockaddr_storage cli;   // IPv6 (デュアルスタック) / IPv4 どちらの待受でも入る大きさ
 		socklen_t clen = sizeof(cli);
 		sock_t c = ::accept(g_listen, (sockaddr*)&cli, &clen);
 		if (c == SOCK_INVALID) {
 			if (!g_running.load(std::memory_order_acquire)) break;
 			continue;
 		}
+#ifdef SO_NOSIGPIPE
+		{
+			int on = 1;
+			::setsockopt(c, SOL_SOCKET, SO_NOSIGPIPE, (const char*)&on, sizeof(on));
+		}
+#endif
 		std::thread(HandleConnection, c).detach();
 	}
 }
@@ -1370,13 +1394,43 @@ void StartOn(const std::string& host_in, int port)
 	// URL 表示用ホストを決める。全 IF バインド (0.0.0.0/*) のときは 0.0.0.0 を
 	// そのまま見せても接続できないので、実際の外向き IPv4 に解決して見せる。
 	// (WSAStartup 後でないと Windows でソケットを作れないためここで解決。)
-	if (host == "0.0.0.0" || host == "*") {
+	if (host == "0.0.0.0" || host == "*" || host == "::") {
 		std::string outward = ResolveOutwardIPv4();
 		g_url_host = outward.empty() ? host : outward;
 	} else {
 		g_url_host = host;
 	}
 
+	const bool any_host = (host == "0.0.0.0" || host == "*" || host == "::");
+	bool bound = false;
+#ifdef KRKRZ_REPL_WEB_DUALSTACK
+	// 全 IF 束縛は IPv6 ソケット + IPV6_V6ONLY=0 で IPv4 (mapped) も同時に受ける。
+	// IPv6 が使えない環境では下の IPv4 経路へフォールバック。
+	if (any_host) {
+		g_listen = ::socket(AF_INET6, SOCK_STREAM, 0);
+		if (g_listen != SOCK_INVALID) {
+			int one6 = 1, zero = 0;
+			::setsockopt(g_listen, SOL_SOCKET, SO_REUSEADDR, (const char*)&one6, sizeof(one6));
+			::setsockopt(g_listen, IPPROTO_IPV6, IPV6_V6ONLY, (const char*)&zero, sizeof(zero));
+			sockaddr_in6 addr6;
+			memset(&addr6, 0, sizeof(addr6));
+			addr6.sin6_family = AF_INET6;
+			addr6.sin6_port   = htons((unsigned short)g_port);
+			addr6.sin6_addr   = in6addr_any;
+			if (::bind(g_listen, (sockaddr*)&addr6, sizeof(addr6)) == 0 &&
+			    ::listen(g_listen, 8) == 0) {
+				bound = true;
+				TVPAddImportantLog(ttstr(TJS_W(
+					"ReplWebServer: WARNING binding all interfaces (IPv6+IPv4) — REPL is reachable "
+					"from the network. Use only on trusted networks/LAN.")));
+			} else {
+				closesock(g_listen);
+				g_listen = SOCK_INVALID;
+			}
+		}
+	}
+#endif
+	if (!bound) {
 	g_listen = ::socket(AF_INET, SOCK_STREAM, 0);
 	if (g_listen == SOCK_INVALID) {
 		TVPAddImportantLog(TJS_W("ReplWebServer: socket() failed"));
@@ -1388,7 +1442,7 @@ void StartOn(const std::string& host_in, int port)
 	// バインドアドレス解決: "0.0.0.0"/"*"=全IF, それ以外は inet_pton, 失敗時は loopback。
 	unsigned long bindaddr;
 	bool loopback_only;
-	if (host == "0.0.0.0" || host == "*") {
+	if (any_host) {
 		bindaddr = htonl(INADDR_ANY);
 		loopback_only = false;
 	} else {
@@ -1420,9 +1474,22 @@ void StartOn(const std::string& host_in, int port)
 		g_listen = SOCK_INVALID;
 		return;
 	}
+	} // !bound
 
 	g_running.store(true, std::memory_order_release);
 	g_accept_thread = std::thread(AcceptLoop);
+	// Stop() を経ずに exit() された場合 (iOS Simulator の終了で OS 側スレッドが
+	// exit() を呼ぶ等)、 joinable な std::thread のグローバルデストラクタが
+	// std::terminate → SIGABRT になる。 静的デストラクタより先に走る atexit で切り離す
+	// (この時点で登録した atexit はグローバル g_accept_thread の破棄より先に呼ばれる)。
+	static bool s_atexit_registered = false;
+	if (!s_atexit_registered) {
+		s_atexit_registered = true;
+		std::atexit([] {
+			g_running.store(false, std::memory_order_release);
+			if (g_accept_thread.joinable()) g_accept_thread.detach();
+		});
+	}
 
 	// 待受 URL は console log sink を web へ切り替える「前」に出す。
 	// 表示 URL は外向き実 IP に解決済みの g_url_host を使う (0.0.0.0 のままだと
@@ -1580,8 +1647,14 @@ void Stop()
 		std::this_thread::sleep_for(std::chrono::milliseconds(150));
 	}
 	if (!g_running.exchange(false)) return;
-	// listen を閉じて accept を解除
-	if (g_listen != SOCK_INVALID) { closesock(g_listen); g_listen = SOCK_INVALID; }
+	// listen を閉じて accept を解除。 Linux では close() だけだとブロック中の
+	// accept() が起きない (join で固まる) ので、 先に shutdown() で起こす
+	if (g_listen != SOCK_INVALID) {
+#ifndef _WIN32
+		::shutdown(g_listen, SHUT_RDWR);
+#endif
+		closesock(g_listen); g_listen = SOCK_INVALID;
+	}
 	// SSE クライアントを起こして終了させる
 	{
 		std::lock_guard<std::mutex> lk(g_clients_mu);

@@ -898,7 +898,8 @@ TJS_END_NATIVE_STATIC_PROP_DECL_OUTER(cls, dataPath)
 // WINVER 互換のユーザーフォルダ参照。 KAG (MainWindow.tjs checkSave) が
 // セーブ場所の書き込みに失敗したときのフォールバック先として参照する。
 // SDL 版に無いと「メンバ "personalPath" が見つかりません」で落ちる。
-// Windows 以外は専用フォルダを提供しないので exePath を返す
+// Windows 以外は Application->PersonalPath() / AppDataPath() (OS ごとの標準フォルダ)。
+// 専用フォルダが無いプラットフォームでは exePath を返す
 // (スクリプト側は exePath と等しければ「別置き場なし」として扱う)。
 TJS_BEGIN_NATIVE_PROP_DECL(personalPath)
 {
@@ -908,13 +909,16 @@ TJS_BEGIN_NATIVE_PROP_DECL(personalPath)
 		// "My Documents" (無ければ RoamingAppData)。 WINVER の
 		// TVPGetPersonalPath と同じ解決順・同じ正規化。
 		tjs_string path = ApplicationSpecialPath::GetPersonalPath();
+#else
+		// 各 OS の文書フォルダ (tTVPApplication::PersonalPath 参照)
+		tjs_string path = Application ? Application->PersonalPath() : tjs_string();
+#endif
 		if(!path.empty()) {
 			ttstr p = TVPNormalizeStorageName(ttstr(path.c_str()));
 			if(p.GetLastChar() != TJS_W('/')) p += TJS_W('/');
 			*result = p;
 			return TJS_S_OK;
 		}
-#endif
 		*result = TVPGetAppPath();
 		return TJS_S_OK;
 	}
@@ -931,13 +935,16 @@ TJS_BEGIN_NATIVE_PROP_DECL(appDataPath)
 #ifdef _WIN32
 		// RoamingAppData (WINVER の TVPGetAppDataPath と同じ)
 		tjs_string path = ApplicationSpecialPath::GetAppDataPath();
+#else
+		// 各 OS のアプリデータ基点フォルダ (tTVPApplication::AppDataPath 参照)
+		tjs_string path = Application ? Application->AppDataPath() : tjs_string();
+#endif
 		if(!path.empty()) {
 			ttstr p = TVPNormalizeStorageName(ttstr(path.c_str()));
 			if(p.GetLastChar() != TJS_W('/')) p += TJS_W('/');
 			*result = p;
 			return TJS_S_OK;
 		}
-#endif
 		*result = TVPGetAppPath();
 		return TJS_S_OK;
 	}

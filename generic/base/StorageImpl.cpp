@@ -16,10 +16,12 @@
 #include "UtilStreams.h"   // tTVPLocalTempStorageHolder (プラグインの取り出し)
 #include "WindowImpl.h"
 #include "SysInitIntf.h"
+#include "SysInitImpl.h"   // TVPNativeDataPath / TVPEnsureDataPathDirectory
 #ifdef KRKRZ_USE_REPL_FILECHANNEL
 #include "ReplModal.h"   // TVPReplTrySelect
 #endif
 #include "LogIntf.h"
+#include "DebugIntf.h"   // TVPAddImportantLog
 #include "Random.h"
 #include "XP3Archive.h"
 
@@ -33,6 +35,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <fcntl.h>
 #endif
 
 
@@ -238,6 +241,83 @@ static tTJSCriticalSection TVPTempUniqueNumCS;
 static ttstr TVPTempPath;
 bool TVPTempPathInit = false;
 static tjs_int TVPProcessID;
+
+// dir (末尾に区切り付き) にファイルを作れるか。 実際に作って即消す
+static bool TVPIsWritableTempFolder(const ttstr &dir)
+{
+	if(dir.IsEmpty()) return false;
+#ifdef _WIN32
+	ttstr probe = dir + TJS_W("krkr_probe_") + ttstr((tjs_int)::GetCurrentProcessId()) +
+		TJS_W("_") + ttstr((tjs_int)::GetTickCount());
+	HANDLE h = ::CreateFileW(reinterpret_cast<const wchar_t*>(probe.c_str()), GENERIC_WRITE, 0, NULL,
+		CREATE_NEW, FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, NULL);
+	if(h == INVALID_HANDLE_VALUE) return false;
+	::CloseHandle(h);	// FILE_FLAG_DELETE_ON_CLOSE で消える
+	return true;
+#else
+	ttstr probe = dir + TJS_W("krkr_probe_") + ttstr(static_cast<tjs_int>(getpid())) +
+		TJS_W("_") + ttstr(static_cast<tjs_int>(TVPGetRoughTickCount32()));
+	std::string u8;
+	TVPUtf16ToUtf8(u8, probe.AsStdString());
+	int fd = ::open(u8.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
+	if(fd < 0) return false;
+	::close(fd);
+	::unlink(u8.c_str());
+	return true;
+#endif
+}
+
+// 一時フォルダを決める。
+// OS の一時フォルダは実在や書き込み可否を確かめずに返ってくる。 Windows の
+// GetTempPath は TMP → TEMP → USERPROFILE → Windows ディレクトリの順なので、
+// 環境変数が全く無い状態で起動されると C:\Windows\ になり、 一般権限では
+// アーカイブ内 DLL の取り出し等が失敗する。 書けない (または Windows ディレクトリ
+// そのもの) ならログを出してセーブデータのフォルダへ逃がす。
+static ttstr TVPDecideTempPath()
+{
+	ttstr path;
+	try {
+		path = ttstr( Application->TempPath().c_str() );
+	} catch(...) {
+		// std::filesystem::temp_directory_path は POSIX では実在しないと例外になる
+	}
+	if(!path.IsEmpty() && path.GetLastChar() != TJS_W('\\') && path.GetLastChar() != TJS_W('/'))
+		path += TJS_W("/");
+
+	bool isWindowsDir = false;
+#ifdef _WIN32
+	{
+		wchar_t win[MAX_PATH + 1];
+		UINT wlen = ::GetWindowsDirectoryW(win, MAX_PATH + 1);
+		if(wlen > 0 && wlen <= MAX_PATH && !path.IsEmpty()) {
+			ttstr w(reinterpret_cast<const tjs_char*>(win));
+			if(w.GetLastChar() != TJS_W('\\')) w += TJS_W("\\");
+			isWindowsDir = (::lstrcmpiW(reinterpret_cast<const wchar_t*>(w.c_str()),
+				reinterpret_cast<const wchar_t*>(path.c_str())) == 0);
+		}
+	}
+#endif
+	if(!isWindowsDir && TVPIsWritableTempFolder(path)) return path;
+
+	ttstr reason = path.IsEmpty() ? ttstr(TJS_W("(none)")) : path;
+	if(isWindowsDir) reason += TJS_W(" (the Windows directory: TMP / TEMP / USERPROFILE are all missing)");
+	else             reason += TJS_W(" (not writable)");
+
+	TVPEnsureDataPathDirectory();
+	ttstr data(TVPNativeDataPath.c_str());
+	if(!data.IsEmpty() && data.GetLastChar() != TJS_W('\\') && data.GetLastChar() != TJS_W('/'))
+		data += TJS_W("/");
+	if(TVPIsWritableTempFolder(data)) {
+		TVPAddImportantLog(ttstr(TJS_W("temporary folder is unusable: ")) + reason +
+			TJS_W(" -> using the data path instead: ") + data);
+		return data;
+	}
+	TVPAddImportantLog(ttstr(TJS_W("temporary folder is unusable: ")) + reason +
+		TJS_W(", and the data path is not writable either: ") + data +
+		TJS_W(" (extracting files such as plugins in an archive will fail)"));
+	return path;
+}
+
 ttstr TVPGetTemporaryName()
 {
 	tjs_int num;
@@ -247,8 +327,7 @@ ttstr TVPGetTemporaryName()
 
 		if(!TVPTempPathInit)
 		{
-			TVPTempPath = ttstr( Application->TempPath().c_str() );
-			if(TVPTempPath.GetLastChar() != TJS_W('\\')) TVPTempPath += TJS_W("\\");
+			TVPTempPath = TVPDecideTempPath();
 			TVPProcessID = static_cast<tjs_int>( getpid() );
 			TVPTempUniqueNum = static_cast<tjs_int>( TVPGetRoughTickCount32() );
 			TVPTempPathInit = true;

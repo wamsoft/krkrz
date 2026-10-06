@@ -12,6 +12,11 @@
 // (PS5 等。 論理 1920x1080 に対し実 3840x2160) では両者が食い違うので、
 // GL へ渡す前にここで実サイズ側へ移す。 一致する環境 (デスクトップ / NX)
 // では比が 1 なので素通しになる。
+//
+// 縦横は同じ倍率にして中央寄せする (SDL_Renderer 経路の
+// SDL_LOGICAL_PRESENTATION_LETTERBOX と同じ見え方)。 縦横別倍率にすると
+// 論理面とアスペクト比が違う画面 (iPad の 4:3、 縦長スマホ等) で引き伸ばされる。
+// 余白は DrawDevice のクリア色 (ビューポート背景色) になる。
 //---------------------------------------------------------------------------
 inline tTVPRect TVPScaleRectToSurface(const tTVPRect &r, int logW, int logH,
                                       int physW, int physH)
@@ -20,11 +25,14 @@ inline tTVPRect TVPScaleRectToSurface(const tTVPRect &r, int logW, int logH,
 	if (logW == physW && logH == physH) return r;
 	double sx = (double)physW / logW;
 	double sy = (double)physH / logH;
+	double s  = sx < sy ? sx : sy;
+	double ox = (physW - logW * s) * 0.5;
+	double oy = (physH - logH * s) * 0.5;
 	tTVPRect out;
-	out.left   = (tjs_int)(r.left   * sx + 0.5);
-	out.right  = (tjs_int)(r.right  * sx + 0.5);
-	out.top    = (tjs_int)(r.top    * sy + 0.5);
-	out.bottom = (tjs_int)(r.bottom * sy + 0.5);
+	out.left   = (tjs_int)(r.left   * s + ox + 0.5);
+	out.right  = (tjs_int)(r.right  * s + ox + 0.5);
+	out.top    = (tjs_int)(r.top    * s + oy + 0.5);
+	out.bottom = (tjs_int)(r.bottom * s + oy + 0.5);
 	return out;
 }
 

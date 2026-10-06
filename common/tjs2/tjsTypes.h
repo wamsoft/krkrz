@@ -147,6 +147,10 @@ typedef int32_t HRESULT;
 #define TJS_INTF_METHOD
 #define TJS_USERENTRY
 
+#if defined(__LP64__) || defined(_WIN64)
+#define TJS_64BIT_OS	/* 64bit (gcc / clang) */
+#endif
+
 #endif /* end of defined(_WIN32) && !defined(__GNUC__) */
 
 #define _TJS_W(str)     TJS_W(str)

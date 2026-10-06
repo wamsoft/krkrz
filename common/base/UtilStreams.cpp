@@ -42,7 +42,12 @@ tTVPLocalTempStorageHolder::tTVPLocalTempStorageHolder(const ttstr & name)
 
 		LocalFolder = TVPGetTemporaryName();
 		LocalName = LocalFolder + TJS_W("/") + TVPExtractStorageName(name);
-		TVPCreateFolders(LocalFolder); // create temporary folder
+		if(!TVPCreateFolders(LocalFolder)) // create temporary folder
+		{
+			// この後の書き込みで開けずに失敗する。 原因が一時フォルダだと分かるようにする
+			TVPAddImportantLog(ttstr(TJS_W("cannot create a temporary folder: ")) + LocalFolder +
+				TJS_W(" (to extract ") + name + TJS_W(")"));
+		}
 		FolderMustBeDeleted = true;
 		FileMustBeDeleted = true;
 

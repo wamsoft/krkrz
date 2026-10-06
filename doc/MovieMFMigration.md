@@ -664,3 +664,84 @@ SE のピーク値を Core Audio のセッションピークメーターで採�
 教訓: **`iTVPAudioStream::SetVolume` は「リニアゲイン × 100000」ではない**。
 知覚カーブが掛かる 0..100000 のスライダ値で、リニアゲインを持っている側は
 `TVPAudioGainToVolume()` を通すこと。
+
+## レイヤ再生 (vomLayer) の 4 件 — 2026-10-01 報告・同日修正
+
+ホスト案件で、8fps・960x540・不透明の連番アニメ (33 コマ程度のループと単発) を webm にして
+`VideoOverlay` の `vomLayer` で再生する検証をした際に見つかったもの。
+実機 = WINVER x64 (2026-09-24 ビルド)。**4 件とも修正済み** (movie-player / src/core)。
+
+| # | 症状 | 原因 | 修正 |
+|---|---|---|---|
+| 1 | **webm (VP8 / VP9) の再生中、1 本につき CPU 1 コアが 100% に張り付く** (停止中 2〜4%、同じ素材の mp4 は約 11%) | movie-player のコアスレッドは `Decode()` の最後に毎回 `MSG_DECODE` を投げ直し、`yield` だけで回っていた (次フレームの表示時刻まで何もすることが無くても回り続ける) | `Decode()` で何も進まなかった回 (入力投入・出力吸い上げ・フレーム更新・音声供給のどれも無し) は、次フレームの表示時刻まで (上限 10ms、音声ありは 5ms) **メッセージ到着か時間経過を待つ** (`MessageLooper::WaitForMessage`)。Windows の `condition_variable::wait_for` は既定のタイマ分解能 (~15.6ms) でしか起きないため、**高分解能の待機タイマ (`CREATE_WAITABLE_TIMER_HIGH_RESOLUTION`) とメッセージ到着イベントを `WaitForMultipleObjects` で並べて待つ** (本体の VSync 前眠りと同じ方式)。さらに音声なし (video-master) の時計は、表示が予定時刻より 1 フレーム未満の遅れなら**予定時刻で錨を打つ**ようにした (実際の表示時刻で打ち直すと、待ちから起きる遅れが毎フレーム積み重なって再生が遅くなる) |
+| 2 | **layer モードで mp4 (H.264) / mpg (MPEG-1) のループ再生が 2 周目で止まる** | engine のループは `EC_COMPLETE` を受けて `Rewind()` するだけ (`Play()` は呼ばない)。`tTVPLayerVideoBase` は終端で `stEnded` になり、`Rewind()` / `SetPosition()` はシーク要求を立てるだけだったので、デコードスレッドが再生指示待ちのまま進まなかった | `stEnded` からの `Rewind()` / `SetPosition()` は再生中 (`stPlaying`) へ戻す (`ResumeIfEndedNoLock`)。ループでない終端は engine が `Stop()` するので当たらない。あわせて mpg の先頭への巻き戻しを `plm_seek_frame` → **`plm_rewind`** に変更 (`plm_seek_frame` は目的のフレームをデコードして返す = 消費するので、2 周目以降と prepare でコマ 0 が飛んでいた) |
+| 3 | **ループ時に最終コマの表示時間がほぼ 0 (1〜10ms)** | webm: movie-player の終了判定が「最終フレームの**表示開始**時刻」で成立していた。mp4 / mpg: `tTVPLayerVideoBase` が最終フレームを提示した直後に終端を通知していた。どちらも巻き戻した先頭コマがすぐ上書きする | どちらも**最終フレームを 1 フレーム分表示してから**終了とする。1 フレームの長さは実際の PTS 間隔を優先し (コンテナの frameRate が壊れている素材がある — 手元の素材で 0.0005fps)、1 秒で頭打ち |
+| 4 | **新しく開いた動画のコマ 0 で `onFrameUpdate` が来ない** / **単発の再生が終わるとレイヤがコマ 0 に戻る** | 前者: `tTJSNI_VideoOverlay::Play()` が `VideoOverlay->Play()` の**後**に `ClearWndProcMessages()` していた。webm は `Play()` の中でコマ 0 をデコードし終えてから戻るので、その更新通知 (と `GetEvent` の空読みでイベント本体) が捨てられていた。後者: movie-player の停止 / 終了 (`MSG_STOP` / `MSG_FINISH`) が表示フレームを `mDummyFrame` に差し替えて通知しており、その中身は再生開始時のシークで複製した先頭コマだった | 前者: 掃除を `VideoOverlay->Play()` の**前**へ移した。後者: 停止 / 終了は表示中のフレームをダミーへ複製して保持し、**通知しない** (`HoldLastVideoFrame`) |
+
+同時に見つけて直したもの: **webm のループで `onPeriod(perLoop)` が 1 周に 2 回出ていた**。
+終了後の巻き戻し (`Seek(0)`) が一時的に `STATE_PRELOADING` にしてから元の状態 (`STATE_FINISH`)
+へ戻すため、戻した時に終了がもう一度通知されていた。シーク中の一時的な状態切り替えは通知しない。
+
+検証 (WINVER x64、修正前ビルドと比較。素材 = 8fps・32 コマ・音声なしで、コマごとに灰色の段階を
+変えたもの。`onFrameUpdate` のたびにレイヤの画素からどのコマが出ているかを読む):
+
+| | 修正前 | 修正後 |
+|---|---|---|
+| webm 再生中の CPU | 102% | 0〜2% |
+| webm 最初の更新 | コマ 1 (128ms) | コマ 0 (2ms) |
+| webm 最終コマの表示時間 | 0ms (表示と同時にコマ 0 へ戻る) | 125ms |
+| webm 単発終了後のレイヤ | コマ 0 | コマ 31 (最終コマ) |
+| webm ループの perLoop | 1 周に 2 回 | 1 回 |
+| mp4 / mpg のループ | 1 周目の終わりで止まる | 継続 (最終コマも 1 コマ分表示) |
+
+ほかの webm でも: 1080p・音声あり 139% → 44%、アルファ付き 30fps 105% → 22% (残りはデコード
+そのもの)。SDL 版 (同じ movie-player を使う) も webm の CPU 120% → 15〜20%、最終コマの表示時間が
+0 → 1 コマ分になった。
+
+補足と残り:
+
+- 動画を閉じた直後に TJS のタイマー / REPL が 60〜130 秒止まる件 (2026-10-01、同じ検証で報告) は
+  動画側ではなく WINVER のメインループの不具合だった。`stop()` / `close()` の
+  `ClearWndProcMessages` (範囲指定の `PeekMessage`) がタイマーの wake を「調べ済み」にし、
+  アイドルの `WaitMessage` が起きなくなっていた。アイドル待ちを
+  `MsgWaitForMultipleObjectsEx(MWMO_INPUTAVAILABLE)` に変えて解消 → [AppEvent.md](AppEvent.md) §6。
+- 単発の終了は、最終コマを 1 コマ分表示した後に `onStatusChanged("stop")` が来る。`open()` の
+  時点でも `stop` が来るので、利用側は「直前が play だった stop」だけを終了とみなす (従来どおり)。
+- mpg (MPEG-1) は規格上フレームレートが 23.976 / 24 / 25 / 29.97 / 30 / 50 / 59.94 / 60 しか無いので、
+  8fps の素材は 24fps へ水増し (各コマを 3 回) して作る必要がある (pl_mpeg の制限ではなく規格)。
+- mp4 の `onFrameUpdate` のコマ番号が実際より 2 大きかった (先頭コマで 2) → 同日修正。MF SourceReader の
+  タイムスタンプはエンコーダの遅延分 (この素材で 250ms) から始まるのに、0 起点でコマ番号を出していた。
+  `tTVPLayerVideoBase` が先頭から読んだ最初のフレームの pts を起点 (`PtsOriginMs`) にし、位置 / コマ番号は
+  それを引き、位置の指定 (`SetPosition` / `SetFrame`) はそれを足してデコーダへ渡す。
+- 音声ありの webm のループで 2 周目の頭が止まる / 先頭のコマが一気に流れる → 同日修正 (movie-player)。
+  音声の時計は「起点 PTS + sink の再生済みサンプル数」で、この再生済みサンプル数 (miniaudio の
+  `ma_sound_get_time_in_pcm_frames`) は open からの通算でシーク (キューの破棄) でも 0 に戻らない。
+  巻き戻し後も通算をそのまま足していたので、時計が 1 周分先へ飛び、先頭のフレームが一気に流れた後、
+  終端で音声の終わりを待って止まっていた。起点バッファを積んだ時点の再生済みサンプル数を覚えて差で測る。
+  同じ理由で**一時停止 → 再開でも時計が飛んでいた** (再開後に一時停止していた時間ぶんのコマが飛ぶ。
+  movie-player の README にあった「Pause/resume 後に数フレームがスキップ扱いになる」の正体) ので、
+  再開時に起点を取り直すのをやめた (再生済みサンプル数は一時停止中は進まない)。
+  検証: 8fps・32 コマ + 正弦波の webm (Vorbis / Opus) で、ループの 2 周目も 125ms 間隔・perLoop 1 回、
+  一時停止 → 再開は続きのコマから (修正前は 10 コマ飛んで、終了後はコマ 0 に戻っていた)。
+- SDL 版の `VideoOverlay` は当初 `loop` が未実装だった → 下の「SDL 版 VideoOverlay」で対応済み。
+
+### SDL 版 VideoOverlay (generic) のループ / コマ番号 / 先頭コマ — 2026-10-01
+
+同じ素材で SDL 版 (generic/visual/VideoOvlImpl.cpp) も確かめたところ、修正前から次の状態だった:
+`loop` が効かない (`SetLoop` が空で 1 周で stop)、`onFrameUpdate` のコマ番号が常に 0、`fps` /
+`numberOfFrame` が 0、新しく開いた webm の先頭コマが通知されない。対応:
+
+| 項目 | 修正 |
+|---|---|
+| ループ | `SetLoop` で保持し、`CheckUpdate` (毎フレームのポーリング) で再生中に終端を検出したら `Seek(0)` + `Play()` して `perLoop` を発火 (stop は出さない)。WINVER の vsEnded / EC_COMPLETE → 巻き戻しと同じ形 |
+| コマ番号 | `iTVPMoviePlayer::FrameRate()` を追加 (movie-player はコンテナの値、1fps 未満は不明扱い / pl_mpeg は `plm_get_framerate`)。`GetFrame` = 再生位置 × fps、`GetFPS` / `GetNumberOfFrame` / `SetFrame` も実装。`onFrameUpdate` には**フレームを書き込んだ時点**のコマ番号を渡す (表示 = `Update` はデコードより遅れるので、表示時点の位置だと先のコマ番号になる) |
+| 先頭コマ | movie-player は開いた時点で先頭フレームをプリロードするが、フレームコールバックの登録より前なので配送されない。generic ラッパの `Play()` が、まだ 1 枚も配送していなければ `Seek(0)` で出し直す。あわせて停止 / 終了後の `Play()` は先頭から (`Seek(0)`)、一時停止からは `Resume()` |
+| MPEG-1 (pl_mpeg) | WINVER と同じ 2 点: 先頭への巻き戻しは `plm_rewind` (`plm_seek_frame` はコマ 0 を消費する)、最終フレームは 1 コマ分表示してから終端 / ループ。再生位置はフレーム配送の前に更新 |
+
+movie-player 側も 2 点: シーク (`Flush`) で同じ絵を通知し直さない (ループの巻き戻しで、まだ FINISH の
+うちに届く通知を見た SDL 版が「停止した」と判断し、偽の stop → play が出ていた)、時計を進めてから
+フレームを通知する (コールバック内の `Position()` が 1 つ前のコマを指していた)。
+
+検証 (SDL x64、8fps・32 コマの webm と 24fps・96 コマの mpg): webm はコマ 0 が 16ms で通知、
+コマ番号 = 表示中のコマ、ループで最終コマを 1 コマ分表示してから `perLoop` 1 回で 2 周目へ、
+状態イベントは play 1 回のみ。mpg も同じ。prepare → play も webm / mpg で確認 (WINVER も再確認)。

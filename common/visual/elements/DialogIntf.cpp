@@ -145,6 +145,14 @@ void tTJSNI_Dialog::OnClosed(const ttstr& action)
 	TVPPostEvent(Owner, Owner, eventname, 0, TVP_EPT_IMMEDIATE, 1, args);
 }
 
+void tTJSNI_Dialog::OnKeyCapture(tjs_uint vk, tjs_uint32 shift)
+{
+	if (!Owner) return;
+	tTJSVariant args[2] = { (tjs_int)vk, (tjs_int)shift };
+	static ttstr eventname(TJS_W("onKeyCapture"));
+	TVPPostEvent(Owner, Owner, eventname, 0, TVP_EPT_IMMEDIATE, 2, args);
+}
+
 void tTJSNI_Dialog::OnVar(const ttstr& name, const ttstr& value)
 {
 	if (!Owner) return;
@@ -177,6 +185,77 @@ bool tTJSNI_Dialog::WantsVarNotify(std::vector<ttstr>& out_names)
 		return false;
 	if (v.Type() == tvtVoid) return false;
 	out_names.clear();
+	return true;
+}
+
+// 読み上げ: setGameA11y のノード (Dictionary) を読む。
+static bool GameA11yString(iTJSDispatch2* d, const tjs_char* key, ttstr& out)
+{
+	tTJSVariant v;
+	if (TJS_FAILED(d->PropGet(0, key, nullptr, &v, d)) || v.Type() == tvtVoid) return false;
+	out = ttstr(v);
+	return true;
+}
+
+static std::optional<double> GameA11yNumber(iTJSDispatch2* d, const tjs_char* key)
+{
+	tTJSVariant v;
+	if (TJS_FAILED(d->PropGet(0, key, nullptr, &v, d)) || v.Type() == tvtVoid) return std::nullopt;
+	return (double)(tTVReal)v;
+}
+
+static tjs_int GameA11yCount(iTJSDispatch2* arr)
+{
+	tTJSVariant v;
+	if (arr && TJS_SUCCEEDED(arr->PropGet(0, TJS_W("count"), nullptr, &v, arr)))
+		return (tjs_int)v;
+	return 0;
+}
+
+static bool ReadGameA11yNode(iTJSDispatch2* d, tTVPGameA11yNode& n)
+{
+	if (!GameA11yString(d, TJS_W("id"), n.id) || n.id.IsEmpty()) return false;
+	GameA11yString(d, TJS_W("role"), n.role);
+	GameA11yString(d, TJS_W("name"), n.name);
+	GameA11yString(d, TJS_W("value"), n.value);
+	GameA11yString(d, TJS_W("description"), n.description);
+	GameA11yString(d, TJS_W("parent"), n.parent);
+	// states: 配列 ["focusable","checked"] か文字列 "focusable,checked"
+	tTJSVariant sv;
+	if (TJS_SUCCEEDED(d->PropGet(0, TJS_W("states"), nullptr, &sv, d))) {
+		if (sv.Type() == tvtObject && sv.AsObjectNoAddRef()) {
+			iTJSDispatch2* arr = sv.AsObjectNoAddRef();
+			tjs_int count = GameA11yCount(arr);
+			for (tjs_int i = 0; i < count; ++i) {
+				tTJSVariant v;
+				if (TJS_FAILED(arr->PropGetByNum(0, i, &v, arr)) || v.Type() == tvtVoid) continue;
+				if (!n.states.IsEmpty()) n.states += TJS_W(",");
+				n.states += ttstr(v);
+			}
+		} else if (sv.Type() != tvtVoid) {
+			n.states = ttstr(sv);
+		}
+	}
+	// rect: [x, y, w, h] (primary layer の座標)
+	tTJSVariant rv;
+	if (TJS_SUCCEEDED(d->PropGet(0, TJS_W("rect"), nullptr, &rv, d))
+	    && rv.Type() == tvtObject && rv.AsObjectNoAddRef()) {
+		iTJSDispatch2* arr = rv.AsObjectNoAddRef();
+		if (GameA11yCount(arr) >= 4) {
+			double r[4];
+			for (tjs_int i = 0; i < 4; ++i) {
+				tTJSVariant v;
+				arr->PropGetByNum(0, i, &v, arr);
+				r[i] = (v.Type() == tvtVoid) ? 0.0 : (double)(tTVReal)v;
+			}
+			n.has_rect = true;
+			n.x = r[0]; n.y = r[1]; n.w = r[2]; n.h = r[3];
+		}
+	}
+	n.num_value = GameA11yNumber(d, TJS_W("num_value"));
+	n.num_min = GameA11yNumber(d, TJS_W("num_min"));
+	n.num_max = GameA11yNumber(d, TJS_W("num_max"));
+	n.num_step = GameA11yNumber(d, TJS_W("num_step"));
 	return true;
 }
 
@@ -244,6 +323,11 @@ bool tTJSNI_Dialog::GetVar(const ttstr& name, ttstr& out)
 bool tTJSNI_Dialog::FocusWidget(const ttstr& id)
 {
 	return tTVPElementsDialogManager::Instance().FocusWidget(this, id);
+}
+
+bool tTJSNI_Dialog::SetKeyCapture(bool on)
+{
+	return tTVPElementsDialogManager::Instance().SetKeyCapture(this, on);
 }
 
 bool tTJSNI_Dialog::ActivateWidget(const ttstr& id)
@@ -1048,6 +1132,41 @@ tTJSNC_Dialog::tTJSNC_Dialog() : inherited(TJS_W("ElementsDialog"))
 	}
 	TJS_END_NATIVE_METHOD_DECL(/*func. name*/onClose)
 	//---------------------------------------------------------------------------
+	// onKeyCapture(key, shift) — beginKeyCapture 中に押されたキー。 key は VK
+	// コード (右/中/X ボタンのマウス押下は VK_RBUTTON 等)、 shift は ss* の
+	// 組合せ (オートリピートは ssRepeat 付き)。 既定は何もしない。
+	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/onKeyCapture)
+	{
+		// no-op default
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_METHOD_DECL(/*func. name*/onKeyCapture)
+	//---------------------------------------------------------------------------
+	// beginKeyCapture() — キー捕捉を始める。 このダイアログがキーボード
+	// フォーカスを持つ間、 キー押下と左以外のマウスボタン押下はウィジェット
+	// (フォーカス移動・決定・Esc 等) に使われず、 すべて onKeyCapture へ届く。
+	// キーアップと文字入力は捨てる。 左クリックはウィジェットへ通常どおり届く。
+	// endKeyCapture() かダイアログを閉じるまで続く。 「次に押されたキーを
+	// 割り当てる」設定画面向け。 非アクティブなら false。
+	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/beginKeyCapture)
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Dialog);
+		bool ok = _this->SetKeyCapture(true);
+		if (result) *result = (tjs_int)(ok ? 1 : 0);
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_METHOD_DECL(/*func. name*/beginKeyCapture)
+	//---------------------------------------------------------------------------
+	// endKeyCapture() — キー捕捉を終える。 非アクティブなら false。
+	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/endKeyCapture)
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Dialog);
+		bool ok = _this->SetKeyCapture(false);
+		if (result) *result = (tjs_int)(ok ? 1 : 0);
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_METHOD_DECL(/*func. name*/endKeyCapture)
+	//---------------------------------------------------------------------------
 	// setVar(name, value) — 表示中ダイアログの変数 store へ書込。 JSON で
 	// "text_var": name を指定した label が次フレームで更新される。 自分の
 	// インスタンスが非アクティブなら false。
@@ -1307,6 +1426,144 @@ tTJSNC_Dialog::tTJSNC_Dialog() : inherited(TJS_W("ElementsDialog"))
 		TJS_END_NATIVE_PROP_SETTER
 	}
 	TJS_END_NATIVE_PROP_DECL(language)
+	//---------------------------------------------------------------------------
+	// 読み上げ (スクリーンリーダー対応、 doc/specification/accessibility.md)
+	//
+	// announce(text [, assertive])  — スクリーンリーダーに読ませる (最前面の
+	//   ダイアログの live region。 ダイアログが無ければゲーム本体の slot の
+	//   live region)。 AT が繋がっていなくても受け付ける (繋がった時点で最新の
+	//   状態が渡る。 REPL 中は読み上げログにも残る)。 assertive=true で割り込み。
+	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/announce)
+	{
+		if (numparams < 1) return TJS_E_BADPARAMCOUNT;
+		bool assertive = (numparams >= 2 && param[1]->Type() != tvtVoid)
+			? (bool)(tjs_int)*param[1] : false;
+		tTVPElementsDialogManager::Instance().A11yAnnounce(ttstr(*param[0]), assertive);
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_METHOD_DECL(/*func. name*/announce)
+	//---------------------------------------------------------------------------
+	// a11yActive プロパティ (読み取り専用): OS のスクリーンリーダー等が接続中か。
+	TJS_BEGIN_NATIVE_PROP_DECL(a11yActive)
+	{
+		TJS_BEGIN_NATIVE_PROP_GETTER
+		{
+			*result = (tjs_int)(tTVPElementsDialogManager::Instance().A11yActive() ? 1 : 0);
+			return TJS_S_OK;
+		}
+		TJS_END_NATIVE_PROP_GETTER
+		TJS_DENY_NATIVE_PROP_SETTER
+	}
+	TJS_END_NATIVE_PROP_DECL(a11yActive)
+	//---------------------------------------------------------------------------
+	// a11yMode プロパティ: "auto" (既定。 AT が繋がったときだけ働く) / "off"
+	//   (OS へ出さない。 ツリー取得 / 読み上げログは使える)。
+	TJS_BEGIN_NATIVE_PROP_DECL(a11yMode)
+	{
+		TJS_BEGIN_NATIVE_PROP_GETTER
+		{
+			*result = tTVPElementsDialogManager::Instance().GetA11yMode();
+			return TJS_S_OK;
+		}
+		TJS_END_NATIVE_PROP_GETTER
+		TJS_BEGIN_NATIVE_PROP_SETTER
+		{
+			tTVPElementsDialogManager::Instance().SetA11yMode(ttstr(*param));
+			return TJS_S_OK;
+		}
+		TJS_END_NATIVE_PROP_SETTER
+	}
+	TJS_END_NATIVE_PROP_DECL(a11yMode)
+	//---------------------------------------------------------------------------
+	// a11yLabel プロパティ: 読み上げツリーの根 (ウィンドウ) の名前 (ゲーム名 /
+	//   場面名など)。 空なら最前面画面の名前 (画面 JSON の "a11y".title)。
+	TJS_BEGIN_NATIVE_PROP_DECL(a11yLabel)
+	{
+		TJS_BEGIN_NATIVE_PROP_GETTER
+		{
+			*result = tTVPElementsDialogManager::Instance().GetA11yLabel();
+			return TJS_S_OK;
+		}
+		TJS_END_NATIVE_PROP_GETTER
+		TJS_BEGIN_NATIVE_PROP_SETTER
+		{
+			tTVPElementsDialogManager::Instance().SetA11yLabel(ttstr(*param));
+			return TJS_S_OK;
+		}
+		TJS_END_NATIVE_PROP_SETTER
+	}
+	TJS_END_NATIVE_PROP_DECL(a11yLabel)
+	//---------------------------------------------------------------------------
+	// setGameA11y(nodes [, focus])  — ゲーム本体 (Layer に描いた UI) を読み上げ
+	//   ツリーに載せる。 nodes は Dictionary の配列で、 呼ぶたびに丸ごと差し替える
+	//   (差分は内部で取る)。 focus は focused にするノードの id。
+	//     %[ id, role, name, value, description, states, rect, parent,
+	//        num_value, num_min, num_max, num_step ]
+	//   id 必須 (一意)。 role は "button" / "check_box" / "radio_button" /
+	//   "list" / "list_item" / "slider" / "label" / "group" … 。 states は配列か
+	//   "focusable,checked" (focusable / disabled / checked / selected /
+	//   expanded / read_only)。 rect は primary layer の座標 [x, y, w, h] (省略可、
+	//   ウィンドウの拡縮 / レターボックスは本体が換算する)。 parent は親の id
+	//   (省略で最上位)。 ゲームの slot はダイアログより下で、 モーダルな
+	//   ダイアログの表示中は隠れる。
+	//   AT からの操作は ElementsDialog.onGameA11yAction(id, action, arg) に届く
+	//   (action = click / focus / increment / decrement / set_value。 描画の外で
+	//   呼ばれる)。 フォーカスを動かすのはスクリプト側 (focus を受けたら
+	//   setGameA11y を focus 付きで呼び直す)。
+	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/setGameA11y)
+	{
+		if (numparams < 1) return TJS_E_BADPARAMCOUNT;
+		std::vector<tTVPGameA11yNode> nodes;
+		if (param[0]->Type() == tvtObject && param[0]->AsObjectNoAddRef()) {
+			iTJSDispatch2* arr = param[0]->AsObjectNoAddRef();
+			tjs_int count = GameA11yCount(arr);
+			nodes.reserve(count);
+			for (tjs_int i = 0; i < count; ++i) {
+				tTJSVariant v;
+				if (TJS_FAILED(arr->PropGetByNum(0, i, &v, arr))) continue;
+				if (v.Type() != tvtObject || !v.AsObjectNoAddRef()) continue;
+				tTVPGameA11yNode n;
+				if (ReadGameA11yNode(v.AsObjectNoAddRef(), n)) nodes.push_back(std::move(n));
+			}
+		}
+		ttstr focus = (numparams >= 2 && param[1]->Type() != tvtVoid) ? ttstr(*param[1]) : ttstr();
+		tTVPElementsDialogManager::Instance().SetGameA11y(nodes, focus);
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_METHOD_DECL(/*func. name*/setGameA11y)
+	//---------------------------------------------------------------------------
+	// clearGameA11y()  — ゲーム本体のノードを全て外す。
+	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/clearGameA11y)
+	{
+		tTVPElementsDialogManager::Instance().ClearGameA11y();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_METHOD_DECL(/*func. name*/clearGameA11y)
+	//---------------------------------------------------------------------------
+	// a11yLayers プロパティ (既定 false): メインウィンドウの Layer を読み上げ
+	//   ツリーに自動で載せる。 フォーカス連鎖に入っている Layer (focusable &&
+	//   joinFocusChain、 名前は hint)、 a11yName / a11yRole を持つ Layer、
+	//   ElementsPanel を描いている Layer が対象。 Layer に a11yName / a11yRole /
+	//   a11yValue / a11yDescription / a11yStates を生やせば上書き、 a11yHidden=true
+	//   で部分木ごと外す。 onA11yAction(action, arg) を定義すると AT の操作を
+	//   受ける (false を返すと既定の処理 = focus / click=フォーカスして Enter も)。
+	//   setGameA11y のノードとは併用でき、 そちらが先に並び、 focus も優先。
+	TJS_BEGIN_NATIVE_PROP_DECL(a11yLayers)
+	{
+		TJS_BEGIN_NATIVE_PROP_GETTER
+		{
+			*result = (tjs_int)(tTVPElementsDialogManager::Instance().GetA11yLayers() ? 1 : 0);
+			return TJS_S_OK;
+		}
+		TJS_END_NATIVE_PROP_GETTER
+		TJS_BEGIN_NATIVE_PROP_SETTER
+		{
+			tTVPElementsDialogManager::Instance().SetA11yLayers((tjs_int)*param != 0);
+			return TJS_S_OK;
+		}
+		TJS_END_NATIVE_PROP_SETTER
+	}
+	TJS_END_NATIVE_PROP_DECL(a11yLayers)
 	//---------------------------------------------------------------------------
 	// fontLanguages プロパティ (static 相当):
 	//   言語連動フォント置換表。 言語コード → { map: %[family(または

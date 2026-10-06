@@ -582,8 +582,12 @@ void tTJSNI_VideoOverlay::Play()
 		// が prepare の EC_UPDATE を食べる可能性があり、IsPrepare が残ると本再生の
 		// 1 コマ目を prepare 完了と誤認して Pause()+Rewind() してしまう。
 		IsPrepare = false;
-		VideoOverlay->Play();
+		// 前の再生の残りイベントは Play() の「前」に捨てる。後で捨てると、Play() が
+		// その場で配送する先頭フレームの更新通知 (webm は Play() の中で 1 コマ目を
+		// デコードし終えてから戻る) まで食べてしまい、コマ 0 の onFrameUpdate が来ず
+		// 最初に見えるのがコマ 1 になる。
 		ClearWndProcMessages();
+		VideoOverlay->Play();
 		RegisterPresenter(); // presenter 経路: 稼働開始を DrawDevice に登録
 		// Track V-D で EVR 撤去。旧 vomMFEVR は EVR の非同期 state 通知に頼って
 		// SetStatus を抑止していたが、統合後は overlay と同じく同期 SetStatus する。

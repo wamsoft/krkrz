@@ -439,7 +439,18 @@ common/sound/RealFFT_NEON.cpp
 # ----------------------------------------------------------------------------
 # アーキテクチャ自動判定
 # ----------------------------------------------------------------------------
-string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" _krkrz_arch_lc)
+set(_krkrz_arch "${CMAKE_SYSTEM_PROCESSOR}")
+# iOS (CMAKE_SYSTEM_NAME=iOS) のクロスビルドでは CMAKE_SYSTEM_PROCESSOR が空になる。
+# 単一アーキ指定 (CMAKE_OSX_ARCHITECTURES=arm64) ならそれを使う。
+if (APPLE AND NOT _krkrz_arch AND CMAKE_OSX_ARCHITECTURES)
+    list(LENGTH CMAKE_OSX_ARCHITECTURES _krkrz_narch)
+    if (_krkrz_narch EQUAL 1)
+        set(_krkrz_arch "${CMAKE_OSX_ARCHITECTURES}")
+    endif()
+    unset(_krkrz_narch)
+endif()
+string(TOLOWER "${_krkrz_arch}" _krkrz_arch_lc)
+unset(_krkrz_arch)
 # Emscripten toolchain は CMAKE_SYSTEM_PROCESSOR=x86 を名乗るが、wasm に
 # x86 SIMD intrinsics は無いので除外する (C リファレンス実装へフォールバック)
 if (NOT EMSCRIPTEN)
@@ -523,6 +534,7 @@ generic/base/SysInitImpl.cpp
 generic/base/SystemImpl.cpp
 generic/environ/Application.cpp
 generic/environ/FontSystemBase.cpp
+generic/environ/SystemFontList.cpp
 generic/environ/WindowForm.cpp
 generic/environ/JoyPad.cpp
 generic/msg/MsgImpl.cpp

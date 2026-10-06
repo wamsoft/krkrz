@@ -1,0 +1,484 @@
+// -*- mode:tjs2 -*-
+// ======================================================================
+//  a11y シーン (A11yScene)
+//    読み上げ (スクリーンリーダー対応) を 1 画面で試す。
+//      1. Layer に描いた選択肢を ElementsDialog.setGameA11y で載せる
+//      2. フォーカス連鎖の Layer を ElementsDialog.a11yLayers で自動で載せる
+//         (a11yName / a11yRole / a11yStates / a11yHidden / onA11yAction)
+//      3. ElementsDialog.announce で任意の文を読ませる (パネル)
+//    仕様: doc/specification/accessibility.md (umbrella)
+// ======================================================================
+
+// ----------------------------------------------------------------------
+// フォーカスできるボタン。 名前は hint がそのまま読まれる。
+// スクリーンリーダーの click は既定の処理 (フォーカスして Enter) で届くので、
+// Enter で押せるようにしておけば onA11yAction は要らない。
+// ----------------------------------------------------------------------
+class A11yButtonLayer extends Layer
+{
+    var scene, label;
+    var textLeft = void;         // void = 中央寄せ
+
+    function A11yButtonLayer(win, par, sc, text)
+    {
+        super.Layer(win, par);
+        scene = sc; label = text;
+        hint = text;                 // 読み上げの名前 (ツールチップにもなる)
+        focusable = true;
+        hitType = htMask; hitThreshold = 0;
+        cursor = crHandPoint;
+        setSize(150, 44);
+        redraw();
+        visible = true;
+    }
+
+    function redraw()
+    {
+        var on = focused;
+        fillRect(0, 0, width, height, on ? 0xff3d7ac8 : 0xff2a3550);
+        if (on) {
+            fillRect(0, 0, width, 3, 0xffffe066);
+            fillRect(0, height - 3, width, 3, 0xffffe066);
+        }
+        font.height = 18;
+        var tx = (textLeft !== void) ? textLeft : (width - font.getTextWidth(label)) \ 2;
+        drawText(tx, 12, label, 0xffffff, 255);
+    }
+
+    function press() { scene.notePress(label); }
+
+    function onFocus(prev) { super.onFocus(...); redraw(); scene.noteLayerFocus(this); }
+    function onBlur(next)  { super.onBlur(...); redraw(); }
+    function onMouseDown(x, y, button, shift) { super.onMouseDown(...); focus(); press(); }
+    // キーはエンジンがフォーカス中の Layer へ直接配る。 Enter / Space 以外は
+    // 既定の処理 (Tab・矢印でフォーカス移動) へ回す。
+    function onKeyDown(key, shift, process)
+    {
+        if (key == VK_RETURN || key == VK_SPACE) press();
+        else super.onKeyDown(key, shift, process);
+    }
+}
+
+// チェックボックス風。 a11yRole と、 本体が読む `checked` メンバで状態が伝わる。
+class A11yCheckLayer extends A11yButtonLayer
+{
+    var checked = false;
+    var a11yRole = "check_box";
+
+    function A11yCheckLayer(win, par, sc, text) { super.A11yButtonLayer(win, par, sc, text); }
+
+    function redraw()
+    {
+        super.redraw();
+        fillRect(10, 14, 16, 16, 0xffdfe6f2);
+        fillRect(12, 16, 12, 12, checked ? 0xffffe066 : 0xff1b2130);
+    }
+    function press() { checked = !checked; redraw(); scene.notePress(label + (checked ? " オン" : " オフ")); }
+}
+
+// スライダー風。 値の変更 (increment / decrement / set_value) は既定の処理が
+// 無いので onA11yAction で受ける。 a11yValue が読み上げの値。
+class A11ySliderLayer extends A11yButtonLayer
+{
+    var value = 50;
+    var a11yRole = "slider";
+    property a11yValue { getter() { return value + "%"; } }
+
+    function A11ySliderLayer(win, par, sc, text) { super.A11yButtonLayer(win, par, sc, text); setSize(312, 44); redraw(); }
+
+    function redraw()
+    {
+        var on = focused;
+        fillRect(0, 0, width, height, on ? 0xff3d7ac8 : 0xff2a3550);
+        font.height = 18;
+        drawText(10, 12, label + " " + value + "%", 0xffffff, 255);
+        fillRect(150, 20, 150, 4, 0xff5a6a8a);
+        fillRect(150, 20, 150 * value \ 100, 4, 0xffffe066);
+    }
+    function setValue(v)
+    {
+        v = (int)v;
+        if (v < 0) v = 0;
+        if (v > 100) v = 100;
+        value = v; redraw(); scene.noteValue(label, value);
+    }
+    function press() {}
+    function onKeyDown(key, shift, process)
+    {
+        if (key == VK_LEFT) setValue(value - 10);
+        else if (key == VK_RIGHT) setValue(value + 10);
+        else super.onKeyDown(key, shift, process);
+    }
+    function onA11yAction(action, arg)
+    {
+        switch (action) {
+        case "increment": setValue(value + 10); return true;
+        case "decrement": setValue(value - 10); return true;
+        case "set_value": setValue(+arg); return true;
+        }
+        return false;   // focus などは既定の処理 (layer.focus()) に任せる
+    }
+}
+
+// 選択肢を描くレイヤ。 フォーカス連鎖には入れるが、 読み上げツリーには
+// setGameA11y で 1 項目ずつ載せるので a11yHidden で自動から外す。
+class A11yChoiceLayer extends Layer
+{
+    var scene;
+    var a11yHidden = true;      // クラスで生やすときは var で宣言する
+
+    function A11yChoiceLayer(win, par, sc)
+    {
+        super.Layer(win, par);
+        scene = sc;
+        focusable = true;
+        hitType = htMask; hitThreshold = 0;
+        cursor = crHandPoint;
+    }
+
+    function onFocus(prev) { super.onFocus(...); scene.noteChoiceFocus(); }
+    function onBlur(next)  { super.onBlur(...); scene.noteChoiceFocus(); }
+    function onMouseDown(x, y, button, shift)
+    {
+        super.onMouseDown(...);
+        var i = (y - 8) \ scene.CH_ROW;
+        if (i >= 0 && i < scene.CHOICES.count) { scene.selectChoice(i); scene.decideChoice(); }
+    }
+    function onKeyDown(key, shift, process)
+    {
+        var n = scene.CHOICES.count;
+        if (key == VK_UP)        scene.selectChoice((scene.choiceIndex + n - 1) % n);
+        else if (key == VK_DOWN) scene.selectChoice((scene.choiceIndex + 1) % n);
+        else if (key == VK_RETURN || key == VK_SPACE) scene.decideChoice();
+        else super.onKeyDown(key, shift, process);   // Tab などは既定 (フォーカス移動)
+    }
+}
+
+class A11yScene extends DemoScene
+{
+    var SEC_X = 24, INFO_X = 620, INFO_W = 320;
+
+    // 1. 選択肢 (setGameA11y)
+    var CHOICES = ["北へ行く", "南へ行く", "ここで待つ"];
+    var CH_X = 24, CH_Y = 76, CH_W = 560, CH_ROW = 48;
+    var choiceLayer;
+    var choiceIndex = 0;
+    var decided = "(まだ)";
+
+    // 2. Layer の自動 (a11yLayers)
+    var buttons = [];          // フォーカス連鎖の順
+    var headingLayer, decoLayer;
+
+    // 状態表示
+    var hasA11y = false;
+    var lastAction = "(まだ)", lastAnnounce = "(まだ)", lastPress = "(まだ)";
+    var logSince = 0, logLines = [];
+    var pendingInfo = true, pollTick = 0;
+    var assertive = false;
+
+    function A11yScene() { super.DemoScene("読み上げ (スクリーンリーダー)"); }
+
+    function create()
+    {
+        hasA11y = hasElements() && typeof ElementsDialog.setGameA11y != "undefined";
+        stage.fillRect(0, 0, 1280, 720, 0xff141821);
+        drawStatic();
+        buildChoices();
+        buildLayers();
+        if (hasA11y) {
+            // スクリーンリーダーからの操作 (選択肢のノード)。 クラスへ関数を代入する。
+            ElementsDialog.onGameA11yAction = onGameA11yAction incontextof this;
+            ElementsDialog.onA11yActiveChanged = onA11yActiveChanged incontextof this;
+            ElementsDialog.a11yLabel = "読み上げデモ";
+            ElementsDialog.a11yLayers = true;
+            choiceLayer.focus();   // → noteChoiceFocus → pushChoices
+            setInfo("↑↓ 選択肢 / Enter 決定 / ←→ でボタン間を移動 / Tab で右下パネルへ。ナレーター等で読み上げ");
+            showPanelDict(panelDict());
+        } else {
+            setInfo("このビルドには読み上げの口がありません (ElementsDialog.setGameA11y が無い)");
+        }
+        redrawInfo();
+    }
+
+    function onExit()
+    {
+        // 読み上げの状態はクラス全体 (static) なので、 シーンを抜けるときに戻す
+        if (hasA11y) {
+            ElementsDialog.clearGameA11y();
+            ElementsDialog.a11yLayers = false;
+            ElementsDialog.a11yLabel = "";
+            ElementsDialog.onGameA11yAction = void;
+            ElementsDialog.onA11yActiveChanged = void;
+        }
+        choiceLayer = headingLayer = decoLayer = void;
+        buttons = [];
+    }
+
+    // ------------------------------------------------------------------
+    // 1. Layer に描いた選択肢を setGameA11y で載せる
+    // ------------------------------------------------------------------
+    function buildChoices()
+    {
+        choiceLayer = new A11yChoiceLayer(window, stage, this);
+        choiceLayer.name = "choices";
+        choiceLayer.setPos(CH_X, CH_Y);
+        choiceLayer.setSize(CH_W, CH_ROW * CHOICES.count + 16);
+        choiceLayer.visible = true;
+        drawChoices();
+    }
+
+    function drawChoices()
+    {
+        var l = choiceLayer;
+        if (!(isvalid l)) return;
+        l.fillRect(0, 0, l.width, l.height, 0xff1b2130);
+        l.font.height = 20;
+        for (var i = 0; i < CHOICES.count; i++) {
+            var y = 8 + i * CH_ROW;
+            var sel = (i == choiceIndex);
+            l.fillRect(8, y, CH_W - 16, CH_ROW - 6, sel ? (l.focused ? 0xff3d7ac8 : 0xff34405a) : 0xff242c3e);
+            l.drawText(24, y + 10, (sel ? "▶ " : "　 ") + CHOICES[i], 0xffffff, 255);
+        }
+    }
+
+    // ノード表を渡す。 呼ぶたびに丸ごと差し替え (差分は本体が取る)。
+    // rect は primary layer の座標 (stage は (0,0) に全画面で置かれている)。
+    function pushChoices()
+    {
+        if (!hasA11y) return;
+        var nodes = [ %[ id : "choices", role : "list", name : "どうする?" ] ];
+        for (var i = 0; i < CHOICES.count; i++) {
+            nodes.add(%[
+                id : "choice" + i, role : "list_item", name : CHOICES[i], parent : "choices",
+                states : (i == choiceIndex) ? "focusable,selected" : "focusable",
+                rect : [ CH_X + 8, CH_Y + 8 + i * CH_ROW, CH_W - 16, CH_ROW - 6 ]
+            ]);
+        }
+        nodes.add(%[ id : "result", role : "label", name : "選んだもの", value : decided ]);
+        // focus を渡すとスクリーンリーダーのフォーカスはそちらが優先される。
+        // 選択肢のレイヤにフォーカスがある間だけ渡す (それ以外は a11yLayers が
+        // focusedLayer を使う)。
+        ElementsDialog.setGameA11y(nodes, choiceLayer.focused ? "choice" + choiceIndex : void);
+    }
+
+    function selectChoice(i)
+    {
+        choiceIndex = i;
+        if (!choiceLayer.focused) choiceLayer.focus();
+        drawChoices();
+        pushChoices();
+        pendingInfo = true;
+    }
+
+    function decideChoice()
+    {
+        decided = CHOICES[choiceIndex];
+        pushChoices();
+        say("「" + decided + "」を選びました");
+    }
+
+    // スクリーンリーダーからの操作。 本体はフォーカスや選択を動かさないので、
+    // ゲームの状態を変えて setGameA11y を呼び直す。
+    function onGameA11yAction(id, action, arg)
+    {
+        lastAction = id + " / " + action + (arg != "" ? " (" + arg + ")" : "");
+        pendingInfo = true;
+        if (id.substr(0, 6) != "choice" || id == "choices") return;
+        var i = +id.substr(6);
+        if (action == "focus") selectChoice(i);
+        else if (action == "click") { selectChoice(i); decideChoice(); }
+    }
+
+    function onA11yActiveChanged(active) { pendingInfo = true; }
+
+    // ------------------------------------------------------------------
+    // 2. Layer の自動 (a11yLayers)
+    // ------------------------------------------------------------------
+    function buildLayers()
+    {
+        // フォーカスできない見出し。 a11yName / a11yRole があれば載る
+        headingLayer = new Layer(window, stage);
+        headingLayer.name = "heading";
+        headingLayer.setPos(SEC_X, 318);
+        headingLayer.setSize(560, 30);
+        headingLayer.a11yName = "セーブとロード";
+        headingLayer.a11yRole = "heading";
+        headingLayer.font.height = 18;
+        headingLayer.fillRect(0, 0, 560, 30, 0xff141821);
+        headingLayer.drawText(0, 4, "セーブとロード (a11yName + a11yRole=heading の見出し)", 0x9fb0c8, 255);
+        headingLayer.visible = true;
+
+        // Layer.name が読み上げツリーの id (layer:<name>) になる。 .a11ydo で指すときに使う
+        var names = ["セーブ", "ロード", "タイトルへ"], ids = ["save", "load", "title"];
+        for (var i = 0; i < names.count; i++) {
+            var b = new A11yButtonLayer(window, stage, this, names[i]);
+            b.name = ids[i];
+            b.setPos(SEC_X + i * 162, 356);
+            buttons.add(b);
+        }
+        var c = new A11yCheckLayer(window, stage, this, "オートモード");
+        c.textLeft = 36;
+        c.name = "auto";
+        c.setPos(SEC_X, 412); c.setSize(200, 44); c.redraw();
+        buttons.add(c);
+        var s = new A11ySliderLayer(window, stage, this, "音量");
+        s.name = "volume";
+        s.setPos(SEC_X + 212, 412);
+        buttons.add(s);
+
+        // 飾り。 a11yName を持つが a11yHidden で外す (読まれない)
+        decoLayer = new Layer(window, stage);
+        decoLayer.name = "deco";
+        decoLayer.setPos(SEC_X, 470);
+        decoLayer.setSize(560, 30);
+        decoLayer.a11yName = "これは読まれない飾り";
+        decoLayer.a11yHidden = true;
+        decoLayer.font.height = 15;
+        decoLayer.fillRect(0, 0, 560, 30, 0xff141821);
+        decoLayer.drawText(0, 6, "─── a11yHidden=true の飾り (名前があっても読まれない) ───", 0x5a6a8a, 255);
+        decoLayer.visible = true;
+    }
+
+    function noteLayerFocus(layer) { pendingInfo = true; }
+    function noteChoiceFocus()
+    {
+        if (!(isvalid choiceLayer)) return;
+        drawChoices();
+        pushChoices();     // 選択肢から外れたら focus を渡さない → focusedLayer が使われる
+        pendingInfo = true;
+    }
+    function notePress(label) { lastPress = label; pendingInfo = true; say(label + " を押しました"); }
+    function noteValue(label, v) { lastPress = label + " " + v + "%"; pendingInfo = true; }
+
+    // ------------------------------------------------------------------
+    // 3. announce
+    // ------------------------------------------------------------------
+    function say(text)
+    {
+        lastAnnounce = text + (assertive ? " (割り込み)" : "");
+        pendingInfo = true;
+        if (hasA11y) ElementsDialog.announce(text, assertive);
+    }
+
+    // ------------------------------------------------------------------
+    // 表示
+    // ------------------------------------------------------------------
+    function drawStatic()
+    {
+        stage.font.height = 19;
+        stage.drawText(SEC_X, 44,  "1. Layer に描いた選択肢 (setGameA11y + onGameA11yAction)", 0xffd76a, 255);
+        stage.drawText(SEC_X, 286, "2. フォーカス連鎖の Layer を自動で載せる (a11yLayers)", 0xffd76a, 255);
+        stage.drawText(SEC_X, 520, "3. 任意の文を読ませる (announce) → 右下パネル", 0xffd76a, 255);
+        stage.font.height = 15;
+        stage.drawText(SEC_X, 250, "↑↓ で選ぶ / Enter・クリックで決定 (announce で読ませる)。→ で下のボタンへ", 0x9fb0c8, 255);
+        stage.drawText(SEC_X, 548, "パネルの部品は画面 JSON の \"a11y\" キーで名前を補っている (Hello / Time のボタン等)", 0x9fb0c8, 255);
+        stage.drawText(SEC_X, 572, "動作確認は REPL の .a11y / .a11ylog / .a11ydo でもできる (readme.txt)", 0x9fb0c8, 255);
+        stage.update();
+    }
+
+    function redrawInfo()
+    {
+        stage.fillRect(INFO_X, 40, INFO_W, 620, 0xff1b2130);
+        stage.fillRect(INFO_X, 40, INFO_W, 2, 0xff3a4560);
+        stage.font.height = 18;
+        stage.drawText(INFO_X + 14, 52, "状態", 0xffd76a, 255);
+        stage.font.height = 15;
+        var y = 84;
+        if (hasA11y) {
+            y = line(y, "スクリーンリーダー: " + (ElementsDialog.a11yActive ? "接続中" : "未接続"));
+            y = line(y, "a11yLayers: " + (ElementsDialog.a11yLayers ? "true" : "false"));
+        } else {
+            y = line(y, "読み上げの口なし");
+        }
+        var f = window.focusedLayer;
+        var fn = "(なし)";
+        if (f === choiceLayer) fn = "選択肢 " + CHOICES[choiceIndex];
+        else if (f !== void && f !== null && typeof f.label != "undefined") fn = f.label;
+        y = line(y, "フォーカス: " + fn);
+        y = line(y, "決定: " + decided);
+        y = line(y, "押した: " + lastPress);
+        y += 8;
+        y = line(y, "-- AT からの操作 --", 0xffd76a);
+        y = line(y, lastAction);
+        y += 8;
+        y = line(y, "-- announce --", 0xffd76a);
+        y = line(y, lastAnnounce);
+        y += 8;
+        y = line(y, "-- 読み上げログ (REPL 起動時のみ) --", 0xffd76a);
+        for (var i = 0; i < logLines.count; i++) y = line(y, logLines[i], 0xb8c4d8);
+        stage.update();
+    }
+
+    function line(y, text, col)
+    {
+        if (col === void) col = 0xdfe6f2;
+        var maxW = INFO_W - 28;
+        if (stage.font.getTextWidth(text) > maxW) {
+            while (text.length > 1 && stage.font.getTextWidth(text + "…") > maxW) text = text.substr(0, text.length - 1);
+            text += "…";
+        }
+        stage.drawText(INFO_X + 14, y, text, col, 255);
+        return y + 22;
+    }
+
+    // Agent.a11yLog は REPL が動いているときだけ溜まる (Agent 自体も REPL ビルドのみ)
+    function pollLog()
+    {
+        if (typeof global.Agent == "undefined" || typeof Agent.a11yLog == "undefined") return;
+        var r = Agent.a11yLog(logSince);
+        if (r.lines.count == 0) return;
+        logSince = r.next;
+        for (var i = 0; i < r.lines.count; i++) logLines.add(r.lines[i]);
+        while (logLines.count > 10) logLines.erase(0);
+        pendingInfo = true;
+    }
+
+    function onPanelAction(id, payload)
+    {
+        switch (id) {
+        case "layers":    ElementsDialog.a11yLayers = (payload == true); pendingInfo = true; break;
+        case "assertive": assertive = (payload == true); break;
+        case "say":       say("こんにちは。吉里吉里Z の読み上げデモです"); break;
+        case "time":      say("ただいま " + (new Date()).getHours() + " 時 " + (new Date()).getMinutes() + " 分です"); break;
+        }
+    }
+
+    function onDemoFrame(tick)
+    {
+        if (tick - pollTick >= 300) { pollTick = tick; pollLog(); pendingInfo = true; }
+        if (pendingInfo) { pendingInfo = false; redrawInfo(); }
+    }
+
+    function onDemoTest()
+    {
+        dm(@"@demotest:a11y hasA11y=${hasA11y} buttons=${buttons.count} choices=${CHOICES.count}");
+    }
+
+    function panelDict()
+    {
+        return %[
+            size : [300, 300], background : [26, 30, 40, 236], locale : "ja-JP",
+            align : "bottom_right", margin : 16,
+            a11y : %[ title : "読み上げの操作" ],
+            content : %[ type : "margin", padding : 14, child : %[ type : "vtile", children : [
+                %[ type : "vsize", height : 0, child : %[ type : "hspacer", width : 268 ] ],
+                %[ type : "align_center", child : %[ type : "label", text : "読み上げの操作", size_scale : 1.2,
+                       a11y : %[ role : "heading" ] ] ],
+                %[ type : "vspacer", height : 10 ],
+                %[ type : "check_box", id : "layers", text : "Layer を自動で載せる (a11yLayers)", value : true ],
+                %[ type : "check_box", id : "assertive", text : "割り込みで読ませる (assertive)", value : false ],
+                %[ type : "vspacer", height : 10 ],
+                %[ type : "htile", children : [
+                    // 表示の文字と読ませたい名前が違うボタン (アイコンや略記) は
+                    // "a11y" で名前を付ける。 文字列なら名前、 辞書なら詳細指定
+                    %[ type : "button", id : "say",  text : "Hello", a11y : "あいさつを読み上げる" ],
+                    %[ type : "hspacer", width : 8 ],
+                    %[ type : "button", id : "time", text : "Time", a11y : %[ label : "時刻を読み上げる",
+                           description : "今の時刻を announce で読ませます" ] ]
+                ] ],
+                %[ type : "vspacer", height : 10 ],
+                %[ type : "label", text : "飾りの区切り線 ──────", a11y : %[ hidden : true ] ]
+            ] ] ]
+        ];
+    }
+}

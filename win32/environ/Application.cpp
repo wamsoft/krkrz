@@ -685,7 +685,17 @@ void tTVPApplication::HandleIdle(MSG &) {
 	if( TVPSystemControl ) {
 		done = TVPSystemControl->ApplicationIdle();
 	}
-	if( done ) ::WaitMessage();
+	if( done ) {
+		// WaitMessage は「最後に PeekMessage で調べた後に届いたメッセージ」でしか起きない。
+		// ApplicationIdle の中 (TJS のイベント配送) で走ったコードが範囲指定の PeekMessage
+		// (VideoOverlay の ClearWndProcMessages 等) をすると、その時点でキューに居た別の
+		// メッセージ (タイマースレッドの wake 等) まで「調べ済み」になり、キューに残って
+		// いるのに WaitMessage が眠り続ける。タイマースレッドは wake を投函済みとして
+		// 二度と投げないので、無関係なメッセージが来るまで TJS のタイマーが止まっていた
+		// (動画を閉じた直後に 60〜130 秒止まる)。MWMO_INPUTAVAILABLE は調べ済みでも
+		// 未処理のメッセージがあれば即座に戻る。
+		::MsgWaitForMultipleObjectsEx( 0, NULL, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE );
+	}
 }
 void tTVPApplication::SetTitle( const tjs_string& caption ) {
 	title_ = caption;

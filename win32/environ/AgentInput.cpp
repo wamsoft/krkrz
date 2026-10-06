@@ -5,8 +5,10 @@
 // 同じハンドラに流す (TVPPostInputEvent → DrawDevice / Elements ダイアログ intercept
 // → ゲーム)。common/environ/AgentControlIntf.cpp から呼ばれる。
 //
-// shift は Agent から渡された値をそのまま OnMouse*/OnKey* へ渡す (実入力と同じく
-// TShiftState として扱われ内部で uint32 へ変換される)。x/y はウィンドウ座標。
+// shift は Agent から TJS の ss* 値 (TVP_SS_*) で渡される。OnMouse*/OnKey* は
+// 実入力と同じく Win32 の MK_* ビット (TShiftState) を受け取って内部で TVP_SS_*
+// へ変換するので、渡す前に TVP_TShiftState_From_uint32 で MK_* へ戻す
+// (そのまま渡すと ssCtrl=4 が MK_SHIFT として読まれる)。x/y はウィンドウ座標。
 //---------------------------------------------------------------------------
 #include "tjsCommHead.h"
 #include "AgentInput.h"
@@ -15,6 +17,12 @@
 #include "VirtualCursor.h"
 
 namespace {
+// Agent の shift (TVP_SS_*) → OnMouse*/OnKey* が受け取る TShiftState (MK_*)。
+int AgentShiftToForm(tjs_int64 shift)
+{
+	return (int)TVP_TShiftState_From_uint32((tjs_uint32)shift);
+}
+
 // 注入先のフォーム。モーダルウィンドウ表示中はそちらを対象にする
 // (実入力と同様、モーダル中はモーダルウィンドウしか操作できないため)。
 TTVPWindowForm* AgentMainForm()
@@ -31,7 +39,7 @@ bool TVPAgentInjectMouseMove(int shift, int x, int y)
 	tTVPAgentMouseInjectScope inject_scope;
 	TTVPWindowForm* form = AgentMainForm();
 	if (!form) return false;
-	form->OnMouseMove(shift, x, y);
+	form->OnMouseMove(AgentShiftToForm(shift), x, y);
 	return true;
 }
 
@@ -41,6 +49,7 @@ bool TVPAgentInjectMouseButton(bool down, int button, int shift, int x, int y)
 	tTVPAgentMouseInjectScope inject_scope;
 	TTVPWindowForm* form = AgentMainForm();
 	if (!form) return false;
+	shift = AgentShiftToForm(shift);
 	if (down) {
 		form->OnMouseDown(button, shift, x, y);
 	} else {
@@ -59,7 +68,7 @@ bool TVPAgentInjectWheel(int delta, int shift, int x, int y)
 	tTVPAgentMouseInjectScope inject_scope;
 	TTVPWindowForm* form = AgentMainForm();
 	if (!form) return false;
-	form->OnMouseWheel(delta, shift, x, y);
+	form->OnMouseWheel(delta, AgentShiftToForm(shift), x, y);
 	return true;
 }
 
@@ -67,8 +76,9 @@ bool TVPAgentInjectKey(bool down, tjs_int64 vk, tjs_int64 shift)
 {
 	TTVPWindowForm* form = AgentMainForm();
 	if (!form) return false;
-	if (down) form->OnKeyDown((WORD)vk, (int)shift, 0, false);
-	else      form->OnKeyUp((WORD)vk, (int)shift);
+	int s = AgentShiftToForm(shift);
+	if (down) form->OnKeyDown((WORD)vk, s, 0, false);
+	else      form->OnKeyUp((WORD)vk, s);
 	return true;
 }
 

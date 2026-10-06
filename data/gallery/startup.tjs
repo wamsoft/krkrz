@@ -67,6 +67,7 @@ tryScene("system_debug/scene.tjs", function() { return new SystemDebugScene(); }
 tryScene("webui/scene.tjs",        function() { return new WebUIScene(); });
 tryScene("softkey_ime/scene.tjs",  function() { return new SoftkeyImeScene(); });
 tryScene("pad_advanced/scene.tjs", function() { return new PadAdvancedScene(); });
+tryScene("a11y/scene.tjs",         function() { return new A11yScene(); });
 
 dm(@"gallery: ${scenes.count} scene(s)");
 if (scenes.count == 0) { System.inform("シーンが読み込めませんでした"); System.exit(1); }

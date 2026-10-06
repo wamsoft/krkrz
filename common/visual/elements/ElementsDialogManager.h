@@ -14,12 +14,29 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 class iTVPDialogEventHandler;
 class iTVPDialogRenderer;
 class iTVPDialogRendererHost;
+
+//! @brief ゲーム本体 (Layer 描画の UI) を読み上げツリーに載せるときの 1 ノード
+//!        (TJS: ElementsDialog.setGameA11y の配列の要素)。
+struct tTVPGameA11yNode
+{
+	ttstr id;            //!< スクリプト側の識別子 (必須、 一意)
+	ttstr role;          //!< Elements のロール名 ("button" / "check_box" / "list_item" …)
+	ttstr name;
+	ttstr value;
+	ttstr description;
+	ttstr states;        //!< "focusable,checked" 形式 (配列は呼出側で連結)
+	ttstr parent;        //!< 親の id。 空なら最上位
+	bool has_rect = false;
+	double x = 0, y = 0, w = 0, h = 0;   //!< primary layer の座標
+	std::optional<double> num_value, num_min, num_max, num_step;
+};
 
 //! @brief overlay 描画パイプラインの区間計測 (TJS: ElementsDialog.renderStats)。
 //!        すべて累積値 (renderStatsReset() で 0 クリア)。 時間は microsecond。
@@ -223,6 +240,16 @@ public:
 	//!        ElementsDialog.activate(id))。 非アクティブ / インスタンス無し /
 	//!        id 不明なら false。
 	bool ActivateWidget(iTVPDialogEventHandler* handler, const ttstr& id);
+
+	//! @brief 指定 handler のインスタンスのキー捕捉を切り替える
+	//!        (ElementsDialog.beginKeyCapture / endKeyCapture)。 捕捉中にその
+	//!        インスタンスがキーボードフォーカスを持っていると、 キー押下と
+	//!        左以外のマウスボタン押下はウィジェットへ配送せず
+	//!        handler->OnKeyCapture へ渡して消費する (キーアップ・文字入力は
+	//!        捨てる)。 左クリックは従来どおりウィジェットへ届く。 モーダルの
+	//!        上でもホストホットキーより優先する。 インスタンスが閉じれば
+	//!        捕捉も消える。 非アクティブ / インスタンス無しなら false。
+	bool SetKeyCapture(iTVPDialogEventHandler* handler, bool on);
 
 	//! @brief 画面が使っている変数 1 件の記述 (DescribeVars の要素)。
 	struct VarInfo
@@ -476,6 +503,52 @@ public:
 	//!        入れ子可。
 	void PushDeferScope();
 	void PopDeferScope();
+
+	// === 読み上げ (スクリーンリーダー対応、 doc/specification/accessibility.md) ===
+	// 表示中のインスタンスを OS のアクセシビリティ API (UIA / NSAccessibility /
+	// AT-SPI) へ出す (AccessKit。 KRKRZ_HAS_A11Y のビルドのみ。 それ以外でも
+	// ツリーの取得 / 操作 / 読み上げログは使える)。
+
+	//! @brief 読み上げツリーを JSON で返す。
+	//!        {"dialogs":[{"index","screen","modal","tree":{"focus","nodes":[...]}}],
+	//!         "game":{"hidden","tree"} | null}
+	//!        (tree は Elements の docs/accessibility.md §5 の形)。 Agent.a11yTree() 用。
+	ttstr A11yTreeJson() const;
+	//! @brief 読み上げログ («スクリーンリーダーがおおよそ何と読むか» の行)。
+	//!        REPL が動いているときだけ溜まる。 since 番目以降を返し、 next に
+	//!        次に渡す番号を入れる。
+	std::vector<ttstr> A11yLog(size_t since, size_t& next) const;
+	//! @brief AT と同じ経路で操作する (node = ツリーの id、 action = click /
+	//!        focus / increment / decrement / set_value)。 最前面から探し、
+	//!        モーダルが無ければゲーム本体のノードも探す。
+	bool A11yAction(const ttstr& node, const ttstr& action, const ttstr& arg);
+	//! @brief 読み上げさせる (最前面インスタンスの live region。 無ければゲーム本体の slot)。
+	void A11yAnnounce(const ttstr& text, bool assertive);
+	//! @brief OS のスクリーンリーダー等が接続しているか。
+	bool A11yActive() const;
+	//! @brief "auto" (既定。 AT が繋がったときだけ働く) / "off" (OS へ出さない)。
+	void SetA11yMode(const ttstr& mode);
+	ttstr GetA11yMode() const;
+	//! @brief 読み上げツリーの根 (ウィンドウ) の名前。 空なら最前面画面の名前。
+	void SetA11yLabel(const ttstr& label);
+	ttstr GetA11yLabel() const;
+
+	//! @brief ゲーム本体のノードを丸ごと差し替える (差分は内部で取る)。 ゲームの
+	//!        slot はダイアログより下に置かれ、 モーダルなダイアログの表示中は
+	//!        隠れる。 focus は focused にするノードの id (空 = 無し)。
+	//!        AT からの操作は ElementsDialog.onGameA11yAction(id, action, arg)
+	//!        で届く。
+	void SetGameA11y(const std::vector<tTVPGameA11yNode>& nodes, const ttstr& focus);
+	//! @brief ゲーム本体のノードを全て外す。
+	void ClearGameA11y();
+
+	//! @brief メインウィンドウの Layer を読み上げツリーに自動で載せる (既定 false)。
+	//!        フォーカス連鎖に入っている Layer (focusable && joinFocusChain)、
+	//!        a11yName / a11yRole を持つ Layer、 Elements パネルを描いている Layer が
+	//!        ゲーム本体の slot に並ぶ。 setGameA11y のノードとは併用でき、 その
+	//!        ノードが先に並ぶ。 doc/specification/accessibility.md「Layer の自動」。
+	void SetA11yLayers(bool on);
+	bool GetA11yLayers() const;
 
 	//! @brief エンジン終了時の後始末 (ThorVG を畳む)。 表示中のインスタンスを
 	//!        全て閉じてから elements_modal::shutdown() を呼ぶ。 呼ばないと

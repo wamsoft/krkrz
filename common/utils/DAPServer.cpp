@@ -39,7 +39,9 @@
 #  include <fcntl.h>
 #  include <errno.h>
    using socket_t = int;
-   static inline int CloseSocket(socket_t s) { return ::close(s); }
+   // close() だけでは別スレッドでブロック中の accept()/recv() が起きないので、
+   // 先に shutdown() で起こす (Winsock の closesocket はそれ自体で起こす)
+   static inline int CloseSocket(socket_t s) { ::shutdown(s, SHUT_RDWR); return ::close(s); }
    static inline int LastSockError()         { return errno; }
    static const socket_t INVALID_SOCK = -1;
    static const int      SOCK_ERR     = -1;

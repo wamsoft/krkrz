@@ -291,6 +291,10 @@ bool tTVPReplThread::ProcessLine(const std::string& input_in,
 			emit(LL_HELP, "  .cap [path]      - Capture screen (overlay incl.) to PNG (Agent.captureScreen)");
 			emit(LL_HELP, "  .dlg             - List active Elements dialogs (Agent.dialogs)");
 			emit(LL_HELP, "  .dlgclose        - Close all Elements dialogs (Agent.closeAllDialogs)");
+			emit(LL_HELP, "  .a11y            - Screen reader tree of the dialogs, JSON (Agent.a11yTree)");
+			emit(LL_HELP, "  .a11ylog [N]     - What a screen reader would say, from line N (Agent.a11yLog)");
+			emit(LL_HELP, "  .a11ydo <node> <action> [arg] - Act like a screen reader (Agent.a11yAction)");
+			emit(LL_HELP, "  .say <text>      - Have the screen reader announce text (ElementsDialog.announce)");
 			emit(LL_HELP, "  .click X Y       - Inject a mouse click at (X,Y) (Agent.click)");
 			emit(LL_HELP, "  .watch           - List watch expressions (evaluates first)");
 			emit(LL_HELP, "  .watch add EXPR  - Add a watch expression");
@@ -544,6 +548,34 @@ bool tTVPReplThread::ProcessLine(const std::string& input_in,
 				input = "Agent.dialogs()";
 			} else if (input == ".dlgclose") {
 				input = "Agent.closeAllDialogs()";
+			} else if (input == ".a11y") {
+				// 読み上げ (スクリーンリーダー): 表示中のダイアログのツリー (JSON)
+				input = "Agent.a11yTree()";
+			} else if (input.rfind(".a11ylog", 0) == 0 && (input.size() == 8 || input[8] == ' ')) {
+				std::string arg = trim(input.substr(8));
+				input = "Agent.a11yLog(" + (arg.empty() ? std::string("0") : arg) + ")";
+			} else if (input.rfind(".a11ydo", 0) == 0 && (input.size() == 7 || input[7] == ' ')) {
+				// .a11ydo <node> <action> [arg] — AT と同じ経路で操作する
+				auto esc = [](const std::string& s) {
+					std::string o;
+					for (char c : s) { if (c == '"' || c == '\\') o += '\\'; o += c; }
+					return "\"" + o + "\"";
+				};
+				std::string rest = trim(input.substr(7));
+				auto word = [&rest, &trim]() {
+					size_t sp = rest.find(' ');
+					std::string w = rest.substr(0, sp);
+					rest = (sp == std::string::npos) ? std::string() : trim(rest.substr(sp + 1));
+					return w;
+				};
+				std::string node = word();
+				std::string action = word();
+				input = "Agent.a11yAction(" + esc(node) + "," + esc(action) + "," + esc(rest) + ")";
+			} else if (input.rfind(".say", 0) == 0 && (input.size() == 4 || input[4] == ' ')) {
+				std::string arg = trim(input.substr(4));
+				std::string o;
+				for (char c : arg) { if (c == '"' || c == '\\') o += '\\'; o += c; }
+				input = "ElementsDialog.announce(\"" + o + "\")";
 			} else if (input.rfind(".click", 0) == 0 && (input.size() == 6 || input[6] == ' ')) {
 				std::string arg = trim(input.substr(6));
 				for (char& c : arg) if (c == ' ' || c == '\t') c = ',';

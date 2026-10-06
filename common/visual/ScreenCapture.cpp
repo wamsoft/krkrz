@@ -55,9 +55,13 @@ bool TVPSaveCapturedImage(const ttstr& path, const void* pixels,
 		const tjs_uint8* src = reinterpret_cast<const tjs_uint8*>(pixels);
 		const int row_bytes = w * 4;
 		for (int y = 0; y < h; ++y) {
-			void* dst = bmp.GetScanLineForWrite((tjs_uint)y);
+			tjs_uint8* dst = reinterpret_cast<tjs_uint8*>(bmp.GetScanLineForWrite((tjs_uint)y));
 			if (!dst) return false;
 			std::memcpy(dst, src + (size_t)y * pitch_bytes, row_bytes);
+			// 画面の合成結果のαは意味を持たない (表示は RGB だけを使う)。 αを書かない
+			// 描画 (外部モジュールが残したブレンド状態等) の後はバックバッファのαが 0 に
+			// なり、 そのまま保存すると透明な PNG になるので、 不透明に固定する。
+			for (int x = 0; x < w; ++x) dst[x*4 + 3] = 0xff;
 		}
 		TVPSaveImage(path, mode, &bmp, nullptr);
 		return true;

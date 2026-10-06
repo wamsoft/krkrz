@@ -80,6 +80,10 @@ REPL 特殊コマンド:
 | `.cap [path]` | overlay 込みの実画面を PNG 保存 (`Agent.captureScreen`、省略時 `agent_cap.png`) |
 | `.dlg` | アクティブな Elements ダイアログ一覧 (`Agent.dialogs`) |
 | `.dlgclose` | 全 Elements ダイアログを強制クローズ (`Agent.closeAllDialogs`) |
+| `.a11y` | 読み上げツリー (スクリーンリーダーに見えるもの) を JSON で表示 (`Agent.a11yTree`) |
+| `.a11ylog [N]` | 読み上げログ («スクリーンリーダーがおおよそ何と読むか») の N 行目以降 (`Agent.a11yLog`) |
+| `.a11ydo <node> <action> [arg]` | スクリーンリーダーと同じ経路で操作する (`Agent.a11yAction`)。 action は click / focus / increment / decrement / set_value |
+| `.say <text>` | スクリーンリーダーに読ませる (`ElementsDialog.announce`) |
 | `.click X Y` | (X,Y) にマウスクリックを注入 (`Agent.click`) |
 | `.watch` | 監視式の一覧を `id: 式 = 値` で表示 (表示前に全件評価する = 吉里吉里2 の Update ボタン相当) |
 | `.watch add EXPR` | 監視式を追加して即評価。 式は空白を含んでよい |
@@ -173,6 +177,9 @@ Elements ダイアログにも届く (DrawDevice / Window の dialog intercept �
 | `Agent.dialogs()` | アクティブダイアログ記述の配列 `%[index, modal, active, screen, focused, x, y, w, h]` |
 | `Agent.dialogTree(index)` | ダイアログ内の id 付き widget 一覧 `%[id, type, value]` (UI ツリー dump)。 どの widget が居るか・現在値を観測でき、 id 指定操作と組で使う |
 | `Agent.closeDialog() / closeAllDialogs()` | 最前面 / 全ダイアログを閉じる |
+| `Agent.a11yTree()` | 読み上げツリー (JSON 文字列) `{"dialogs":[…],"game":…}`。 ダイアログと、 ゲーム本体の slot (`setGameA11y` / `a11yLayers`) を含む。 スクリーンリーダーが繋がっていなくても取れる |
+| `Agent.a11yLog([since])` | 読み上げログ `%[lines, next]`。 REPL 起動中だけ溜まる (`[focus]` / `[value]` / `[state]` / `[polite]` …) |
+| `Agent.a11yAction(node, action [, arg])` | スクリーンリーダーと同じ経路で操作する (キー合成ではない)。 node は `a11yTree` の id |
 | `Agent.dialogClick(index, id)` | 指定ダイアログの widget を **id で起動** (座標不要)。 focus を即時適用してから Enter (button=click / checkbox=toggle)。 内部は `overlay_session::activate_by_id` |
 | `Agent.dialogFocus(index, id)` | 指定 widget へフォーカス移動 |
 | `Agent.captureScreen(path [, x, y, w, h])` | overlay 込みの実画面を次フレームで PNG 保存 (即 return、 戻り値 = path) |
@@ -262,6 +269,11 @@ krkrz64 data/ -replfile=/tmp/krkrzchan
 端末非依存で選択/コピー/検索がブラウザネイティブに効く。 待受 URL は
 `System.replWebURL` で取得できる。 `0.0.0.0:<port>` バインドで LAN 越しの
 開発 PC からも接続可 (信頼できるネットワーク限定。 起動ログに警告が出る)。
+Apple / Linux では全 IF 指定 (`0.0.0.0` / `*` / `::`) のとき AF_INET6 +
+`IPV6_V6ONLY=0` のデュアルスタックで待ち受ける (iOS 実機へ USB 経由で繋ぐ
+CoreDevice のトンネル `<端末名>.coredevice.local` は IPv6 しか持たないため。
+IPv6 が使えなければ従来の IPv4 にフォールバック)。 切断済みソケットへの送信は
+SIGPIPE を出さない (Linux = `MSG_NOSIGNAL` / Apple = `SO_NOSIGPIPE`)。
 
 サーバは起動オプション `-replweb` を付けなくても、 スクリプトから
 `WebServer.start([port])` で立ち上げられる (下記 `WebServer` クラス参照)。
@@ -631,5 +643,5 @@ file-based modal はデスクトップ向けで、 web-only ビルドではリ�
   REPL リクエストが確実にピックアップされる (`NativeEventQueue` の共有
   `command_que_` を介さないため、他のイベントと競合しない)
 - Win32 では worker が `PostThreadMessage(WM_NULL)` でメインスレッドの
-  `WaitMessage` を起こす。SDL3 では `SDL_AppIterate` が連続呼び出しされる
+  アイドル待ち (`MsgWaitForMultipleObjectsEx(MWMO_INPUTAVAILABLE)`。以前は `WaitMessage`) を起こす。SDL3 では `SDL_AppIterate` が連続呼び出しされる
   ので起床機構は不要

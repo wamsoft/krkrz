@@ -106,9 +106,12 @@ tjs_string MySDL3Application::ResolveExePath(const tjs_string& appPath) const
 	// argv[0] ( InitArgs は InitPath より前に呼ばれている )
 	if(!_args.empty() && !_args[0].empty()) {
 		const tjs_string& argv0 = _args[0];
-		// パス区切りを含むならそのまま、 含まないなら appPath の下と見なす
-		if(argv0.find_first_of(TJS_W("/\\")) != tjs_string::npos) return argv0;
-		return appPath + argv0;
+		// 絶対パスならそのまま。 相対 ( "./krkrz" や区切り無し ) は exe の実体がある
+		// appPath ( 絶対パス ) の下と見なす。 相対のまま返すとデータパスが
+		// "./savedata" のような相対パスになり、 起動中の正規化で例外になる
+		if(std::filesystem::path(argv0).is_absolute()) return argv0;
+		const tjs_string::size_type sep = argv0.find_last_of(TJS_W("/\\"));
+		return appPath + (sep == tjs_string::npos ? argv0 : argv0.substr(sep + 1));
 	}
 	return appPath + TJS_W("krkrz.exe");
 }
@@ -175,7 +178,9 @@ bool MySDL3Application::InitPath()
 			projectPath = appPath + "data/";
 			TVPLOG_INFO("data/startup.tjs found, using data/ as project path");
 		} else {
-#if defined(SDL_PLATFORM_ANDROID)
+#if defined(SDL_PLATFORM_ANDROID) || defined(SDL_PLATFORM_IOS)
+			// モバイルはプロジェクトフォルダを選ばせる手段が無い
+			TVPLOG_ERROR("No project data (data.xp3 / data/startup.tjs) in {}", appPath);
 			return false;
 #else
 			// -license のように「情報を出して終わるだけ」の起動では、
@@ -209,18 +214,39 @@ bool MySDL3Application::InitPath()
 	// -userconf の書き出し先に使うため、 実際の exe 名を取る必要がある
 	// ( 以前は固定で "krkrz.exe" を繋いでいた )。
 	_ExePath = ResolveExePath(_AppPath);
-#if defined(SDL_PLATFORM_ANDROID)
+#if defined(SDL_PLATFORM_ANDROID) || defined(SDL_PLATFORM_IOS)
+	// iOS はバンドル外の dylib をロードできないので全プラグイン static
 	_PluginPath = TJS_W("");
 #elif defined(SDL_PLATFORM_APPLE)
 	_PluginPath = _AppPath;
-#elif defined(TJS_64BIT_OS)
-	_PluginPath = _AppPath + TJS_W("plugin64/");;
+#elif defined(SDL_PLATFORM_WINDOWS) && defined(TJS_64BIT_OS)
+	// CMake のインストール先 (PLUGIN_DIR) と同じ規則: plugin64 は Windows 64bit だけ。
+	// Linux 等は 64bit でも plugin/ ( TJS_64BIT_OS だけで判定すると食い違う )
+	_PluginPath = _AppPath + TJS_W("plugin64/");
 #else
 	_PluginPath = _AppPath + TJS_W("plugin/");
 #endif
 
 #if defined(SDL_PLATFORM_WINDOWS)
 	::SetDllDirectory((wchar_t*)PluginPath().c_str());
+#endif
+
+	if (!_PluginPath.empty()) {
+		std::string pluginPath;
+		TVPUtf16ToUtf8(pluginPath, _PluginPath);
+		TVPLOG_INFO("pluginPath: {}", pluginPath);
+	}
+#if !defined(SDL_PLATFORM_WINDOWS) && !defined(SDL_PLATFORM_ANDROID) && !defined(SDL_PLATFORM_APPLE)
+	// plugin64/ は Windows 64bit 専用。 Linux 等で置かれていても探さないので、
+	// 「64bit 版なら plugin64」と思って置いた場合に気付けるよう警告する
+	{
+		std::error_code ec;
+		if (std::filesystem::is_directory(std::filesystem::path(appPath + "plugin64"), ec)) {
+			TVPLOG_WARNING("{}plugin64/ is not searched on this platform; "
+			               "put plugins in {}plugin/ (plugin64/ is Windows 64-bit only)",
+			               appPath, appPath);
+		}
+	}
 #endif
 
 	return true;
@@ -235,7 +261,9 @@ const tjs_string& MySDL3Application::TempPath() const
         // テンポラリフォルダのパス・標準関数
         auto tempU8 = std::filesystem::temp_directory_path().u8string();
         std::string tempPath(reinterpret_cast<const char*>(tempU8.c_str()), tempU8.size());
-		tempPath += std::filesystem::path::preferred_separator;
+		// Windows の temp_directory_path は末尾に区切りが付いて返るので、無いときだけ足す
+		if (tempPath.empty() || (tempPath.back() != '/' && tempPath.back() != '\\'))
+			tempPath += static_cast<char>(std::filesystem::path::preferred_separator);
         TVPUtf8ToUtf16(_TempPath, tempPath);
     }
     return _TempPath;

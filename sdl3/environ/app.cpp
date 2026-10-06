@@ -18,6 +18,7 @@
 #include "app.h"
 
 #include <vector>
+#include <filesystem>        // InitDataPath (旧既定 savedata の検出)
 #ifdef KRKRZ_HAS_ELEMENTS
 #include "ElementsModalRunner.h"   // TVPInputStringElements
 #endif
@@ -26,6 +27,8 @@
 #include <SDL3/SDL_dialog.h>   // SelectFile (SDL_ShowOpenFileDialog)
 #include <SDL3/SDL_misc.h>     // ShellExecute (SDL_OpenURL)
 #include <SDL3/SDL_locale.h>   // GetSystemLanguage (SDL_GetPreferredLocales)
+#include <SDL3/SDL_filesystem.h>  // PersonalPath / AppDataPath (SDL_GetUserFolder)
+#include <SDL3/SDL_system.h>      // SDL_GetAndroid*StoragePath
 
 #if defined(SDL_PLATFORM_WINDOWS)
 	#include <windows.h>
@@ -38,6 +41,9 @@
 #ifdef __EMSCRIPTEN__
 	#include <emscripten.h>
 #endif
+#if !defined(SDL_PLATFORM_WINDOWS) && !defined(__EMSCRIPTEN__)
+	#include <dlfcn.h>   // SDL3Application::LoadLibrary (DLL の固定 RTLD_NODELETE)
+#endif
 
 static const char *GetOSVersion()
 {
@@ -48,6 +54,13 @@ static const char *GetOSVersion()
 		if (GetVersionEx((OSVERSIONINFO*)&osvi)) {
 			snprintf(osVersionBuffer, sizeof(osVersionBuffer), "Windows %lu.%lu (Build %lu)",
 				osvi.dwMajorVersion, osvi.dwMinorVersion, osvi.dwBuildNumber);
+		}
+	#elif defined(SDL_PLATFORM_IOS)
+		// kern.osrelease は Darwin の版なので、 iOS は製品版 (例 18.5) を返す
+		char version[256] = {};
+		size_t len = sizeof(version);
+		if (sysctlbyname("kern.osproductversion", version, &len, NULL, 0) == 0) {
+			snprintf(osVersionBuffer, sizeof(osVersionBuffer), "iOS %s", version);
 		}
 	#elif defined(SDL_PLATFORM_APPLE)
 		char version[256] = {};
@@ -123,12 +136,90 @@ const char *SDL3Application::getPlatformTagSpec() const
 	return "web";
 #elif defined(__ANDROID__)
 	return "android";
+#elif defined(SDL_PLATFORM_IOS)
+	return "ios";
 #elif defined(__APPLE__)
 	return "macos";
 #elif defined(__linux__)
 	return "linux";
 #else
 	return "";
+#endif
+}
+
+// --- OS 標準のユーザーフォルダ (System.personalPath / System.appDataPath) ----
+//
+// WINVER の Documents / RoamingAppData に相当する、 OS 標準フォルダそのもの
+// (アプリ固有のサブフォルダではない) を末尾 '/' 付きで返す。 空 = 専用フォルダ
+// 無し (System 側は exePath を返す)。
+namespace {
+tjs_string TVPSdlFolderToTjs(const std::string& path)
+{
+	if (path.empty()) return tjs_string();
+	std::string p = path;
+	if (p.back() != '/') p += '/';
+	tjs_string w;
+	TVPUtf8ToUtf16(w, p);
+	return w;
+}
+
+std::string TVPHomeDir()
+{
+	const char* home = SDL_getenv("HOME");
+	return home ? std::string(home) : std::string();
+}
+} // namespace
+
+tjs_string SDL3Application::PersonalPath() const
+{
+#if defined(__EMSCRIPTEN__) || defined(_WIN32)
+	// Web は専用フォルダ無し。 Windows は System 側が ApplicationSpecialPath (Known Folder) を使う
+	return tjs_string();
+#elif defined(SDL_PLATFORM_ANDROID)
+	// アプリ専用の外部ストレージ (USB / ファイルアプリから見える)。 無ければ内部。
+	const char* ext = SDL_GetAndroidExternalStoragePath();
+	if (ext && ext[0]) return TVPSdlFolderToTjs(ext);
+	const char* in = SDL_GetAndroidInternalStoragePath();
+	return in ? TVPSdlFolderToTjs(in) : tjs_string();
+#else
+	// macOS: ~/Documents、 iOS: サンドボックス内 Documents、 Linux: XDG の Documents
+	// (SDL_GetUserFolder の戻り値は SDL 所有のキャッシュなので解放しない)
+	if (const char* doc = SDL_GetUserFolder(SDL_FOLDER_DOCUMENTS)) {
+		if (doc[0]) return TVPSdlFolderToTjs(doc);
+	}
+	// Documents が定義されていない環境 (XDG 未設定の Linux 等) はホーム
+	if (const char* home = SDL_GetUserFolder(SDL_FOLDER_HOME)) {
+		return TVPSdlFolderToTjs(home);
+	}
+	return tjs_string();
+#endif
+}
+
+tjs_string SDL3Application::AppDataPath() const
+{
+#if defined(__EMSCRIPTEN__) || defined(_WIN32)
+	// Web は専用フォルダ無し。 Windows は System 側が ApplicationSpecialPath (Known Folder) を使う
+	return tjs_string();
+#elif defined(SDL_PLATFORM_ANDROID)
+	const char* in = SDL_GetAndroidInternalStoragePath();
+	return in ? TVPSdlFolderToTjs(in) : tjs_string();
+#elif defined(SDL_PLATFORM_APPLE)
+	// macOS: ~/Library/Application Support、 iOS: サンドボックス内の同名フォルダ
+	// ($HOME はサンドボックスのコンテナを指す)。 iOS では初回は存在しないので作る。
+	std::string home = TVPHomeDir();
+	if (home.empty()) return tjs_string();
+	if (home.back() != '/') home += '/';
+	std::string p = home + "Library/Application Support/";
+	SDL_CreateDirectory(p.c_str());
+	return TVPSdlFolderToTjs(p);
+#else
+	// Linux 等: XDG Base Directory の data home ($XDG_DATA_HOME、 既定 ~/.local/share)
+	const char* xdg = SDL_getenv("XDG_DATA_HOME");
+	if (xdg && xdg[0] == '/') return TVPSdlFolderToTjs(xdg);
+	std::string home = TVPHomeDir();
+	if (home.empty()) return tjs_string();
+	if (home.back() != '/') home += '/';
+	return TVPSdlFolderToTjs(home + ".local/share/");
 #endif
 }
 
@@ -1140,16 +1231,22 @@ SDL3Application::LoadLibrary( const tjs_char* path )
 		const char *error = SDL_GetError();
 		TVPLOG_ERROR("Failed to load library: {}", error);
 	}
-	// TODO(plugin-unload-crash / generic/SDL 未対応):
-	//   プラグインDLLが engine 終了(tTJS::Shutdown)より前にアンマップされると、
-	//   ncbind で System/Window 等に付与したメソッドの vtable が消えてクラッシュする
-	//   (詳細は generic/base/PluginImpl.cpp tTVPPlugin::Uninit の TODO 参照)。
-	//   WIN版は win32/base/PluginImpl.cpp で GetModuleHandleEx(PIN) 済みだが SDL は未対応。
-	//   ここ(SDL_LoadObject 成功直後)で pin するのが可搬な対処:
-	//     POSIX: dlopen(path_utf8.c_str(), RTLD_NOW|RTLD_NOLOAD|RTLD_NODELETE); // 返り値は捨て可
-	//     Win  : GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN|..._FROM_ADDRESS,
-	//              (LPCWSTR)SDL_LoadFunction(handle,"V2Link"), &m);
-	//   ※現状はWIN環境のビルド一気通しが主目的のため後回し。SDLビルドで要実装・要検証。
+	// [plugin-unload-crash] 読み込んだ DLL を固定 (pin) して、FreeLibrary / SDL_UnloadObject しても
+	//   プロセス終了までアンマップさせない。WIN版 (win32/base/PluginImpl.cpp) と同じふるまい。
+	//   プラグインが本体に登録したもの (ncbind で System/Window 等に付けたメソッド、ストレージメディア …)
+	//   の後片付けは本体の終了処理の最後 (静的オブジェクトの破棄) まで続くので、それより前に DLL が
+	//   外れると消えたコードを呼んで落ちる。実例 (2026-10-03): PackinOne 同梱の proxyfs が登録した
+	//   ストレージメディアを、DLL 解放後に TVPStorageMediaManager の破棄が Release して AV。
+	//   (登録漏れそのものは proxyfs 側で直した。これは同種の落ちをまとめて防ぐ安全網)
+	if (handle) {
+#if defined(SDL_PLATFORM_WINDOWS)
+		HMODULE pinned = NULL;
+		::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+			(LPCWSTR)handle, &pinned); // SDL_SharedObject は Windows では HMODULE (= DLL の先頭アドレス)
+#elif defined(RTLD_NODELETE)
+		dlopen(path_utf8.c_str(), RTLD_NOW | RTLD_NOLOAD | RTLD_NODELETE); // 参照を 1 つ足して固定 (返り値は使わない)
+#endif
+	}
 	return handle;
 }
 
@@ -1284,7 +1381,11 @@ SDL3Application::AppEvent(const SDL_Event& event)
 	default: break;
 	}
 
-	SDL_Window* window = SDL_GetWindowFromID(event.window.windowID);
+	// イベント種別ごとの windowID の位置は SDL_GetWindowFromEvent に任せる。
+	// event.window.windowID を直接読むと、 windowID が別の位置にある構造体
+	// (SDL_TouchFingerEvent 等) では別のフィールドを読んでしまい、 タッチが
+	// どのウィンドウにも配られなかった (SDL のタッチ→マウス変換を止めた iOS で顕在化)。
+	SDL_Window* window = SDL_GetWindowFromEvent(&event);
 	if (!window) return SDL_APP_CONTINUE;
 
 	SDL3WindowForm* form = (SDL3WindowForm*)SDL_GetPointerProperty(SDL_GetWindowProperties(window), "form", nullptr);
@@ -1347,16 +1448,51 @@ static tjs_string GetDataPathDirectory( tjs_string datapath, const tjs_string& e
 
 #else
 
-static tjs_string GetDataPathDirectory( tjs_string datapath, const tjs_string& exename ) {
+#if defined(SDL_PLATFORM_LINUX) && !defined(SDL_PLATFORM_ANDROID)
+#define KRKRZ_LINUX_DESKTOP_DATAPATH
+#endif
+
+// prefpath: Linux デスクトップでの $(appdatapath) 等の置き換え先 (末尾 '/' 付きの
+// ローカルパス)。空なら従来どおり user:// に置き換える
+static tjs_string GetDataPathDirectory( tjs_string datapath, const tjs_string& exename,
+                                        const tjs_string& prefpath = tjs_string() ) {
+#ifdef KRKRZ_LINUX_DESKTOP_DATAPATH
+	// Linux の既定はユーザ領域 (~/.local/share/<orgname>/<appname>/)。
+	// exe の隣は AppImage / Flatpak / /opt 配置では書き込めないため
+	if(datapath == TJS_W("") ) datapath = tjs_string(TJS_W("$(appdatapath)"));
+#else
 	if(datapath == TJS_W("") ) datapath = tjs_string(TJS_W("$(exepath)\\savedata"));
+#endif
 	ttstr basepath = TVPExtractStoragePath(Application->ExePath());
-	tjs_string_view exepath  = tjs_string_view(basepath.c_str()); 
-	tjs_string_view userpath = tjs_string_view(TJS_W("user://./")); // SDLデフォルト
+	tjs_string_view exepath  = tjs_string_view(basepath.c_str());
+	tjs_string_view userpath = prefpath.empty()
+		? tjs_string_view(TJS_W("user://./")) // SDLデフォルト
+		: tjs_string_view(prefpath);
 	datapath = string_replace_all(datapath, tjs_string_view(TJS_W("$(exepath)")), exepath);
 	datapath = string_replace_all(datapath, tjs_string_view(TJS_W("$(personalpath)")), userpath);
 	datapath = string_replace_all(datapath, tjs_string_view(TJS_W("$(appdatapath)")), userpath);
 	datapath = string_replace_all(datapath, tjs_string_view(TJS_W("$(vistapath)")), userpath );
 	datapath = string_replace_all(datapath, tjs_string_view(TJS_W("$(savedgamespath)")), userpath);
+#ifdef KRKRZ_LINUX_DESKTOP_DATAPATH
+	// Windows 流の "\" 区切りで書かれた設定 ( 既定値や .cf の "$(exepath)\savedata" ) を
+	// 正規化し、末尾区切りを保証する。 以前は末尾 '/' が無く、 System.dataPath + "x" が
+	// exe の隣に "savedatax" として書かれていた
+	// 置き換え先 ( exepath / prefpath ) は末尾 '/' 付きなので、 "$(exepath)\savedata" は
+	// "…//savedata" になる。 連続区切りは 1 つにまとめる ( ここはローカルパスのみ )。
+	// .cf で "…\savedata" と書くと TJS 文字列のエスケープで '\' が消え
+	// "$(exepath)savedata" になるが、 これも exepath の末尾 '/' で従来どおり繋がる
+	for(auto &c : datapath) if(c == TJS_W('\\')) c = TJS_W('/');
+	{
+		tjs_string collapsed;
+		collapsed.reserve(datapath.size());
+		for(auto c : datapath) {
+			if(c == TJS_W('/') && !collapsed.empty() && collapsed.back() == TJS_W('/')) continue;
+			collapsed += c;
+		}
+		datapath.swap(collapsed);
+	}
+	if(!datapath.empty() && datapath.back() != TJS_W('/')) datapath += TJS_W('/');
+#endif
 	return datapath;
 }
 
@@ -1382,12 +1518,49 @@ SDL3Application::InitDataPath()
 	                  CreateUserStorageMedia(orgname.c_str(), appname.c_str()));
 
 #if defined(SDL_PLATFORM_WINDOWS) || defined(SDL_PLATFORM_LINUX)
-	// -datapth オプションで保存先を差し替え・未定義時は実行ファイルの場所にある savedata
+	// -datapth オプションで保存先を差し替え・未定義時は
+	//   Windows: 実行ファイルの場所にある savedata
+	//   Linux  : ユーザ領域 (SDL_GetPrefPath = ~/.local/share/<orgname>/<appname>/)
 	tjs_string config_datapath;
 	if (TVPGetCommandLine(TJS_W("-datapath"), &val)) {
 		config_datapath = ((ttstr)val).AsStdString();
 	}
+#ifdef KRKRZ_LINUX_DESKTOP_DATAPATH
+	// user:// (SDL storage) と同じフォルダを、 getLocalName が使えるローカルパスで渡す
+	tjs_string prefpath;
+	if (char *pref = SDL_GetPrefPath(orgname.c_str(), appname.c_str())) {
+		TVPUtf8ToUtf16(prefpath, pref);
+		SDL_free(pref);
+	} else {
+		TVPLOG_ERROR("SDL_GetPrefPath failed: {}", SDL_GetError());
+	}
+	_DataPath = GetDataPathDirectory(config_datapath, ExePath(), prefpath);
+	if (config_datapath.empty()) {
+		std::string dp;
+		TVPUtf16ToUtf8(dp, _DataPath);
+		TVPLOG_INFO("datapath (Linux default, orgname={} appname={}): {}", orgname, appname, dp);
+		// 2026-10 の変更: 既定が exe の隣 (savedata) からユーザ領域に変わった。
+		// 旧既定で作られたセーブが exe の隣に残っていれば、 移行を促す
+		std::string exedir;
+		TVPUtf16ToUtf8(exedir, TVPExtractStoragePath(ExePath()).AsStdString());
+		std::error_code ec;
+		bool legacy = std::filesystem::is_directory(std::filesystem::path(exedir + "savedata"), ec);
+		if (!legacy) {
+			for (const auto &e : std::filesystem::directory_iterator(std::filesystem::path(exedir), ec)) {
+				const std::string name = e.path().filename().string();
+				if (name.size() > 8 && name.compare(0, 8, "savedata") == 0) { legacy = true; break; }
+			}
+		}
+		if (legacy) {
+			TVPLOG_WARNING("Legacy save data found next to the executable ({}savedata*). "
+			               "Since 2026-10 the Linux default datapath is {} ; "
+			               "move the files there, or keep the old location with "
+			               "datapath=\"$(exepath)/savedata\" in the .cf file", exedir, dp);
+		}
+	}
+#else
 	_DataPath = GetDataPathDirectory(config_datapath, ExePath());
+#endif
 #else
 	_DataPath = TJS_W("user://./");
 #endif

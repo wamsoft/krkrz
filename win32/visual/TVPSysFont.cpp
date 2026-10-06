@@ -68,6 +68,11 @@ void TVPSetDefaultFontName( const tjs_char * name ) {
 	TVPDefaultFontName.AssignMessage( name );
 	IsInitDefalutFontName = true;
 }
+// WINVER の既定フォントは GDI (システムの既定) から決まるので、 登録が増えても
+// 選び直さない。 OS フォントも GDI が直接引くので遅延登録は要らない
+// (どちらも generic/environ の実装と対になる口)。
+bool TVPRetryDefaultFontName() { return false; }
+void TVPRegisterSystemFontsLazily( FontSystem& ) {}
 void tTVPSysFont::InitializeMemDC() {
 	BITMAPINFO bmpinfo;
 	ZeroMemory( &bmpinfo, sizeof(bmpinfo) );

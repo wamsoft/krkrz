@@ -40,6 +40,9 @@ class tTJSNI_VideoOverlay : public tTJSNI_BaseVideoOverlay
 	int currentSurface;
 	tTJSCriticalSection surfaceLock;
 	bool updateSurface;
+	//! 書き込み済みで未表示のフレームのコマ番号 (onFrameUpdate に渡す)。表示 (Update) は
+	//! デコードより遅れるので、表示時点の再生位置から出すと先のコマ番号になる
+	tjs_int surfaceFrame;
 	//! prepare() 中 (先頭 1 コマの到着待ち)。到着時に perPrepare を発火して下ろす。
 	//! デコードスレッドのフレームコールバックからも読むので atomic。
 	std::atomic<bool> IsPrepare;
@@ -50,6 +53,10 @@ class tTJSNI_VideoOverlay : public tTJSNI_BaseVideoOverlay
 	//! バックエンドによっては prepare 1 回で複数フレームが届く (seek の flush 分) ため
 	//! IsPrepare だけでは取りこぼす。デコードスレッドからも読むので atomic。
 	std::atomic<bool> PrepareQuiet;
+
+	//! ループ再生 (loop プロパティ)。終端を CheckUpdate で検出したら先頭から再生し直し
+	//! perLoop を発火する (WINVER の vsEnded / EC_COMPLETE → 巻き戻しと同じ形)。
+	bool LoopPlay;
 
 	// overlay 動画 (非 layer) を DrawDevice へ pull 型で渡す presenter。現在の DrawDevice が
 	// 対応 host を公開していれば登録して使い (SDL 等)、無ければ従来 push (UpdateVideo) へ
@@ -133,7 +140,7 @@ public:
 	tjs_int64 GetTotalTime();
 
 	void SetLoop( bool b );
-	bool GetLoop() const { return false; }
+	bool GetLoop() const { return LoopPlay; }
 
 	void SetLayer1( tTJSNI_BaseLayer *l );
 	tTJSNI_BaseLayer *GetLayer1() { return Layer1; }

@@ -19,6 +19,7 @@
 #include "WindowImpl.h"
 #include "GraphicsLoaderImpl.h"
 #include "SysInitIntf.h"
+#include "SysInitImpl.h"   // TVPNativeDataPath / TVPEnsureDataPathDirectory
 #include "DebugIntf.h"
 #include "Random.h"
 #include "XP3Archive.h"
@@ -301,6 +302,70 @@ static tTJSCriticalSection TVPTempUniqueNumCS;
 static ttstr TVPTempPath;
 bool TVPTempPathInit = false;
 static tjs_int TVPProcessID;
+
+// dir (末尾に区切り付き) にファイルを作れるか。 実際に作って即消す
+static bool TVPIsWritableTempFolder(const ttstr &dir)
+{
+	if(dir.IsEmpty()) return false;
+	ttstr probe = dir + TJS_W("krkr_probe_") + ttstr((tjs_int)::GetCurrentProcessId()) +
+		TJS_W("_") + ttstr((tjs_int)::GetTickCount());
+	HANDLE h = ::CreateFileW(reinterpret_cast<const wchar_t*>(probe.c_str()), GENERIC_WRITE, 0, NULL,
+		CREATE_NEW, FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, NULL);
+	if(h == INVALID_HANDLE_VALUE) return false;
+	::CloseHandle(h);	// FILE_FLAG_DELETE_ON_CLOSE で消える
+	return true;
+}
+
+// 一時フォルダを決める。
+// OS の一時フォルダは実在や書き込み可否を確かめずに返ってくる。 Windows の
+// GetTempPath は TMP → TEMP → USERPROFILE → Windows ディレクトリの順なので、
+// 環境変数が全く無い状態で起動されると C:\Windows\ になり、 一般権限では
+// アーカイブ内 DLL の取り出し等が失敗する。 書けない (または Windows ディレクトリ
+// そのもの) ならログを出してセーブデータのフォルダへ逃がす。
+static ttstr TVPDecideTempPath()
+{
+	// long-path 対応: 必要長を問い合わせて動的確保 (TMP が MAX_PATH 超でも切れない)
+	ttstr path;
+	DWORD tlen = ::GetTempPath(0, NULL);
+	if(tlen > 0) {
+		std::vector<wchar_t> tmp((size_t)tlen + 1);
+		if(::GetTempPath(tlen + 1, tmp.data()) > 0) path = (tjs_char*)tmp.data();
+	}
+	if(!path.IsEmpty() && path.GetLastChar() != TJS_W('\\') && path.GetLastChar() != TJS_W('/'))
+		path += TJS_W("\\");
+
+	bool isWindowsDir = false;
+	{
+		wchar_t win[MAX_PATH + 1];
+		UINT wlen = ::GetWindowsDirectoryW(win, MAX_PATH + 1);
+		if(wlen > 0 && wlen <= MAX_PATH && !path.IsEmpty()) {
+			ttstr w(reinterpret_cast<const tjs_char*>(win));
+			if(w.GetLastChar() != TJS_W('\\')) w += TJS_W("\\");
+			isWindowsDir = (::lstrcmpiW(reinterpret_cast<const wchar_t*>(w.c_str()),
+				reinterpret_cast<const wchar_t*>(path.c_str())) == 0);
+		}
+	}
+	if(!isWindowsDir && TVPIsWritableTempFolder(path)) return path;
+
+	ttstr reason = path.IsEmpty() ? ttstr(TJS_W("(none)")) : path;
+	if(isWindowsDir) reason += TJS_W(" (the Windows directory: TMP / TEMP / USERPROFILE are all missing)");
+	else             reason += TJS_W(" (not writable)");
+
+	TVPEnsureDataPathDirectory();
+	ttstr data(TVPNativeDataPath.c_str());
+	if(!data.IsEmpty() && data.GetLastChar() != TJS_W('\\') && data.GetLastChar() != TJS_W('/'))
+		data += TJS_W("\\");
+	if(TVPIsWritableTempFolder(data)) {
+		TVPAddImportantLog(ttstr(TJS_W("temporary folder is unusable: ")) + reason +
+			TJS_W(" -> using the data path instead: ") + data);
+		return data;
+	}
+	TVPAddImportantLog(ttstr(TJS_W("temporary folder is unusable: ")) + reason +
+		TJS_W(", and the data path is not writable either: ") + data +
+		TJS_W(" (extracting files such as plugins in an archive will fail)"));
+	return path;
+}
+
 ttstr TVPGetTemporaryName()
 {
 	tjs_int num;
@@ -310,13 +375,7 @@ ttstr TVPGetTemporaryName()
 
 		if(!TVPTempPathInit)
 		{
-			// long-path 対応: 必要長を問い合わせて動的確保 (TMP が MAX_PATH 超でも切れない)
-			DWORD tlen = ::GetTempPath(0, NULL);
-			std::vector<wchar_t> tmp((size_t)tlen + 1);
-			::GetTempPath(tlen + 1, tmp.data());
-			TVPTempPath = (tjs_char*)tmp.data();
-
-			if(TVPTempPath.GetLastChar() != TJS_W('\\')) TVPTempPath += TJS_W("\\");
+			TVPTempPath = TVPDecideTempPath();
 			TVPProcessID = (tjs_int) GetCurrentProcessId();
 			TVPTempUniqueNum = (tjs_int) GetTickCount();
 			TVPTempPathInit = true;

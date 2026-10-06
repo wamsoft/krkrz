@@ -63,9 +63,11 @@ tTJSNI_VideoOverlay::tTJSNI_VideoOverlay()
 , Layer2(nullptr)
 , currentSurface(0)
 , updateSurface(false)
+, surfaceFrame(0)
 , IsPrepare(false)
 , PrepareFallback(false)
 , PrepareQuiet(false)
+, LoopPlay(false)
 , Presenter(nullptr)
 , PresenterRegistered(false)
 , mUseYUV(false)
@@ -112,6 +114,13 @@ tTJSNI_VideoOverlay::CheckUpdate()
 	// prepare 中 (音を出さずに 1 コマだけ出している最中) は「再生中」ではないので
 	// 状態を動かさない。動かすと play → stop の偽の状態変化がスクリプトへ飛ぶ。
 	if (PrepareQuiet) return;
+	if (LoopPlay && Status == tTVPVideoOverlayStatus::Play && mPlayer && !mPlayer->IsPlaying()) {
+		// 終端まで再生した: 先頭から再生し直す (stop は出さない)
+		mPlayer->Seek( 0 );
+		mPlayer->Play();
+		FirePeriodEvent(perLoop);
+		return;
+	}
 	if (Status == tTVPVideoOverlayStatus::Play || Status == tTVPVideoOverlayStatus::Pause) {
 		SetStatusAsync( mPlayer->IsPlaying() ? tTVPVideoOverlayStatus::Play : tTVPVideoOverlayStatus::Stop );
 	}
@@ -156,8 +165,7 @@ tTJSNI_VideoOverlay::Update()
 			l2->Update();
 		}
 		updateSurface = false;
-		// XXX フレーム番号がとれるのが理想
-		FireFrameUpdateEvent(0);
+		FireFrameUpdateEvent(surfaceFrame);
 
 		if (IsPrepare) {
 			// prepare() の 1 コマが届いた。PrepareFrame() は先頭へ戻した停止状態で
@@ -264,8 +272,10 @@ void tTJSNI_VideoOverlay::Open(const ttstr &name)
 					tjs_int dest_pitch = bitmap->GetPitch();
 					char *destp = static_cast<char*>(bitmap->GetScanLine(0));
 					updater(destp, dest_pitch);
+					tjs_int frameNo = GetFrame();
 					{
 						tTJSCriticalSectionHolder cs(surfaceLock);
+						surfaceFrame = frameNo;
 						updateSurface = true;
 						currentSurface = (currentSurface + 1) % 2; // Toggle between 0 and 1
 					}
@@ -505,10 +515,19 @@ tjs_uint64 tTJSNI_VideoOverlay::GetTimePosition() {
 	return 0;
 }
 //---------------------------------------------------------------------------
-void tTJSNI_VideoOverlay::SetFrame( tjs_int f ) {}
+void tTJSNI_VideoOverlay::SetFrame( tjs_int f ) {
+	double fps = mPlayer ? mPlayer->FrameRate() : 0.0;
+	if (fps > 0.0 && f >= 0) {
+		mPlayer->Seek( (int64_t)( f * 1000000.0 / fps ) );
+	}
+}
 //---------------------------------------------------------------------------
 tjs_int tTJSNI_VideoOverlay::GetFrame() {
-	return 0;
+	// 再生位置 (us) × fps。フレームの先頭時刻ちょうどが前のコマに丸まらないよう
+	// 1/4 コマぶん足してから切り捨てる
+	double fps = mPlayer ? mPlayer->FrameRate() : 0.0;
+	if (fps <= 0.0) return 0;
+	return (tjs_int)( mPlayer->Position() * fps / 1000000.0 + 0.25 );
 }
 //---------------------------------------------------------------------------
 void tTJSNI_VideoOverlay::SetStopFrame( tjs_int f ) {}
@@ -520,11 +539,13 @@ tjs_int tTJSNI_VideoOverlay::GetStopFrame() {
 }
 //---------------------------------------------------------------------------
 tjs_real tTJSNI_VideoOverlay::GetFPS() {
-	return 0.0;
+	return mPlayer ? mPlayer->FrameRate() : 0.0;
 }
 //---------------------------------------------------------------------------
 tjs_int tTJSNI_VideoOverlay::GetNumberOfFrame() {
-	return 0;
+	double fps = mPlayer ? mPlayer->FrameRate() : 0.0;
+	if (fps <= 0.0) return 0;
+	return (tjs_int)( mPlayer->Duration() * fps / 1000000.0 + 0.5 );
 }
 //---------------------------------------------------------------------------
 tjs_int64 tTJSNI_VideoOverlay::GetTotalTime() {
@@ -534,7 +555,7 @@ tjs_int64 tTJSNI_VideoOverlay::GetTotalTime() {
 	return 0;
 }
 //---------------------------------------------------------------------------
-void tTJSNI_VideoOverlay::SetLoop( bool b ) {}
+void tTJSNI_VideoOverlay::SetLoop( bool b ) { LoopPlay = b; }
 //---------------------------------------------------------------------------
 void tTJSNI_VideoOverlay::SetLayer1( tTJSNI_BaseLayer *l ) { Layer1 = l; }
 //---------------------------------------------------------------------------

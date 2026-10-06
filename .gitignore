@@ -63,6 +63,7 @@ data
 !/data/webui/
 !/data/softkey_ime/
 !/data/pad_advanced/
+!/data/a11y/
 !/data/input/
 !/data/image_ops/
 !/data/text_font/

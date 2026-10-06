@@ -17,6 +17,13 @@
         "zlib",
         "png"
       ]
+    },
+    {
+      "name": "angle",
+      "features": [
+        "metal"
+      ],
+      "platform": "osx"
     }
   ],
   "builtin-baseline": "ceaa2404d370c7a40fcfb11d747a71c9fd1df044",

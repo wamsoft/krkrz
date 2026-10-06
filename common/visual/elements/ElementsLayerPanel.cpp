@@ -392,6 +392,33 @@ ttstr tTVPElementsLayerPanel::FocusedId() const
 	return Utf8ToTtstr(Session->focused_id());
 }
 
+cycfi::elements::a11y::snapshot tTVPElementsLayerPanel::A11ySnapshot() const
+{
+	if (!Session) return {};
+	return Session->a11y_snapshot();
+}
+
+void tTVPElementsLayerPanel::A11yPerform(cycfi::elements::a11y::node_id id,
+                                         cycfi::elements::a11y::action act,
+                                         cycfi::elements::a11y::action_arg arg)
+{
+	if (Session) Session->a11y_perform(id, act, std::move(arg));
+}
+
+tTVPElementsLayerPanel* tTVPElementsLayerPanel::FindByLayer(const tTJSNI_BaseLayer* layer)
+{
+	for (auto* p : PanelRegistry())
+		if (p->Layer == layer && p->Session) return p;
+	return nullptr;
+}
+
+bool tTVPElementsLayerPanel::IsAlive(const tTVPElementsLayerPanel* panel)
+{
+	for (auto* p : PanelRegistry())
+		if (p == panel) return true;
+	return false;
+}
+
 bool tTVPElementsLayerPanel::IsFinished() const
 {
 	if (!Session) return true;

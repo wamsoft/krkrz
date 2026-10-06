@@ -23,6 +23,7 @@
 #include "elements/ElementsDialogManager.h"
 #endif
 
+#include <SDL3/SDL_platform_defines.h>  // SDL_PLATFORM_IOS
 #include <stdio.h>
 #include <string>
 #include <unordered_map>
@@ -133,7 +134,7 @@ SDL3WindowForm::SDL3WindowForm(class tTJSNI_Window* win)
 #if defined(TVP_USE_OPENGL)
 	flags |= SDL_WINDOW_OPENGL;
 #endif
-#if defined(__ANDROID__) || defined(__IOS__) || defined(__ORBIS__) || defined (__PROSPERO__)
+#if defined(__ANDROID__) || defined(SDL_PLATFORM_IOS) || defined(__ORBIS__) || defined (__PROSPERO__)
 	flags |= SDL_WINDOW_FULLSCREEN;
 	int width  = 1920;
 	int height = 1080; 
@@ -350,6 +351,193 @@ SDL3WindowForm::GetSurfaceSize(int &w, int &h) const
 		w = 0;
 		h = 0;
 	}
+}
+
+//---------------------------------------------------------------------------
+// タッチ専用環境の自前タッチ→マウス変換 (2 本指タップ = 戻る)
+//---------------------------------------------------------------------------
+#if defined(SDL_PLATFORM_IOS)
+#define TVP_OWN_TOUCH_MOUSE 1
+#endif
+
+#ifdef TVP_OWN_TOUCH_MOUSE
+namespace {
+// 1 本目のマウスダウンを保留する時間。 この間に 2 本目が触れたら 2 本指ジェスチャ
+const Uint32 kTouchHoldMs      = 100;
+// 2 本指タップと見なす最大時間 / 1 本目の移動許容量 (ウィンドウ座標)
+const Uint64 kTwoFingerTapNs   = 500ull * 1000 * 1000;
+const float  kTouchSlop        = 12.0f;
+// 2 本指スワイプでホイール 1 ノッチ (WHEEL_DELTA=120) とする移動量 (ウィンドウ座標)
+const float  kSwipePerNotch    = 30.0f;
+// 自前変換の有効/無効 (Window.enableTouchMouse)。 SDL 標準の変換は main.cpp で止める
+bool         sOwnTouchMouse    = true;
+Uint32       sTouchTimerEvent  = 0;
+
+Uint32 TouchHoldTimer(void* userdata, SDL_TimerID, Uint32)
+{
+	// タイマースレッドからはイベントを積むだけ (処理はメインスレッドの AppEvent)
+	SDL_Event e;
+	SDL_zero(e);
+	e.type = sTouchTimerEvent;
+	e.user.windowID = (SDL_WindowID)(uintptr_t)userdata;
+	SDL_PushEvent(&e);
+	return 0;
+}
+} // namespace
+
+void SDL3WindowForm::TouchMouseReset()
+{
+	mTouchMouse.active = mTouchMouse.pending = mTouchMouse.mouseDown = mTouchMouse.twoFinger = false;
+	mTouchMouse.twoFingerScroll = false;
+	mTouchMouse.scrollAccum = 0;
+	mTouchMouse.fingers = 0;
+	++mTouchMouse.generation;
+}
+
+// 保留していた左ボタン押下を送る (以後は通常のドラッグ / クリック)
+void SDL3WindowForm::TouchMouseFlushPending()
+{
+	if (!mTouchMouse.pending) return;
+	mTouchMouse.pending = false;
+	mTouchMouse.mouseDown = true;
+	SendMouseMessage(AM_MOUSE_DOWN, mbLeft, 0, (int)mTouchMouse.sx, (int)mTouchMouse.sy);
+}
+
+void SDL3WindowForm::TouchMouseFinger(const SDL_Event& event)
+{
+	if (!sOwnTouchMouse || !mWindow) return;
+	int ww = 0, wh = 0;
+	SDL_GetWindowSize(mWindow, &ww, &wh);
+	float wx = event.tfinger.x * ww, wy = event.tfinger.y * wh;   // ウィンドウ座標
+	// サーフェス座標。 SDL_RenderCoordinatesFromWindow はレンダラの «現在の»
+	// ビューポート / スケール (描画途中の状態) に依存してずれるので使わず、
+	// 論理サーフェスのレターボックス (縦横同倍率・中央寄せ) を直接逆算する。
+	float sx = wx, sy = wy;
+	if (mFixedSurfaceWidth > 0 && mFixedSurfaceHeight > 0 && ww > 0 && wh > 0) {
+		float scx = (float)ww / mFixedSurfaceWidth, scy = (float)wh / mFixedSurfaceHeight;
+		float sc  = scx < scy ? scx : scy;
+		sx = (wx - (ww - mFixedSurfaceWidth  * sc) * 0.5f) / sc;
+		sy = (wy - (wh - mFixedSurfaceHeight * sc) * 0.5f) / sc;
+	}
+	if (event.type == SDL_EVENT_FINGER_DOWN)
+		TVPLOG_DEBUG("touch down: norm=({:.3f},{:.3f}) win=({:.0f},{:.0f})/{}x{} surface=({:.0f},{:.0f})",
+			event.tfinger.x, event.tfinger.y, wx, wy, ww, wh, sx, sy);
+
+	switch (event.type) {
+	case SDL_EVENT_FINGER_DOWN:
+		++mTouchMouse.fingers;
+		if (!mTouchMouse.active) {
+			mTouchMouse.active = true;
+			mTouchMouse.primary = event.tfinger.fingerID;
+			mTouchMouse.pending = true;
+			mTouchMouse.twoFinger = false;
+			mTouchMouse.sx = sx; mTouchMouse.sy = sy;
+			mTouchMouse.wx = wx; mTouchMouse.wy = wy;
+			mTouchMouse.downNs = event.tfinger.timestamp;
+			++mTouchMouse.generation;
+			SendMouseMessage(AM_MOUSE_MOVE, 0, 0, (int)sx, (int)sy);   // ホバー位置合わせ
+			if (!sTouchTimerEvent) sTouchTimerEvent = SDL_RegisterEvents(1);
+			SDL_AddTimer(kTouchHoldMs, TouchHoldTimer,
+				(void*)(uintptr_t)SDL_GetWindowID(mWindow));
+		} else if (mTouchMouse.pending && !mTouchMouse.twoFinger) {
+			// 保留中に 2 本目 → 左クリックは出さず 2 本指ジェスチャにする
+			mTouchMouse.pending = false;
+			mTouchMouse.twoFinger = true;
+			mTouchMouse.twoFingerScroll = false;
+			mTouchMouse.scrollAccum = 0;
+		}
+		break;
+
+	case SDL_EVENT_FINGER_MOTION:
+		if (event.tfinger.fingerID != mTouchMouse.primary) break;
+		if (mTouchMouse.twoFinger) {
+			// 2 本指で上下に動かしたらホイール (指を上へ = 下へスクロール = delta 負)。
+			// スワイプになったら離したときの «戻る» は出さない。
+			mTouchMouse.scrollAccum += event.tfinger.dy * wh;
+			if (!mTouchMouse.twoFingerScroll) {
+				if (mTouchMouse.scrollAccum * mTouchMouse.scrollAccum < kTouchSlop * kTouchSlop) break;
+				mTouchMouse.twoFingerScroll = true;
+				mTouchMouse.scrollAccum = 0;
+			}
+			int notches = (int)(mTouchMouse.scrollAccum / kSwipePerNotch);
+			if (notches != 0) {
+				mTouchMouse.scrollAccum -= notches * kSwipePerNotch;
+				SendMouseMessage(AM_MOUSE_WHEEL, notches * 120, 0, (int)sx, (int)sy);
+			}
+			break;
+		}
+		if (mTouchMouse.pending) {
+			float dx = wx - mTouchMouse.wx, dy = wy - mTouchMouse.wy;
+			if (dx * dx + dy * dy < kTouchSlop * kTouchSlop) break;
+			TouchMouseFlushPending();     // 動き出したら押下を確定してドラッグへ
+		}
+		if (mTouchMouse.mouseDown)
+			SendMouseMessage(AM_MOUSE_MOVE, 0, 0, (int)sx, (int)sy);
+		break;
+
+	case SDL_EVENT_FINGER_UP:
+	case SDL_EVENT_FINGER_CANCELED:
+		if (mTouchMouse.fingers > 0) --mTouchMouse.fingers;
+		if (mTouchMouse.twoFinger) {
+			if (mTouchMouse.fingers == 0) {
+				const bool tap = event.type == SDL_EVENT_FINGER_UP && !mTouchMouse.twoFingerScroll &&
+					event.tfinger.timestamp - mTouchMouse.downNs <= kTwoFingerTapNs;
+				TouchMouseReset();
+				if (tap) {
+					// 2 本指タップ = 戻る。 ESC キーとして SDL のイベントキューへ積む
+					// (System.registerHotKey 等の通常のキー経路をそのまま通すため)
+					TVPLOG_INFO("two-finger tap -> ESC");
+					SDL_Event k;
+					SDL_zero(k);
+					k.key.windowID = SDL_GetWindowID(mWindow);
+					k.key.key = SDLK_ESCAPE;
+					k.key.scancode = SDL_SCANCODE_ESCAPE;
+					k.type = SDL_EVENT_KEY_DOWN; k.key.down = true;
+					SDL_PushEvent(&k);
+					k.type = SDL_EVENT_KEY_UP;   k.key.down = false;
+					SDL_PushEvent(&k);
+				}
+			}
+			break;
+		}
+		if (event.tfinger.fingerID != mTouchMouse.primary) break;
+		if (event.type == SDL_EVENT_FINGER_UP) {
+			TouchMouseFlushPending();     // 保留中のタップは押下→解放を一度に送る
+			if (mTouchMouse.mouseDown)
+				SendMouseMessage(AM_MOUSE_UP, mbLeft, 0, (int)sx, (int)sy);
+		} else if (mTouchMouse.mouseDown) {
+			SendMouseMessage(AM_MOUSE_UP, mbLeft, 0, (int)mTouchMouse.sx, (int)mTouchMouse.sy);
+		}
+		TouchMouseReset();
+		break;
+	}
+}
+#else
+void SDL3WindowForm::TouchMouseFinger(const SDL_Event&) {}
+void SDL3WindowForm::TouchMouseFlushPending() {}
+void SDL3WindowForm::TouchMouseReset() {}
+#endif
+
+void
+SDL3WindowForm::WindowToSurface(float &x, float &y, bool fromEvent) const
+{
+	// SDL_Renderer 経路 (sdl DrawDevice) は SDL_SetRenderLogicalPresentation により
+	// マウスイベントが SDL 側で論理座標へ換算済み。 GL 経路 (ogl / sdlogl) は
+	// ウィンドウ座標のまま来るので、 描画 (TVPScaleRectToSurface) と同じ
+	// レターボックス (縦横同倍率・中央寄せ) で逆変換する。
+	if (mFixedSurfaceWidth <= 0 || mFixedSurfaceHeight <= 0 || !mWindow) return;
+	if (SDL_Renderer *renderer = SDL_GetRenderer(mWindow)) {
+		if (!fromEvent) SDL_RenderCoordinatesFromWindow(renderer, x, y, &x, &y);
+		return;
+	}
+	int ww = 0, wh = 0;
+	SDL_GetWindowSize(mWindow, &ww, &wh);
+	if (ww <= 0 || wh <= 0) return;
+	float sx = (float)ww / mFixedSurfaceWidth;
+	float sy = (float)wh / mFixedSurfaceHeight;
+	float s  = sx < sy ? sx : sy;
+	x = (x - (ww - mFixedSurfaceWidth  * s) * 0.5f) / s;
+	y = (y - (wh - mFixedSurfaceHeight * s) * 0.5f) / s;
 }
 
 void
@@ -938,6 +1126,7 @@ SDL3WindowForm::GetCursorPos(tjs_int &x, tjs_int &y)
 	float xpos = 0, ypos = 0;
 	if (mWindow) {
 		SDL_GetMouseState(&xpos, &ypos);
+		WindowToSurface(xpos, ypos, false);   // 論理サーフェス固定環境のみ換算
 	}
 	// SDL_GetMouseState はウィンドウクライアント座標。 この関数の契約は
 	// 「描画矩形内の座標」なので destRect オフセットを引く (SetCursorPos の逆)。
@@ -988,13 +1177,23 @@ SDL3WindowForm::GetEnableTouch() const
 bool
 SDL3WindowForm::GetEnableTouchMouse() const
 {
+#ifdef TVP_OWN_TOUCH_MOUSE
+	return sOwnTouchMouse;
+#else
 	return SDL_GetHintBoolean(SDL_HINT_TOUCH_MOUSE_EVENTS, true) == true;
+#endif
 }
 
 void
 SDL3WindowForm::SetEnableTouchMouse( bool b )
 {
+#ifdef TVP_OWN_TOUCH_MOUSE
+	// SDL 標準の変換は常に止めておき (main.cpp)、 自前変換を切り替える
+	sOwnTouchMouse = b;
+	if (!b) TouchMouseReset();
+#else
 	SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, b ? "1" : "0");
+#endif
 }
 
 extern tjs_uint16 TVPTransSDLKeyToVirtualKey(tjs_int sdlKey);
@@ -1003,6 +1202,14 @@ extern tjs_uint16 TVPTransSDLKeyToVirtualKey(tjs_int sdlKey);
 bool
 SDL3WindowForm::AppEvent(const SDL_Event& event)
 {
+#ifdef TVP_OWN_TOUCH_MOUSE
+	if (sTouchTimerEvent && event.type == sTouchTimerEvent) {
+		// マウスダウン保留の期限。 2 本目が来なかったので通常の押下として確定
+		// (長押しも通常どおり onMouseDown が先に届く)
+		TouchMouseFlushPending();
+		return true;
+	}
+#endif
 	switch (event.type) {
 		case SDL_EVENT_KEYBOARD_ADDED:
 		case SDL_EVENT_KEYBOARD_REMOVED: {
@@ -1073,10 +1280,12 @@ SDL3WindowForm::AppEvent(const SDL_Event& event)
 			// ダブルクリックは win32 の WM_*BUTTONDBLCLK と同じ順序で
 			// (dblclick → down) 流す。generic 側で onDoubleClick を発火し、
 			// 続く up での onClick を抑止する。
+			float bx = event.button.x, by = event.button.y;
+			WindowToSurface(bx, by, true);
 			if (message == AM_MOUSE_DOWN && event.button.clicks >= 2) {
-				SendMouseMessage(AM_MOUSE_DBLCLK, button, shift, event.button.x, event.button.y);
+				SendMouseMessage(AM_MOUSE_DBLCLK, button, shift, bx, by);
 			}
-			SendMouseMessage(message, button, shift, event.button.x, event.button.y);
+			SendMouseMessage(message, button, shift, bx, by);
 			break;
 		}
 		case SDL_EVENT_MOUSE_MOTION: {
@@ -1085,7 +1294,9 @@ SDL3WindowForm::AppEvent(const SDL_Event& event)
 			if (mod & SDL_KMOD_SHIFT) shift |= TVP_SS_SHIFT;
 			if (mod & SDL_KMOD_CTRL) shift |= TVP_SS_CTRL;
 			if (mod & SDL_KMOD_ALT) shift |= TVP_SS_ALT;
-			SendMouseMessage(AM_MOUSE_MOVE, 0, shift, event.motion.x, event.motion.y);
+			float mx = event.motion.x, my = event.motion.y;
+			WindowToSurface(mx, my, true);
+			SendMouseMessage(AM_MOUSE_MOVE, 0, shift, mx, my);
 			break;
 		}
 		case SDL_EVENT_MOUSE_WHEEL: {
@@ -1096,6 +1307,7 @@ SDL3WindowForm::AppEvent(const SDL_Event& event)
 			if (mod & SDL_KMOD_ALT) shift |= TVP_SS_ALT;
 			float x, y;
 			SDL_GetMouseState(&x, &y);
+			WindowToSurface(x, y, false);
 			// SDL3 の wheel.y はノッチ単位 (±1.0、 精密ホイールは小数)。
 			// TJS の onMouseWheel delta は win32 WHEEL_DELTA (±120) 単位
 			// なので換算する。 小数分は残差として持ち越し、 精密ホイールの
@@ -1110,7 +1322,10 @@ SDL3WindowForm::AppEvent(const SDL_Event& event)
 		}
 		case SDL_EVENT_FINGER_DOWN:
 		case SDL_EVENT_FINGER_UP:
+		case SDL_EVENT_FINGER_CANCELED:
 		case SDL_EVENT_FINGER_MOTION: {
+			TouchMouseFinger(event);
+			if (event.type == SDL_EVENT_FINGER_CANCELED) break;
 			if (mEnableTouch) {
 				int type = (event.type == SDL_EVENT_FINGER_UP) ? AM_TOUCH_UP :
 						(event.type == SDL_EVENT_FINGER_DOWN) ? AM_TOUCH_DOWN : AM_TOUCH_MOVE;

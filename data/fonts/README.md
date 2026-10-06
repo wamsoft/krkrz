@@ -16,8 +16,10 @@ python tools/fontgen/gen_fonts_json.py \
 | ファイル | family | 用途 | 出典 |
 |---|---|---|---|
 | notocoloremoji.ttf | Noto Color Emoji | カラー絵文字 (CBDT) | https://github.com/googlefonts/noto-emoji |
+| notoemoji-regular.ttf | Noto Emoji | モノクロ絵文字 | https://github.com/googlefonts/noto-emoji |
 | notosansarabic-regular.ttf | Noto Sans Arabic | アラビア文字 (RTL/連結) | https://github.com/notofonts/arabic |
 | notosanshebrew-regular.ttf | Noto Sans Hebrew | ヘブライ文字 (RTL) | https://github.com/notofonts/hebrew |
+| notosansjp-regular.otf | Noto Sans JP | 日本語 (デモ既定の本文フォント) | https://github.com/notofonts/noto-cjk |
 
 他スクリプトを足す場合も Noto ファミリ (https://notofonts.github.io/ の
 per-script リポジトリ、`fonts/<Family>/hinted/ttf/`) から取得すると

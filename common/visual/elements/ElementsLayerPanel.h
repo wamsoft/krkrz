@@ -40,6 +40,8 @@
 #include "EventIntf.h"        // tTVPContinuousEventCallbackIntf
 #include "tvpinputdefs.h"     // tTVPMouseButton / TVP_SS_*
 
+#include <elements/support/a11y.hpp>   // 読み上げツリー (ゲーム本体の slot へ接ぐ)
+
 #include <memory>
 #include <string>
 #include <vector>
@@ -128,6 +130,18 @@ public:
 
 	//! @brief 現在フォーカス中の widget id (無ければ空)。
 	ttstr FocusedId() const;
+
+	//! @brief 読み上げツリー (パネルの座標 = レイヤのローカル座標)。
+	//!        ElementsDialog.a11yLayers でゲーム本体の slot に接ぐのに使う。
+	cycfi::elements::a11y::snapshot A11ySnapshot() const;
+	//! @brief 読み上げの操作 (AT / Agent.a11yAction と同じ経路)。
+	void A11yPerform(cycfi::elements::a11y::node_id id,
+	                 cycfi::elements::a11y::action act,
+	                 cycfi::elements::a11y::action_arg arg);
+	//! @brief このレイヤに描いている開いたパネル (無ければ nullptr)。
+	static tTVPElementsLayerPanel* FindByLayer(const tTJSNI_BaseLayer* layer);
+	//! @brief パネルがまだ開いているか (弱参照の生存確認)。
+	static bool IsAlive(const tTVPElementsLayerPanel* panel);
 
 	//! @brief 画面が自分で終了したか (`close_on_click` / Esc 相当)。
 	//!        呼び出し側はこれを見て後始末する。

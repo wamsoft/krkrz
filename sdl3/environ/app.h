@@ -60,6 +60,27 @@ protected:
 	//! 直して WS_MAXIMIZEBOX を復活させるので、該当箇所から都度呼び直す。
 	void ApplyMaximizeBoxOption();
 
+	//! タッチ専用環境 (iOS) の自前タッチ→マウス変換。 SDL 標準の変換は 1 本目の
+	//! 指が触れた瞬間に左ボタンを押すので、 2 本指タップ (= 戻る / ESC) と両立しない。
+	//! 1 本目のマウスダウンを短時間保留し、 その間に 2 本目が来たらジェスチャ扱いにする。
+	struct TouchMouseState {
+		bool        active = false;     //!< 1 本目の指が触れている
+		SDL_FingerID primary = 0;
+		bool        pending = false;    //!< マウスダウン保留中
+		bool        mouseDown = false;  //!< 左ボタン押下を送った
+		bool        twoFinger = false;  //!< 2 本指ジェスチャ中
+		bool        twoFingerScroll = false; //!< 2 本指スワイプ (ホイール) になった
+		float       scrollAccum = 0;    //!< スワイプ量の未送信分 (ウィンドウ座標)
+		int         fingers = 0;        //!< 触れている指の数
+		float       sx = 0, sy = 0;     //!< 押下位置 (サーフェス座標)
+		float       wx = 0, wy = 0;     //!< 押下位置 (ウィンドウ座標、 移動判定用)
+		Uint64      downNs = 0;
+		Uint32      generation = 0;     //!< 保留タイマーの世代
+	} mTouchMouse;
+	void TouchMouseFinger(const SDL_Event& event);
+	void TouchMouseFlushPending();
+	void TouchMouseReset();
+
 public:
 	virtual void *NativeWindowHandle() const {
 		return mWindow;
@@ -70,6 +91,10 @@ public:
 	virtual void ApplyAspectLock() override;
 
 	virtual void GetSurfaceSize(int &w, int &h) const;
+	//! 論理サーフェス固定時、 ウィンドウ座標 → 論理サーフェス座標 (レターボックス考慮)。
+	//! fromEvent=true はマウスイベント由来の座標 (SDL_Renderer 経路では SDL が換算済み)、
+	//! false は SDL_GetMouseState 由来の生ウィンドウ座標。
+	void WindowToSurface(float &x, float &y, bool fromEvent) const;
 	virtual void ResizeWindow(int w, int h);
 
 	// メインウインドウのキャプション設定
@@ -232,6 +257,9 @@ public:
 	// 例) Switch 後継機なら "switch;switch2" を返すと、config_switch.cf の
 	//     共通設定に config_switch2.cf の個別設定を重ねられる。
 	virtual const char *getPlatformTagSpec() const;
+
+	virtual tjs_string PersonalPath() const override;
+	virtual tjs_string AppDataPath() const override;
 
 	// 本体の表示言語 (BCP-47)。 SDL の SDL_GetPreferredLocales() を既定実装に
 	// する (Windows / Linux / macOS / Android で機能する)。 SDL の locale

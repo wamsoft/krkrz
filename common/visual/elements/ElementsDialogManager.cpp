@@ -30,6 +30,7 @@
 #ifndef __WINVER__
 #include "WindowForm.h"     // TTVPWindowForm::NativeWindowHandle() (SDL/generic host)
 #endif
+#include "ScriptMgnIntf.h"  // TVPGetScriptDispatch (読み上げ: onGameA11yAction)
 #include "EventIntf.h"      // TVPAdd/RemoveContinuousEventHook (paint 中 OnAction の遅延配送)
 #include "tjsDictionary.h"  // TJSCreateDictionaryObject (OnDrag の payload)
 #include "StoragesResourceLoader.h"   // TVPInstallElementsResourceLoader / Fonts
@@ -39,6 +40,7 @@
 
 #ifndef _WIN32
 #include "VirtualKey.h"
+#include "LayerIntf.h"     // 読み上げ: Layer の自動 (a11yLayers)
 #endif
 
 #include <elements/element/pad_icon.hpp>   // set_pad_theme / parse_pad_theme
@@ -56,6 +58,16 @@
 #ifndef __WINVER__
 #include <SDL3/SDL.h>        // SDL host: SDL_StartTextInput / SDL_HasScreenKeyboardSupport 等
 #endif
+
+#ifdef KRKRZ_HAS_A11Y
+#include <elements/a11y/accesskit_host.hpp>   // 読み上げ: OS のアクセシビリティ API へ出す
+#endif
+#include <elements/support/a11y.hpp>          // 読み上げツリー (snapshot / speech_lines)
+#include <mutex>             // 読み上げ: AT 操作のキュー
+#include <thread>            // 読み上げ: AT 操作がメインスレッドで来たかの判定
+#include <climits>           // INT_MIN (読み上げ: 重なり順の未送信印)
+#include <functional>        // 読み上げ: ゲーム slot の木の組み立て
+#include <unordered_map>     // 読み上げ: ゲーム slot のノード表
 
 #include <algorithm>         // std::remove_if (ホストホットキー解除)
 #include <cstdlib>           // std::strtol
@@ -328,10 +340,30 @@ struct tTVPElementsDialogManager::Impl
 	// steady_clock 呼出はフレームあたり数回なのでオーバーヘッドは無視できる。
 	tTVPElementsRenderStats stats;
 
+	//! @brief 読み上げ (スクリーンリーダー) 用のインスタンスごとの状態。
+	//!        session の sink から weak で見る (画面の張り直し / 破棄の順序に
+	//!        依存しないように)。
+	struct A11ySlot
+	{
+		int slot = 0;
+#ifdef KRKRZ_HAS_A11Y
+		std::shared_ptr<cycfi::elements::a11y::sink> os;   //!< OS (AccessKit) の slot
+#endif
+		cycfi::elements::a11y::snapshot last;              //!< 読み上げログの差分元
+		bool has_last = false;
+		// OS 側へ最後に伝えた値 (変わったときだけ送る)
+		int z = -1;
+		bool modal = false;
+#ifdef KRKRZ_HAS_A11Y
+		cycfi::elements::a11y::transform xf;   // accesskit_host.hpp の型 (A11Y 無効時は不要)
+#endif
+	};
+
 	//! @brief 1 つの overlay UI インスタンス。 z-order = instances 内の並び順
 	//!        (先頭 = 最背面、 末尾 = 最前面)。
 	struct Instance
 	{
+		std::shared_ptr<A11ySlot> a11y;   // 読み上げ (session より先 = 後に壊れる)
 		std::unique_ptr<elements_modal::overlay_session> session;
 
 		// このインスタンスに紐付く event handler (TJS ElementsDialog 等)。 layer キーと
@@ -365,6 +397,10 @@ struct tTVPElementsDialogManager::Impl
 		// までダイアログに効かない (長押しスキップ中に開いたソフトキーボードへ
 		// 決定ボタンが即入力される誤爆の防止)。
 		std::set<tjs_uint> armed_vks;
+
+		// キー捕捉中か (SetKeyCapture)。 フォーカス保持中のキー押下と
+		// 左以外のマウスボタン押下を handler->OnKeyCapture へ回す。
+		bool key_capture = false;
 
 		// dialog 論理サイズ (JSON "size" → content フィット後)。
 		int dialog_w = 400;
@@ -597,6 +633,25 @@ struct tTVPElementsDialogManager::Impl
 				return inst;
 		}
 		return nullptr;
+	}
+
+	// キー捕捉中でキーボードフォーカスを持つインスタンス (無ければ nullptr)。
+	Instance* KeyCaptureTarget() const
+	{
+		Instance* f = TopmostKeyboardFocus();
+		if (f && f->key_capture && f->session && f->handler) return f;
+		return nullptr;
+	}
+
+	// 捕捉したキー押下を handler へ渡す。 押しっぱなしのまま捕捉が終わっても
+	// 背面のインスタンスへリピートが漏れないよう、 他のインスタンスの
+	// 「新規押下を見た VK」からは外しておく。
+	void DeliverKeyCapture(Instance* target, tjs_uint vk, tjs_uint32 shift)
+	{
+		for (auto& up : instances) {
+			if (up.get() != target) up->armed_vks.erase(vk);
+		}
+		target->handler->OnKeyCapture(vk, shift);
 	}
 
 	Instance* FindByHandler(iTVPDialogEventHandler* handler) const
@@ -971,6 +1026,7 @@ struct tTVPElementsDialogManager::Impl
 		iTVPDialogEventHandler* handler =
 			inst->ever_active ? inst->handler : nullptr;
 		ttstr close_action = inst->close_action;
+		DetachA11y(*inst);
 		for (auto it = instances.begin(); it != instances.end(); ++it) {
 			if (it->get() == inst) {
 				instances.erase(it);
@@ -986,6 +1042,7 @@ struct tTVPElementsDialogManager::Impl
 	{
 		std::vector<std::pair<iTVPDialogEventHandler*, ttstr>> closed;
 		for (auto& inst : instances) {
+			DetachA11y(*inst);
 			if (auto* r = FindRenderer(inst->host_device)) {
 				r->ReleaseLayer(inst->LayerKey());
 			}
@@ -998,6 +1055,991 @@ struct tTVPElementsDialogManager::Impl
 		ime_focus_active = false;
 		SetImeOpenForFocus(false);
 		for (auto& [handler, action] : closed) handler->OnClosed(action);
+	}
+
+	// === 読み上げ (スクリーンリーダー対応) ===
+	//
+	// OS への口 (AccessKit) はメインウィンドウに 1 つ。 インスタンスはそれぞれ
+	// slot として載り、 重なり順 / モーダル / 位置を PaintOverlay の末尾で
+	// 同期する (SyncA11y)。 AT からの操作はどのスレッドからも来るのでキューに
+	// 積み、 同じ SyncA11y (メインスレッド) で流す。
+#ifdef KRKRZ_HAS_A11Y
+	std::unique_ptr<cycfi::elements::a11y::accesskit_host> a11y_host;
+#endif
+	std::string a11y_mode = "auto";
+	std::string a11y_label;
+	std::vector<std::string> a11y_log;    // utf-8
+	size_t a11y_log_dropped = 0;
+	int a11y_next_slot = 1;
+	struct A11yRequest
+	{
+		int slot;
+		cycfi::elements::a11y::node_id id;
+		cycfi::elements::a11y::action act;
+		cycfi::elements::a11y::action_arg arg;
+	};
+	std::mutex a11y_mtx;
+	std::vector<A11yRequest> a11y_requests;
+
+	// --- ゲーム本体の slot (ElementsDialog.setGameA11y) ---
+	// Layer に描かれた UI (選択肢 / メニュー / 設定画面) はスクリプトがノードの
+	// 表で渡す。 slot はダイアログ (1..) より下の 0 番で、 モーダルなダイアログの
+	// 表示中は隠れる。 ダイアログが出ていないときの announce もここの live
+	// region に載る。 AT の操作は onGameA11yAction でスクリプトへ返す。
+	static constexpr int kGameA11ySlot = 0;
+	struct GameA11y
+	{
+		std::shared_ptr<A11ySlot> slot;   // 無ければ未使用
+		std::vector<tTVPGameA11yNode> nodes;
+		std::string focus;
+		std::string live_text;
+		bool live_assertive = false;
+		cycfi::elements::a11y::snapshot snap;
+		std::unordered_map<cycfi::elements::a11y::node_id, std::string> ids;   // → スクリプトの id
+
+		// --- Layer の自動 (a11yLayers) ---
+		bool layers = false;
+		std::vector<cycfi::elements::a11y::node> auto_nodes;     // 子の並びは設定済み
+		std::vector<cycfi::elements::a11y::node_id> auto_top;    // 最上位に並べるもの
+		cycfi::elements::a11y::node_id auto_focus = 0;
+		// ノード → 操作先 (Layer か、 Elements パネルの中のノード)。 ポインタは
+		// 配送の直前にツリーに居るか確かめ直してから使う。
+		struct Target
+		{
+			tTJSNI_BaseLayer* layer = nullptr;
+			tTVPElementsLayerPanel* panel = nullptr;
+			cycfi::elements::a11y::node_id local = 0;
+		};
+		std::unordered_map<cycfi::elements::a11y::node_id, Target> auto_targets;
+		tjs_uint32 auto_tick = 0;               // 最後に組んだ時刻 (ms)
+		bool auto_built = false;
+		const tTJSNI_BaseLayer* auto_focused_layer = nullptr;
+	} game;
+
+	// Layer の自動の組み直し (描画の外、 continuous イベント)。 AT が繋がって
+	// いるか読み上げログを取っている間だけ登録する。
+	bool a11y_last_active = false;   // onA11yActiveChanged の発火用
+
+	// スクリーンリーダーの接続 / 切断を ElementsDialog.onA11yActiveChanged へ
+	// (描画の外で配る)。 accesskit_host の通知 (Windows / macOS はウィンドウの
+	// スレッド = 静止画面でも即時) と SyncA11y の両方から呼ぶ。
+	void CheckA11yActiveChanged()
+	{
+		bool active = false;
+#ifdef KRKRZ_HAS_A11Y
+		active = a11y_host && a11y_host->is_active();
+#endif
+		if (active == a11y_last_active) return;
+		a11y_last_active = active;
+		PendingAction pa{nullptr, TJS_W("onA11yActiveChanged"),
+			tTJSVariant((tjs_int)(active ? 1 : 0)), PendingAction::Kind::ClassEvent};
+		pending_actions.push_back(std::move(pa));
+		ArmActionHook();
+		UpdateLayerHook();
+	}
+
+	struct A11yLayerHook : public tTVPContinuousEventCallbackIntf {
+		Impl* owner = nullptr;
+		bool registered = false;
+		void TJS_INTF_METHOD OnContinuousCallback(tjs_uint64 tick) override;
+	} a11y_layer_hook;
+
+	// AT の操作を受ける (どのスレッドからも来る)。 メインスレッドで来たとき
+	// (Windows / macOS: accesskit_host がウィンドウのスレッドへ投げ直す) は
+	// その場で流す — 静止画面の WINVER では描画 (SyncA11y) が来ないため。
+	std::thread::id a11y_main_thread = std::this_thread::get_id();
+	void OnA11yRequest(int slot, cycfi::elements::a11y::node_id id,
+	                   cycfi::elements::a11y::action act,
+	                   cycfi::elements::a11y::action_arg arg)
+	{
+		{
+			std::lock_guard<std::mutex> lock(a11y_mtx);
+			a11y_requests.push_back({slot, id, act, std::move(arg)});
+		}
+		if (std::this_thread::get_id() == a11y_main_thread && paint_depth <= 0)
+			DrainA11yRequests();
+	}
+
+	// 読み上げログは REPL / Agent で確かめるとき (REPL の口が開いているとき) だけ溜める
+	static bool A11yLogging() { return TVPReplActive; }
+
+	void A11yLogLine(const std::string& line)
+	{
+		a11y_log.push_back(line);
+		if (a11y_log.size() > 2000) {
+			a11y_log.erase(a11y_log.begin(), a11y_log.begin() + 1000);
+			a11y_log_dropped += 1000;
+		}
+		tjs_string ws;
+		TVPUtf8ToUtf16(ws, "[a11y] " + line);
+		TVPAddLog(ttstr(ws.c_str()));
+	}
+
+	// view → OS (AccessKit) へ渡しつつ、 読み上げログを作る sink
+	struct A11ySink : public cycfi::elements::a11y::sink
+	{
+		Impl* impl;
+		std::weak_ptr<A11ySlot> slot;
+		A11ySink(Impl* i, std::weak_ptr<A11ySlot> s) : impl(i), slot(std::move(s)) {}
+
+		bool is_active() const override
+		{
+			auto s = slot.lock();
+			if (!s) return false;
+			if (A11yLogging()) return true;
+#ifdef KRKRZ_HAS_A11Y
+			return s->os && s->os->is_active();
+#else
+			return false;
+#endif
+		}
+
+		void tree_changed(const cycfi::elements::a11y::snapshot& full,
+		                  const cycfi::elements::a11y::update& delta) override
+		{
+			auto s = slot.lock();
+			if (!s) return;
+#ifdef KRKRZ_HAS_A11Y
+			if (s->os) s->os->tree_changed(full, delta);
+#else
+			(void)delta;
+#endif
+			if (A11yLogging()) {
+				for (const auto& line : cycfi::elements::a11y::speech_lines(
+				         s->has_last ? &s->last : nullptr, full))
+					impl->A11yLogLine(line);
+			}
+			s->last = full;
+			s->has_last = true;
+		}
+	};
+
+	// 張り直した session を OS / ログへ繋ぐ (BeginScreen の末尾、 OS への口を
+	// 開いたとき)。
+	void AttachA11y(Instance& inst)
+	{
+		if (!inst.session) return;
+		if (!inst.a11y) {
+			inst.a11y = std::make_shared<A11ySlot>();
+			inst.a11y->slot = a11y_next_slot++;
+		}
+		inst.a11y->has_last = false;
+		inst.a11y->z = -1;   // 次の SyncA11y で重なり順を送り直す
+#ifdef KRKRZ_HAS_A11Y
+		inst.a11y->os.reset();
+		if (a11y_host) {
+			const int slot = inst.a11y->slot;
+			std::weak_ptr<A11ySlot> ws = inst.a11y;
+			Instance* ip = &inst;
+			inst.a11y->os = a11y_host->add_source(slot,
+				[this, slot](cycfi::elements::a11y::node_id id,
+				             cycfi::elements::a11y::action act,
+				             cycfi::elements::a11y::action_arg arg) {
+					OnA11yRequest(slot, id, act, std::move(arg));
+				},
+				// AT が繋がった瞬間のツリー (Windows / macOS はメインスレッドで来る)
+				[this, ip]() {
+					for (auto& up : instances)
+						if (up.get() == ip && ip->session) return ip->session->a11y_snapshot();
+					return cycfi::elements::a11y::snapshot{};
+				},
+				[ws]() {
+					auto s = ws.lock();
+					return s ? s->xf : cycfi::elements::a11y::transform{};
+				});
+		}
+#endif
+		inst.session->a11y_sink(std::make_shared<A11ySink>(this, inst.a11y));
+	}
+
+	void DetachA11y(Instance& inst)
+	{
+#ifdef KRKRZ_HAS_A11Y
+		if (inst.a11y && a11y_host) a11y_host->remove_source(inst.a11y->slot);
+#else
+		(void)inst;
+#endif
+	}
+
+	// OS への口をメインウィンドウに開く / 閉じる (モードに合わせる)。
+	void UpdateA11yHost()
+	{
+#ifdef KRKRZ_HAS_A11Y
+		const bool want = (a11y_mode != "off");
+		if (want && !a11y_host) {
+			void* hwnd_or_null = nullptr;
+#ifdef __WINVER__
+			if (TVPMainWindow) hwnd_or_null = TVPMainWindow->GetWindowHandle();
+			if (!hwnd_or_null) return;
+			a11y_host = cycfi::elements::a11y::accesskit_host::attach(hwnd_or_null);
+#else
+			SDL_Window* sw = HostMainWindow();
+			if (!sw) return;
+			(void)hwnd_or_null;
+			a11y_host = cycfi::elements::a11y::accesskit_host::attach_sdl(sw);
+#endif
+			if (a11y_host && !a11y_label.empty()) a11y_host->set_window_label(a11y_label);
+			if (a11y_host)
+				a11y_host->on_active_changed([this](bool) {
+					if (std::this_thread::get_id() == a11y_main_thread) CheckA11yActiveChanged();
+				});
+			for (auto& up : instances) AttachA11y(*up);
+			// ゲーム slot は常設 (live region を先に置いておく。 文字の入った
+			// live region が後から現れても、 スクリーンリーダーは読まないことがある)
+			if (game.slot) AttachGameA11y();
+			else EnsureGameA11y();
+		} else if (!want && a11y_host) {
+			for (auto& up : instances) {
+				if (up->a11y) up->a11y->os.reset();
+			}
+			if (game.slot) game.slot->os.reset();
+			a11y_host.reset();
+		}
+#endif
+	}
+
+	// AT からの操作を流す (メインスレッド)。 ダイアログの操作は session へ、
+	// ゲーム slot の操作は onGameA11yAction の配送キューへ。
+	void DrainA11yRequests()
+	{
+		std::vector<A11yRequest> reqs;
+		{
+			std::lock_guard<std::mutex> lock(a11y_mtx);
+			reqs.swap(a11y_requests);
+		}
+		for (auto& r : reqs) {
+			if (r.slot == kGameA11ySlot) {
+				QueueGameNodeAction(r.id, r.act, r.arg);
+				continue;
+			}
+			for (auto& up : instances) {
+				if (up->a11y && up->a11y->slot == r.slot && up->session && up->active) {
+					up->session->a11y_perform(r.id, r.act, std::move(r.arg));
+					break;
+				}
+			}
+		}
+	}
+
+	// PaintOverlay の末尾 (メインウィンドウのデバイス) から毎フレーム。
+	void SyncA11y(iTVPDrawDevice* device)
+	{
+		DrainA11yRequests();
+
+#ifdef KRKRZ_HAS_A11Y
+		UpdateA11yHost();
+		UpdateLayerHook();
+		CheckA11yActiveChanged();
+		if (!a11y_host) return;
+		// present 変換 (dialog 論理座標 → window client px) をそのまま使う。
+		// Linux (AT-SPI) はウィンドウ座標なので、 px → ウィンドウ座標へ直す。
+		// 描画面 (renderer の surface) の座標 → OS 側の単位。 Windows は
+		// ウィンドウの物理ピクセル、 macOS はポイント × backingScaleFactor
+		// (SDL のウィンドウが高解像度でなくても Retina なら 2)、 Linux (AT-SPI) は
+		// ウィンドウ座標。 surface は環境によって物理ピクセルだったり論理サイズ
+		// だったりするので、 実際の比で換算する。
+		float to_os = 1.0f;
+#if !defined(__WINVER__)
+		if (SDL_Window* sw = HostMainWindow()) {
+			int lw = 0, lh = 0, pw = 0, ph = 0;
+			SDL_GetWindowSize(sw, &lw, &lh);
+			SDL_GetWindowSizeInPixels(sw, &pw, &ph);
+			int surf_w = 0, surf_h = 0;
+			if (iTVPDialogRenderer* r = FindRenderer(device)) r->GetSurfaceSize(surf_w, surf_h);
+			if (surf_w <= 0) surf_w = pw;
+#if defined(__linux__)
+			const float target_w = (float)lw;
+#elif defined(__APPLE__)
+			const float target_w = (float)lw * a11y_host->native_scale();
+#else
+			const float target_w = (float)pw;
+#endif
+			if (surf_w > 0 && target_w > 0) to_os = target_w / (float)surf_w;
+		}
+#endif
+		bool changed = false;
+		for (size_t i = 0; i < instances.size(); ++i) {
+			Instance& inst = *instances[i];
+			if (!inst.a11y || !inst.session) continue;
+			A11ySlot& s = *inst.a11y;
+			const int z = (int)i;
+			if (s.z != z) {
+				a11y_host->set_z(s.slot, z);
+				s.z = z;
+				changed = true;
+			}
+			const bool modal = inst.modal && inst.active;
+			if (s.modal != modal) {
+				a11y_host->set_modal(s.slot, modal);
+				s.modal = modal;
+				changed = true;
+			}
+			cycfi::elements::a11y::transform xf{
+				inst.present_scale * to_os, inst.present_scale * to_os,
+				inst.present_off_x * to_os, inst.present_off_y * to_os};
+			if (xf.sx != s.xf.sx || xf.sy != s.xf.sy || xf.tx != s.xf.tx || xf.ty != s.xf.ty) {
+				a11y_host->set_transform(s.slot, xf);
+				s.xf = xf;
+				changed = true;
+			}
+		}
+		// ゲーム slot: 普段は最背面。 キーを受けているダイアログが無く、 ゲーム側に
+		// フォーカスがあるときは最前面へ上げる (AT のフォーカスはいちばん上の
+		// slot のものが採られるため。 背面の非モーダルパネルに奪わせない)。
+		if (game.slot) {
+			A11ySlot& s = *game.slot;
+			const bool game_focus = game.snap.focus && game.snap.focus != game.snap.root;
+			const int z = (game_focus && !TopmostKeyboardFocus()) ? (int)instances.size() : -1;
+			if (s.z != z) {
+				a11y_host->set_z(s.slot, z);
+				s.z = z;
+				changed = true;
+			}
+			// primary layer の座標 → window client px (DestRect = ゲーム画像の表示領域)
+			int dx = 0, dy = 0, dw = 0, dh = 0;
+			tjs_int sw = 0, sh = 0;
+			if (iTVPDialogRenderer* r = FindRenderer(device)) r->GetDestRect(dx, dy, dw, dh);
+			if (device) device->GetSrcSize(sw, sh);
+			if (sw > 0 && sh > 0 && dw > 0 && dh > 0) {
+				cycfi::elements::a11y::transform xf{
+					(float)dw / (float)sw * to_os, (float)dh / (float)sh * to_os,
+					(float)dx * to_os, (float)dy * to_os};
+				if (xf.sx != s.xf.sx || xf.sy != s.xf.sy || xf.tx != s.xf.tx || xf.ty != s.xf.ty) {
+					a11y_host->set_transform(s.slot, xf);
+					s.xf = xf;
+					changed = true;
+				}
+			}
+		}
+		if (changed) a11y_host->flush();
+#else
+		(void)device;
+#endif
+	}
+
+	// --- ゲーム slot ---
+
+	// slot を (まだ無ければ) 作る。 setGameA11y / ダイアログが無いときの announce。
+	void EnsureGameA11y()
+	{
+		if (game.slot) return;
+		game.slot = std::make_shared<A11ySlot>();
+		game.slot->slot = kGameA11ySlot;
+		AttachGameA11y();
+	}
+
+	// OS の口へ繋ぐ (slot を作ったとき、 OS への口を開いたとき)。
+	void AttachGameA11y()
+	{
+		if (!game.slot) return;
+		game.slot->has_last = false;
+		game.slot->z = INT_MIN;   // 次の SyncA11y で重なり順を送り直す
+#ifdef KRKRZ_HAS_A11Y
+		game.slot->os.reset();
+		if (a11y_host) {
+			std::weak_ptr<A11ySlot> ws = game.slot;
+			game.slot->os = a11y_host->add_source(kGameA11ySlot,
+				[this](cycfi::elements::a11y::node_id id,
+				       cycfi::elements::a11y::action act,
+				       cycfi::elements::a11y::action_arg arg) {
+					OnA11yRequest(kGameA11ySlot, id, act, std::move(arg));
+				},
+				[this]() { return game.snap; },
+				[ws]() {
+					auto s = ws.lock();
+					return s ? s->xf : cycfi::elements::a11y::transform{};
+				});
+		}
+#endif
+		PushGameA11y();
+	}
+
+	void DetachGameA11y()
+	{
+		if (!game.slot) return;
+#ifdef KRKRZ_HAS_A11Y
+		if (a11y_host) {
+			a11y_host->remove_source(kGameA11ySlot);
+			a11y_host->flush();
+		}
+#endif
+		game.slot.reset();
+		game.snap = cycfi::elements::a11y::snapshot{};
+		game.ids.clear();
+		game.auto_nodes.clear();
+		game.auto_top.clear();
+		game.auto_targets.clear();
+		game.auto_focus = 0;
+		game.auto_built = false;
+		UpdateLayerHook();
+	}
+
+	// ロールから既定の操作。 スクリプトはロールと状態だけ書けばよい。
+	static std::uint32_t GameA11yActions(cycfi::elements::a11y::role r, std::uint32_t states)
+	{
+		namespace a11y = cycfi::elements::a11y;
+		std::uint32_t a = 0;
+		switch (r) {
+		case a11y::role::button: case a11y::role::toggle_button:
+		case a11y::role::check_box: case a11y::role::radio_button:
+		case a11y::role::tab: case a11y::role::menu_item: case a11y::role::list_item:
+			a = a11y::bit(a11y::action::click) | a11y::bit(a11y::action::focus);
+			break;
+		case a11y::role::slider: case a11y::role::spin_button:
+			a = a11y::bit(a11y::action::increment) | a11y::bit(a11y::action::decrement)
+			  | a11y::bit(a11y::action::set_value) | a11y::bit(a11y::action::focus);
+			break;
+		case a11y::role::text_input: case a11y::role::multiline_text_input:
+			a = a11y::bit(a11y::action::set_value) | a11y::bit(a11y::action::focus);
+			break;
+		default:
+			break;
+		}
+		if (states & a11y::state::focusable) a |= a11y::bit(a11y::action::focus);
+		if (states & a11y::state::disabled) a &= a11y::bit(a11y::action::focus);
+		return a;
+	}
+
+	// スクリプトのノード表 → snapshot (primary layer 座標のまま。 変換は transform)。
+	void BuildGameSnapshot()
+	{
+		namespace a11y = cycfi::elements::a11y;
+		a11y::snapshot out;
+		game.ids.clear();
+
+		a11y::node root;
+		root.id = a11y::hash_id("\x01krkrz.game");
+		root.role = a11y::role::generic;
+		tjs_int sw = 0, sh = 0;
+		if (TVPMainWindow)
+			if (iTVPDrawDevice* d = TVPMainWindow->GetDrawDevice()) d->GetSrcSize(sw, sh);
+		root.bounds = cycfi::elements::rect(0, 0, (float)sw, (float)sh);
+
+		std::vector<a11y::node> nodes;
+		std::vector<std::string> parents;
+		std::unordered_map<std::string, size_t> by_id;
+		nodes.reserve(game.nodes.size());
+		for (const auto& g : game.nodes) {
+			std::string id = TtstrToUtf8(g.id);
+			if (id.empty() || by_id.count(id)) {
+				TVPAddLog(TJS_W("ElementsDialog.setGameA11y: id が空か重複しているノードを飛ばしました: ") + g.id);
+				continue;
+			}
+			a11y::node n;
+			n.id = a11y::hash_id(id);
+			n.debug_id = id;
+			const std::string role = TtstrToUtf8(g.role);
+			auto r = a11y::role_from_name(role);
+			if (!r && !role.empty())
+				TVPAddLog(TJS_W("ElementsDialog.setGameA11y: 知らない role です (group として扱います): ") + g.role);
+			n.role = r ? *r : a11y::role::generic;
+			if (n.role == a11y::role::none) n.role = a11y::role::generic;
+			n.name = TtstrToUtf8(g.name);
+			n.value = TtstrToUtf8(g.value);
+			n.description = TtstrToUtf8(g.description);
+			const std::string st = TtstrToUtf8(g.states);
+			size_t p = 0;
+			while (p <= st.size()) {
+				size_t e = st.find(',', p);
+				if (e == std::string::npos) e = st.size();
+				std::string w = st.substr(p, e - p);
+				while (!w.empty() && w.front() == ' ') w.erase(w.begin());
+				while (!w.empty() && w.back() == ' ') w.pop_back();
+				if (!w.empty()) {
+					std::uint32_t b = a11y::state_from_name(w);
+					if (!b)
+						TVPAddLog(TJS_W("ElementsDialog.setGameA11y: 知らない state です: ") + Utf8ToTtstr(w));
+					n.states |= b;
+				}
+				p = e + 1;
+			}
+			n.states &= ~a11y::state::focused;   // focused は focus 引数で決める
+			n.num_value = g.num_value;
+			n.num_min = g.num_min;
+			n.num_max = g.num_max;
+			n.num_step = g.num_step;
+			if (g.has_rect)
+				n.bounds = cycfi::elements::rect((float)g.x, (float)g.y,
+				                                 (float)(g.x + g.w), (float)(g.y + g.h));
+			n.actions = GameA11yActions(n.role, n.states);
+			if (n.actions & a11y::bit(a11y::action::focus)) n.states |= a11y::state::focusable;
+			if (id == game.focus) n.states |= a11y::state::focused;
+			by_id[id] = nodes.size();
+			game.ids[n.id] = id;
+			nodes.push_back(std::move(n));
+			parents.push_back(TtstrToUtf8(g.parent));
+		}
+		for (size_t i = 0; i < nodes.size(); ++i) {
+			auto it = parents[i].empty() ? by_id.end() : by_id.find(parents[i]);
+			if (it == by_id.end() || it->second == i)
+				root.children.push_back(nodes[i].id);
+			else
+				nodes[it->second].children.push_back(nodes[i].id);
+		}
+
+		// Layer の自動 (a11yLayers): setGameA11y のノードの後に並べる
+		if (game.layers) {
+			for (const auto& n : game.auto_nodes) nodes.push_back(n);
+			for (auto id : game.auto_top) root.children.push_back(id);
+		}
+
+		// ダイアログが無いときの announce の行き先
+		// 常に置く (空のまま待たせておき、 announce で中身を変える)
+		a11y::node live;
+		live.id = a11y::hash_id("\x01krkrz.game.live");
+		live.role = a11y::role::status;
+		live.name = game.live_text;
+		live.live = game.live_assertive ? a11y::live::assertive : a11y::live::polite;
+		root.children.push_back(live.id);
+
+		// 根から pre-order で並べる (親が循環しているノードは届かないので落ちる)
+		std::unordered_map<a11y::node_id, size_t> index;
+		for (size_t i = 0; i < nodes.size(); ++i) index[nodes[i].id] = i;
+		std::vector<bool> done(nodes.size(), false);
+		out.root = root.id;
+		out.nodes.push_back(root);
+		std::function<void(a11y::node_id)> emit = [&](a11y::node_id id) {
+			if (id == live.id) {
+				out.nodes.push_back(live);
+				return;
+			}
+			auto it = index.find(id);
+			if (it == index.end() || done[it->second]) return;
+			done[it->second] = true;
+			out.nodes.push_back(nodes[it->second]);
+			for (auto c : nodes[it->second].children) emit(c);
+		};
+		for (auto c : root.children) emit(c);
+
+		// rect を省いたノード (list / group) は子を囲む矩形にする。 pre-order
+		// なので後ろから畳めば子が先に決まる。
+		{
+			std::unordered_map<a11y::node_id, size_t> at;
+			for (size_t i = 0; i < out.nodes.size(); ++i) at[out.nodes[i].id] = i;
+			for (size_t i = out.nodes.size(); i-- > 1;) {
+				a11y::node& nd = out.nodes[i];
+				if (!nd.bounds.is_empty() || nd.children.empty()) continue;
+				bool any = false;
+				cycfi::elements::rect u;
+				for (auto c : nd.children) {
+					auto it = at.find(c);
+					if (it == at.end() || out.nodes[it->second].bounds.is_empty()) continue;
+					const auto& b = out.nodes[it->second].bounds;
+					u = any ? cycfi::elements::max(u, b) : b;   // max = 両方を囲む矩形
+					any = true;
+				}
+				if (any) nd.bounds = u;
+			}
+		}
+
+		// フォーカス: setGameA11y の focus が優先 (スクリプトが明示している)。
+		// 無ければ Layer の自動のフォーカス (window.focusedLayer)。
+		out.focus = root.id;
+		if (!game.focus.empty()) {
+			const a11y::node_id f = a11y::hash_id(game.focus);
+			for (const auto& n : out.nodes)
+				if (n.id == f) { out.focus = f; break; }
+		}
+		if (out.focus == root.id && game.layers && game.auto_focus) {
+			for (auto& n : out.nodes)
+				if (n.id == game.auto_focus) { out.focus = n.id; n.states |= a11y::state::focused; break; }
+		}
+		out.reindex();
+		game.snap = std::move(out);
+	}
+
+	// --- Layer の自動 (a11yLayers) ---
+
+	// Layer オブジェクトのメンバを読む (無い / 例外は «無い» 扱い)。
+	static bool ReadLayerMember(iTJSDispatch2* obj, const tjs_char* name, tTJSVariant& out)
+	{
+		if (!obj) return false;
+		try {
+			if (TJS_FAILED(obj->PropGet(0, name, nullptr, &out, obj))) return false;
+		} catch (...) {
+			return false;
+		}
+		return out.Type() != tvtVoid;
+	}
+
+	static bool IsLayerInstanceOf(iTJSDispatch2* obj, const tjs_char* cls)
+	{
+		if (!obj) return false;
+		try {
+			return obj->IsInstanceOf(0, nullptr, nullptr, cls, obj) == TJS_S_TRUE;
+		} catch (...) {
+			return false;
+		}
+	}
+
+	// a11yStates: 配列か "a,b" 形式
+	static std::uint32_t ReadStates(const tTJSVariant& v)
+	{
+		std::string st;
+		if (v.Type() == tvtObject && v.AsObjectNoAddRef()) {
+			iTJSDispatch2* arr = v.AsObjectNoAddRef();
+			tTJSVariant c;
+			tjs_int count = 0;
+			if (TJS_SUCCEEDED(arr->PropGet(0, TJS_W("count"), nullptr, &c, arr))) count = (tjs_int)c;
+			for (tjs_int i = 0; i < count; ++i) {
+				tTJSVariant e;
+				if (TJS_FAILED(arr->PropGetByNum(0, i, &e, arr)) || e.Type() == tvtVoid) continue;
+				st += TtstrToUtf8(ttstr(e)) + ",";
+			}
+		} else {
+			st = TtstrToUtf8(ttstr(v));
+		}
+		std::uint32_t bits = 0;
+		size_t p = 0;
+		while (p <= st.size()) {
+			size_t e = st.find(',', p);
+			if (e == std::string::npos) e = st.size();
+			std::string w = st.substr(p, e - p);
+			while (!w.empty() && w.front() == ' ') w.erase(w.begin());
+			while (!w.empty() && w.back() == ' ') w.pop_back();
+			if (!w.empty()) bits |= cycfi::elements::a11y::state_from_name(w);
+			p = e + 1;
+		}
+		return bits;
+	}
+
+	// メインウィンドウの Layer ツリーから自動のノードを組む。
+	void CollectAutoLayers()
+	{
+		game.auto_nodes.clear();
+		game.auto_top.clear();
+		game.auto_targets.clear();
+		game.auto_focus = 0;
+		game.auto_focused_layer = nullptr;
+		game.auto_built = true;
+		if (!game.layers || !TVPMainWindow) return;
+		iTVPDrawDevice* dev = TVPMainWindow->GetDrawDevice();
+		if (!dev) return;
+		tTJSNI_BaseLayer* pri = dev->GetPrimaryLayer();
+		if (!pri) return;
+		tTJSNI_BaseLayer* focused = dev->GetFocusedLayer();
+		game.auto_focused_layer = focused;
+		std::unordered_map<std::string, int> used;   // id 文字列の重複よけ
+		const tjs_int n = (tjs_int)pri->GetCount();
+		for (tjs_int i = 0; i < n; ++i)
+			WalkAutoLayer(pri->GetChildren(i), 0, focused, used);
+	}
+
+	// parent = 親のノード (0 = 最上位)
+	void WalkAutoLayer(tTJSNI_BaseLayer* lay, cycfi::elements::a11y::node_id parent,
+	                   tTJSNI_BaseLayer* focused, std::unordered_map<std::string, int>& used)
+	{
+		namespace a11y = cycfi::elements::a11y;
+		if (!lay || !lay->GetVisible()) return;
+		iTJSDispatch2* obj = lay->GetOwnerNoAddRef();
+		tTJSVariant v;
+		if (ReadLayerMember(obj, TJS_W("a11yHidden"), v) && (tjs_int)v) return;
+
+		tTVPElementsLayerPanel* panel = tTVPElementsLayerPanel::FindByLayer(lay);
+		tTJSVariant vname, vrole;
+		const bool has_name = ReadLayerMember(obj, TJS_W("a11yName"), vname);
+		const bool has_role = ReadLayerMember(obj, TJS_W("a11yRole"), vrole);
+		const bool chain = lay->GetFocusable() && lay->GetJoinFocusChain();
+
+		a11y::node_id self = parent;
+		if (chain || has_name || has_role || panel) {
+			a11y::node nd;
+			// id: Layer.name (重複したら #2, #3 …)。 名前が無ければ «layer»
+			std::string base = TtstrToUtf8(lay->GetName());
+			if (base.empty()) base = "layer";
+			std::string id = "layer:" + base;
+			int& k = used[id];
+			if (++k > 1) id += "#" + std::to_string(k);
+			nd.id = a11y::hash_id("\x02" + id);
+			nd.debug_id = id;
+
+			// role: a11yRole > クラスからの推定 > 押せるものは button
+			std::optional<a11y::role> r;
+			if (has_role) r = a11y::role_from_name(TtstrToUtf8(ttstr(vrole)));
+			if (!r) {
+				if (IsLayerInstanceOf(obj, TJS_W("CheckBoxLayer"))) r = a11y::role::check_box;
+				else if (IsLayerInstanceOf(obj, TJS_W("EditLayer"))) r = a11y::role::text_input;
+				else if (chain) r = a11y::role::button;
+				else if (panel) r = a11y::role::generic;   // 中の部品を束ねる
+				else r = a11y::role::label;
+			}
+			nd.role = (*r == a11y::role::none) ? a11y::role::generic : *r;
+
+			// name: a11yName > hint
+			if (has_name) nd.name = TtstrToUtf8(ttstr(vname));
+			else nd.name = TtstrToUtf8(lay->GetHint());
+			if (ReadLayerMember(obj, TJS_W("a11yValue"), v)) nd.value = TtstrToUtf8(ttstr(v));
+			else if (nd.role == a11y::role::text_input && ReadLayerMember(obj, TJS_W("text"), v))
+				nd.value = TtstrToUtf8(ttstr(v));
+			if (ReadLayerMember(obj, TJS_W("a11yDescription"), v)) nd.description = TtstrToUtf8(ttstr(v));
+			if (ReadLayerMember(obj, TJS_W("a11yStates"), v)) nd.states = ReadStates(v);
+			else if (nd.role == a11y::role::check_box && ReadLayerMember(obj, TJS_W("checked"), v) && (tjs_int)v)
+				nd.states |= a11y::state::checked;
+			nd.states &= ~a11y::state::focused;
+			if (!lay->GetNodeEnabled()) nd.states |= a11y::state::disabled;
+			if (chain) nd.states |= a11y::state::focusable;
+
+			tjs_int x = 0, y = 0;
+			lay->ToPrimaryCoordinates(x, y);
+			nd.bounds = cycfi::elements::rect((float)x, (float)y,
+				(float)(x + (tjs_int)lay->GetWidth()), (float)(y + (tjs_int)lay->GetHeight()));
+			nd.actions = GameA11yActions(nd.role, nd.states);
+			if (nd.actions & a11y::bit(a11y::action::focus)) nd.states |= a11y::state::focusable;
+			if (lay == focused) game.auto_focus = nd.id;
+
+			self = nd.id;
+			GameA11y::Target t;
+			t.layer = lay;
+			game.auto_targets[nd.id] = t;
+			AppendAutoNode(std::move(nd), parent);
+
+			// Layer に描いている Elements パネルの中身を接ぐ
+			if (panel) GraftPanel(panel, self, x, y, lay == focused);
+		}
+
+		const tjs_int n = (tjs_int)lay->GetCount();
+		for (tjs_int i = 0; i < n; ++i)
+			WalkAutoLayer(lay->GetChildren(i), self, focused, used);
+	}
+
+	void AppendAutoNode(cycfi::elements::a11y::node nd, cycfi::elements::a11y::node_id parent)
+	{
+		if (parent == 0) {
+			game.auto_top.push_back(nd.id);
+		} else {
+			for (auto& p : game.auto_nodes)
+				if (p.id == parent) { p.children.push_back(nd.id); break; }
+		}
+		game.auto_nodes.push_back(std::move(nd));
+	}
+
+	// パネルの読み上げツリーを、 そのレイヤのノードの下へ (id は混ぜ直す)。
+	void GraftPanel(tTVPElementsLayerPanel* panel, cycfi::elements::a11y::node_id under,
+	                tjs_int ox, tjs_int oy, bool layer_focused)
+	{
+		namespace a11y = cycfi::elements::a11y;
+		a11y::snapshot ps = panel->A11ySnapshot();
+		if (ps.nodes.empty()) return;
+		const std::uint64_t salt = std::uint64_t(reinterpret_cast<std::uintptr_t>(panel)) * 0x9E3779B97F4A7C15ull;
+		auto remap = [salt](a11y::node_id id) { return (id * 0xBF58476D1CE4E5B9ull) ^ salt; };
+		for (const auto& pn : ps.nodes) {
+			if (pn.id == ps.root) continue;
+			a11y::node nd = pn;
+			nd.id = remap(pn.id);
+			for (auto& c : nd.children) c = remap(c);
+			if (!nd.bounds.is_empty())
+				nd.bounds = cycfi::elements::rect(nd.bounds.left + ox, nd.bounds.top + oy,
+				                                  nd.bounds.right + ox, nd.bounds.bottom + oy);
+			nd.states &= ~a11y::state::focused;
+			if (layer_focused && pn.id == ps.focus) game.auto_focus = nd.id;
+			GameA11y::Target t;
+			t.panel = panel;
+			t.local = pn.id;
+			game.auto_targets[nd.id] = t;
+			game.auto_nodes.push_back(std::move(nd));
+		}
+		// パネルの根の子をレイヤのノードの子にする
+		if (const a11y::node* pr = ps.find(ps.root)) {
+			for (auto& p : game.auto_nodes)
+				if (p.id == under) {
+					for (auto c : pr->children) p.children.push_back(remap(c));
+					break;
+				}
+		}
+	}
+
+	// 組み直す頻度: 150ms ごと + フォーカス中の Layer が変わったら即時。
+	// force = Agent.a11yTree 等、 今の状態が要るとき。
+	void RefreshAutoLayers(bool force)
+	{
+		if (!game.layers) return;
+		const tjs_uint32 now = TVPGetRoughTickCount32();
+		const tTJSNI_BaseLayer* focused = nullptr;
+		if (TVPMainWindow)
+			if (iTVPDrawDevice* dev = TVPMainWindow->GetDrawDevice()) focused = dev->GetFocusedLayer();
+		if (!force && game.auto_built && focused == game.auto_focused_layer
+		    && now - game.auto_tick < 150)
+			return;
+		game.auto_tick = now;
+		EnsureGameA11y();
+		CollectAutoLayers();
+		PushGameA11y();
+	}
+
+	bool LayerInTree(const tTJSNI_BaseLayer* root, const tTJSNI_BaseLayer* target)
+	{
+		if (!root) return false;
+		if (root == target) return true;
+		auto* r = const_cast<tTJSNI_BaseLayer*>(root);
+		const tjs_int n = (tjs_int)r->GetCount();
+		for (tjs_int i = 0; i < n; ++i)
+			if (LayerInTree(r->GetChildren(i), target)) return true;
+		return false;
+	}
+
+	// AT / Agent からのゲーム slot の操作 (どちらのノードか振り分ける)。
+	bool QueueGameNodeAction(cycfi::elements::a11y::node_id id, cycfi::elements::a11y::action act,
+	                         const cycfi::elements::a11y::action_arg& arg)
+	{
+		auto it = game.ids.find(id);
+		if (it != game.ids.end()) {
+			QueueGameA11yAction(it->second, act, arg);
+			return true;
+		}
+		auto at = game.auto_targets.find(id);
+		if (at == game.auto_targets.end()) return false;
+		PendingAction pa{nullptr, ttstr(), tTJSVariant((tjs_int)act), PendingAction::Kind::LayerA11y};
+		pa.target = at->second;
+		if (arg.text) pa.extra = Utf8ToTtstr(*arg.text);
+		else if (arg.number) {
+			char b[64];
+			snprintf(b, sizeof(b), "%.17g", *arg.number);
+			pa.extra = Utf8ToTtstr(b);
+		}
+		pending_actions.push_back(std::move(pa));
+		ArmActionHook();
+		return true;
+	}
+
+	// 描画の外 (action_hook) で Layer / パネルを操作する。
+	void DispatchLayerA11yAction(const GameA11y::Target& t, cycfi::elements::a11y::action act,
+	                             const ttstr& arg)
+	{
+		namespace a11y = cycfi::elements::a11y;
+		if (t.panel) {
+			if (!tTVPElementsLayerPanel::IsAlive(t.panel)) return;
+			a11y::action_arg aa;
+			if (!arg.IsEmpty()) aa.text = TtstrToUtf8(arg);
+			t.panel->A11yPerform(t.local, act, std::move(aa));
+			return;
+		}
+		if (!TVPMainWindow) return;
+		iTVPDrawDevice* dev = TVPMainWindow->GetDrawDevice();
+		if (!dev || !LayerInTree(dev->GetPrimaryLayer(), t.layer)) return;   // 消えた
+		tTJSNI_BaseLayer* lay = t.layer;
+		// onA11yAction(action, arg) があればそちらへ。 false を返したら既定の処理も
+		if (iTJSDispatch2* obj = lay->GetOwnerNoAddRef()) {
+			tTJSVariant fn;
+			if (ReadLayerMember(obj, TJS_W("onA11yAction"), fn) && fn.Type() == tvtObject) {
+				tTJSVariant a0(Utf8ToTtstr(a11y::action_name(act))), a1(arg), res;
+				tTJSVariant* args[] = {&a0, &a1};
+				try {
+					fn.AsObjectClosureNoAddRef().FuncCall(0, nullptr, nullptr, &res, 2, args, obj);
+				} catch (eTJSScriptError& e) {
+					TVPAddLog(TJS_W("Layer.onA11yAction: ") + e.GetMessage());
+				} catch (eTJS& e) {
+					TVPAddLog(TJS_W("Layer.onA11yAction: ") + e.GetMessage());
+				}
+				if (!(res.Type() != tvtVoid && !(tjs_int)res)) return;   // false 以外 = 処理済み
+			}
+		}
+		if (act == a11y::action::focus || act == a11y::action::click) {
+			if (lay->GetNodeFocusable()) lay->SetFocus(true);
+		}
+		if (act == a11y::action::click) {
+			// フォーカスした Layer に Enter を押させる (キー操作できる部品の «押す»)
+			TVPPostInputEvent(new tTVPOnKeyDownInputEvent(TVPMainWindow, VK_RETURN, 0));
+			TVPPostInputEvent(new tTVPOnKeyUpInputEvent(TVPMainWindow, VK_RETURN, 0));
+		}
+	}
+
+	// Layer の自動の組み直しフック: a11yLayers かつ (AT 接続中 or 読み上げログ中)
+	void UpdateLayerHook()
+	{
+		bool want = game.layers && A11yLogging();
+#ifdef KRKRZ_HAS_A11Y
+		want = want || (game.layers && a11y_host && a11y_host->is_active());
+#endif
+		if (want && !a11y_layer_hook.registered) {
+			a11y_layer_hook.owner = this;
+			TVPAddContinuousEventHook(&a11y_layer_hook);
+			a11y_layer_hook.registered = true;
+		} else if (!want && a11y_layer_hook.registered) {
+			TVPRemoveContinuousEventHook(&a11y_layer_hook);
+			a11y_layer_hook.registered = false;
+		}
+	}
+
+	// 組み直して OS / 読み上げログへ流す。
+	void PushGameA11y()
+	{
+		if (!game.slot) return;
+		BuildGameSnapshot();
+		A11ySlot& s = *game.slot;
+		auto delta = cycfi::elements::a11y::diff(s.has_last ? &s.last : nullptr, game.snap);
+		if (s.has_last && delta.empty()) return;
+		A11ySink(this, game.slot).tree_changed(game.snap, delta);
+	}
+
+	// onGameA11yAction(id, action, arg) を描画の外で配る。
+	void QueueGameA11yAction(const std::string& id, cycfi::elements::a11y::action act,
+	                         const cycfi::elements::a11y::action_arg& arg)
+	{
+		std::string a;
+		if (arg.text) a = *arg.text;
+		else if (arg.number) {
+			char b[64];
+			snprintf(b, sizeof(b), "%.17g", *arg.number);
+			a = b;
+		}
+		PendingAction pa{nullptr, Utf8ToTtstr(id),
+			tTJSVariant(Utf8ToTtstr(cycfi::elements::a11y::action_name(act))),
+			PendingAction::Kind::GameA11y};
+		pa.extra = Utf8ToTtstr(a);
+		pending_actions.push_back(std::move(pa));
+		ArmActionHook();
+	}
+
+	static void DispatchGameA11yAction(const ttstr& id, const ttstr& action, const ttstr& arg)
+	{
+		iTJSDispatch2* global = TVPGetScriptDispatch();
+		if (!global) return;
+		tTJSVariant cls;
+		if (TJS_SUCCEEDED(global->PropGet(0, TJS_W("ElementsDialog"), nullptr, &cls, global))
+		    && cls.Type() == tvtObject) {
+			iTJSDispatch2* c = cls.AsObjectNoAddRef();
+			tTJSVariant fn;
+			if (c && TJS_SUCCEEDED(c->PropGet(0, TJS_W("onGameA11yAction"), nullptr, &fn, c))
+			    && fn.Type() == tvtObject) {
+				tTJSVariant a0(id), a1(action), a2(arg);
+				tTJSVariant* args[] = {&a0, &a1, &a2};
+				tTJSVariantClosure clo = fn.AsObjectClosureNoAddRef();
+				try {
+					clo.FuncCall(0, nullptr, nullptr, nullptr, 3, args, nullptr);
+				} catch (eTJSScriptError& e) {
+					TVPAddLog(TJS_W("ElementsDialog.onGameA11yAction: ") + e.GetMessage());
+				} catch (eTJS& e) {
+					TVPAddLog(TJS_W("ElementsDialog.onGameA11yAction: ") + e.GetMessage());
+				}
+			}
+		}
+		global->Release();
+	}
+
+	// ElementsDialog.<name>(arg) を呼ぶ (定義されていなければ何もしない)。
+	static void CallClassEvent(const ttstr& name, const tTJSVariant& arg)
+	{
+		iTJSDispatch2* global = TVPGetScriptDispatch();
+		if (!global) return;
+		tTJSVariant cls;
+		if (TJS_SUCCEEDED(global->PropGet(0, TJS_W("ElementsDialog"), nullptr, &cls, global))
+		    && cls.Type() == tvtObject) {
+			iTJSDispatch2* c = cls.AsObjectNoAddRef();
+			tTJSVariant fn;
+			if (c && TJS_SUCCEEDED(c->PropGet(0, name.c_str(), nullptr, &fn, c))
+			    && fn.Type() == tvtObject) {
+				tTJSVariant a0(arg);
+				tTJSVariant* args[] = {&a0};
+				try {
+					fn.AsObjectClosureNoAddRef().FuncCall(0, nullptr, nullptr, nullptr, 1, args, nullptr);
+				} catch (eTJSScriptError& e) {
+					TVPAddLog(TJS_W("ElementsDialog.") + name + TJS_W(": ") + e.GetMessage());
+				} catch (eTJS& e) {
+					TVPAddLog(TJS_W("ElementsDialog.") + name + TJS_W(": ") + e.GetMessage());
+				}
+			}
+		}
+		global->Release();
 	}
 
 	// === session / フロー (Instance 単位) ===
@@ -1093,11 +2135,13 @@ struct tTVPElementsDialogManager::Impl
 	}
 
 	struct PendingAction {
-		enum class Kind { Action, Drag, Var };
+		enum class Kind { Action, Drag, Var, GameA11y, LayerA11y, ClassEvent };
 		iTVPDialogEventHandler* handler;
-		ttstr id;               // Action: widget id / Var: 変数名
-		tTJSVariant payload;    // Var: 値 (文字列)
+		ttstr id;               // Action: widget id / Var: 変数名 / GameA11y: ノード id
+		tTJSVariant payload;    // Var: 値 (文字列) / GameA11y: 操作名
 		Kind kind = Kind::Action;
+		ttstr extra;            // GameA11y / LayerA11y: 操作の引数 (set_value の値)
+		GameA11y::Target target;   // LayerA11y: 操作先 (payload は action の数値)
 	};
 	std::deque<PendingAction> pending_actions;
 	struct ActionDrainHook : public tTVPContinuousEventCallbackIntf {
@@ -1194,6 +2238,19 @@ struct tTVPElementsDialogManager::Impl
 		std::deque<PendingAction> q;
 		q.swap(pending_actions);
 		for (auto& a : q) {
+			if (a.kind == PendingAction::Kind::GameA11y) {
+				DispatchGameA11yAction(a.id, ttstr(a.payload), a.extra);
+				continue;
+			}
+			if (a.kind == PendingAction::Kind::ClassEvent) {
+				CallClassEvent(a.id, a.payload);   // ElementsDialog.<id>(payload)
+				continue;
+			}
+			if (a.kind == PendingAction::Kind::LayerA11y) {
+				DispatchLayerA11yAction(a.target,
+					(cycfi::elements::a11y::action)(tjs_int)a.payload, a.extra);
+				continue;
+			}
 			// 配送前に handler が生きているか確認する (close_on_click で
 			// 閉じたダイアログの action は、 handler が短命 (スタック上の
 			// no-op handler 等) の可能性があるため捨てる)。 レイヤパネルの
@@ -1225,6 +2282,14 @@ tTVPElementsDialogManager::Impl::ActionDrainHook::OnContinuousCallback(tjs_uint6
 {
 	// TVPDeliverContinuousEvent から呼ばれる = window update の外 (安全な文脈)。
 	if (owner) owner->DrainPendingActions();
+}
+
+void TJS_INTF_METHOD
+tTVPElementsDialogManager::Impl::A11yLayerHook::OnContinuousCallback(tjs_uint64)
+{
+	if (!owner) return;
+	owner->RefreshAutoLayers(false);
+	owner->UpdateLayerHook();   // AT が離れたら外れる
 }
 
 //---------------------------------------------------------------------------
@@ -1347,6 +2412,8 @@ bool tTVPElementsDialogManager::Impl::BeginScreen(
 	}
 
 	inst.session = std::move(sess);
+	// 読み上げ: 新しい画面を OS / ログへ繋ぐ (画面ごとに作り直されるので毎回)
+	AttachA11y(inst);
 	// 変数観測 (OnVar) は BuildSession が張っている (画面ごとに session が
 	// 作り直されるので、 遷移先の画面でも張り直される)。
 	inst.current_resource_base = resource_base_utf8;
@@ -1981,6 +3048,10 @@ tTVPElementsDialogManager::~tTVPElementsDialogManager()
 		TVPRemoveContinuousEventHook(&_impl->action_hook);
 		_impl->action_hook.registered = false;
 	}
+	if (_impl && _impl->a11y_layer_hook.registered) {
+		TVPRemoveContinuousEventHook(&_impl->a11y_layer_hook);
+		_impl->a11y_layer_hook.registered = false;
+	}
 }
 
 //---------------------------------------------------------------------------
@@ -2009,10 +3080,200 @@ void tTVPElementsDialogManager::ShutdownRuntime()
 	if (!TVPElementsRuntimeInited()) return;
 	TVPElementsRuntimeInited() = false;
 	ForceClose();
+	_impl->game.layers = false;
+	_impl->DetachGameA11y();
+#ifdef KRKRZ_HAS_A11Y
+	_impl->a11y_host.reset();   // 読み上げ: OS への口を外す
+#endif
 	elements_modal::shutdown();
 	// 「畳んだ」ことをログに残す。 終了時クラッシュを追うとき、 この行が
 	// 出ているかどうかが最初の切り分けになる。
 	TVPAddLog(TJS_W("ElementsDialog: runtime shut down (ThorVG terminated)"));
+}
+
+//---------------------------------------------------------------------------
+// 読み上げ (スクリーンリーダー対応)
+//---------------------------------------------------------------------------
+namespace {
+std::string A11yJsonString(const std::string& s)
+{
+	std::string out = "\"";
+	for (unsigned char c : s) {
+		switch (c) {
+		case '"':  out += "\\\""; break;
+		case '\\': out += "\\\\"; break;
+		case '\n': out += "\\n"; break;
+		default:
+			if (c < 0x20) { char b[8]; snprintf(b, sizeof(b), "\\u%04x", c); out += b; }
+			else out += (char)c;
+		}
+	}
+	return out + "\"";
+}
+} // namespace
+
+ttstr tTVPElementsDialogManager::A11yTreeJson() const
+{
+	_impl->RefreshAutoLayers(true);   // Layer の自動は今の状態で
+	std::string out = "{\"dialogs\":[";
+	bool first = true;
+	for (size_t i = 0; i < _impl->instances.size(); ++i) {
+		const auto& inst = *_impl->instances[i];
+		if (!inst.session || !inst.active) continue;
+		if (!first) out += ",";
+		first = false;
+		std::string screen = inst.nav ? inst.nav->current() : std::string();
+		out += "{\"index\":" + std::to_string(i) + ",\"screen\":" + A11yJsonString(screen)
+		     + ",\"modal\":" + (inst.modal ? "true" : "false")
+		     + ",\"tree\":" + inst.session->a11y_dump_json() + "}";
+	}
+	out += "],\"game\":";
+	if (_impl->game.slot) {
+		bool hidden = false;
+		for (const auto& up : _impl->instances)
+			if (up->session && up->active && up->modal) hidden = true;
+		out += "{\"hidden\":" + std::string(hidden ? "true" : "false")
+		     + ",\"tree\":" + cycfi::elements::a11y::to_json(_impl->game.snap) + "}";
+	} else {
+		out += "null";
+	}
+	out += "}";
+	return Utf8ToTtstr(out);
+}
+
+std::vector<ttstr> tTVPElementsDialogManager::A11yLog(size_t since, size_t& next) const
+{
+	next = _impl->a11y_log_dropped + _impl->a11y_log.size();
+	std::vector<ttstr> out;
+	size_t start = (since > _impl->a11y_log_dropped) ? since - _impl->a11y_log_dropped : 0;
+	for (size_t i = start; i < _impl->a11y_log.size(); ++i)
+		out.push_back(Utf8ToTtstr(_impl->a11y_log[i]));
+	return out;
+}
+
+bool tTVPElementsDialogManager::A11yAction(const ttstr& node, const ttstr& action,
+                                           const ttstr& arg)
+{
+	const std::string n = TtstrToUtf8(node), a = TtstrToUtf8(action), v = TtstrToUtf8(arg);
+	for (size_t i = _impl->instances.size(); i-- > 0;) {
+		auto& inst = *_impl->instances[i];
+		if (!inst.session || !inst.active) continue;
+		if (inst.session->a11y_perform(n, a, v)) return true;
+		if (inst.modal) return false;   // ゲーム slot はモーダルの下で隠れている
+	}
+	// ゲーム slot (AT と同じく onGameA11yAction で返す)
+	if (!_impl->game.slot) return false;
+	auto act = cycfi::elements::a11y::action_from_name(a);
+	if (!act) return false;
+	_impl->RefreshAutoLayers(true);
+	for (const auto& nd : _impl->game.snap.nodes) {
+		if (nd.id == _impl->game.snap.root) continue;
+		if (cycfi::elements::a11y::id_string(nd) != n) continue;
+		if (!(nd.actions & cycfi::elements::a11y::bit(*act))) return false;
+		cycfi::elements::a11y::action_arg arg;
+		if (!v.empty()) arg.text = v;
+		return _impl->QueueGameNodeAction(nd.id, *act, arg);
+	}
+	return false;
+}
+
+void tTVPElementsDialogManager::SetA11yLayers(bool on)
+{
+	if (_impl->game.layers == on) return;
+	_impl->game.layers = on;
+	if (on) {
+		_impl->RefreshAutoLayers(true);
+	} else {
+		_impl->game.auto_nodes.clear();
+		_impl->game.auto_top.clear();
+		_impl->game.auto_targets.clear();
+		_impl->game.auto_focus = 0;
+		_impl->game.auto_built = false;
+		_impl->PushGameA11y();
+	}
+	_impl->UpdateLayerHook();
+}
+
+bool tTVPElementsDialogManager::GetA11yLayers() const
+{
+	return _impl->game.layers;
+}
+
+void tTVPElementsDialogManager::A11yAnnounce(const ttstr& text, bool assertive)
+{
+	const std::string t = TtstrToUtf8(text);
+	for (size_t i = _impl->instances.size(); i-- > 0;) {
+		auto& inst = *_impl->instances[i];
+		if (!inst.session || !inst.active) continue;
+		inst.session->announce(t, assertive);
+		return;
+	}
+	// 画面が 1 枚も出ていない: ゲーム slot の live region で読ませる。 同じ文を
+	// 続けて読ませるときは見えない文字で変化を付ける (live region は変化で読む)。
+	_impl->EnsureGameA11y();
+	std::string next = t;
+	if (next == _impl->game.live_text) next += "\xE2\x80\x8B";
+	_impl->game.live_text = next;
+	_impl->game.live_assertive = assertive;
+	_impl->PushGameA11y();
+}
+
+void tTVPElementsDialogManager::SetGameA11y(const std::vector<tTVPGameA11yNode>& nodes,
+                                            const ttstr& focus)
+{
+	_impl->EnsureGameA11y();
+	_impl->game.nodes = nodes;
+	_impl->game.focus = TtstrToUtf8(focus);
+	_impl->PushGameA11y();
+}
+
+void tTVPElementsDialogManager::ClearGameA11y()
+{
+	// slot は残す (live region は常設。 ダイアログが無いときの announce の行き先)
+	_impl->game.nodes.clear();
+	_impl->game.focus.clear();
+	if (_impl->game.slot) _impl->PushGameA11y();
+}
+
+bool tTVPElementsDialogManager::A11yActive() const
+{
+#ifdef KRKRZ_HAS_A11Y
+	return _impl->a11y_host && _impl->a11y_host->is_active();
+#else
+	return false;
+#endif
+}
+
+void tTVPElementsDialogManager::SetA11yMode(const ttstr& mode)
+{
+	std::string m = TtstrToUtf8(mode);
+	if (m != "auto" && m != "off") {
+		TVPAddLog(TJS_W("ElementsDialog.a11yMode: \"auto\" か \"off\" を指定してください"));
+		return;
+	}
+	_impl->a11y_mode = m;
+	_impl->UpdateA11yHost();
+}
+
+ttstr tTVPElementsDialogManager::GetA11yMode() const
+{
+	return Utf8ToTtstr(_impl->a11y_mode);
+}
+
+void tTVPElementsDialogManager::SetA11yLabel(const ttstr& label)
+{
+	_impl->a11y_label = TtstrToUtf8(label);
+#ifdef KRKRZ_HAS_A11Y
+	if (_impl->a11y_host) {
+		_impl->a11y_host->set_window_label(_impl->a11y_label);
+		_impl->a11y_host->flush();
+	}
+#endif
+}
+
+ttstr tTVPElementsDialogManager::GetA11yLabel() const
+{
+	return Utf8ToTtstr(_impl->a11y_label);
 }
 
 static void TVPShutdownElementsRuntime()
@@ -2359,11 +3620,13 @@ void tTVPElementsDialogManager::EnsureRuntimeInitialized()
 		// ResourcePath (resource:// / file://./resource/) は WINVER 埋め込みリソースの
 		// 代替なので、 WINVER では Win32 リソース API から直接列挙・登録する。
 		TVPRegisterElementsFontsFromWinResources();
+		TVPRegisterElementsHostDefaultFonts();
 		TVPApplyRegisteredFontsToElementsTheme();
 		s_fonts_loaded = true;
 #else
 		if (Application) {
 			TVPRegisterElementsFontsFromStorageDir(ttstr(Application->ResourcePath().c_str()));
+			TVPRegisterElementsHostDefaultFonts();
 			TVPApplyRegisteredFontsToElementsTheme();
 			s_fonts_loaded = true;
 		}
@@ -2682,6 +3945,15 @@ bool tTVPElementsDialogManager::SetVar(iTVPDialogEventHandler* handler,
 	Impl::Instance* inst = _impl->FindByHandler(handler);
 	if (!inst || !inst->active || !inst->session) return false;
 	inst->session->set_var(TtstrToUtf8(name), TtstrToUtf8(value));
+	return true;
+}
+
+bool tTVPElementsDialogManager::SetKeyCapture(iTVPDialogEventHandler* handler,
+                                              bool on)
+{
+	Impl::Instance* inst = _impl->FindByHandler(handler);
+	if (!inst || !inst->active || !inst->session) return false;
+	inst->key_capture = on;
 	return true;
 }
 
@@ -3055,6 +4327,8 @@ void tTVPElementsDialogManager::PaintOverlay(iTVPDrawDevice* device)
 	_impl->UpdateImeFollowFocus();
 	//    変換 / 変換候補ウィンドウをキャレット位置へ寄せる (WINVER / SDL 共通)。
 	_impl->UpdateTextInputArea();
+	//    読み上げ: AT の操作を流し、 重なり順 / モーダル / 位置を OS 側へ合わせる。
+	if (device_is_main) _impl->SyncA11y(device);
 
 	// 4) cursor-warp ナビ: キー/パッド由来のフォーカス移動があれば、 実マウス
 	//    カーソルをフォーカス先の hot point へ warp してカーソルを一時非表示に
@@ -3140,6 +4414,14 @@ using namespace tvp_elements_input;
 bool tTVPElementsDialogManager::ForwardMouseDown(
 	tjs_int x, tjs_int y, tTVPMouseButton mb, tjs_uint32 flags)
 {
+	// キー捕捉中: 左以外のボタン押下は捕捉先へ渡して消費する
+	// (右クリックでの取り消し等)。 左クリックはウィジェットへ通常配送。
+	if (mb != mbLeft) {
+		if (Impl::Instance* c = _impl->KeyCaptureTarget()) {
+			_impl->DeliverKeyCapture(c, MouseButtonToVk(mb), flags);
+			return true;
+		}
+	}
 	// ホストホットキー: 登録ボタンはダイアログへ渡さず通常経路へ (非消費)
 	if (_impl->HostHotkeyBypass(MouseButtonToVk(mb), flags, /*isUp=*/false))
 		return false;
@@ -3160,6 +4442,8 @@ bool tTVPElementsDialogManager::ForwardMouseDown(
 bool tTVPElementsDialogManager::ForwardMouseUp(
 	tjs_int x, tjs_int y, tTVPMouseButton mb, tjs_uint32 flags)
 {
+	// キー捕捉中: 左以外のボタンの離しは捨てる (押下と対で消費)
+	if (mb != mbLeft && _impl->KeyCaptureTarget()) return true;
 	// ホストホットキー: up は vk のみ一致でバイパス (down と対で漏らさない)
 	if (_impl->HostHotkeyBypass(MouseButtonToVk(mb), flags, /*isUp=*/true))
 		return false;
@@ -3271,6 +4555,13 @@ bool tTVPElementsDialogManager::ForwardMouseOutOfWindow()
 // キー等) はゲームへ通す (handled pass-through)。
 bool tTVPElementsDialogManager::ForwardKeyDown(tjs_uint key, tjs_uint32 shift)
 {
+	// キー捕捉中: ウィジェットにもホストホットキーにも回さず捕捉先へ渡す。
+	// リピートの扱い (無視するか等) は受け手が shift の TVP_SS_REPEAT で決める。
+	if (Impl::Instance* c = _impl->KeyCaptureTarget()) {
+		if (!(shift & TVP_SS_REPEAT)) c->armed_vks.insert(key);
+		_impl->DeliverKeyCapture(c, key, shift);
+		return true;
+	}
 	// ホストホットキー: 登録キー (VK_PAD* 含む) はダイアログへ渡さず通常経路へ。
 	// モーダル表示中とテキスト入力 focus 中 (duringTextInput=false のもの) は
 	// バイパスしない — 判定は HostHotkeyBypass 側。
@@ -3314,6 +4605,8 @@ bool tTVPElementsDialogManager::ForwardKeyDown(tjs_uint key, tjs_uint32 shift)
 
 bool tTVPElementsDialogManager::ForwardKeyUp(tjs_uint key, tjs_uint32 shift)
 {
+	// キー捕捉中: キーアップは捨てる
+	if (_impl->KeyCaptureTarget()) return true;
 	// ホストホットキー: up は vk のみ一致でバイパス (修飾キー変化で漏らさない)
 	if (_impl->HostHotkeyBypass(key, shift, /*isUp=*/true)) return false;
 	Impl::Instance* f = _impl->TopmostKeyboardFocus();
@@ -3357,6 +4650,11 @@ bool tTVPElementsDialogManager::ForwardKeyUp(tjs_uint key, tjs_uint32 shift)
 
 bool tTVPElementsDialogManager::ForwardKeyPress(tjs_char key)
 {
+	// キー捕捉中: 文字入力は捨てる (キー押下として捕捉先へ渡し済み)
+	if (_impl->KeyCaptureTarget()) {
+		_impl->pending_high_surrogate = 0;
+		return true;
+	}
 	Impl::Instance* f = _impl->TopmostKeyboardFocus();
 	if (!f || !f->session) {
 		_impl->pending_high_surrogate = 0;   // フォーカス喪失時は保持もクリア
@@ -3429,6 +4727,8 @@ bool tTVPElementsDialogManager::ForwardText(const char* utf8_text)
 {
 	// テキスト入力 (IME / 文字) はフォーカス中インスタンスの input_box 向け。
 	// フォーカスが無ければ素通し。 あれば消費 (文字入力は意図的操作)。
+	// キー捕捉中: 文字入力は捨てる
+	if (_impl->KeyCaptureTarget()) return true;
 	Impl::Instance* f = _impl->TopmostKeyboardFocus();
 	if (!f || !f->session || !utf8_text) return false;
 	// 非モーダルパネルは input_box 等に実際に focus が無ければ素通し

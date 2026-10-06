@@ -11,7 +11,7 @@ add_link_options("$<$<AND:$<C_COMPILER_ID:MSVC>,$<COMPILE_LANGUAGE:C,CXX>>:/DEBU
 
 
 set(PROJECT_NAME krkrz)
-set(PROJECT_VERSION 2.4.0)
+set(PROJECT_VERSION 2.5.0)
 
 # ----------------------------------------------------
 # vcpkg マニフェスト統合
@@ -291,9 +291,12 @@ endif()
 # .rsrc だけで 6MB 強を占める (notosansjp-regular.otf 4.3MB /
 # notoemoji-regular.ttf 1.9MB / roboto-regular.ttf 0.16MB)。案件が自前の
 # フォントを data/ 配下から registerFontDir() 等で供給する構成では、この 2 本の
-# 大物は完全な死荷重になるため、埋め込みから外せるようにする。
+# 大物は完全な死荷重になる。**既定は OFF** (2.4.0 以降。埋め込むのは Roboto と
+# Elements のアイコンフォントだけ)。日本語 / 絵文字は data/ の fonts.json で
+# 供給する (同梱デモは data/fonts/ に置いてある)。システムフォントの無い環境
+# (Linux / ブラウザ / Android / CS 機) で埋め込みに頼る場合は ON にする。
 #
-#   KRKRZ_EMBED_BUNDLED_FONTS=OFF  → notosansjp / notoemoji を埋め込まない
+#   KRKRZ_EMBED_BUNDLED_FONTS=ON   → notosansjp / notoemoji も埋め込む
 #   KRKRZ_RESOURCE_EXCLUDE="a;b"   → 任意のファイル名を追加で除外
 #
 # roboto-regular.ttf と elements_basic.ttf は Elements の既定テーマ
@@ -302,7 +305,7 @@ endif()
 # 描画する構成では案件側でフォントを供給すること。
 # ----------------------------------------------------
 option(KRKRZ_EMBED_BUNDLED_FONTS
-       "embed the bundled CJK / emoji fonts (notosansjp, notoemoji) into the binary" ON)
+       "embed the bundled CJK / emoji fonts (notosansjp, notoemoji) into the binary" OFF)
 set(KRKRZ_RESOURCE_EXCLUDE "" CACHE STRING
     "resource/ file names to exclude from embedding (';' separated)")
 
@@ -812,6 +815,18 @@ if (KRKRZ_USE_ELEMENTS AND NOT KRKRZ_VARIANT STREQUAL "LIB")
 		# null になり、 common/visual/elements/StoragesResourceLoader.cpp が TVPReadStream
 		# へ橋渡しする。
 		set(ELEMENTS_FILE_IO_SUPPORT OFF CACHE BOOL "Allow elements to read resources from disk" FORCE)
+		# 読み上げ (スクリーンリーダー): ダイアログを OS のアクセシビリティ API へ
+		# 出す (AccessKit の prebuilt を elements が FetchContent で取る)。 デスクトップ
+		# (Windows / macOS / Linux) だけ。 doc/specification/accessibility.md
+		set(_krkrz_a11y_default OFF)
+		if (NOT ANDROID AND NOT EMSCRIPTEN AND NOT IOS
+		    AND CMAKE_SYSTEM_NAME MATCHES "^(Windows|Darwin|Linux)$")
+			set(_krkrz_a11y_default ON)
+		endif()
+		option(KRKRZ_USE_A11Y "Expose Elements dialogs to OS screen readers (AccessKit)" ${_krkrz_a11y_default})
+		if (KRKRZ_USE_A11Y)
+			set(ELEMENTS_A11Y_ACCESSKIT ON CACHE BOOL "" FORCE)
+		endif()
 		add_subdirectory(external/elements)
 
 		# ThorVG は自前で global operator new/delete を override するが、 krkrz も
@@ -836,6 +851,11 @@ if (KRKRZ_USE_ELEMENTS AND NOT KRKRZ_VARIANT STREQUAL "LIB")
 	endif()
 	if (TARGET elements_modal)
 		list(APPEND KRKRZ_LIB_ELEMENTS elements_modal::elements_modal)
+	endif()
+	# 読み上げ (KRKRZ_USE_A11Y)。 consumer 側は #ifdef KRKRZ_HAS_A11Y でガードする。
+	if (KRKRZ_USE_A11Y AND TARGET elements_a11y_accesskit)
+		list(APPEND KRKRZ_LIB_ELEMENTS elements_a11y_accesskit)
+		list(APPEND KRKRZ_DEFINES KRKRZ_HAS_A11Y)
 	endif()
 
 	# Elements 機構が組み込まれていることを示すマクロ。 DrawDevice / Window / TJS の
@@ -1000,6 +1020,14 @@ elseif(APPLE)
 foreach(RESOURCE ${RESOURCE_FILES})
 	set_source_files_properties(${RESOURCE} PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
 endforeach()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+	# miniaudio は iOS では AVAudioSession を使うため Objective-C++ でのコンパイルが必須
+	# (miniaudio.h 冒頭の注意書き)。 MINIAUDIO_IMPLEMENTATION を持つのは AudioStream.cpp
+	enable_language(OBJCXX)
+	set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/common/sound/AudioStream.cpp
+		PROPERTIES LANGUAGE OBJCXX)
+endif()
 
 elseif(ANDROID)
 
@@ -1287,6 +1315,43 @@ target_link_libraries( ${EXENAME} PRIVATE
 	$<$<PLATFORM_ID:Windows>:shell32>   # TVPExecuteProgram: ShellExecuteW (App Paths 解決)
 )
 
+# 外枠 (iOS など) がターゲット定義ディレクトリ内で処理したいこと
+# (POST_BUILD コマンドなど add_custom_command(TARGET) は同一ディレクトリ限定) 用のフック。
+# 外枠側で function(krkrz_platform_target_hook TARGET) を定義しておくと呼ばれる。
+if(COMMAND krkrz_platform_target_hook)
+	krkrz_platform_target_hook(${EXENAME})
+endif()
+
+# macOS の OpenGL ES は ANGLE (Metal バックエンド) で提供する。 macOS には
+# OpenGL ES が無いため、 SDL3 は GLES コンテキスト要求時に EGL 経由で
+# libGLESv2 / libEGL を実行時に dlopen する。 vcpkg の angle (overlay triplet で
+# dylib 化) を Contents/Frameworks に同梱し、 パスは main.cpp が SDL のヒント
+# (SDL_HINT_OPENGL_LIBRARY / SDL_HINT_EGL_LIBRARY) で渡す。
+if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS" AND KRKRZ_USE_OPENGL)
+	find_package(unofficial-angle CONFIG REQUIRED)
+	set(_krkrz_angle_libs unofficial::angle::libEGL unofficial::angle::libGLESv2)
+	if(TARGET unofficial::angle::libANGLE)
+		get_target_property(_krkrz_angle_type unofficial::angle::libANGLE TYPE)
+		if(_krkrz_angle_type STREQUAL "SHARED_LIBRARY")
+			list(APPEND _krkrz_angle_libs unofficial::angle::libANGLE)
+		endif()
+	endif()
+	set(_krkrz_fw_dir "$<TARGET_BUNDLE_CONTENT_DIR:${EXENAME}>/Frameworks")
+	add_custom_command(TARGET ${EXENAME} POST_BUILD
+		COMMAND ${CMAKE_COMMAND} -E make_directory "${_krkrz_fw_dir}")
+	foreach(_lib ${_krkrz_angle_libs})
+		add_custom_command(TARGET ${EXENAME} POST_BUILD
+			COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:${_lib}>" "${_krkrz_fw_dir}/")
+	endforeach()
+	# libEGL → libGLESv2 の依存 (@rpath/...) を解決させる
+	set_property(TARGET ${EXENAME} APPEND PROPERTY BUILD_RPATH "@executable_path/../Frameworks")
+	set_property(TARGET ${EXENAME} APPEND PROPERTY INSTALL_RPATH "@executable_path/../Frameworks")
+	# main.cpp がヒントに渡すファイル名
+	target_compile_definitions(${EXENAME} PRIVATE
+		KRKRZ_ANGLE_GLES_LIB="$<TARGET_FILE_NAME:unofficial::angle::libGLESv2>"
+		KRKRZ_ANGLE_EGL_LIB="$<TARGET_FILE_NAME:unofficial::angle::libEGL>")
+endif()
+
 if(APPLE)
 foreach(PLUGIN ${KRKRZ_DYNAMIC_PLUGINS})
 	add_dependencies(${EXENAME} ${PLUGIN})
@@ -1340,7 +1405,20 @@ elseif(SDL_SHARED)
 		# SDL3 の DLL も一緒にインストール
 		foreach(LIB ${KRKRZ_LIB_SDL3_RUNTIME})
 			install(FILES $<TARGET_FILE:${LIB}> DESTINATION .)
+			if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+				# exe が NEEDED で引く soname (libSDL3.so.0) のリンクも置く
+				install(FILES $<TARGET_SONAME_FILE:${LIB}> DESTINATION .)
+			endif()
 		endforeach()
+	endif()
+
+	if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+		# 同梱 SDL3 を exe と同じフォルダから確実に読ませる。
+		# Steam 起動時は LD_LIBRARY_PATH の先頭に Steam ランタイムと /usr/lib が
+		# 入るため、RUNPATH (LD_LIBRARY_PATH の後に探される) では SteamOS 側の
+		# libSDL3 が勝ってしまう。LD_LIBRARY_PATH より先に探される DT_RPATH にする。
+		set_target_properties(${EXENAME} PROPERTIES INSTALL_RPATH "\$ORIGIN")
+		target_link_options(${EXENAME} PRIVATE "LINKER:--disable-new-dtags")
 	endif()
 
 else()

@@ -8,6 +8,7 @@
 #include <vector>
 #include "FontRasterizer.h"
 #include "StorageIntf.h"   // TVPCreateStream / TVPIsExistentStorage
+#include "SysInitIntf.h"   // TVPProjectDir
 #include "tjs.h"           // iTJSBinaryStream / TVPReadBuffer
 #include "FontVariations.h" // TVPNormalizeFontVariations (fonts.json の axes 宣言)
 #include <cstdio>           // snprintf
@@ -19,6 +20,11 @@ extern void TVPGetAllFontList( std::vector<tjs_string>& list );
 extern const tjs_char *TVPGetDefaultFontName();
 extern void TVPSetDefaultFontName( const tjs_char * name );
 extern const ttstr &TVPGetDefaultFaceNames();
+// 既定フォントが候補に当たらず決まっていたなら選び直す。 選び直して変わったら true
+// (generic は FontSystemBase.cpp、 WINVER は GDI の既定なので常に false)
+extern bool TVPRetryDefaultFontName();
+// OS のフォントを名前だけ遅延登録する (ファイルは開かない。 generic のみ実装)
+extern void TVPRegisterSystemFontsLazily( FontSystem& fs );
 
 void FontSystem::InitFontNames() {
 	// enumlate all fonts
@@ -39,10 +45,15 @@ void FontSystem::InitFontNames() {
 //---------------------------------------------------------------------------
 void FontSystem::LoadFontMetadata() {
 	if( FontMetadataLoaded ) return;
+	// プロジェクトフォルダが決まる前 (起動初期のフォントシステム生成時等) は読めない。
+	// 読んだことにせず、 次の機会 (初回のフォント使用) に回す
+	if( TVPProjectDir.IsEmpty() ) return;
 	FontMetadataLoaded = true;
 
 	ttstr metaname( TJS_W("fonts.json") );
-	if( !TVPIsExistentStorage( metaname ) ) return;
+	try {
+		if( !TVPIsExistentStorage( metaname ) ) return;
+	} catch( ... ) { return; }
 
 	std::string text;
 	try {
@@ -118,6 +129,8 @@ void FontSystem::LoadFontMetadata() {
 				}
 		}
 	}
+	// 宣言名が既定フォントの候補に当たるかもしれない (起動初期に決まらなかった場合)
+	RefreshDefaultFontIfUnresolved();
 }
 //---------------------------------------------------------------------------
 bool FontSystem::EnsureLazyFontLoaded( const tjs_string &name ) {
@@ -154,6 +167,14 @@ bool FontSystem::GetLazyFontVariations( const tjs_string& name, tjs_string& axes
 void FontSystem::RegisterLazyFont( const tjs_string& name, const tjs_string& storage ) {
 	LazyFontFiles[ name ] = storage;
 	LazyFontStorageAll[ name ] = storage;
+	RefreshDefaultFontIfUnresolved();
+}
+//---------------------------------------------------------------------------
+void FontSystem::RefreshDefaultFontIfUnresolved() {
+	// 既定フォントが候補のどれにも当たらずに決まっていた場合だけ、 登録が増えた
+	// 時点で選び直す (起動スクリプトから Font.registerFontFile 等で供給する構成用)。
+	if( !DefaultLOGFONTCreated ) return;
+	if( TVPRetryDefaultFontName() ) DefaultFont.Face = TVPGetDefaultFaceNames();
 }
 //---------------------------------------------------------------------------
 void FontSystem::EnumerateLazyFontStorages( std::vector<std::pair<tjs_string, tjs_string>>& out ) const {
@@ -173,7 +194,20 @@ bool FontSystem::FontExists( const tjs_string &name ) {
 	return t != NULL;
 }
 
+bool FontSystem::FontAvailable( const tjs_string &name ) {
+	if( FontExists( name ) ) return true;
+	LoadFontMetadata();
+	return LazyFontStorageAll.find( name ) != LazyFontStorageAll.end();
+}
+
 FontSystem::FontSystem() : FontNamesInit(false), DefaultLOGFONTCreated(false) {
+	// 既定フォントはここでは決めない (InitDefaultFont)。 コンストラクタ中は
+	// TVPFontSystem がまだ NULL で、 fonts.json 宣言名や OS フォントを候補に出来ないため
+}
+
+void FontSystem::InitDefaultFont() {
+	LoadFontMetadata();
+	TVPRegisterSystemFontsLazily( *this );
 	ConstructDefaultFont();
 }
 
@@ -242,6 +276,7 @@ void FontSystem::AddExtraFont( const tjs_string& storage, std::vector<ttstr>* fa
 			// 永続マップへ記録し、glyphware など別経路が名前で解決できるようにする。
 			LazyFontStorageAll[ *i ] = storage;
 		}
+		RefreshDefaultFontIfUnresolved();
 	}
 	if( faces ) {
 		for( auto i = loadface.begin(); i != loadface.end(); ++i ) {

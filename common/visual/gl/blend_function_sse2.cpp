@@ -1651,7 +1651,9 @@ void TVPGL_SSE2_Init() {
 		//TVPTLG6DecodeGolombValues			// MMXを積極的に使ったものはなく、SIMD化しづらそうなためSSE2版未実装
 #ifdef TJS_64BIT_OS
 		// MMX版の方が速いので、64bitでのみ有効に
-		TVPTLG6DecodeLineGeneric = TVPTLG6DecodeLineGeneric_sse2_c;
+		// SSE2 版は 8 画素ブロック単位でしか処理できないので、8 画素に満たない
+		// 行末の端数ブロック用の TVPTLG6DecodeLineGeneric は C 版のままにする
+		// (差し替えると幅が 8 の倍数でない画像で絵が崩れ、行末からはみ出して書く)
 		TVPTLG6DecodeLine = TVPTLG6DecodeLine_sse2_c;
 #endif
 		//TVPTLG6DecodeLine = TVPTLG6DecodeLine_test;	// for Test

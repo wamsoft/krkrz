@@ -56,6 +56,20 @@ PRESET=x64-linux BUILD_TYPE=Debug CMAKEOPT='-DKRKRZ_USE_SJIS=YES' \
 
 Windows からは `deckbuild.ps1` (WSL 経由で同スクリプトを呼ぶ) が使える。
 
+### Linux ホストで直接使う場合の注意
+
+上記は WSL 前提の例だが、Linux ホストの docker でもそのまま使える
+(パスは `-s ~/kirikiri/krkrz_dev` のようにホストのパスを渡す)。
+
+- コンテナは root で動くので、install 先 `bin/x64-linux/` が **root 所有**になる。
+  ホスト側で触る前に所有者を戻す:
+  `docker run --rm -v $PWD/bin:/b deckbuild-sniper chown -R $(id -u):$(id -g) /b`
+- ホストでそのまま起動できる (同梱 SDL3 は RPATH で解決、下記「既知の注意点」)。
+  Wayland セッションでは `WAYLAND_DISPLAY` を渡す
+- 画面 (コンポジタ) がスリープ中に Wayland で起動すると、SDL3 の初期化
+  (`Wayland_ShowCursor`) で segfault する。ビルドの問題ではないので、画面を
+  復帰させてから実行する
+
 - ビルドツリー (`build/x64-linux`) は docker named volume 上
   (bind mount の遅い I/O 回避)。ホストからは見えない
 - 成果物は install でソース側 `bin/x64-linux/Release/` に出るので
@@ -86,21 +100,44 @@ objdump -T <exe> | grep -o "GLIBC_[0-9.]*" | sort -Vu | tail -1
 objdump -T <exe> | grep -o "GLIBCXX_[0-9.]*" | sort -Vu | tail -1
 
 # 動的リンクする .so の一覧 — SDK にしか無い .so が NEEDED に出たら
-# 同梱 + LD_LIBRARY_PATH で解決するか、静的リンクに倒す
+# 同梱 (exe の RPATH = $ORIGIN で解決) するか、静的リンクに倒す
 readelf -d <exe> | grep -E "NEEDED|RPATH"
 ```
 
 実測 (2026-09-06 時点の krkrz x64-linux): GLIBC ≤ 2.30、GLIBCXX 依存なし。
+再確認 (2026-10-06, Linux ホスト docker): krkrz 本体 GLIBC_2.30 / プラグイン・libSDL3 とも ≤ 2.31、GLIBCXX 依存なし。
+ホスト (Wayland) で `-demotest -demotestcap` 全 24 シーン ok。
 Steam Deck 実機のネイティブ実行 / sniper コンテナ実行の両方で動作確認済み。
 
 ### 既知の注意点
 
-- install される `libSDL3.so.0.x.y` は実体のみで soname リンク
-  (`libSDL3.so.0`) が無い。配布時は soname を補完し、exe に RPATH が
-  無いため `LD_LIBRARY_PATH=.` で起動する
-  (umbrella `deckproject.toml` の stage script が補完している)
+- 同梱 SDL3 は install 先に実体 `libSDL3.so.0.x.y` と soname リンク
+  `libSDL3.so.0` を置き、exe には `$ORIGIN` を **DT_RPATH** で埋め込む
+  (`--disable-new-dtags`)。Steam から起動すると `LD_LIBRARY_PATH` の先頭に
+  Steam ランタイムと `/usr/lib` が入り、ゲームフォルダは末尾に付くだけなので、
+  `LD_LIBRARY_PATH` の後に探される RUNPATH では SteamOS 側の libSDL3
+  (2026-10 時点 3.2.18) が勝ってしまう。`LD_LIBRARY_PATH=.` も不要
+  (`readelf -d krkrz` で `(RPATH) Library rpath: [$ORIGIN]` を確認できる)
+- `krkrz_plugin()` (tp_stub/krkrz.cmake) で作る共有プラグインにも
+  `$ORIGIN:$ORIGIN/..` を DT_RPATH で付けている。プラグインが同梱 .so に依存する
+  場合は `plugin/` か exe のフォルダに置けば読まれる。プラグインに RUNPATH を
+  付けると exe 側の DT_RPATH も効かなくなるので、独自に RPATH を設定するときも
+  `--disable-new-dtags` を使うこと (`krkrz_plugin()` を使わないプラグインは対象外)
 - sniper SDK イメージはローリング更新される。再現性を厳密にしたい場合は
   Dockerfile の `FROM` をダイジェスト固定にする
+
+## 配布パッケージとデータ保存場所
+
+- 作品の配布物 (そのまま動くフォルダ / tar.gz) は外枠 **krkrz_linux**
+  (https://github.com/wamsoft/krkrz_linux) で作る。`linux-config.json` に案件を書き、
+  この sniper 環境 (steamdev の `deckbuild-sniper` イメージ) でビルドして、
+  install 結果・`<exe名>.cf`・`.desktop`/アイコン・資材をまとめる。
+  使い方は umbrella の `doc/topics/core/linux_package.md`
+- **データ保存場所の既定 (2026-10〜)**: `-datapath` 未指定時は
+  `~/.local/share/<orgname>/<appname>/` (`SDL_GetPrefPath` のローカルパス)。
+  以前は exe の隣の `savedata` で、末尾 `/` が欠けて `savedataX` と書かれていた。
+  配布物は `<exe名>.cf` に `orgname` / `appname` を書く (krkrz_linux が生成)。
+  実装は `sdl3/environ/app.cpp` の `GetDataPathDirectory` / `InitDataPath`
 
 ## 関連
 
@@ -108,3 +145,4 @@ Steam Deck 実機のネイティブ実行 / sniper コンテナ実行の両方�
   (`deckbuild/README.md` = ビルド環境詳細・依存ライブラリ不足時の対処ガイド、
   `docs/WORKFLOW.md` = Steam Deck 実機でのデプロイ/デバッグ運用)
 - umbrella `deckproject.toml` — krkrz_dev の build/stage/deploy 定義 (実運用例)
+- krkrz_linux: https://github.com/wamsoft/krkrz_linux — Linux 版の配布パッケージを作る外枠

@@ -58,6 +58,33 @@ SSOT はここ (src/core/data/demolib)。umbrella (krkrz_dev) の data/ 直下�
   で起動すると DemoWindow は 60 フレーム後に "@demotest:ok" を出力して
   終了する。CI や実機確認の自動化に使う。
 
+  ギャラリー (src/core/data = DemoShell) に -demotest を付けると、全シーンを
+  40 フレームずつ巡回し、シーンごとに onDemoTest() の出力と
+  "@demotest:scene N/M <シーン名>" を出し、最後に "@demotest:ok" で終了する。
+
+  ● 全シーンの表示確認 (-demotestcap)
+
+    krkrz64.exe <ABS>/src/core/data -demotest -demotestcap=<保存先dir>
+
+    巡回中、各シーンの画面 (Elements overlay 込み) を
+    <保存先dir>/scene01.png 〜 sceneNN.png に保存する (番号 = シーン順、
+    01 はメニュー)。ログには "@demotest:cap <path> <シーン名>" が出るので、
+    番号とシーン名の対応はそこで分かる。-demotestcap だけ指定しても
+    巡回は始まる (-demotest は省略可)。
+
+    - <dir> は絶対パスで渡す。無ければ自動で作られる
+    - 保存は System.captureScreen (REPL 有効ビルドのみ)。MASTER 等で
+      使えないときは "@demotest:cap unavailable" を出して撮影を省く
+      (巡回させたいときは -demotest も付けておく)
+    - 画面は実際に描画されるので、ウィンドウが出せる環境で実行する
+      (Linux で端末/エージェントから起動するなら WAYLAND_DISPLAY / DISPLAY を設定)
+    - 乱数・アニメーションを使うシーン (画像処理、パーティクル、FPS 表示等)
+      は撮るたびに内容が変わる。前回との単純な画素比較では差分が出る
+    - 1 シーンにつき 1 枚 (最初のページ) だけ。複数ページあるシーンの
+      残りのページは REPL (-replfile) から demoShell.switchTo(n)
+      (0 = メニュー) と Agent.keyPress(VK_RIGHT) で送り、
+      System.captureScreen(path) で撮る
+
 ■ 注意
 
   - このフォルダを編集したら、依存する全デモ (core / umbrella) の動作を

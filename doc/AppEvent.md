@@ -190,6 +190,30 @@ WINVER 専用クライアント (`tTVPVSyncTimingThread` / `tTJSNI_VideoOverlay`
 `tTVPWaveSoundBufferThread` / `tTVPContinuousHandlerCallLimitThread`) は
 `win32/` 配下のみでコンパイルされるため一切触らない。
 
+### WINVER のアイドル待ちと wake のラッチ (2026-10-01)
+
+wake は**ラッチ付き**で投げる: `tTVPTimerThread` は `PendingEventsAvailable` が立っている間は
+次の wake を投げず、メインスレッドの `HandleWake()` が下ろすまで待つ (メッセージキューを溢れさせない
+ため)。したがって**投函した wake がメインスレッドに拾われないと、タイマーは永久に止まる**。
+
+WINVER のメインループ (`win32/environ/Application.cpp` `tTVPApplication::HandleIdle`) は、
+`ApplicationIdle()` (TJS のイベント配送) の後に眠る。ここが以前は `::WaitMessage()` だった。
+`WaitMessage` は「最後に `PeekMessage` で調べた**後に**届いたメッセージ」でしか起きないので、
+イベント配送の中で走ったコードが範囲指定の `PeekMessage` をすると (VideoOverlay の
+`ClearWndProcMessages` が該当)、その時点でキューに居た wake まで「調べ済み」になり、
+**キューに残ったまま眠り続ける**。ラッチが立っているので wake は再投函されず、入力など無関係な
+メッセージが来るまで TJS のタイマーと REPL が止まっていた (動画を閉じた直後に 60〜130 秒、
+`PostMessage(WM_NULL)` で即復帰)。
+
+現在は `MsgWaitForMultipleObjectsEx(0, NULL, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE)` で待つ。
+`MWMO_INPUTAVAILABLE` は調べ済みでも未処理のメッセージがあれば即座に戻る。
+
+- メインスレッドで**範囲指定の `PeekMessage` (PM_REMOVE / PM_NOREMOVE とも) を書くこと自体は可**だが、
+  その直後に `WaitMessage` で眠るコードを新たに書かないこと。待つなら `MWMO_INPUTAVAILABLE` 付きの
+  `MsgWaitForMultipleObjectsEx` を使う。
+- ラッチ付きの wake を新しく足す場合も同じ前提に乗る (投函に失敗したらラッチを立てない — 既存の
+  `tTVPTimerThread` のコメント参照)。
+
 ## 7. 移行に伴う削除物
 
 - `generic/base/NativeEventQueue.{h,cpp}` を削除 (`sources.cmake` の該当行も)。

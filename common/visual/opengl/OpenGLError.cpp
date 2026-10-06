@@ -47,6 +47,9 @@ void InitGLES()
 		int major = GLAD_VERSION_MAJOR(gles_version);
 		int minor = GLAD_VERSION_MINOR(gles_version);
 		TVPLOG_INFO("Loaded GLES {}.{}", major, minor);
+		// 実際に作られたコンテキストの版を反映する。 SDL3 経路はここ以外で
+		// 設定されないので、 これが無いと既定の 200 (ES2) 扱いのままになる
+		TVPOpenGLESVersion = major * 100 + minor * 10;
 		glesInited = true;
 	}
 }

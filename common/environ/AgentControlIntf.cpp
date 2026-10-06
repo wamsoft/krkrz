@@ -452,6 +452,64 @@ tTJSNC_Agent::tTJSNC_Agent() : inherited(TJS_W("Agent"))
 		return TJS_S_OK;
 	}
 	TJS_END_NATIVE_METHOD_DECL(/*func. name*/dialogTree)
+	//=== 読み上げ (スクリーンリーダー対応) ====================================
+	//---------------------------------------------------------------------------
+	// a11yTree()  — 表示中のダイアログとゲーム本体の読み上げツリーを JSON 文字列で返す。
+	//   {"dialogs":[{"index","screen","modal","tree":{"focus","nodes":[...]}}],
+	//    "game":{"hidden","tree"} | null}
+	//   (tree は Elements の docs/accessibility.md §5 の形。 id は画面 JSON の
+	//   "id" / setGameA11y の id、 無ければ "#<hex>")。 AT が接続していなくても取れる。
+	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/a11yTree)
+	{
+		if (result) *result = tTVPElementsDialogManager::Instance().A11yTreeJson();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_METHOD_DECL(/*func. name*/a11yTree)
+	//---------------------------------------------------------------------------
+	// a11yLog([since])  — 読み上げログ %[ lines, next ]。
+	//   lines = «スクリーンリーダーがおおよそ何と読むか» の行 ([focus] / [value] /
+	//   [state] / [polite] …)。 REPL が動いているときだけ溜まる。 next を次回の
+	//   since に渡すと差分だけ取れる。
+	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/a11yLog)
+	{
+		size_t since = (numparams >= 1 && param[0]->Type() != tvtVoid)
+			? (size_t)(tjs_int64)*param[0] : 0;
+		size_t next = 0;
+		auto lines = tTVPElementsDialogManager::Instance().A11yLog(since, next);
+		iTJSDispatch2* d = TJSCreateDictionaryObject();
+		if (!d) return TJS_E_FAIL;
+		iTJSDispatch2* arr = TJSCreateArrayObject();
+		if (arr) {
+			for (tjs_int i = 0; i < (tjs_int)lines.size(); ++i) {
+				tTJSVariant v(lines[i]);
+				arr->PropSetByNum(TJS_MEMBERENSURE, i, &v, arr);
+			}
+			tTJSVariant av(arr, arr);
+			d->PropSet(TJS_MEMBERENSURE, TJS_W("lines"), nullptr, &av, d);
+			arr->Release();
+		}
+		{ tTJSVariant v((tjs_int64)next); d->PropSet(TJS_MEMBERENSURE, TJS_W("next"), nullptr, &v, d); }
+		if (result) *result = tTJSVariant(d, d);
+		d->Release();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_METHOD_DECL(/*func. name*/a11yLog)
+	//---------------------------------------------------------------------------
+	// a11yAction(node, action [, arg])  — スクリーンリーダーと同じ経路で操作する。
+	//   node = a11yTree の id、 action = click / focus / increment / decrement /
+	//   set_value (arg が値)。 最前面のダイアログから探し、 モーダルが無ければ
+	//   ゲーム本体のノード (setGameA11y) も探す。 キー合成ではなく
+	//   AT の操作経路そのものを通すので、 読み上げ対応の検証に使う。
+	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/a11yAction)
+	{
+		if (numparams < 2) return TJS_E_BADPARAMCOUNT;
+		ttstr arg = (numparams >= 3 && param[2]->Type() != tvtVoid) ? ttstr(*param[2]) : ttstr();
+		bool ok = tTVPElementsDialogManager::Instance().A11yAction(
+			ttstr(*param[0]), ttstr(*param[1]), arg);
+		if (result) *result = (tjs_int)(ok ? 1 : 0);
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_METHOD_DECL(/*func. name*/a11yAction)
 #endif // KRKRZ_HAS_ELEMENTS
 
 	//=== 画面キャプチャ =======================================================

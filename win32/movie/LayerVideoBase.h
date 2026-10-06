@@ -93,6 +93,8 @@ protected:
 private:
 	//-- スレッド
 	void ThreadMain();
+	//! 終端 (stEnded) からの巻き戻し / シークで再生を続ける (Mtx 保持下で呼ぶ)
+	void ResumeIfEndedNoLock();
 	std::thread DecodeThread;
 	std::mutex  Mtx;
 	std::condition_variable Cond;
@@ -113,7 +115,12 @@ private:
 	long   BufferSize;
 	std::atomic<bool> Updated;    //!< 新フレーム有り (GetEvent が EC_UPDATE で消費)
 	std::atomic<bool> Completed;  //!< 終端 (GetEvent が EC_COMPLETE で消費)
-	std::atomic<__int64> CurPtsMs; //!< 直近提示フレームの pts
+	std::atomic<__int64> CurPtsMs; //!< 直近提示フレームの pts (デコーダの生の時刻)
+	//! 先頭フレームの pts (ms)。未確定は -1。mp4 (MF) のタイムスタンプはエンコーダの遅延分
+	//! (B フレームの並べ替え等) だけ 0 より後ろから始まるので、位置 / コマ番号はこれを
+	//! 起点にする (しないと先頭コマのコマ番号が 2 等になる)。位置の指定はこれを足して渡す。
+	std::atomic<__int64> PtsOriginMs;
+	__int64 OriginMs() const { __int64 o = PtsOriginMs.load(); return o > 0 ? o : 0; }
 
 	//-- A/V 同期 (音声をマスタクロックにする)。再生開始/シープ時に基準を取り直す。
 	bool    ClockValid;       //!< クロック基準が有効か

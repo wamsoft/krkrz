@@ -14,6 +14,20 @@
 #include "TVPSysFont.h"
 #endif
 
+#ifdef KRKRZ_USE_GLYPHWARE
+#include "glyphware/Layout.h"   // glyphware::isDefaultIgnorable
+#endif
+// 無い文字を U+FFFD / '?' で代用してよいか (描かない文字と代用文字そのものは除く)
+static bool TVPIsReplaceableMissingChar( tjs_uint32 ch ) {
+	if( ch == 0xFFFD || ch == '?' ) return false;
+#ifdef KRKRZ_USE_GLYPHWARE
+	return !glyphware::isDefaultIgnorable( static_cast<char32_t>( ch ) );
+#else
+	return ch >= 0x20 && !( ch >= 0x7F && ch <= 0x9F ) && !( ch >= 0x200B && ch <= 0x200F ) && !( ch >= 0xFE00 && ch <= 0xFE0F );
+#endif
+}
+
+
 extern void TVPUninitializeFreeFont();
 extern FontSystem* TVPFontSystem;
 
@@ -179,7 +193,11 @@ void FreeTypeFontRasterizer::ApplyFont( const tTVPFont& font ) {
 void FreeTypeFontRasterizer::GetTextExtent(tjs_uint32 ch, tjs_int &w, tjs_int &h) {
 	if( Face ) {
 		tGlyphMetrics metrics;
-		if( Face->GetGlyphSizeFromCharcode( ch, metrics) ) {
+		// 描画 (GetBitmap) と同じ代用規則で測る: 無い文字は U+FFFD → '?'
+		if( Face->GetGlyphSizeFromCharcode( ch, metrics) ||
+			( TVPIsReplaceableMissingChar( ch ) &&
+			  ( Face->GetGlyphSizeFromCharcode( 0xFFFD, metrics ) ||
+			    Face->GetGlyphSizeFromCharcode( '?', metrics ) ) ) ) {
 			w = metrics.CellIncX;
 			h = metrics.CellIncY;
 		}
@@ -227,6 +245,12 @@ tTVPCharacterData* FreeTypeFontRasterizer::GetBitmap( const tTVPFontAndCharacter
 		//Face->ClearOption( TVP_FACE_OPTIONS_FORCE_AUTO_HINTING );
 	}
 	tTVPCharacterData* data = Face->GetGlyphFromCharcode(font.Character);
+	// どの face にも無い文字は U+FFFD、 それも無ければ '?' で描く (glyphware の
+	// レイアウトと同じ規則)。 制御文字や結合子など描かない文字は従来どおり既定文字
+	if( data == NULL && TVPIsReplaceableMissingChar( font.Character ) ) {
+		data = Face->GetGlyphFromCharcode( 0xFFFD );
+		if( data == NULL ) data = Face->GetGlyphFromCharcode( '?' );
+	}
 	if( data == NULL ) {
 		data = Face->GetGlyphFromCharcode( Face->GetDefaultChar() );
 	}

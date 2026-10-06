@@ -9,13 +9,14 @@
 
 #include <vector>
 #include <cstdio>
+#include <atomic>
 
 // ラッピング処理
 class tTVPMoviePlayer : public iTVPMoviePlayer {
  public:
 
   tTVPMoviePlayer()
-  : mPlayer(nullptr), mUseYUV(false)
+  : mPlayer(nullptr), mUseYUV(false), mDelivered(false)
   {
   }
 
@@ -55,6 +56,26 @@ class tTVPMoviePlayer : public iTVPMoviePlayer {
   }
 
   virtual void Play(bool loop = false) {
+    switch (mPlayer->GetState()) {
+    case IMoviePlayer::STATE_PAUSE:
+      // 一時停止からの再開 (クロックを取り直す Resume の方)
+      mPlayer->Resume();
+      return;
+    case IMoviePlayer::STATE_STOP:
+    case IMoviePlayer::STATE_FINISH:
+      // 停止 / 終了後の再生は先頭から (終了位置のままだと即終了する)
+      mPlayer->Seek(0);
+      break;
+    case IMoviePlayer::STATE_PRELOADING:
+      // 開いた直後は先頭フレームがプリロード済みだが、コールバック登録より前に
+      // デコードされているので配送されていない。まだ 1 枚も配送していなければ
+      // 先頭を出し直す (コマ 0 の onFrameUpdate が来ず、最初に見えるのがコマ 1
+      // になるのを防ぐ)。スクリプトが先にシークしていれば配送済みなので触らない
+      if (!mDelivered) mPlayer->Seek(0);
+      break;
+    default:
+      break;
+    }
     mPlayer->Play(loop);
   }
   virtual void Stop() {
@@ -97,6 +118,12 @@ class tTVPMoviePlayer : public iTVPMoviePlayer {
   virtual int64_t Position() const {
     return mPlayer->Position();
   }
+  virtual double FrameRate() const {
+    IMoviePlayer::VideoFormat format;
+    mPlayer->GetVideoFormat(&format);
+    // 壊れた値 (極端に小さい等) の素材があるので、1fps 未満は不明扱い
+    return (format.frameRate >= 1.0f) ? format.frameRate : 0.0;
+  }
   virtual bool IsPlaying() const {
     return mPlayer->IsPlaying();
   }
@@ -106,7 +133,11 @@ class tTVPMoviePlayer : public iTVPMoviePlayer {
 
   virtual void SetOnVideoDecoded(OnVideoDecoded callback) {
     if (mPlayer) {
-      mPlayer->SetOnVideoDecoded(callback);
+      std::atomic<bool> *delivered = &mDelivered;
+      mPlayer->SetOnVideoDecoded([callback, delivered](int w, int h, DestUpdater updater) {
+        *delivered = true;
+        callback(w, h, updater);
+      });
     }
   }
 
@@ -116,7 +147,9 @@ class tTVPMoviePlayer : public iTVPMoviePlayer {
     // src.width/height は coded 寸法 (16 アライン padding 付き) なので、表示寸法へクロップする
     // (crop しないと右端/下端に未定義 chroma 由来の緑帯が出る。plane stride はそのまま)。
     IMoviePlayer *player = mPlayer;
-    mPlayer->SetOnVideoDecodedPlanes([callback, player](const IMoviePlayer::VideoFrameInfo &src) {
+    std::atomic<bool> *delivered = &mDelivered;
+    mPlayer->SetOnVideoDecodedPlanes([callback, player, delivered](const IMoviePlayer::VideoFrameInfo &src) {
+      *delivered = true;
       iTVPMoviePlayer::VideoPlaneFrame f;
       IMoviePlayer::VideoFormat fmt{};
       player->GetVideoFormat(&fmt);
@@ -163,6 +196,8 @@ class tTVPMoviePlayer : public iTVPMoviePlayer {
   iTVPMoviePlayer::OnVideoDecoded mVideoDecoded;
   void *mUserData;
   bool mUseYUV;   // YUV plane 経路 (COLOR_I420) で開いたか
+  // 開いてから 1 枚でもフレームをコールバックへ配送したか (Play の巻き戻し判定用)
+  std::atomic<bool> mDelivered;
 };
 
 // CreatePlayer (ファイルパス版)

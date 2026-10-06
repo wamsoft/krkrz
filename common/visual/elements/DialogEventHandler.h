@@ -57,6 +57,14 @@ public:
 	// 高頻度の書込を除外して負荷を抑える口)。 既定 false = 観測しない。
 	virtual bool WantsVarNotify(std::vector<ttstr>& /*out_names*/) { return false; }
 
+	// === キー捕捉通知 ===
+	// SetKeyCapture で捕捉中のインスタンスがキーボードフォーカスを持つとき、
+	// キー押下 (リピート含む) と左以外のマウスボタン押下を、 ウィジェットへ
+	// 配送する代わりにここへ渡す。 vk は Windows VK コード (マウスは
+	// VK_RBUTTON 等)、 shift は TVP_SS_* (リピートは TVP_SS_REPEAT)。
+	// キー割り当て設定の「次に押されたキーを受け取る」用途。 既定 no-op。
+	virtual void OnKeyCapture(tjs_uint /*vk*/, tjs_uint32 /*shift*/) {}
+
 	// インスタンスの teardown 完了時 (manager のリストから外れた後) に 1 回
 	// 呼ばれる。 action は close_on_click / Esc で閉じた場合の button id
 	// (Close() / ForceClose / Window close 等の外部要因は空文字)。 一度も

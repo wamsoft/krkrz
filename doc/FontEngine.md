@@ -558,16 +558,88 @@ GDI ラスタライザ (WINVER 既定) と旧 FreeType ラスタライザ (非 W
 
 ## 埋め込み方針 (現状)
 
-- **exe 埋め込み (resource/)**: 最小限 = 日本語 (Noto Sans JP) + 英字 (Roboto)
-  + モノクロ絵文字 (Noto Emoji) + アイコン (elements_basic)。
-- **data/ 外だし (fonts.json)**: カラー絵文字 (Noto Color Emoji)。案件では
-  中国語 (繁/簡) や日本語バリエーション等も data/fonts.json に足す想定。
-- **埋め込みを削る**: 案件が自前フォント一式を data/ 側で供給するなら、
-  ビルド時 `-DKRKRZ_EMBED_BUNDLED_FONTS=OFF` で Noto Sans JP (4.3MB) と
-  Noto Emoji (1.9MB) を埋め込み対象から外せる (exe -6.2MB)。Roboto /
-  elements_basic は既定テーマが参照するので残す。任意ファイルは
-  `-DKRKRZ_RESOURCE_EXCLUDE="名前;名前"`。外すと当然 `resource://` からは
-  引けなくなるので、日本語フォントは案件側で登録すること。
+- **exe 埋め込み (resource/)**: 既定は英字 (Roboto) + アイコン (elements_basic)
+  だけ。Roboto は U+FFFD を持つので、どのフォントにも無い文字の代替表示にも使う。
+- **`KRKRZ_EMBED_BUNDLED_FONTS` (既定 OFF)**: ON で日本語 (Noto Sans JP 4.3MB) と
+  モノクロ絵文字 (Noto Emoji 1.9MB) も埋め込む (exe +6.5MB)。以前は ON が既定
+  だったが、exe の大半をフォントが占めていたので既定を外した。任意ファイルは
+  `-DKRKRZ_RESOURCE_EXCLUDE="名前;名前"`。
+- **data/ 外だし (fonts.json)**: 日本語・絵文字・カラー絵文字 (Noto Color Emoji)
+  など。コアデモ (`data/fonts/`) は Noto Sans JP / Noto Emoji もここに置いている。
+  統合ランチャ (umbrella の `data/`) はプロジェクト直下の fonts.json しか自動で
+  読まれないので、`startup.tjs` でコアデモの fonts.json を読んで
+  `Font.registerFontFile(storage, family)` で遅延登録している。
+- **OS のフォント**: 下の「OS のフォント」。
+
+## OS のフォント
+
+- **WINVER**: GDI の名前解決 (従来どおり)。glyphware 経路は `@gdi:<名前>` キーで
+  `GetFontData` から読む (`TVPGlyphwareResolveFontKey`)。
+- **SDL 版ほか** (`generic/environ/SystemFontList.cpp`): `FontSystem::InitDefaultFont`
+  (= `TVPInializeFontRasterizers` で FontSystem を作った直後) に OS のフォント一覧から
+  **family 名 → ファイルパスだけ**を `RegisterLazyFont` で遅延テーブルへ入れる。
+  ファイルは開かない (初回使用時に `EnsureLazyFontLoaded`)。既に同名が登録済み
+  (同梱 / fonts.json / 実行時登録) なら上書きしない。
+  - Windows: DirectWrite (`dwrite.dll` を実行時に引く。リンク依存なし)。
+    システムコレクションの各 family の Regular 相当 1 本のファイルパスを、
+    地域名 (メイリオ等) を含む全 family 名で登録する。
+  - Linux: fontconfig (`libfontconfig.so.1` を dlopen。無ければ何もしない)。
+    `FcFontList` の scalable なものだけ。
+  - macOS / Android: 未対応 (TODO.md)。
+  - `-systemfont=no` で無効。
+- classic FreeType は face を「family style」で登録するため、Regular の face には
+  family 名だけの別名も付ける (`FreeType.cpp` `TVPLoadFont`)。OS の "Meiryo" が
+  "Meiryo Regular" でしか引けないと `Font.face = "Meiryo"` が効かないため。
+
+## 既定フォントの決め方 (SDL 版ほか)
+
+`generic/environ/FontSystemBase.cpp` `TVPGetDefaultFontName` が言語別の候補列から
+**使えるもの** (FreeType に登録済み、または `FontSystem::FontAvailable` =
+fonts.json / 実行時登録 / OS の遅延テーブルに名前がある) を選ぶ。日本語の候補は
+"Noto Sans JP Regular" → Yu Gothic UI / Meiryo UI / Meiryo / MS UI Gothic /
+MS Gothic → Hiragino → IPA / VL / Takao → Noto Sans CJK JP / Noto Sans JP の順
+(OS の可変版 Noto Sans JP は既定インスタンスが Thin なので後ろに置く)。
+
+- FontSystem のコンストラクタでは決めない (`TVPFontSystem` がまだ NULL で候補を
+  引けない)。生成直後の `InitDefaultFont` で決める。
+- 起動初期はプロジェクトフォルダが未確定なので fonts.json は読めない。
+  `LoadFontMetadata` は `TVPProjectDir` が空なら「読んだことにせず」戻り、初回の
+  フォント使用時に読み直す (先に読了フラグを立てると以後永久に読まれない)。
+- どの候補にも当たらなかった場合 (`TVPDefaultFontNameResolved == false`) は、
+  `RegisterLazyFont` / `AddExtraFont` / `LoadFontMetadata` の後で
+  `TVPRetryDefaultFontName` が選び直し、変わったら `DefaultFont.Face` を差し替える。
+  当たっていれば選び直さない (実行中に既定の見た目が変わらないように)。
+- `-deffont` / `TVPSetDefaultFontName` は選び直しの対象外。
+- WINVER は GDI の既定フォント (選び直しなし)。
+
+## どのフォントにも無い文字 (代替表示)
+
+連鎖のどの face にも無い文字は **U+FFFD → `?` → primary の .notdef** の順で、連鎖の
+中でそれを持つ face のグリフを描く。既定埋め込みの Roboto が U+FFFD を持つので、
+通常は � になる。見えない文字 (C0/C1 制御・SHY・ZWSP/ZWJ・BiDi 制御・異体字
+セレクタ・タグ等 = `glyphware::isDefaultIgnorable`) は代替せず何も描かない。
+
+| 経路 | 実装 |
+|---|---|
+| drawShapedText 系 / Elements の計測 (glyphware `layoutLine`) | `src/Replacement.cpp` `shapeReplacement`。未収録の span を元の文字数ぶんの代替文字で shape し、cluster を元テキストのバイト位置へ戻す (折り返し・文字送りの単位は変わらない) |
+| 縦組み (`itemizeVertical`) | 同上。行メトリクスも代替文字を持つ face で取る |
+| drawText (glyphware ラスタライザ) | `GlyphwareFontRasterizer::ResolveGlyph` |
+| drawText (旧 FreeType ラスタライザ) | `FreeTypeFontRasterizer::GetTextExtent` / `GetBitmap` (既定文字の前に試す) |
+| Elements の描画 (ThorVG gw ローダ) | `tvgGwLoader.cpp` `shapeLineToGlyphs` / `metrics`。**ThorVG は elements 配下と layerExVector 配下の 2 コピーがあり、ビルドで使われるのは layerExVector 側** (同じ修正を両方に入れる) |
+| GDI ラスタライザ | 対象外 (GDI の代替表示のまま) |
+
+## Elements のテーマフォントとエンジン既定フォント
+
+Elements は resource/ の同梱フォントを登録してテーマの families に並べる
+(`StoragesResourceLoader.cpp` `TVPApplyRegisteredFontsToElementsTheme`)。既定の
+埋め込みが Roboto だけになったので、その後ろに**エンジンの既定 face 列**
+(`TVPGetDefaultFaceNames`) を最後の手段としてつなぐ
+(`TVPRegisterElementsHostDefaultFonts`)。キーはフォント名のまま `register_font` へ
+渡し、gw ブリッジの `openFaceByKey` → `TVPGlyphwareFaceForToken` が fonts.json
+宣言名 / storage / OS (WINVER は GDI) の順で解決する。並びは
+latin → CJK → **エンジン既定** → emoji で、案件が登録したフォントが持つ文字は
+そちらが勝つ。名前が引けないもの (`TVPGlyphwareFontNameAvailable` が false) は
+登録しない。glyphware 無しのビルドでは何もしない。
 
 ## 検証手法メモ
 

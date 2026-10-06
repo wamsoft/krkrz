@@ -835,11 +835,9 @@ TJS_BEGIN_NATIVE_PROP_DECL(exeBits)
 {
         TJS_BEGIN_NATIVE_PROP_GETTER
           {
-#ifdef TJS_64BIT_OS
-            if (result) *result = 64;
-#else
-            if (result) *result = 32;
-#endif
+            // 実行ファイル自体のビット数なのでポインタ幅で判定する (TJS_64BIT_OS は
+            // MSVC では x64 でしか立たず、arm64 版では 64 にならない)
+            if (result) *result = (tjs_int)(sizeof(void*) * 8);
             return TJS_S_OK;
           }
         TJS_END_NATIVE_PROP_GETTER

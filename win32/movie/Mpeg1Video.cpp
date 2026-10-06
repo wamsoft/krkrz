@@ -137,6 +137,14 @@ bool tTVPMpeg1Video::DecoderReadFrame( BYTE *dst, long pitch, __int64 &outPtsMs,
 bool tTVPMpeg1Video::DecoderSeek( __int64 ms )
 {
 	if( Plm == nullptr ) return false;
+	if( ms <= 0 )
+	{
+		// 先頭へは rewind で戻す。plm_seek_frame は目的のフレームをデコードして
+		// 返す (= 消費する) ので、次の DecoderReadFrame がコマ 1 から始まり、
+		// ループの 2 周目以降や prepare でコマ 0 が飛ぶ。
+		plm_rewind( (plm_t*)Plm );
+		return true;
+	}
 	// seek_exact=TRUE で正確な位置へ (キーフレーム間を復号)
 	plm_frame_t *f = plm_seek_frame( (plm_t*)Plm, ms / 1000.0, TRUE );
 	return f != nullptr;

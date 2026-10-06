@@ -43,6 +43,7 @@ class FontSystem {
 	void AddFont( const tjs_string& name );
 
 	void ConstructDefaultFont();
+	void RefreshDefaultFontIfUnresolved();
 
 	// data/fonts.json 由来の遅延ロード対象: フォント名(family/alias) -> ストレージ名。
 	// 起動時にメタデータを読んでここへ登録するだけ(FreeType パースはしない)。
@@ -66,6 +67,12 @@ public:
 		return DefaultFont;
 	}
 	bool FontExists( const tjs_string &name );
+	// FontExists に加えて fonts.json 宣言名 / 実行時登録名 / OS フォント (遅延登録) も
+	// 使えるとみなす。既定書体の候補選び用 (ファイルは開かない)
+	bool FontAvailable( const tjs_string &name );
+	// 既定フォントを決める。TVPFontSystem 代入直後に呼ぶ (fonts.json と OS フォントの
+	// 遅延登録を済ませてから選ぶため、コンストラクタでは決めない)
+	void InitDefaultFont();
 	// メタデータ(data/fonts.json)登録名なら初回だけ実ファイルを遅延ロードする。
 	// ロードして登録できたら true。既ロード/対象外は false。
 	bool EnsureLazyFontLoaded( const tjs_string &name );

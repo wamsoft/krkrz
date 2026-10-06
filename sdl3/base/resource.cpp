@@ -63,16 +63,34 @@ public:
 		}
     }
 
+	// 相対パスはカレントディレクトリで見つからなければ、 アプリのベースパス
+	// (macOS は .app の Resources、 他は実行ファイルの場所) で探す。
+	// Finder や別ディレクトリから起動するとカレントディレクトリがリソースの
+	// 場所と一致しないため。
+	static bool Exists(const std::string &path) {
+		SDL_PathInfo info;
+		return SDL_GetPathInfo(path.c_str(), &info) && info.type != SDL_PATHTYPE_NONE;
+	}
+	static void Resolve(std::string &path) {
+		if (!path.empty() && (path[0] == '/' || Exists(path))) return;
+		if (const char *base = SDL_GetBasePath()) {
+			// 空 = リソースのルート (ディレクトリ列挙で来る)
+			std::string full = std::string(base) + path;
+			if (Exists(full)) path = full;
+		}
+	}
+
 	virtual bool TJS_INTF_METHOD CheckExistentStorage(const ttstr &name) override {
 		std::string path;
 		getName(name, path);
-		SDL_PathInfo info;
-        return SDL_GetPathInfo(path.c_str(), &info) && info.type != SDL_PATHTYPE_NONE;
+		Resolve(path);
+		return Exists(path);
 	}
 
     virtual iTJSBinaryStream * TJS_INTF_METHOD Open(const ttstr & name, tjs_uint32 flags) override {
 		std::string path;
 		getName(name, path);
+		Resolve(path);
 		tjs_uint32 access = flags & TJS_BS_ACCESS_MASK;
         if (access == TJS_BS_READ) {
 			return CreateStreamFromSDL(path.c_str(), flags);
@@ -84,6 +102,7 @@ public:
     virtual void TJS_INTF_METHOD GetListAt(const ttstr &name, iTVPStorageLister * lister) override {
 		std::string path;
 		getName(name, path);
+		Resolve(path);
 		SDL_EnumerateDirectory(path.c_str(), [](void *userdata, const char *dirname, const char *fname) {
 			iTVPStorageLister * lister = static_cast<iTVPStorageLister *>(userdata);
 			tjs_string tjs_filename;

@@ -729,6 +729,17 @@ void TVPLoadPluigins(void)
 	// Plugin load order is to be decided using its name;
 	// aaa.tpm is to be loaded before aab.tpm (sorted by ASCII order)
 
+#if defined(TVP_CUSTOM_INTERNAL_PLUGIN) && !defined(_WIN64)
+	// 本体に埋め込まれた起動モジュールを読む (カスタムブートローダ使用時のみ働く)。
+	// 64bit ではこの処理を外付けの .tpm (plugin64 に置く) が受け持ち、ここより下の
+	// .tpm 自動読み込みで実行されるので、本体側で呼ぶのは 32bit だけ
+	// (両方で走ると二重に初期化される)。
+	{
+		extern void TVP_CUSTOM_INTERNAL_PLUGIN(void);
+		TVP_CUSTOM_INTERNAL_PLUGIN();
+	}
+#endif
+
 	// search plugins from path: (exepath), (exepath)\system, (exepath)\plugin
 	std::vector<tTVPFoundPlugin> list;
 

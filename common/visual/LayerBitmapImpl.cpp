@@ -96,6 +96,8 @@ void TVPInializeFontRasterizers() {
 #endif
 
 		TVPFontSystem = new FontSystem();
+		// 既定フォントは TVPFontSystem が引ける状態で決める (fonts.json / OS フォントを候補にするため)
+		TVPFontSystem->InitDefaultFont();
 		// FontSystem 生成前 (コンストラクタ内の既定フォント選択等) にロードされた
 		// システム/同梱フォントの face 名→storage を後追い記録する
 		// (glyphware 等の名前解決用。SDL/generic の同梱フォントが対象)

@@ -23,7 +23,7 @@ tTVPLayerVideoBase::tTVPLayerVideoBase( HWND owner, bool overlayOutput, bool pre
 : VideoWidth(0), VideoHeight(0), VideoFPS(0.0), DurationMs(0)
 , State(stStopped), PrepareOnly(false), Terminate(false), DoSeek(false), SeekMs(0)
 , OwnerWindow(owner), FrontIdx(0), BufferSize(0)
-, Updated(false), Completed(false), CurPtsMs(0)
+, Updated(false), Completed(false), CurPtsMs(0), PtsOriginMs(-1)
 , ClockValid(false), AudioEpochMs(0), PtsEpochMs(0)
 , RefCount(1), Loop(false), AudioVolMB(0), OverlayMode(overlayOutput), Overlay(nullptr)
 , PreferI420(preferI420 && !overlayOutput)   // overlayOutput が優先
@@ -77,6 +77,8 @@ void tTVPLayerVideoBase::ThreadMain()
 	const bool hasAudio = DecoderHasAudio();
 	__int64 prevPts = 0;
 	bool havePrev = false;
+	bool presented = false;   // シーク (巻き戻し) 以降に 1 コマでも提示したか
+	bool fromStart = true;    // 先頭から (開いた直後 / 0 へのシーク後) デコードしているか
 
 	auto interrupted = [&]{ return Terminate.load() || DoSeek.load() || State.load() != stPlaying; };
 
@@ -94,7 +96,9 @@ void tTVPLayerVideoBase::ThreadMain()
 			DecoderSeek( SeekMs.load() );
 			if( Audio ) Audio->Flush();
 			CurPtsMs = SeekMs.load();
+			fromStart = ( SeekMs.load() <= 0 );
 			havePrev = false;
+			presented = false;
 			ClockValid = false;   // 同期クロック基準を取り直す
 			continue;
 		}
@@ -140,6 +144,19 @@ void tTVPLayerVideoBase::ThreadMain()
 
 		if( !got || eos )
 		{
+			// 最終コマも 1 コマ分の時間は見せてから終端を通知する。提示した直後に
+			// 終端を通知すると、ループでは巻き戻した先頭コマがすぐ上書きして
+			// 最終コマの表示時間がほぼ 0 になる (prepare は 1 コマ目で止まるので対象外)。
+			if( presented && !prepareOnly && VideoFPS > 0.0 )
+			{
+				__int64 frameMs = (__int64)( 1000.0 / VideoFPS + 0.5 );
+				if( frameMs > 1000 ) frameMs = 1000;
+				std::unique_lock<std::mutex> lk(Mtx);
+				Cond.wait_for( lk, std::chrono::milliseconds(frameMs), [&]{ return interrupted(); } );
+			}
+			if( Terminate ) break;
+			if( interrupted() ) continue;   // 待っている間にシーク / 停止 / 一時停止された
+			presented = false;
 			Completed = true;
 			State = stEnded;
 			// prepare の途中で終端/失敗したら prepare は畳む (engine は EC_COMPLETE 側で
@@ -148,6 +165,10 @@ void tTVPLayerVideoBase::ThreadMain()
 			if( OwnerWindow ) ::PostMessage( OwnerWindow, WM_GRAPHNOTIFY, 0, 0 );
 			continue;
 		}
+
+		// 先頭から読んだ最初のフレームの pts を位置 / コマ番号の起点にする
+		if( fromStart && PtsOriginMs.load() < 0 ) PtsOriginMs = pts;
+		fromStart = false;
 
 		if( prepareOnly )
 		{
@@ -227,6 +248,7 @@ void tTVPLayerVideoBase::ThreadMain()
 		}
 		CurPtsMs = pts;
 		Updated = true;
+		presented = true;
 		if( prepareOnly )
 		{
 			// 1 コマ出したので停止状態へ戻す。音声は一度も Start していないので
@@ -321,17 +343,36 @@ void __stdcall tTVPLayerVideoBase::Pause()
 	Cond.notify_all();
 }
 //---------------------------------------------------------------------------
+//! 終端まで再生した状態 (stEnded) からの巻き戻し / シークは再生を続ける。
+//! engine のループ再生は EC_COMPLETE を受けて Rewind() するだけ (Play() は呼ばない) なので、
+//! ここで再生中へ戻さないと、デコードスレッドが再生指示待ちのまま 2 周目が始まらない。
+//! (ループでない終端は engine が Stop() するので stStopped になり、ここには当たらない)
+void tTVPLayerVideoBase::ResumeIfEndedNoLock()
+{
+	if( State == stEnded )
+	{
+		State = stPlaying;
+		Completed = false;
+		ClockValid = false;
+	}
+}
+//---------------------------------------------------------------------------
 void __stdcall tTVPLayerVideoBase::SetPosition( unsigned __int64 tick )
 {
 	std::lock_guard<std::mutex> lk(Mtx);
-	SeekMs = (__int64)tick;
+	SeekMs = (__int64)tick + OriginMs();   // 位置は先頭フレーム起点、デコーダへは生の時刻
 	DoSeek = true;
+	ResumeIfEndedNoLock();
 	Cond.notify_all();
 }
 //---------------------------------------------------------------------------
 void __stdcall tTVPLayerVideoBase::GetPosition( unsigned __int64 *tick )
 {
-	if( tick ) *tick = (unsigned __int64)CurPtsMs.load();
+	if( tick )
+	{
+		__int64 p = CurPtsMs.load() - OriginMs();
+		*tick = (unsigned __int64)( p > 0 ? p : 0 );
+	}
 }
 //---------------------------------------------------------------------------
 void __stdcall tTVPLayerVideoBase::GetStatus( tTVPVideoStatus *status )
@@ -374,6 +415,7 @@ void __stdcall tTVPLayerVideoBase::Rewind()
 	std::lock_guard<std::mutex> lk(Mtx);
 	SeekMs = 0;
 	DoSeek = true;
+	ResumeIfEndedNoLock();
 	Cond.notify_all();
 }
 //---------------------------------------------------------------------------
@@ -385,7 +427,12 @@ void __stdcall tTVPLayerVideoBase::SetFrame( int f )
 //---------------------------------------------------------------------------
 void __stdcall tTVPLayerVideoBase::GetFrame( int *f )
 {
-	if( f ) *f = (int)( CurPtsMs.load() * VideoFPS / 1000.0 );
+	if( !f ) return;
+	// 先頭フレーム起点。フレームの先頭時刻ちょうどが丸めで前のコマにならないよう
+	// 1/4 コマ足してから切り捨てる
+	__int64 p = CurPtsMs.load() - OriginMs();
+	if( p < 0 ) p = 0;
+	*f = (int)( p * VideoFPS / 1000.0 + 0.25 );
 }
 //---------------------------------------------------------------------------
 void __stdcall tTVPLayerVideoBase::GetFPS( double *f ) { if( f ) *f = VideoFPS; }

@@ -36,6 +36,8 @@
 //    で起動すると、DemoWindow が 60 フレーム描画後に onDemoTest() を呼び、
 //    "@demotest:ok" を出力して System.exit(0) する。デモ側は追加実装不要。
 //    デモ固有の検証結果を足す場合も "@demotest:" プレフィクスで出力する。
+//    -demotestcap=<dir> を足すと (DemoShell の巡回時) 各シーンを
+//    <dir>/sceneNN.png にキャプチャする (表示確認用。REPL 有効ビルドのみ)。
 // ======================================================================
 
 var DEMOLIB_VERSION = 1;
@@ -484,12 +486,29 @@ class MenuScene extends DemoScene
         hoverAt(x, y);
     }
 
+    // 一覧はドラッグでスクロールできる (タッチ環境向け)。 起動は «ドラッグせずに
+    // 離したとき»。 押した行と離した行が同じ場合のみ起動する。
+    var pressY = void, pressTop = 0, pressRow = -1, dragging = false;
+    function rowAt(y)
+    {
+        if (y < itemTop || y >= viewBottom) return -1;
+        var i = topIndex + ((y - itemTop) / itemH \ 1);
+        return (i >= 0 && i < itemCount()) ? i : -1;
+    }
     function onMouseDown(x, y, button, shift)
     {
-        if (y < itemTop || y >= viewBottom) return;
-        var row = (y - itemTop) / itemH \ 1;
-        var i = topIndex + row;
-        if (i >= 0 && i < itemCount()) { cursor = i; draw(); window.switchTo(i + 1); }
+        if (button != mbLeft) return;
+        pressRow = rowAt(y);
+        if (pressRow < 0) { pressY = void; return; }
+        pressY = y; pressTop = topIndex; dragging = false;
+        cursor = pressRow; draw();
+    }
+    function onMouseUp(x, y, button, shift)
+    {
+        if (button != mbLeft || pressY === void) return;
+        var launch = !dragging && rowAt(y) == pressRow;
+        pressY = void; dragging = false;
+        if (launch) window.switchTo(pressRow + 1);
     }
 
     // ホバーで選択行を追従 (クリックと同じ行計算。変化した時だけ再描画)
@@ -500,7 +519,19 @@ class MenuScene extends DemoScene
         var i = topIndex + row;
         if (i >= 0 && i < itemCount() && i != cursor) { cursor = i; draw(); }
     }
-    function onMouseMove(x, y, shift) { hoverAt(x, y); }
+    function onMouseMove(x, y, shift)
+    {
+        if (pressY !== void) {
+            var dy = y - pressY;
+            if (!dragging && (dy > 12 || dy < -12)) dragging = true;
+            if (dragging) {
+                var t = pressTop - (dy / itemH \ 1);
+                if (t != topIndex) scroll(t - topIndex);
+                return;
+            }
+        }
+        hoverAt(x, y);
+    }
 
     function onDemoTest() { dm(@"@demotest:menu items=${itemCount()}"); }
 }
@@ -527,6 +558,7 @@ class DemoShell extends Window
     var lastTick;
     var _autoTest;             // -demotest 残フレーム
     var _autoTested;           // demotest 済みシーンの記録
+    var _autoCapDir;           // -demotestcap の保存先 (末尾 "/"、void なら撮らない)
 
     var W = 1280, H = 720, BAR_H = 40;
     var NAV_L, NAV_R;          // ナビ ◀ ▶ のクリック領域 (x範囲)
@@ -547,6 +579,16 @@ class DemoShell extends Window
         lastTick = System.getTickCount();
         _fpsTick = lastTick;
         if (System.getArgument("-demotest") !== void) { _autoTest = 40; _autoTested = %[]; }
+        _autoCapDir = System.getArgument("-demotestcap");
+        if (_autoCapDir !== void) {
+            if (typeof System.captureScreen == "undefined") {
+                dm("@demotest:cap unavailable (System.captureScreen 無し = REPL 無効ビルド)");
+                _autoCapDir = void;
+            } else {
+                if (_autoTest === void) { _autoTest = 40; _autoTested = %[]; }
+                if (_autoCapDir.charAt(_autoCapDir.length - 1) != "/") _autoCapDir += "/";
+            }
+        }
 
         // ホストホットキー: シェル操作に必須のキーを Elements パネルより優先で
         // onKeyDown へ届くよう登録する (モーダルダイアログ表示中は無効=そちら優先、
@@ -790,6 +832,9 @@ class DemoShell extends Window
         // -demotest: 各シーンを数十フレームずつ巡回して検証出力し最後に終了
         if (_autoTest !== void) {
             _autoTest--;
+            // -demotestcap=<dir>: 切替の数フレーム前に画面キャプチャを要求する
+            // (保存は次フレームの present 時なので、切替と同じフレームでは遅い)
+            if (_autoTest == 5 && _autoCapDir !== void) _captureScene();
             if (_autoTest <= 0) {
                 if (typeof _autoTested[index] == "undefined") {
                     _autoTested[index] = 1;
@@ -800,6 +845,16 @@ class DemoShell extends Window
                 else { dm("@demotest:ok"); System.exit(0); }
             }
         }
+    }
+
+    // -demotestcap: 現在シーンを <dir>/sceneNN.png に保存 (NN = 1 始まりのシーン番号)
+    function _captureScene()
+    {
+        var no = string(index + 1);
+        if (no.length < 2) no = "0" + no;
+        var path = _autoCapDir + "scene" + no + ".png";
+        System.captureScreen(path);
+        dm(@"@demotest:cap ${path} ${scene.sceneTitle}");
     }
 
     // --- 入力: ナビはシェル、その他は現在シーンへ ------------------------
@@ -846,8 +901,17 @@ class DemoShell extends Window
     {
         if (scene !== void) scene.onTextInput(text);
     }
+    // Window.onMouse* の x,y はクライアント (描画領域) 座標。 ウィンドウを拡大表示
+    // している環境 (iOS / Android の論理 1920x1080 面、 デスクトップの拡大表示等) では
+    // 1280x720 のレイアウト座標と一致しないので、 プライマリレイヤ座標へ直して扱う
+    // (移動イベントが必ず先に届くので cursorX/Y は押下位置を指している)。
+    function toLayerPos(x, y)
+    {
+        return [primaryLayer.cursorX, primaryLayer.cursorY];
+    }
     function onMouseDown(x, y, button, shift)
     {
+        var p = toLayerPos(x, y); x = p[0]; y = p[1];
         // 下部バーのナビ/メニューをクリック判定
         if (y >= H - BAR_H) {
             if (NAV_MENU !== void && x >= NAV_MENU[0] && x <= NAV_MENU[1]) { switchTo(0); return; }
@@ -856,9 +920,9 @@ class DemoShell extends Window
         }
         if (scene !== void) scene.onMouseDown(x, y, button, shift);
     }
-    function onMouseUp(x, y, button, shift)   { if (scene !== void) scene.onMouseUp(x, y, button, shift); }
-    function onMouseMove(x, y, shift)         { if (scene !== void) scene.onMouseMove(x, y, shift); }
-    function onMouseWheel(shift, delta, x, y) { if (scene !== void) scene.onMouseWheel(shift, delta, x, y); }
+    function onMouseUp(x, y, button, shift)   { var p = toLayerPos(x, y); if (scene !== void) scene.onMouseUp(p[0], p[1], button, shift); }
+    function onMouseMove(x, y, shift)         { var p = toLayerPos(x, y); if (scene !== void) scene.onMouseMove(p[0], p[1], shift); }
+    function onMouseWheel(shift, delta, x, y) { var p = toLayerPos(x, y); if (scene !== void) scene.onMouseWheel(shift, delta, p[0], p[1]); }
 }
 
 // シーン配列からシェルを起動する簡易エントリ (単体/巡回)

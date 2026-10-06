@@ -230,6 +230,20 @@ void NoteRegisteredFamily(const std::string& family)
 		v.push_back(family);
 }
 
+// TVPRegisterElementsHostDefaultFonts で足した family (エンジン既定フォント由来)。
+// theme の並びでは同梱 / 案件フォントより後ろに回す (最後の手段のフォールバック)。
+std::vector<std::string>& HostDefaultFamilies()
+{
+	static std::vector<std::string> v;
+	return v;
+}
+
+bool IsHostDefaultFamily(const std::string& family)
+{
+	auto& v = HostDefaultFamilies();
+	return std::find(v.begin(), v.end(), family) != v.end();
+}
+
 // "Noto Sans JP" / "NotoSansSC" / "Source Han Sans" 等の CJK 向けフォントは
 // theme families の末尾に回し、 1byte 系を先頭に積む (1byte 系を primary に
 // したいという krkrz 慣習)。 family 名のサフィックス語幹マッチ。
@@ -525,6 +539,52 @@ ttstr TVPRegisterElementsFont(const ttstr& family, const ttstr& path,
 }
 
 //---------------------------------------------------------------------------
+// エンジン既定フォントを Elements のフォールバックへ
+//---------------------------------------------------------------------------
+#ifdef KRKRZ_USE_GLYPHWARE
+extern const ttstr& TVPGetDefaultFaceNames();
+bool TVPGlyphwareFontNameAvailable(const std::string& nameU8);
+#endif
+
+void TVPRegisterElementsHostDefaultFonts()
+{
+#ifdef KRKRZ_USE_GLYPHWARE
+	TVPInstallElementsResourceLoader();
+
+	std::string faces = TtstrToUtf8(TVPGetDefaultFaceNames());
+	std::size_t pos = 0;
+	while (pos <= faces.size()) {
+		std::size_t comma = faces.find(',', pos);
+		if (comma == std::string::npos) comma = faces.size();
+		std::string name = faces.substr(pos, comma - pos);
+		pos = comma + 1;
+		auto b = name.find_first_not_of(" \t");
+		auto e = name.find_last_not_of(" \t");
+		if (b == std::string::npos) continue;
+		name = name.substr(b, e - b + 1);
+
+		const auto& reg = RegisteredFamilies();
+		if (std::find(reg.begin(), reg.end(), name) != reg.end()) continue;
+		// 名前が引けないもの (fonts.json 未宣言・OS に無い) は登録しない。
+		// 登録すると gw ローダが名前を storage パスとして開こうとして失敗する。
+		if (!TVPGlyphwareFontNameAvailable(name)) continue;
+
+		// キーはフォント名のまま (ブリッジの openFaceByKey がホスト側で解決する)
+		std::string embedded = cycfi::elements::register_font(name, name,
+			cycfi::elements::font_constants::weight_normal,
+			cycfi::elements::font_constants::slant_normal,
+			cycfi::elements::font_constants::stretch_normal);
+		const std::string& canonical = !embedded.empty() ? embedded : name;
+		if (!IsHostDefaultFamily(canonical)) HostDefaultFamilies().push_back(canonical);
+		NoteRegisteredFamily(canonical);
+		TVPAddLog(ttstr(TJS_W("ElementsResourceLoader: engine default font as fallback: ")) +
+			Utf8ToTtstr(canonical));
+	}
+#endif
+	// glyphware 無しのビルドは gw ローダが無く、 名前をキーに開けないので何もしない
+}
+
+//---------------------------------------------------------------------------
 // Theme override
 //
 // Elements の default theme は label_font="Open Sans" / heading_font="Roboto" /
@@ -603,13 +663,17 @@ void TVPApplyRegisteredFontsToElementsTheme()
 	// は ThorVG の per-codepoint fallback で CJK 系フォントに自動的に切替わる。
 	// Emoji フォントは英数グリフも持っていて primary になると字間が崩れるので
 	// 必ず末尾 (絵文字 codepoint の fallback 専用)。
+	// エンジン既定フォント由来 (host) は CJK 群の後ろ・Emoji の前。 同梱 / 案件の
+	// フォントが持つ文字はそちらが勝ち、 誰も持たない文字だけ OS 等へ落ちる。
 	std::vector<const std::string*> latin;
 	std::vector<const std::string*> cjk;
+	std::vector<const std::string*> host;
 	std::vector<const std::string*> emoji;
 	for (const auto& f : fams) {
 		// elements_basic はアイコン専用フォント (theme.icon_font が参照)。
 		// 本文フォントの fallback 連結に混ぜない。
 		if (f == "elements_basic") continue;
+		if (IsHostDefaultFamily(f)) { host.push_back(&f); continue; }
 		if (f.find("Emoji") != std::string::npos ||
 		    f.find("emoji") != std::string::npos) { emoji.push_back(&f); continue; }
 		(IsCJKFamilyName(f) ? cjk : latin).push_back(&f);
@@ -624,6 +688,7 @@ void TVPApplyRegisteredFontsToElementsTheme()
 	};
 	for (auto* s : latin) append(s);
 	for (auto* s : cjk)   append(s);
+	for (auto* s : host)  append(s);
 	for (auto* s : emoji) append(s);
 
 	ApplyThemeFromStoredFamilies();

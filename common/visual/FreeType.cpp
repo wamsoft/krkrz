@@ -301,6 +301,24 @@ static void TVPLoadFont( FT_Open_Args& arg, std::vector<FontInfo*>& fonts, std::
 					info->enc_flags |= TVP_ENC_APPLE_ROMAN;
 				}
 			}
+			// ファミリ名だけでも引けるようにする (Regular の書体に限る)。 face 名は
+			// "family style" 形式なので、 OS のフォント名 ("Meiryo" 等) や fonts.json の
+			// family 名で指定されると一致しなかった
+			if( std::string(face->style_name) == "Regular" ) {
+				tjs_string fname;
+				TVPEncodeUTF8ToUTF16( fname, std::string(face->family_name) );
+				if( !fname.empty() && fname != wname ) {
+					FontInfo* ainfo = new FontInfo( *info );
+					ainfo->facename = fname;
+					fonts.push_back( ainfo );
+					if( faces ) faces->push_back( fname );
+					if( fontmap ) {
+						tjs_uint styleflag = (face->style_flags&FT_STYLE_FLAG_ITALIC) ? TVP_TF_ITALIC : 0;
+						styleflag |= (face->style_flags&FT_STYLE_FLAG_BOLD ) ? TVP_TF_BOLD : 0;
+						fontmap->insert( std::map<FaceKey, FontInfo*>::value_type( FaceKey(fname,styleflag), ainfo ) );
+					}
+				}
+			}
 		}
 		if(face) FT_Done_Face(face), face = nullptr;
 	}

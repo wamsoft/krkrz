@@ -31,6 +31,7 @@ bool TVPTakeScreenCaptureRequest(tTVPScreenCaptureReq& out);
 
 //! @brief ARGB8888 (メモリ上 B,G,R,A 並び) バッファを画像ファイルに保存する。
 //!        pitch_bytes は 1 行のバイト数。 mode は TVPSaveImage のモード ("png" 等)。
+//!        画面の読み戻しなので A は無視し、 保存画像は常に不透明 (A=255) にする。
 //! @return 成功なら true。
 bool TVPSaveCapturedImage(const ttstr& path, const void* pixels,
                           int w, int h, int pitch_bytes,

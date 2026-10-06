@@ -34,6 +34,8 @@ public:
   virtual int32_t Height() const  = 0;
   virtual int64_t Duration() const  = 0;
   virtual int64_t Position() const  = 0;
+  // 映像のフレームレート (fps)。不明なら 0 (コマ番号を出せない実装は既定のまま)
+  virtual double FrameRate() const { return 0.0; }
   virtual bool IsPlaying() const  = 0;
   virtual bool Loop() const  = 0;
 

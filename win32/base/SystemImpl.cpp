@@ -26,6 +26,7 @@
 #include "InputDialog.h"   // TVPInputString
 #ifdef KRKRZ_USE_REPL_FILECHANNEL
 #include "ReplModal.h"   // TVPReplConfirm / TVPReplInputString
+#endif
 
 //---------------------------------------------------------------------------
 // モニタ情報 (doc/WindowState.md)
@@ -104,7 +105,6 @@ static HWND TVPGetHWNDFromVariant(tTJSVariant *v)
 	return reinterpret_cast<HWND>((intptr_t)(tjs_int64)hv);
 }
 
-#endif
 #ifdef KRKRZ_REPL_WEB
 #include "ReplWebServer.h"   // TVPReplWeb::GetURL (System.replWebURL)
 #endif

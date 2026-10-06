@@ -189,6 +189,7 @@ public:
 	int32_t Height() const override { return mHeight; }
 	int64_t Duration() const override { return mDurationUs; }
 	int64_t Position() const override { return mCurPosUs.load(); }
+	double FrameRate() const override { return mFps; }
 	bool IsPlaying() const override { return mState.load() == stPlaying; }
 	bool Loop() const override { return mLoop.load(); }
 
@@ -256,6 +257,7 @@ private:
 	{
 		int64_t prevPtsMs = 0;
 		bool havePrev = false;
+		bool presented = false;   // シーク (巻き戻し) 以降に 1 コマでも提示したか
 
 		for (;;) {
 			{
@@ -265,7 +267,11 @@ private:
 			if (mTerminate) break;
 
 			if (mDoSeek.exchange(false)) {
-				plm_seek_frame(mPlm, mSeekUs.load() / 1000000.0, TRUE);
+				// 先頭へは rewind で戻す。plm_seek_frame は目的のフレームをデコードして
+				// 返す (= 消費する) ので、次のデコードがコマ 1 から始まりコマ 0 が飛ぶ
+				if (mSeekUs.load() <= 0) plm_rewind(mPlm);
+				else plm_seek_frame(mPlm, mSeekUs.load() / 1000000.0, TRUE);
+				presented = false;
 				mSink.Flush();
 				mCurPosUs = mSeekUs.load();
 				havePrev = false;
@@ -281,7 +287,19 @@ private:
 			if (mHasAudio && !prepareOnly) PumpAudio();
 
 			plm_frame_t *frame = plm_decode_video(mPlm);
+			if (!frame && presented && !prepareOnly && mFps > 0.0) {
+				// 最終フレームも 1 コマ分の時間は見せてから終端 / ループの巻き戻しへ。
+				// 提示した直後に終端にすると、巻き戻した先頭コマがすぐ上書きして
+				// 最終コマの表示時間がほぼ 0 になる
+				int64_t frameMs = (int64_t)(1000.0 / mFps + 0.5);
+				if (frameMs > 1000) frameMs = 1000;
+				std::unique_lock<std::mutex> lk(mMtx);
+				mCond.wait_for(lk, std::chrono::milliseconds(frameMs), [&]{ return Interrupted(); });
+			}
 			if (!frame) {
+				if (mTerminate) break;
+				if (Interrupted()) continue;   // 待っている間にシーク / 停止 / 一時停止された
+				presented = false;
 				// 終端。ループ指定ならクロックを取り直して先頭へ、でなければ Ended。
 				if (mLoop.load()) {
 					plm_rewind(mPlm);
@@ -334,8 +352,9 @@ private:
 			if (mTerminate) break;
 			if (mState.load() != stPlaying) continue;   // stop/pause/seek 割り込み
 
+			mCurPosUs = ptsMs * 1000;   // 配送より前 (コールバック内の Position が今のコマを指す)
 			DeliverFrame(frame);
-			mCurPosUs = ptsMs * 1000;
+			presented = true;
 			if (prepareOnly) {
 				// 1 コマ出したので停止状態へ戻す。音声は一度も Start していない。
 				// デコード位置は進んでいるので先頭へ戻す (直後の Play() を頭から)。

@@ -460,6 +460,26 @@ widget の初期値 (`initial` / `value`) は出ない — 「誰も触ってい
 パス単位のキャッシュに乗らない (中身を書き換えると同じ絵を使う他の画面を
 巻き添えにするため) 代わりに、 画面をまたいだ使い回しは効かない。
 
+### 読み上げ (スクリーンリーダー対応、 static)
+
+overlay の画面を OS のアクセシビリティ API (UIA / NSAccessibility / AT-SPI) へ
+出す (AccessKit。 `KRKRZ_USE_A11Y`、 デスクトップの通常ビルドで既定 ON)。
+画面 JSON の `"a11y"` キー (Elements 側 `docs/accessibility.md` §4) がそのまま効く。
+仕様と使い方の全体は umbrella の `doc/specification/accessibility.md`。
+
+| 口 | 内容 |
+|---|---|
+| `ElementsDialog.announce(text[, assertive])` | 読ませる (最前面ダイアログの live region。 無ければゲーム本体の slot の常設 live region) |
+| `ElementsDialog.a11yActive` | スクリーンリーダーがツリーを問い合わせ済みか (読み取り専用) |
+| `ElementsDialog.onA11yActiveChanged(active)` | 上が変わったときに呼ばれる (描画の外) |
+| `ElementsDialog.a11yMode` | `"auto"` (既定) / `"off"` |
+| `ElementsDialog.a11yLabel` | ウィンドウ (根) の名前 |
+| `ElementsDialog.setGameA11y(nodes[, focus])` / `clearGameA11y()` | ゲーム本体 (Layer 描画の UI) のノードを渡す / 外す |
+| `ElementsDialog.onGameA11yAction(id, action, arg)` | そのノードへの操作 |
+| `ElementsDialog.a11yLayers` | Layer のフォーカス連鎖と ElementsPanel を自動で載せる (既定 false) |
+
+REPL では `.a11y` / `.a11ylog` / `.a11ydo` / `.say` ([REPL.md](REPL.md))。
+
 ### フォーカスリング (static、 `ElementsDialog.focusRing`)
 
 フォーカス中の要素に elements が描く汎用の枠 (青い角丸)。 **krkrz では既定
@@ -1079,6 +1099,36 @@ ElementsDialog.clearHotKeys();
 必須の ESC / PgUp / PgDn / パッド B / LB / RB をホットキー登録する。 パッドの
 十字 / A はホットキーにしない = フォーカスパネルのウィジェット操作に流れ、
 パネルが無いシーンでは素通しでシェルに届く。
+
+### キー捕捉 (ElementsDialog.beginKeyCapture)
+
+「次に押されたキーをそのまま受け取る」ための仕組み。 キー割り当て設定画面の
+「割り当てるキーを押してください」のように、 ウィジェットの操作 (フォーカス移動・
+決定・Esc で閉じる等) に使わせず、 生のキーを TJS で判定したいときに使う。
+
+```tjs
+dlg.beginKeyCapture();   // 捕捉開始 (非アクティブなら false)
+dlg.endKeyCapture();     // 捕捉終了
+dlg.onKeyCapture = function(key, shift) { ... };   // 捕捉したキー
+```
+
+- 捕捉中のインスタンスが**キーボードフォーカスを持っている間**、 キー押下は
+  `RouteVk` (ウィジェットへの配送) より前で横取りされ、 `onKeyCapture(key, shift)` へ
+  届いて消費される。 **モーダルの上でも、 ホストホットキーより優先**する
+  (ただし最上位ホットキー `System.registerHotKey` はこの外側なので先に効く)。
+- `key` は VK コード、 `shift` は `ss*` の組合せ。 **オートリピートも
+  `ssRepeat` 付きで届く** (無視するかは受け手が決める)。 Shift / Ctrl / Alt の
+  単独押しも届く。
+- **左以外のマウスボタン** (右 / 中 / X) の押下も `VK_RBUTTON` 等で届く (右クリックで
+  取り消す等)。 左クリックは従来どおりウィジェットへ配送される。
+- キーアップと文字入力 (`onKeyPress` / テキスト) は捕捉中は捨てる。
+- 捕捉したキーは、 他のインスタンスの「表示後に押下を見た VK」から外す。 キーを
+  押したまま捕捉を終えて (ダイアログを閉じて) も、 背面の画面へリピートが漏れない。
+- `endKeyCapture()` を呼ぶか、 ダイアログが閉じれば捕捉は終わる。
+
+典型的な使い方は、 説明文だけのダイアログを設定画面の上にモーダルで重ね、 その
+ダイアログで `beginKeyCapture()` する形。 `onKeyCapture` の中から `close()` してよい
+(破棄は次フレーム)。
 
 `tTVPElementsDialogManager::ForwardKeyDown` / `ForwardKeyUp` は VK code を 2 種に振り分ける (`RouteVk`):
 

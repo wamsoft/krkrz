@@ -4,6 +4,7 @@
 #ifdef KRKRZ_USE_GLYPHWARE
 
 #include "GlyphwareHost.h"      // resolve / effective key / build chain
+#include "glyphware/Layout.h"   // glyphware::isDefaultIgnorable (無い文字の代用)
 #include "FontVariations.h"     // 可変軸の実効座標 (Font.weight / Font.variations)
 #include "LayerBitmapIntf.h"    // tTVPNativeBaseBitmap::GetFont
 #include "CharacterSet.h"       // TVPUtf16ToUtf8
@@ -133,6 +134,13 @@ bool GlyphwareFontRasterizer::ResolveGlyph(tjs_uint32 codepoint, int& faceIdx,
 		if (!Chain[i]) continue;
 		tjs_uint32 g = Chain[i]->glyphIndex(static_cast<char32_t>(codepoint));
 		if (g) { faceIdx = i; gid = g; return true; }
+	}
+	// どの face にも無い文字は U+FFFD、 それも無ければ '?' で描く (glyphware の
+	// レイアウトと同じ規則)。 制御文字や結合子など描かない文字はそのまま (.notdef)
+	if (codepoint != 0xFFFD && codepoint != '?' &&
+	    !glyphware::isDefaultIgnorable(static_cast<char32_t>(codepoint))) {
+		if (ResolveGlyph(0xFFFD, faceIdx, gid, false)) return true;
+		if (ResolveGlyph('?', faceIdx, gid, false)) return true;
 	}
 	return false;
 }

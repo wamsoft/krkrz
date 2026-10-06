@@ -360,6 +360,8 @@ bool tTVPPlugin::Uninit()
 		//     Win  : GetModuleHandleExW(PIN|FROM_ADDRESS, SDL_LoadFunction(h,"V2Link"), &m)
 		//   [本筋] shutdown前にプラグインDLLを FreeLibrary している正確なコード経路を
 		//     特定し、その解放を engine 終了後に回すのが妥当(PINは対症的な広い回避策)。
+		//   → 2026-10-03: SDL3Application::LoadLibrary で pin するようにした (WIN版と同じ)。
+		//     FreeLibrary は呼ぶが DLL はプロセス終了までアンマップされない
 		Application->FreeLibrary(Instance);
 	}
 	if (Holder) {

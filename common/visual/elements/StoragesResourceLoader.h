@@ -60,6 +60,15 @@ void TVPRegisterElementsFontsFromWinResources();
 ttstr TVPRegisterElementsFont(const ttstr& family, const ttstr& path,
 	int weight = 40, int slant = 0, int stretch = 50);
 
+//! @brief エンジンの既定フォント (Font の既定 face 列 = TVPGetDefaultFaceNames) を
+//!        Elements にも最後の手段のフォールバックとして登録する。 同梱フォントが
+//!        Roboto だけのビルドでも、 fonts.json 宣言フォントや OS の日本語フォントで
+//!        日本語が描けるようにするため。 キーはフォント名のまま渡し、 ホスト側
+//!        (fonts.json 宣言名 → storage → OS / GDI) で解決する。 登録した family は
+//!        theme の並びで同梱 / 案件フォントより後ろ (Emoji の前) に回す。
+//!        EnsureRuntimeInitialized が呼ぶ。
+void TVPRegisterElementsHostDefaultFonts();
+
 //! @brief これまでに登録した family を全部並べた families 文字列で
 //!        cycfi::elements の theme.label_font / heading_font / text_box_font /
 //!        mono_spaced_font / system_font を上書きする。 ThorVG FT loader の

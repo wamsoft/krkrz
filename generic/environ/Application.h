@@ -305,6 +305,13 @@ public:
 	virtual const tjs_string& ProjectPath() const = 0; //< プロジェクトデータのパス
 	virtual const tjs_string& LogPath() const = 0; //< ログデータのパス
 
+	// OS 標準のユーザーフォルダ (TJS: System.personalPath / System.appDataPath)。
+	// どちらもアプリ固有のサブフォルダではなく OS 標準フォルダそのもの (WINVER の
+	// Documents / RoamingAppData と同じ意味)。末尾 '/' 付きのネイティブパスを返す。
+	// 空 = そのプラットフォームに専用フォルダが無い (System 側は exePath を返す)。
+	virtual tjs_string PersonalPath() const { return tjs_string(); } //< 文書フォルダ
+	virtual tjs_string AppDataPath() const { return tjs_string(); }  //< アプリデータの基点フォルダ
+
 	virtual const std::string& getLanguage() const = 0; //< 言語名取得
 	virtual const std::string& getCountry() const = 0; //< 国名取得
 

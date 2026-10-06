@@ -47,6 +47,8 @@ public:
 	// どうかは WantsVarNotify が答える (watchVars / onVar 実装の有無で決まる)。
 	void OnVar(const ttstr& name, const ttstr& value) override;
 	bool WantsVarNotify(std::vector<ttstr>& out_names) override;
+	// キー捕捉中の押下で TJS の onKeyCapture(key, shift) を起動する。
+	void OnKeyCapture(tjs_uint vk, tjs_uint32 shift) override;
 
 	// TJS から呼ばれる
 	// modal: -1 = 省略 (後方互換で grabFocus に追従) / 0 = 非モーダル / 1 = モーダル。
@@ -67,6 +69,8 @@ public:
 	// id 指定の widget へフォーカスを移す (Agent.dialogFocus の instance 版)。
 	// input_box は編集フォーカス (キャレット + text 受理) になる。
 	bool FocusWidget(const ttstr& id);
+	// キー捕捉の開始 / 終了 (beginKeyCapture / endKeyCapture)。
+	bool SetKeyCapture(bool on);
 	bool ActivateWidget(const ttstr& id);
 
 	//! ElementsDialog.watchVars の状態。 どの変数の変化を onVar で受けるか。
