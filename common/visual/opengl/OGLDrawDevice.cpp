@@ -252,6 +252,12 @@ void TJS_INTF_METHOD tTVPOGLDrawDevice::Show()
 		CanvasInstance->EndDrawing();
 	}
 
+#ifndef __WINVER__
+	// 再生矩形が指定された動画はゲーム画面 (レイヤ / Canvas) の上へ重ねる
+	// (画面を覆う動画は ShowVideo 側)
+	RenderPartialVideo();
+#endif
+
 	// Layer 合成完了直後・Swap 直前に Elements ダイアログをオーバーレイ
 	PresentDialogOverlay();
 
@@ -670,18 +676,30 @@ tTVPOGLDrawDevice::ShowVideo()
 	// pull するだけ。
 	// overlay の Visible=false (WINVER 仕様: 既定 false) の間は画面を占有せず、false を返して
 	// 通常のゲーム描画へ戻す。WINVER が RenderVideoFrame 内で Visible を判定するのと等価。
-	if( !VideoPresenter ) return false;
-	if( !VideoPresenter->IsVisible() ) return false;
+	// 再生矩形が指定されている (画面を覆わない) ときも false を返し、Show() がゲーム画面を
+	// 描いてから RenderPartialVideo() で動画を重ねる。
+	if( !VideoPresenter || !VideoPresenter->IsVisible() || !VideoPresenter->CoversScreen() ) return false;
 	glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+	VideoPresenter->RenderVideoFrame(MakeVideoContext());
+	return true;
+}
+
+tTVPGLVideoPresenterContext tTVPOGLDrawDevice::MakeVideoContext()
+{
 	tTVPGLVideoPresenterContext ctx;
 	ctx.TextureDrawer = &TextureDrawer;
 	ctx.TargetWidth   = SurfaceWidth;
 	ctx.TargetHeight  = SurfaceHeight;
 	ctx.DestRect      = ToPhysicalRect(DestRect, SurfaceWidth, SurfaceHeight);
 	{	tjs_int sw = 0, sh = 0; GetSrcSize( sw, sh ); ctx.SrcWidth = sw; ctx.SrcHeight = sh; }
-	VideoPresenter->RenderVideoFrame(ctx);
-	return true;
+	return ctx;
+}
+
+void tTVPOGLDrawDevice::RenderPartialVideo()
+{
+	if( !VideoPresenter || !VideoPresenter->IsVisible() || VideoPresenter->CoversScreen() ) return;
+	VideoPresenter->RenderVideoFrame(MakeVideoContext());
 }
 
 void

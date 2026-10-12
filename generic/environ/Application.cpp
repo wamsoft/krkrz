@@ -37,9 +37,7 @@
 #include "StorageIntf.h"
 #include "ScriptMgnIntf.h"
 
-#ifdef KRKRZ_HAS_ELEMENTS
-#include "elements/ElementsUserConfig.h"
-#endif
+#include "UserConfig.h"   // -userconf (Elements の有無に関係なく使う)
 
 #include <picojson/picojson.h>
 #include <algorithm>
@@ -147,71 +145,84 @@ tTVPApplication::InitArgs(int argc, tjs_char **argv)
 
 extern void TVPLoadStaticPluigins(void);
 
+// メッセージ資材 (messages*.json) の読み込み。1 回だけ読む (読めたら以降は何もしない)。
+// 起動オプションの解決 (TVPGetCommandLine) は設定ファイルの読み込み結果などを
+// メッセージ定数でログに出すので、それより前に済ませる必要がある。SDL 版の main は
+// 音声の初期化 (起動オプションを読む) より前にこれを呼ぶ。InitializeApplication も
+// 先頭で呼ぶ (読めていなければここで読んでエラーを返す)。
+bool tTVPApplication::LoadMessageResource()
+{
+	if (MessageResourceLoaded) return true;
+	// メッセージ資材の言語選択。
+	// 言語タグは -language= (生引数のみ) → OS 言語 (TVPGetSystemLanguage) の順。
+	// この時点では TVPGetCommandLine (config.cf 込みの引数解決) をまだ呼べない
+	// — 解決処理自体がメッセージ定数でログを出すため、メッセージ読込を先に
+	// 済ませる必要がある — ので、生引数 _args を直接走査する。
+	tjs_string langTag;
+	{
+		static const tjs_char prefix[] = TJS_W("-language=");
+		const size_t prefix_len = sizeof(prefix)/sizeof(tjs_char) - 1;
+		for (const tjs_string &a : _args) {
+			if (a.compare(0, prefix_len, prefix) == 0) {
+				langTag = a.substr(prefix_len);
+				break;
+			}
+		}
+		if (langTag.empty()) langTag = TVPGetSystemLanguage().AsStdString();
+	}
+	tjs_string loaded_path;
+	try {
+		// 候補 suffix (例: en-US → "-en" → "") を順に試し、最初に存在した
+		// ファイルを読む。存在するのに壊れている場合はエラー (握り潰さない)。
+		// 存在確認を挟むのは、TVPReadStream (TVPCreateStream) が不在ファイルで
+		// 例外を投げるとフォールバックが続行できず起動全体が失敗するため。
+		for (const std::string &sfx : TVPGetMessageResourceSuffixesForTag(langTag)) {
+			tjs_string wsfx(sfx.begin(), sfx.end());
+			tjs_string path = Application->ResourcePath() + TJS_W("messages") + wsfx + TJS_W(".json");
+			if (!TVPIsExistentStorage(ttstr(path.c_str()))) continue;
+			tjs_uint64 flen;
+			auto buf = TVPReadStream(path.c_str(), &flen);
+			if (buf.get() == nullptr) continue;
+			picojson::value v;
+			std::string errorstr;
+			picojson::parse( v, (const char*)buf.get(), (const char*)buf.get()+flen, &errorstr );
+			if (errorstr.empty() != true ) {
+				tjs_string errmessage;
+				if (TVPUtf8ToUtf16( errmessage, errorstr ) ) {
+					TVPAddImportantLog( errmessage.c_str() );
+				}
+				return false;
+			}
+			TVPLoadMessage(v.get<picojson::array>());
+			loaded_path = path;
+			break;
+		}
+		if (loaded_path.empty()) {
+			TVPAddImportantLog( TJS_W("failed to load message file") );
+			return false;
+		}
+		{
+			std::string path8;
+			TVPUtf16ToUtf8( path8, loaded_path );
+			std::string tag8;
+			TVPUtf16ToUtf8( tag8, langTag );
+			TVPLOG_INFO( "message file: {} (language tag: {})", path8,
+			             tag8.empty() ? "unknown" : tag8 );
+		}
+	} catch( const std::exception &e ) {
+		std::string path8;
+		TVPUtf16ToUtf8( path8, Application->ResourcePath() + TJS_W("messages.json") );
+		TVPLOG_ERROR("failed to load message file {}: {}", path8, e.what());
+		return false;
+	}
+	MessageResourceLoaded = true;
+	return true;
+}
+
 bool tTVPApplication::InitializeApplication() 
 {
 	try {
-		// メッセージ資材の言語選択。
-		// 言語タグは -language= (生引数のみ) → OS 言語 (TVPGetSystemLanguage) の順。
-		// この時点では TVPGetCommandLine (config.cf 込みの引数解決) をまだ呼べない
-		// — 解決処理自体がメッセージ定数でログを出すため、メッセージ読込を先に
-		// 済ませる必要がある — ので、生引数 _args を直接走査する。
-		tjs_string langTag;
-		{
-			static const tjs_char prefix[] = TJS_W("-language=");
-			const size_t prefix_len = sizeof(prefix)/sizeof(tjs_char) - 1;
-			for (const tjs_string &a : _args) {
-				if (a.compare(0, prefix_len, prefix) == 0) {
-					langTag = a.substr(prefix_len);
-					break;
-				}
-			}
-			if (langTag.empty()) langTag = TVPGetSystemLanguage().AsStdString();
-		}
-		tjs_string loaded_path;
-		try {
-			// 候補 suffix (例: en-US → "-en" → "") を順に試し、最初に存在した
-			// ファイルを読む。存在するのに壊れている場合はエラー (握り潰さない)。
-			// 存在確認を挟むのは、TVPReadStream (TVPCreateStream) が不在ファイルで
-			// 例外を投げるとフォールバックが続行できず起動全体が失敗するため。
-			for (const std::string &sfx : TVPGetMessageResourceSuffixesForTag(langTag)) {
-				tjs_string wsfx(sfx.begin(), sfx.end());
-				tjs_string path = Application->ResourcePath() + TJS_W("messages") + wsfx + TJS_W(".json");
-				if (!TVPIsExistentStorage(ttstr(path.c_str()))) continue;
-				tjs_uint64 flen;
-				auto buf = TVPReadStream(path.c_str(), &flen);
-				if (buf.get() == nullptr) continue;
-				picojson::value v;
-				std::string errorstr;
-				picojson::parse( v, (const char*)buf.get(), (const char*)buf.get()+flen, &errorstr );
-				if (errorstr.empty() != true ) {
-					tjs_string errmessage;
-					if (TVPUtf8ToUtf16( errmessage, errorstr ) ) {
-						TVPAddImportantLog( errmessage.c_str() );
-					}
-					return false;
-				}
-				TVPLoadMessage(v.get<picojson::array>());
-				loaded_path = path;
-				break;
-			}
-			if (loaded_path.empty()) {
-				TVPAddImportantLog( TJS_W("failed to load message file") );
-				return false;
-			}
-			{
-				std::string path8;
-				TVPUtf16ToUtf8( path8, loaded_path );
-				std::string tag8;
-				TVPUtf16ToUtf8( tag8, langTag );
-				TVPLOG_INFO( "message file: {} (language tag: {})", path8,
-				             tag8.empty() ? "unknown" : tag8 );
-			}
-		} catch( const std::exception &e ) {
-			std::string path8;
-			TVPUtf16ToUtf8( path8, Application->ResourcePath() + TJS_W("messages.json") );
-			TVPLOG_ERROR("failed to load message file {}: {}", path8, e.what());
-			return false;
-		}
+		if (!LoadMessageResource()) return false;
 
 		// 初期カレントディレクトリ設定
 		TVPSetCurrentDirectory( AppPath() );
@@ -222,14 +233,12 @@ bool tTVPApplication::InitializeApplication()
 		// アーカイブデリミタ、msgmap.tjsの実行 と言った初期化処理
 		TVPInitializeBaseSystems();
 
-		// -userconf 付きで起動されたかどうかチェックする。Android だと Activity 分けた方が賢明
-		// if(TVPExecuteUserConfig()) return;
-#ifdef KRKRZ_HAS_ELEMENTS
-		if (TVPExecuteElementsUserConfig()) {
+		// -userconf 付きで起動されたらブラウザで設定画面を開き、ゲームは起動しない
+		// (UserConfig.h。デスクトップのみ。KRKRZ_USERCONF_WEB が無いビルドでは何もしない)
+		if (TVPExecuteUserConfig()) {
 			TVPSetUserConfigExitFlag(true);
 			return false; // SDL_AppInit 側で SDL_APP_SUCCESS として扱う
 		}
-#endif
 
 		// 非同期画像読み込みは後で実装する
 		image_load_thread_ = new tTVPAsyncImageLoader();

@@ -16,6 +16,7 @@
 #include <thread>
 
 #include "SysInitImpl.h"
+#include "UserConfig.h"
 #include "StorageIntf.h"
 #include "ConfigLine.h"
 #include "StorageImpl.h"
@@ -644,12 +645,20 @@ static tjs_string TVPGetUserConfigFileName()
 	if(!TVPSplitExePathForConfig(dir, stem)) return tjs_string();
 	tjs_string datapath = TVPNativeDataPath;
 	if(datapath.empty()) return tjs_string();
+	// user:// などローカルでない場所は対象外 (ローカルのファイルとして読み書きできないため)
+	if(datapath.find(TJS_W("://")) != tjs_string::npos) return tjs_string();
 	if(datapath.back() != TJS_W('/') && datapath.back() != TJS_W('\\'))
 		datapath += TJS_W("/");
 	return datapath + stem + TJS_W(".cfu");
 #else
 	return tjs_string();
 #endif
+}
+//---------------------------------------------------------------------------
+// 設定画面 (-userconf) が書く <exe名>.cfu のフルパス (UserConfig.h)
+tjs_string TVPGetUserConfigFilePath()
+{
+	return TVPGetUserConfigFileName();
 }
 //---------------------------------------------------------------------------
 static std::vector<std::string> * TVPGetConfigFileOptions(const tjs_string& filename)

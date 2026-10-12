@@ -66,6 +66,13 @@ public:
 	//! @brief 現在の動画フレーム (+ mixer 追加画像) を ctx.RenderTarget へ描画する。
 	//! @return 何か描いたら true。まだフレームが無い等で描かなければ false。
 	virtual bool TJS_INTF_METHOD RenderVideoFrame( const tTVPVideoPresenterContext & ctx ) = 0;
+
+	//! @brief overlay が表示状態か。false の間 DrawDevice はゲーム画面を描く。既定実装は true。
+	virtual bool TJS_INTF_METHOD IsVisible() const { return true; }
+
+	//! @brief 動画が画面全体を覆うか (再生矩形が未指定)。false のとき DrawDevice は
+	//!        ゲーム画面を描いてから RenderVideoFrame で動画を重ねる。既定実装は true。
+	virtual bool TJS_INTF_METHOD CoversScreen() const { return true; }
 };
 
 //! @brief DrawDevice 側が実装する presenter 登録インターフェース

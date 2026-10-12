@@ -1581,7 +1581,7 @@ void Start()
 	// **端末から起動しつつブラウザも開きたい**ときや、 逆に GUI 起動で開かせ
 	// たくないときはこれを使う。 -replwebidle と組むとブラウザ = アプリになる。
 	bool loopback = (host == "127.0.0.1" || host == "localhost" || host == "::1");
-#ifdef _WIN32
+#ifdef TVP_WIN32_DESKTOP
 	bool has_console = (::GetConsoleWindow() != NULL);
 #else
 	bool has_console = true; // 非 Windows は自動起動しない (ログのみ)

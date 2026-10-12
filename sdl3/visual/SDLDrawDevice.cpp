@@ -158,7 +158,7 @@ void tTVPSDLDrawDevice::InitRenderer(SDL_Window *sdl_wnd)
 {
 	// 起動オプション `-renderer=<name>` で SDL3 backend を明示指定可能。空ならデフォルト。
 	const char *requested = TVPSDLRendererName.empty() ? NULL : TVPSDLRendererName.c_str();
-	mRenderer = SDL_CreateRenderer(sdl_wnd, requested);
+	mRenderer = CreateSDLRenderer(sdl_wnd, requested);
 	if (!mRenderer) {
 		const char *err = SDL_GetError();
 		TVPLOG_ERROR("tTVPSDLDrawDevice::InitRenderer() failed (requested={}):{}",
@@ -227,11 +227,23 @@ void tTVPSDLDrawDevice::InitRenderer(SDL_Window *sdl_wnd)
 		mUseFlipOnShow, SDL_GetPixelFormatName(mPreferredTextureFormat));
 
 	CreateTexture();
+	OnRendererCreated();
+}
+//---------------------------------------------------------------------------
+SDL_Renderer * tTVPSDLDrawDevice::CreateSDLRenderer(SDL_Window *sdl_wnd, const char *requested)
+{
+	return SDL_CreateRenderer(sdl_wnd, requested);
+}
+//---------------------------------------------------------------------------
+void tTVPSDLDrawDevice::DestroySDLRenderer(SDL_Renderer *renderer)
+{
+	SDL_DestroyRenderer(renderer);
 }
 //---------------------------------------------------------------------------
 void tTVPSDLDrawDevice::DestroyRenderer()
 {
 	if (mRenderer) {
+		OnRendererDestroying();
 		// presenter が保持するテクスチャは renderer 破棄前に手放させる。
 		VideoPresenter = nullptr;
 		DestroyTexture();
@@ -239,7 +251,7 @@ void tTVPSDLDrawDevice::DestroyRenderer()
 			SDL_DestroyTexture(mWallpaperTexture);
 			mWallpaperTexture = nullptr;
 		}
-		SDL_DestroyRenderer(mRenderer);
+		DestroySDLRenderer(mRenderer);
 		mRenderer = nullptr;
 	}
 }
@@ -375,19 +387,10 @@ void TJS_INTF_METHOD tTVPSDLDrawDevice::Show()
 		SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
 		{
 			KRKRZ_RENDER_STATS_SCOPE(TVPRenderStatsAddShowTex);
-			if (mUseFlipOnShow) {
-				// GPU renderer 経路: テクスチャは DIB のメモリ並び (bottom-up) を保持。
-				// 表示時の上下反転は GPU 上のシェーダ/UV で実質ゼロコストなので、
-				// SDLTextureUpdateRect::Update を memcpy なしの最短アップロードにしてここで反転。
-				SDL_RenderTextureRotated(renderer, Texture, NULL, &dstRect, 0.0, NULL, SDL_FLIP_VERTICAL);
-			} else {
-				// SW renderer 経路: SDL_RenderTextureRotated は SW_RenderCopyEx を経由し、
-				// 内部で final_rect サイズの中間サーフェスを毎フレーム alloc する。
-				// SDL_RenderTexture (= SW_RenderCopy) に切り替えて中間 alloc を避ける。
-				// テクスチャ側は Update で top-down に詰め直してある。
-				SDL_RenderTexture(renderer, Texture, NULL, &dstRect);
-			}
+			RenderContent(renderer, dstRect);
 		}
+		// 再生矩形が指定された動画はゲーム画面の上へ重ねる (画面を覆う動画は ShowVideo 側)
+		RenderPartialVideo();
 		// Layer 合成完了後・SDL_RenderPresent 直前に Elements ダイアログをオーバーレイ。
 		// (ゲーム描画より前に置くとそのあとの flip/copy で上書きされる)
 		PresentDialogOverlay();
@@ -407,6 +410,22 @@ void TJS_INTF_METHOD tTVPSDLDrawDevice::Show()
 	});
 }
 
+//---------------------------------------------------------------------------
+void tTVPSDLDrawDevice::RenderContent(SDL_Renderer *renderer, const SDL_FRect &dstRect)
+{
+	if (mUseFlipOnShow) {
+		// GPU renderer 経路: テクスチャは DIB のメモリ並び (bottom-up) を保持。
+		// 表示時の上下反転は GPU 上のシェーダ/UV で実質ゼロコストなので、
+		// SDLTextureUpdateRect::Update を memcpy なしの最短アップロードにしてここで反転。
+		SDL_RenderTextureRotated(renderer, Texture, NULL, &dstRect, 0.0, NULL, SDL_FLIP_VERTICAL);
+	} else {
+		// SW renderer 経路: SDL_RenderTextureRotated は SW_RenderCopyEx を経由し、
+		// 内部で final_rect サイズの中間サーフェスを毎フレーム alloc する。
+		// SDL_RenderTexture (= SW_RenderCopy) に切り替えて中間 alloc を避ける。
+		// テクスチャ側は Update で top-down に詰め直してある。
+		SDL_RenderTexture(renderer, Texture, NULL, &dstRect);
+	}
+}
 //---------------------------------------------------------------------------
 void TJS_INTF_METHOD tTVPSDLDrawDevice::StartBitmapCompletion(iTVPLayerManager * manager)
 {
@@ -563,6 +582,32 @@ tTVPSDLDrawDevice::Render(std::function<void(SDL_Renderer *renserer)> func)
 	}
 }
 
+tTVPSDLVideoPresenterContext
+tTVPSDLDrawDevice::MakeVideoContext()
+{
+	tTVPSDLVideoPresenterContext ctx;
+	ctx.Renderer     = mRenderer;
+	ctx.TargetWidth  = NIWindow ? NIWindow->GetInnerWidth()  : 0;
+	ctx.TargetHeight = NIWindow ? NIWindow->GetInnerHeight() : 0;
+	ctx.DestRect     = DestRect;
+	{	// 再生矩形・mixer 画像のプライマリ座標→描画先変換に使うプライマリレイヤ寸法
+		tjs_int sw = 0, sh = 0;
+		GetSrcSize( sw, sh );
+		ctx.SrcWidth  = sw;
+		ctx.SrcHeight = sh;
+	}
+	return ctx;
+}
+
+void
+tTVPSDLDrawDevice::RenderPartialVideo()
+{
+	if (!VideoPresenter || !mRenderer) return;
+	if (!VideoPresenter->IsVisible() || VideoPresenter->CoversScreen()) return;
+	KRKRZ_RENDER_STATS_SCOPE(TVPRenderStatsAddShowTex);
+	VideoPresenter->RenderVideoFrame(MakeVideoContext());
+}
+
 bool
 tTVPSDLDrawDevice::ShowVideo()
 {
@@ -572,19 +617,11 @@ tTVPSDLDrawDevice::ShowVideo()
 	// overlay の Visible=false (WINVER 仕様: 既定 false) の間は画面を占有せず、false を返して
 	// 通常のゲーム描画へ戻す。WINVER が RenderVideoFrame 内で Visible を判定するのと等価
 	// (SDL は presenter 登録中は画面占有なので、判定は presenter を pull する手前で行う)。
-	if (!VideoPresenter || !NIWindow || !mRenderer) return false;
-	if (!VideoPresenter->IsVisible()) return false;
-	tTVPSDLVideoPresenterContext ctx;
-	ctx.Renderer     = mRenderer;
-	ctx.TargetWidth  = NIWindow->GetInnerWidth();
-	ctx.TargetHeight = NIWindow->GetInnerHeight();
-	ctx.DestRect     = DestRect;
-	{	// mixer 画像のプライマリ座標→描画先変換に使うプライマリレイヤ寸法
-		tjs_int sw = 0, sh = 0;
-		GetSrcSize( sw, sh );
-		ctx.SrcWidth  = sw;
-		ctx.SrcHeight = sh;
-	}
+	// 再生矩形が指定されている (画面を覆わない) ときも false を返し、Show() がゲーム画面を
+	// 描いてから RenderPartialVideo() で動画を重ねる。
+	if (!NIWindow || !mRenderer) return false;
+	if (!IsVideoCoveringScreen()) return false;
+	tTVPSDLVideoPresenterContext ctx = MakeVideoContext();
 	Render([&](SDL_Renderer *renderer) {
 		{
 			KRKRZ_RENDER_STATS_SCOPE(TVPRenderStatsAddShowTex);
@@ -596,6 +633,10 @@ tTVPSDLDrawDevice::ShowVideo()
 			TVPRenderMemoryOverlay(renderer);
 			TVPRenderPadOverlay(renderer);
 		}
+#ifdef KRKRZ_USE_REPL
+		// 動画再生中もキャプチャ要求を処理する (動画込みの実画面を撮る)
+		FulfillScreenCapture(renderer);
+#endif
 	});
 	return true;
 }

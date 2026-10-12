@@ -153,6 +153,8 @@ class tTVPGLVideoOverlayPresenter
 	iTVPGLVideoPresenterHost* mHost;
 	bool                 mActive;
 	std::atomic<bool>    mVisible;     // overlay 表示可否 (WINVER 仕様: 既定 false)。描画スレッドから読む
+	std::atomic<bool>    mRectValid;   // 再生矩形が指定されているか (false = 描画先全体へ内接)
+	tTVPRect             mRect;        // 再生矩形 (プライマリレイヤ座標)。mMutex で保護
 
 	// YUV(I420) 経路 (SupportsYUV=true。generic movie は I420 native)
 	std::vector<uint8_t> mYUV;         // packed I420 (Y=w×h + U/V=cw×ch)
@@ -172,7 +174,7 @@ class tTVPGLVideoOverlayPresenter
 public:
 	tTVPGLVideoOverlayPresenter()
 		: mBuffer(nullptr), mWidth(0), mHeight(0), mDirty(false)
-		, mTexture(nullptr), mHost(nullptr), mActive(false), mVisible(false)
+		, mTexture(nullptr), mHost(nullptr), mActive(false), mVisible(false), mRectValid(false)
 		, mYUVW(0), mYUVH(0), mIsYUV(false)
 		, mMixerW(0), mMixerH(0), mMixerAlpha(1.0f), mMixerValid(false), mMixerDirty(false)
 		, mMixerTex(nullptr)
@@ -283,6 +285,14 @@ public:
 	// (OGLDrawDevice 側)。同じ mVisible を両 IF が参照する。
 	void SetVisible(bool visible) override { mVisible.store(visible, std::memory_order_relaxed); }
 	bool TJS_INTF_METHOD IsVisible() const override { return mVisible.load(std::memory_order_relaxed); }
+	//--- 再生矩形 (VideoOverlay.setPos / setSize / setBounds) ---------------------
+	void SetVideoRect(const tTVPRect *primaryRect) override
+	{
+		std::lock_guard<std::mutex> lock(mMutex);
+		if (primaryRect) mRect = *primaryRect;
+		mRectValid.store(primaryRect != nullptr, std::memory_order_relaxed);
+	}
+	bool TJS_INTF_METHOD CoversScreen() const override { return !mRectValid.load(std::memory_order_relaxed); }
 	//--- iTVPGLVideoPresenter (OGLDrawDevice 側、描画スレッド、GL context current) ---
 	bool TJS_INTF_METHOD RenderVideoFrame(const tTVPGLVideoPresenterContext &ctx) override
 	{
@@ -293,7 +303,7 @@ public:
 			// YUV(I420) 経路: 自前シェーダで 3 プレーンから GPU で YUV→RGB (CPU 変換なし)。
 			if (mYUV.empty() || mYUVW <= 0 || mYUVH <= 0) return false;
 			GLfloat pos[8];
-			ComputeFitPosition(pos, mYUVW, mYUVH, ctx.TargetWidth, ctx.TargetHeight);
+			ComputeVideoPosition(pos, ctx, mYUVW, mYUVH);
 			int cw = (mYUVW+1)/2, ch = (mYUVH+1)/2;
 			const uint8_t *Y = mYUV.data();
 			const uint8_t *U = Y + (size_t)mYUVW * mYUVH;
@@ -322,9 +332,8 @@ public:
 				mDirty = false;
 			}
 			if (!mTexture) return false;
-			// 描画先へ内接 (letterbox) 配置・中央寄せ
 			GLfloat pos[8];
-			ComputeFitPosition(pos, mWidth, mHeight, ctx.TargetWidth, ctx.TargetHeight);
+			ComputeVideoPosition(pos, ctx, mWidth, mHeight);
 			ctx.TextureDrawer->DrawTexture(mTexture, ctx.TargetWidth, ctx.TargetHeight, pos);
 		}
 
@@ -371,24 +380,9 @@ public:
 		}
 		if (!mMixerTex) return;
 
-		// プライマリ座標 → 描画先 (DestRect, サーフェス px) → clip 座標 (ComputeFitPosition と同規約)
-		int srcW = ctx.SrcWidth  > 0 ? ctx.SrcWidth  : mMixerW;
-		int srcH = ctx.SrcHeight > 0 ? ctx.SrcHeight : mMixerH;
-		double dw = (double)ctx.DestRect.get_width()  / srcW;
-		double dh = (double)ctx.DestRect.get_height() / srcH;
-		double px0 = ctx.DestRect.left + mMixerRect.left * dw;
-		double py0 = ctx.DestRect.top  + mMixerRect.top  * dh;
-		double px1 = ctx.DestRect.left + mMixerRect.right  * dw;
-		double py1 = ctx.DestRect.top  + mMixerRect.bottom * dh;
-		int sw = ctx.TargetWidth, sh = ctx.TargetHeight;
-		if (sw <= 0 || sh <= 0) return;
-		float l = (float)(px0 * 2.0 / sw - 1.0);
-		float r = (float)(px1 * 2.0 / sw - 1.0);
-		// GL clip は +Y が上。mMixer は top-down (行0=視覚 top)。DrawTexture の UV 規約に合わせ
-		// 上端行を高い clipY へ出すため頂点の t/b を入替 (これで箱位置は同じ・テクスチャ上下正立)。
-		float t = (float)(1.0 - py0 * 2.0 / sh);  // 上端 (py0) → 高い clipY
-		float b = (float)(1.0 - py1 * 2.0 / sh);  // 下端 (py1) → 低い clipY
-		GLfloat mpos[8] = { l, b,  l, t,  r, b,  r, t };
+		if (ctx.TargetWidth <= 0 || ctx.TargetHeight <= 0) return;
+		GLfloat mpos[8];
+		ComputePrimaryRectPosition(mpos, ctx, mMixerRect, mMixerW, mMixerH);
 		ctx.TextureDrawer->DrawTexture(mMixerTex, ctx.TargetWidth, ctx.TargetHeight, mpos, 0, 0, /*blend=*/true);
 	}
 
@@ -407,6 +401,40 @@ private:
 		delete mMixerTex; mMixerTex = nullptr;
 		mMixerValid = false; mMixerDirty = false; mMixerW = mMixerH = 0;
 		std::vector<char>().swap(mMixer);
+	}
+
+	//! 動画の頂点位置: 再生矩形が指定されていればそこへ引き伸ばし、無ければ描画先全体へ内接
+	void ComputeVideoPosition(GLfloat pos[8], const tTVPGLVideoPresenterContext &ctx, int w, int h) const
+	{
+		if (mRectValid.load(std::memory_order_relaxed) && ctx.TargetWidth > 0 && ctx.TargetHeight > 0)
+			ComputePrimaryRectPosition(pos, ctx, mRect, w, h);
+		else
+			ComputeFitPosition(pos, w, h, ctx.TargetWidth, ctx.TargetHeight);
+	}
+
+	//! プライマリレイヤ座標の矩形 → 描画先 (DestRect, サーフェス px) → clip 座標。
+	//! 頂点の並びは ComputeFitPosition と同じ規約 (DrawTexture の UV に合わせ、top-down の
+	//! 画像が上下正立で出る)。プライマリの大きさが分からないときは fallbackW/H を使う。
+	static void ComputePrimaryRectPosition(GLfloat pos[8], const tTVPGLVideoPresenterContext &ctx,
+	                                       const tTVPRect &rc, int fallbackW, int fallbackH)
+	{
+		int srcW = ctx.SrcWidth  > 0 ? ctx.SrcWidth  : fallbackW;
+		int srcH = ctx.SrcHeight > 0 ? ctx.SrcHeight : fallbackH;
+		double dw = (double)ctx.DestRect.get_width()  / (srcW > 0 ? srcW : 1);
+		double dh = (double)ctx.DestRect.get_height() / (srcH > 0 ? srcH : 1);
+		double px0 = ctx.DestRect.left + rc.left * dw;
+		double py0 = ctx.DestRect.top  + rc.top  * dh;
+		double px1 = ctx.DestRect.left + rc.right  * dw;
+		double py1 = ctx.DestRect.top  + rc.bottom * dh;
+		int sw = ctx.TargetWidth, sh = ctx.TargetHeight;
+		float l = (float)(px0 * 2.0 / sw - 1.0);
+		float r = (float)(px1 * 2.0 / sw - 1.0);
+		// GL clip は +Y が上。画像は top-down (行0=視覚 top)。DrawTexture の UV 規約に合わせ
+		// 上端行を高い clipY へ出すため頂点の t/b を入替 (これで箱位置は同じ・テクスチャ上下正立)。
+		float t = (float)(1.0 - py0 * 2.0 / sh);  // 上端 (py0) → 高い clipY
+		float b = (float)(1.0 - py1 * 2.0 / sh);  // 下端 (py1) → 低い clipY
+		pos[0] = l; pos[1] = b;  pos[2] = l; pos[3] = t;
+		pos[4] = r; pos[5] = b;  pos[6] = r; pos[7] = t;
 	}
 
 	static void ComputeFitPosition(GLfloat pos[8], int w, int h, int sw, int sh)

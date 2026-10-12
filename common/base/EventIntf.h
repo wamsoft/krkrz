@@ -136,6 +136,10 @@ class tTJSNI_BaseWindow;
 extern void TVPPostWindowUpdate(tTJSNI_BaseWindow *window);
 extern void TVPRemoveWindowUpdate(tTJSNI_BaseWindow *window);
 extern void TVPDeliverWindowUpdateEvents();
+
+// 入力イベントキューだけを配送する。 システムイベント停止中に出るモーダルダイアログ
+// (未処理のスクリプト例外の表示など) へキー / パッド入力を届けるために使う。
+extern void TVPDeliverInputEvents();
 //---------------------------------------------------------------------------
 
 

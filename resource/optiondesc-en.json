@@ -1020,7 +1020,7 @@
 			},
 			{
 				"caption": "Startup DrawDevice",
-				"description": "Selects the default DrawDevice used at startup.\n\nSDL3 build: 'sdl' (via SDL_Renderer) / 'sdlogl' (direct OpenGL ES) / 'ogl' (OpenGL ES with Canvas etc.). When not specified, builds with OpenGL enabled default to 'sdlogl', otherwise 'sdl'.\n\nWINVER build: 'basic' (Direct3D 11, default) / 'ogl' (OpenGL ES) / 'null' (no drawing, for testing).\n\n'ogl' / 'sdlogl' require an environment where OpenGL ES is available (the WINVER build, and SDL3 environments without a native GLES-capable driver, need ANGLE's libEGL.dll / libGLESv2.dll). The DrawDevice can also be switched at runtime by assigning to Window.drawDevice, but when the SDL3 build is started with 'sdl' it cannot be switched to an OpenGL device at runtime.",
+				"description": "Selects the default DrawDevice used at startup.\n\nSDL3 build: 'sdl' (via SDL_Renderer) / 'sdlogl' (direct OpenGL ES) / 'ogl' (OpenGL ES with Canvas etc.). When not specified, builds with OpenGL enabled default to 'sdlogl', otherwise 'sdl'. Builds that run Canvas on SDL_GPU (KRKRZ_CANVAS_GPU) also accept 'gpu' (SDL_GPU with Canvas etc.), which is then the default.\n\nWINVER build: 'basic' (Direct3D 11, default) / 'ogl' (OpenGL ES) / 'null' (no drawing, for testing).\n\n'ogl' / 'sdlogl' require an environment where OpenGL ES is available (the WINVER build, and SDL3 environments without a native GLES-capable driver, need ANGLE's libEGL.dll / libGLESv2.dll). The DrawDevice can also be switched at runtime by assigning to Window.drawDevice, but when the SDL3 build is started with 'sdl' it cannot be switched to an OpenGL device at runtime.",
 				"name": "drawdevice",
 				"type": "string",
 				"length": 16,
@@ -1031,6 +1031,15 @@
 				"caption": "SDL_Renderer backend",
 				"description": "Explicitly specifies the SDL_Renderer backend used by SDLDrawDevice (e.g. direct3d11 / vulkan / opengl / software). When not specified, SDL3 chooses automatically.\n\nOnly meaningful on the SDL3 build when SDLDrawDevice (-drawdevice=sdl) is used.",
 				"name": "renderer",
+				"type": "string",
+				"length": 32,
+				"user": false,
+				"value": ""
+			},
+			{
+				"caption": "SDL_GPU driver",
+				"description": "In builds that run Canvas on SDL_GPU (KRKRZ_CANVAS_GPU), specifies the SDL_GPU driver used by GPUDrawDevice (e.g. vulkan). When not specified, SDL3 chooses automatically.\n\nOn Windows, vulkan (SPIR-V shaders) is chosen by default. Specifying direct3d12 runs on D3D12 (DXIL shaders); in that case the script shaders must also be supplied as a DXIL pack.",
+				"name": "gpudriver",
 				"type": "string",
 				"length": 32,
 				"user": false,

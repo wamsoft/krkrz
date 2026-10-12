@@ -33,7 +33,7 @@ namespace {
 // (family 名, ネイティブのファイルパス)
 typedef std::vector<std::pair<tjs_string, tjs_string>> tFontEntries;
 
-#if defined(_WIN32)
+#if defined(TVP_WIN32_DESKTOP)
 } // namespace
 #include <windows.h>
 #include <dwrite.h>

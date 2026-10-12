@@ -35,7 +35,7 @@ enum {
 };
 
 inline unsigned long ColorToRGB( unsigned long col ) {
-#ifdef _WIN32
+#ifdef TVP_WIN32_DESKTOP // GetSysColor はデスクトップのみ
 	if( ((int)col) < 0 ) {
 		return ::GetSysColor( (int)(col&0xff) );
 	}

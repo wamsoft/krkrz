@@ -35,6 +35,7 @@ class tTJSNI_VideoOverlay : public tTJSNI_BaseVideoOverlay, public iTVPVideoPres
 	iTVPVideoOverlay *VideoOverlay;
 
 	tTVPRect Rect;
+	bool RectSpecified;						//!< 再生矩形が指定されたか (presenter 経路: 未指定なら画面全体)
 	bool Visible;
 
 	HWND OwnerWindow;
@@ -211,6 +212,8 @@ public:
 	//-- iTVPVideoPresenter 実装 (Track V-E)。DrawDevice の Show() から描画スレッドで
 	//   呼ばれ、現在の動画フレームを engine の D3D11 バックバッファへ描く。
 	virtual bool TJS_INTF_METHOD RenderVideoFrame( const tTVPVideoPresenterContext & ctx );
+	virtual bool TJS_INTF_METHOD IsVisible() const { return Visible; }
+	virtual bool TJS_INTF_METHOD CoversScreen() const { return !RectSpecified; }
 
 private:
 	//-- presenter host の取得 / 登録 / 解除 (overlay + host 有り時)。

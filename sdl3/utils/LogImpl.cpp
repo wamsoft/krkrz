@@ -72,7 +72,7 @@ static void SDLCALL TVPSDLLogOutput(void * /*userdata*/, int /*category*/, SDL_L
 // SDL3 のデフォルトログ出力は Windows GUI アプリでは stderr が接続されていないため
 // 何も表示されない。親コンソールにアタッチして WriteConsole/WriteFile で出力する。
 //---------------------------------------------------------------------------
-#if defined(_WIN32) && !defined(TVP_USE_LOGCORE)
+#if defined(TVP_WIN32_DESKTOP) && !defined(TVP_USE_LOGCORE)
 #include <windows.h>
 #include <vector>
 
@@ -119,7 +119,7 @@ void TVPLogInit(TVPLogLevel logLevel)
 #ifdef TVP_USE_LOGCORE
     // デスクトップ環境: LogCore 経由でリングバッファ/ファイル出力/TJS handler 等を処理
     SDL_SetLogOutputFunction(TVPSDLLogOutput, nullptr);
-#elif defined(_WIN32)
+#elif defined(TVP_WIN32_DESKTOP)
     // Windows + LogCore 無効: SDL のログを Win32 コンソールに出力
     SDL_SetLogOutputFunction(TVPSDLLogOutputWin32, nullptr);
 #endif

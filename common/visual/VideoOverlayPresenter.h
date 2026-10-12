@@ -43,6 +43,12 @@ public:
 	//!        WINVER は RenderVideoFrame 内で Visible を毎フレーム判定するのと等価。
 	virtual void SetVisible(bool visible) {}
 
+	//! @brief 動画の再生矩形を設定する (VideoOverlay.setPos / setSize / setBounds)。
+	//!        primaryRect はプライマリレイヤ座標 (presenter が mixer と同じく描画先へ変換する)。
+	//!        nullptr は «未指定» = 従来どおり描画先全体へ縦横比を保って描く (画面を覆う)。
+	//!        矩形を指定した場合、DrawDevice はゲーム画面を描いてからその上に動画を重ねる。
+	virtual void SetVideoRect(const tTVPRect *primaryRect) {}
+
 	//! @brief この presenter が YUV plane 経路 (UpdateFrameYUV + GPU 側 YUV→RGB) に対応するか。
 	//!        false の場合、呼び側は ARGB 経路 (UpdateFrame) を使う。
 	virtual bool SupportsYUV() const { return false; }

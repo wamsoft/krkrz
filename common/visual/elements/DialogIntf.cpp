@@ -548,9 +548,12 @@ bool TVPInformElements(const ttstr& caption, const ttstr& text)
 	{ tjs_string t(caption.c_str()); TVPUtf16ToUtf8(c8, t); }
 	{ tjs_string t(text.c_str());    TVPUtf16ToUtf8(t8, t); }
 
+	// OK に初期フォーカスを置く。 置かないと何もフォーカスされていない状態で開き、
+	// pad の A (accept = Enter の合成) / Enter が効かない (B / Esc の cancel だけが効く)。
+	// パッドだけで操作する機種では未処理例外のダイアログを A で閉じられなかった。
 	std::string extra =
 		"{\"type\":\"align_center\",\"child\":"
-		"{\"type\":\"button\",\"id\":\"ok\",\"text\":\"OK\",\"close_on_click\":true}}";
+		"{\"type\":\"button\",\"id\":\"ok\",\"text\":\"OK\",\"initial_focus\":true,\"close_on_click\":true}}";
 	std::string json = MessageDialogJson(c8, t8, extra);
 
 	tTVPNoopDialogHandler h;
@@ -564,10 +567,12 @@ bool TVPConfirmElements(const ttstr& caption, const ttstr& text, bool& yes)
 	{ tjs_string t(caption.c_str()); TVPUtf16ToUtf8(c8, t); }
 	{ tjs_string t(text.c_str());    TVPUtf16ToUtf8(t8, t); }
 
+	// 「はい」に初期フォーカス (A / Enter で選ぶ)。 ネイティブ版 (SDL3Application::ConfirmYesNo)
+	// の Enter 既定と同じ。 B / Esc は従来どおり「いいえ」扱い
 	std::string extra =
 		"{\"type\":\"align_center\",\"child\":"
 		"{\"type\":\"htile\",\"children\":["
-		"{\"type\":\"button\",\"id\":\"yes\",\"text\":\"\xE3\x81\xAF\xE3\x81\x84\",\"close_on_click\":true},"
+		"{\"type\":\"button\",\"id\":\"yes\",\"text\":\"\xE3\x81\xAF\xE3\x81\x84\",\"initial_focus\":true,\"close_on_click\":true},"
 		"{\"type\":\"hspacer\",\"width\":8},"
 		"{\"type\":\"button\",\"id\":\"no\",\"text\":\"\xE3\x81\x84\xE3\x81\x84\xE3\x81\x88\",\"close_on_click\":true}"
 		"]}}";

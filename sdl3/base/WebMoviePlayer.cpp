@@ -70,18 +70,32 @@ EM_ASYNC_JS(int, krkrz_video_open_js, (int handle, const char* curl, const void*
 		v: v, url: url, isBlob: isBlob,
 		layer: false, visible: true, started: false, stopped: true,
 		closed: false, newFrame: false, cap: null, ctx: null, img: null,
-		onrelayout: null
+		onrelayout: null, rect: null
 	};
-	// mixer 表示位置: canvas の表示矩形に一致させる (object-fit:contain が
-	// SDL 実装と同じ内接フィットをやってくれる)
+	// mixer 表示位置: 再生矩形が未指定なら canvas の表示矩形に一致させる (object-fit:contain が
+	// SDL 実装と同じ内接フィットをやってくれる)。指定されていれば、canvas の中でゲーム画面
+	// (プライマリレイヤを canvas へ内接・中央寄せしたもの) を求め、矩形をそこへ写す
 	st.layout = function() {
 		var c = Module['canvas'];
 		if (!c) return;
 		var r = c.getBoundingClientRect();
-		v.style.left = r.left + 'px';
-		v.style.top = r.top + 'px';
-		v.style.width = r.width + 'px';
-		v.style.height = r.height + 'px';
+		var q = st.rect;
+		if (q && q.sw > 0 && q.sh > 0) {
+			var s = Math.min(r.width / q.sw, r.height / q.sh);
+			var gx = r.left + (r.width  - q.sw * s) / 2;
+			var gy = r.top  + (r.height - q.sh * s) / 2;
+			v.style.objectFit = 'fill';   // 矩形いっぱいに引き伸ばす (デスクトップ版と同じ)
+			v.style.left = (gx + q.l * s) + 'px';
+			v.style.top = (gy + q.t * s) + 'px';
+			v.style.width = (q.w * s) + 'px';
+			v.style.height = (q.h * s) + 'px';
+		} else {
+			v.style.objectFit = 'contain';
+			v.style.left = r.left + 'px';
+			v.style.top = r.top + 'px';
+			v.style.width = r.width + 'px';
+			v.style.height = r.height + 'px';
+		}
 	};
 	st.show = function(show) {
 		if (show) {
@@ -242,6 +256,13 @@ EM_JS(double, krkrz_video_get_volume_js, (int handle), {
 	return st ? st.v.volume : 0;
 });
 
+EM_JS(void, krkrz_video_set_overlay_rect_js, (int handle, int specified, int l, int t, int w, int h, int sw, int sh), {
+	var st = globalThis.__krkrzVideo[handle];
+	if (!st) return;
+	st.rect = specified ? { l: l, t: t, w: w, h: h, sw: sw, sh: sh } : null;
+	if (st.v.style.display !== 'none') st.layout();
+});
+
 EM_JS(void, krkrz_video_set_overlay_visible_js, (int handle, int visible), {
 	var st = globalThis.__krkrzVideo[handle];
 	if (!st) return;
@@ -400,6 +421,11 @@ public:
 
 	void SetOverlayVisible(bool visible) override {
 		krkrz_video_set_overlay_visible_js(mHandle, visible ? 1 : 0);
+	}
+
+	void SetOverlayRect(bool specified, int left, int top, int width, int height,
+	                    int srcW, int srcH) override {
+		krkrz_video_set_overlay_rect_js(mHandle, specified ? 1 : 0, left, top, width, height, srcW, srcH);
 	}
 };
 

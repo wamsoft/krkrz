@@ -43,6 +43,16 @@ typedef intptr_t tjs_intptr_t;
 typedef uintptr_t tjs_uintptr_t;
 
 
+#if defined(_WIN32)
+#include <winapifamily.h>
+#if !WINAPI_FAMILY_PARTITION(WINAPI_PARTITION_APP | WINAPI_PARTITION_SYSTEM)
+// WINAPI_FAMILY_GAMES (Xbox) では wingdi.h の RGBQUAD / BITMAPINFO が定義されない
+// (BITMAPINFOHEADER は定義される)
+#define TVP_NEED_BITMAPINFO_DEF
+#include <windows.h> // BITMAPINFOHEADER
+#endif
+#endif
+
 #if !defined(_WIN32)
 typedef struct tagBITMAPINFOHEADER{
     uint32_t      biSize;
@@ -57,6 +67,9 @@ typedef struct tagBITMAPINFOHEADER{
     uint32_t      biClrUsed;
     uint32_t      biClrImportant;
 } BITMAPINFOHEADER, *PBITMAPINFOHEADER;
+#endif
+
+#if !defined(_WIN32) || defined(TVP_NEED_BITMAPINFO_DEF)
 
 typedef struct tagRGBQUAD {
 	uint8_t    rgbBlue;
@@ -69,7 +82,9 @@ typedef struct tagBITMAPINFO {
     BITMAPINFOHEADER    bmiHeader;
     RGBQUAD             bmiColors[1];
 } BITMAPINFO, *PBITMAPINFO;
+#endif
 
+#if !defined(_WIN32)
 typedef int32_t HRESULT;
 #define S_OK 0
 #define E_FAIL 0x80004005

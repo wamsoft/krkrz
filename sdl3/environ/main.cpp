@@ -17,9 +17,7 @@
 #include "GlobalAllocStats.h"   // SDL_SetMemoryFunctions wrapper の入口
 #include "app.h"
 
-#ifdef KRKRZ_HAS_ELEMENTS
-#include "elements/ElementsUserConfig.h"
-#endif
+#include "UserConfig.h"   // -userconf (Elements の有無に関係なく使う)
 
 // wasm (Emscripten) では SDL_MAIN_USE_CALLBACKS を使わない。
 // この方式は内部で emscripten_set_main_loop を使うが、そのコールバックは JSPI で
@@ -413,18 +411,23 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
 
     app->AppInit();
 
+	// メッセージ資材を先に読む。音声の初期化 (InitMiniAudio) が起動オプション
+	// (-soundpoolsize 等) を読み、そこで設定ファイルの解析が走るため、その前に
+	// 済ませておかないと解析中のログがメッセージ ID のまま出る (WINVER の
+	// TVPStartup → TVPLoadMessage と同じ順)。失敗時は InitializeApplication が
+	// 読み直してエラーにする。
+	try { app->LoadMessageResource(); } catch (...) {}
+
 	InitAudioSystem();
 
 	// アプリ初期化
 	if (!app->InitializeApplication()) {
-#ifdef KRKRZ_HAS_ELEMENTS
-		// `-userconf` フローが正常終了した場合は graceful exit。
+		// `-userconf` (設定画面) を実行して終えた場合は graceful exit。
 		if (TVPGetUserConfigExitFlag()) {
 			delete app;
 			DoneAudioSystem();
 			return SDL_APP_SUCCESS;
 		}
-#endif
 		TVPLOG_ERROR("failed to initialize application");
         delete app;
         DoneAudioSystem();

@@ -214,6 +214,11 @@ native / 既定へフォールバックする。 web REPL 用の modal はブラ
 
 結果 JSON: `{ "ok": bool, "result": "<pretty-printed>", "error": "<msg>" }`。
 未読の `resp` が残る間は次コマンドを処理しない (取りこぼし防止)。
+**どの注文にも必ず返事を出す**: rename 直後で `cmd` が一瞬開けない / 読む側が
+前の `resp` を片付けている最中で書けない (Windows) といった場合は少し粘り
+(5ms × 20 回)、 それでも `cmd` が読めなければ `cmd` を消して
+`{"ok":false,"error":"failed to read cmd file"}` を返す。 `resp` がどうしても
+書けなかったときはログ (`ReplFileChannel: failed to write resp`) に出す。
 
 **先頭が `.` の行はドットコマンド**として console / web と同じ `ProcessLine` を
 通り、 出力行を改行で連結したものが `result` に入る (`.watch` / `.mem` /

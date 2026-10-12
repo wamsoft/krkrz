@@ -12,6 +12,8 @@
 #include "ReadOptionDesc.h"
 #include "MsgLanguage.h"
 #include "WindowsUtil.h"
+#include "Application.h"
+#include "FilePathUtil.h"
 
 #include <string>
 
@@ -90,4 +92,36 @@ tTVPCommandOptionList* TVPGetEngineCommandDesc() {
 		}
 	}
 	return TVPParseCommandDescJson( buf, size );
+}
+
+//---------------------------------------------------------------------------
+// 全プラグインの option desc を dest へマージする (設定画面 -userconf 用)。
+// exe と同じフォルダ、plugin64\ (64bit) / plugin\ (32bit) の .dll / .tpm を見る
+// (旧設定ダイアログと同じ範囲)。
+//---------------------------------------------------------------------------
+static void TVPMergePluginCommandDescIn( tTVPCommandOptionList& dest, const tjs_string& dir, const tjs_string& ext ) {
+	tjs_string mask = dir + TJS_W("*.") + ext;
+	WIN32_FIND_DATA fd;
+	HANDLE hSearch = ::FindFirstFile( reinterpret_cast<LPCWSTR>(mask.c_str()), &fd );
+	if( hSearch == INVALID_HANDLE_VALUE ) return;
+	do {
+		tTVPCommandOptionList* options = TVPGetPluginCommandDesc( (dir + tjs_string( reinterpret_cast<tjs_char*>(fd.cFileName) )).c_str() );
+		if( options ) {
+			TVPMargeCommandDesc( dest, *options );
+			delete options;
+		}
+	} while( ::FindNextFile( hSearch, &fd ) );
+	::FindClose( hSearch );
+}
+void TVPMergeAllPluginCommandDesc( tTVPCommandOptionList& dest ) {
+	tjs_string exedir = IncludeTrailingBackslash( ExtractFileDir( ExePath() ) );
+#ifdef TJS_64BIT_OS
+	const tjs_string plugindir = exedir + TJS_W("plugin64\\");
+#else
+	const tjs_string plugindir = exedir + TJS_W("plugin\\");
+#endif
+	for( const tjs_string& dir : { exedir, plugindir } ) {
+		TVPMergePluginCommandDescIn( dest, dir, TJS_W("dll") );
+		TVPMergePluginCommandDescIn( dest, dir, TJS_W("tpm") );
+	}
 }

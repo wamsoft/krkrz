@@ -41,6 +41,8 @@ class tTVPSDLVideoOverlayPresenter
 	iTVPSDLVideoPresenterHost* mHost;
 	bool                 mActive;
 	std::atomic<bool>    mVisible;    // overlay 表示可否 (WINVER 仕様: 既定 false)。描画スレッドから読む
+	std::atomic<bool>    mRectValid;  // 再生矩形が指定されているか (false = 描画先全体へ内接)
+	tTVPRect             mRect;       // 再生矩形 (プライマリレイヤ座標)。mMutex で保護
 
 	// mixer 追加画像 (動画の上へ α 合成。setMixingLayer の後継)
 	std::vector<uint8_t> mMixer;        // BGRA (ARGB8888 メモリ並び) top-down packed
@@ -58,7 +60,7 @@ public:
 		: mBuffer(nullptr), mYUVFormat(iTVPMoviePlayer::VPF_UNKNOWN)
 		, mWidth(0), mHeight(0), mIsYUV(false), mDirty(false)
 		, mTexture(nullptr), mTexW(0), mTexH(0), mTexIsYUV(false), mTexRenderer(nullptr)
-		, mHost(nullptr), mActive(false), mVisible(false)
+		, mHost(nullptr), mActive(false), mVisible(false), mRectValid(false)
 		, mMixerW(0), mMixerH(0), mMixerAlpha(1.0f), mMixerValid(false), mMixerDirty(false)
 		, mMixerTex(nullptr), mMixerTexW(0), mMixerTexH(0), mMixerTexRenderer(nullptr)
 	{ mMixerRect.left = mMixerRect.top = mMixerRect.right = mMixerRect.bottom = 0; }
@@ -100,6 +102,14 @@ public:
 	// (SDLDrawDevice 側)。同じ mVisible を両 IF が参照する。
 	void SetVisible(bool visible) override { mVisible.store(visible, std::memory_order_relaxed); }
 	bool TJS_INTF_METHOD IsVisible() const override { return mVisible.load(std::memory_order_relaxed); }
+
+	void SetVideoRect(const tTVPRect *primaryRect) override
+	{
+		std::lock_guard<std::mutex> lock(mMutex);
+		if (primaryRect) mRect = *primaryRect;
+		mRectValid.store(primaryRect != nullptr, std::memory_order_relaxed);
+	}
+	bool TJS_INTF_METHOD CoversScreen() const override { return !mRectValid.load(std::memory_order_relaxed); }
 
 	bool SupportsYUV() const override { return true; }   // SDL は YUV テクスチャ内蔵
 
@@ -193,6 +203,8 @@ public:
 			mTexW = mWidth; mTexH = mHeight; mTexIsYUV = mIsYUV; mTexRenderer = ctx.Renderer;
 			mDirty = true;
 			if (!mTexture) { TVPLOG_ERROR("SDLVideoPresenter: CreateTexture failed:{}", SDL_GetError()); return false; }
+			// 動画は不透明として描く (ゲーム画面の上へ重ねる場合もフレームのアルファに左右されない)
+			SDL_SetTextureBlendMode(mTexture, SDL_BLENDMODE_NONE);
 		}
 		if (mDirty) {
 			if (mIsYUV) UploadYUV();
@@ -200,10 +212,13 @@ public:
 			mDirty = false;
 		}
 
-		// 描画先へ内接 (letterbox) 配置・中央寄せ
 		SDL_FRect dst;
 		int sw = ctx.TargetWidth, sh = ctx.TargetHeight;
-		if (sw > 0 && sh > 0) {
+		if (mRectValid.load(std::memory_order_relaxed)) {
+			// 再生矩形 (プライマリ座標) → 描画先 (DestRect) へスケール。矩形いっぱいに引き伸ばす
+			dst = MapPrimaryRect(ctx, mRect, mWidth, mHeight);
+		} else if (sw > 0 && sh > 0) {
+			// 描画先へ内接 (letterbox) 配置・中央寄せ
 			double scale = std::min((double)sw / mWidth, (double)sh / mHeight);
 			int nw = (int)(mWidth * scale), nh = (int)(mHeight * scale);
 			dst.x = (float)((sw - nw) / 2); dst.y = (float)((sh - nh) / 2);
@@ -218,6 +233,23 @@ public:
 	}
 
 private:
+	//! プライマリレイヤ座標の矩形を描画先 (ctx.DestRect) の座標へスケールする。
+	//! プライマリの大きさが分からないときは fallbackW/H を使う。
+	static SDL_FRect MapPrimaryRect(const tTVPSDLVideoPresenterContext &ctx, const tTVPRect &r,
+	                                int fallbackW, int fallbackH)
+	{
+		int srcW = ctx.SrcWidth  > 0 ? ctx.SrcWidth  : fallbackW;
+		int srcH = ctx.SrcHeight > 0 ? ctx.SrcHeight : fallbackH;
+		double dw = (double)ctx.DestRect.get_width()  / (srcW > 0 ? srcW : 1);
+		double dh = (double)ctx.DestRect.get_height() / (srcH > 0 ? srcH : 1);
+		SDL_FRect dst;
+		dst.x = (float)(ctx.DestRect.left + r.left * dw);
+		dst.y = (float)(ctx.DestRect.top  + r.top  * dh);
+		dst.w = (float)((r.right  - r.left) * dw);
+		dst.h = (float)((r.bottom - r.top ) * dh);
+		return dst;
+	}
+
 	//! mixer 画像を動画の上へ描く。プライマリレイヤ座標の mMixerRect を ctx.DestRect へマップする。
 	void DrawMixer(const tTVPSDLVideoPresenterContext &ctx)
 	{
@@ -243,16 +275,7 @@ private:
 			}
 			mMixerDirty = false;
 		}
-		// プライマリ座標 → 描画先 (DestRect) へスケール
-		int srcW = ctx.SrcWidth  > 0 ? ctx.SrcWidth  : mMixerW;
-		int srcH = ctx.SrcHeight > 0 ? ctx.SrcHeight : mMixerH;
-		double dw = (double)ctx.DestRect.get_width()  / srcW;
-		double dh = (double)ctx.DestRect.get_height() / srcH;
-		SDL_FRect dst;
-		dst.x = (float)(ctx.DestRect.left + mMixerRect.left * dw);
-		dst.y = (float)(ctx.DestRect.top  + mMixerRect.top  * dh);
-		dst.w = (float)((mMixerRect.right  - mMixerRect.left) * dw);
-		dst.h = (float)((mMixerRect.bottom - mMixerRect.top ) * dh);
+		SDL_FRect dst = MapPrimaryRect(ctx, mMixerRect, mMixerW, mMixerH);
 		float a = mMixerAlpha; if (a < 0) a = 0; if (a > 1) a = 1;
 		SDL_SetTextureBlendMode(mMixerTex, SDL_BLENDMODE_BLEND);
 		SDL_SetTextureAlphaModFloat(mMixerTex, a);

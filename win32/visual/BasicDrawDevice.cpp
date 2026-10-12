@@ -16,6 +16,8 @@
 #include "BitmapInfomation.h"
 #ifdef KRKRZ_USE_REPL
 #include "ScreenCapture.h"
+#include "BitmapIntf.h"
+#include "LayerBitmapIntf.h"
 #endif
 #ifdef KRKRZ_HAS_ELEMENTS
 #include "elements/ElementsDialogManager.h"   // dialog renderer 登録
@@ -551,6 +553,11 @@ void TJS_INTF_METHOD tTVPBasicDrawDevice::Show()
 	if(!TargetWindow) return;
 	if(!SwapChain) return;
 
+	// System.eventDisabled (非アクティブ時に停止など) の間は TJS が止まっていて画面の
+	// 内容が変わらない (stopdeactive.tjs はその間 windowEx の overlay で画面を覆う) ので、
+	// 描画も Present もしない。動画再生中は止めない
+	if( TVPGetSystemEventDisabledState() && !HasActiveVideoPresenter() ) return;
+
 	// 動画 presenter 稼働中は layer 更新が無くても毎フレーム present する
 	// (動画はデコードスレッドで layer 更新と非同期に進むため)。
 	bool videoActive = HasActiveVideoPresenter();
@@ -574,11 +581,19 @@ void TJS_INTF_METHOD tTVPBasicDrawDevice::Show()
 
 	ShouldShow = false;
 
-	if( videoActive ) {
-		// SDL 版 DrawDevice と同様、presenter 登録中は本体 (レイヤ) 描画は不要
-		// (動画が全画面を覆う前提)。RenderVideoPresenters が RTV を黒クリアしてから
-		// 各 presenter (動画 + mixer 追加画像) を描く。
+	// 動画の表示状態: 画面を覆う / 再生矩形の中だけ (ゲーム画面の上へ重ねる) / 非表示
+	bool videoVisible = videoActive && VideoPresenter->IsVisible();
+	bool videoCover   = videoVisible && VideoPresenter->CoversScreen();
+
+	if( videoCover ) {
+		// SDL 版 DrawDevice と同様、動画が画面を覆う間は本体 (レイヤ) 描画は不要。
+		// RenderVideoPresenters が RTV を黒クリアしてから各 presenter (動画 + mixer 追加画像) を描く。
 		RenderVideoPresenters();
+	} else if( videoActive ) {
+		// 再生矩形が指定された動画 (または非表示の動画): 回ってきたバックバッファへ毎フレーム
+		// game frame を描き直し、表示中ならその上へ動画を重ねる。
+		DrawCompositedFrame();
+		if( videoVisible ) RenderVideoPresenters( false );
 	} else if( dialogActive ) {
 		// ダイアログ表示中は layer 更新が無いフレームでも、回ってきた新しい
 		// バックバッファへ game frame を描き直してから overlay を重ねる。
@@ -699,6 +714,60 @@ void tTVPBasicDrawDevice::FulfillScreenCaptureFromBackBuffer()
 	else     TVPAddImportantLog(ttstr(TJS_W("ScreenCapture(backbuffer): failed ")) + req.path);
 }
 #endif // KRKRZ_USE_REPL
+//---------------------------------------------------------------------------
+bool tTVPBasicDrawDevice::CaptureWithOverlay( tTJSNI_Bitmap * bmp )
+{
+	if( !bmp || !bmp->GetBitmap() ) return false;
+	if( !D3DDevice || !D3DContext || !SwapChain || !BackBufferRTV ) return false;
+
+	// Show() と同じ手順で 1 フレーム分をバックバッファへ描く (Present はしない)
+	DrawCompositedFrame();
+	PresentDialogOverlay();
+
+	bool ok = false;
+	ID3D11Texture2D *back = NULL, *stg = NULL;
+	do {
+		if( FAILED(SwapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&back)) || !back ) break;
+		D3D11_TEXTURE2D_DESC bd; back->GetDesc(&bd);
+		D3D11_TEXTURE2D_DESC sd = bd;
+		sd.Usage = D3D11_USAGE_STAGING;
+		sd.BindFlags = 0;
+		sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+		sd.MiscFlags = 0;
+		if( FAILED(D3DDevice->CreateTexture2D(&sd, NULL, &stg)) || !stg ) break;
+		D3DContext->CopyResource(stg, back);
+
+		// ゲーム画面の範囲 (余白を除く) をバックバッファ内に切り詰める
+		int fullw = (int)bd.Width, fullh = (int)bd.Height;
+		int cx = DestRect.left, cy = DestRect.top;
+		int cr = DestRect.right, cb = DestRect.bottom;
+		if( cx < 0 ) cx = 0;
+		if( cy < 0 ) cy = 0;
+		if( cr > fullw ) cr = fullw;
+		if( cb > fullh ) cb = fullh;
+		int cw = cr - cx, ch = cb - cy;
+		if( cw <= 0 || ch <= 0 ) break;
+
+		D3D11_MAPPED_SUBRESOURCE m;
+		if( FAILED(D3DContext->Map(stg, 0, D3D11_MAP_READ, 0, &m)) ) break;
+		bmp->SetSize( (tjs_uint)cw, (tjs_uint)ch, false );
+		tTVPBaseBitmap * dst = bmp->GetBitmap();
+		for( int y = 0; y < ch; y++ ) {
+			// swapchain は B8G8R8A8_UNORM (メモリ上 BGRA) = 32bpp ビットマップと同じ並び
+			const tjs_uint32 * s = (const tjs_uint32*)((const BYTE*)m.pData + (size_t)(cy + y) * m.RowPitch) + cx;
+			tjs_uint32 * d = (tjs_uint32*)dst->GetScanLineForWrite( (tjs_uint)y );
+			for( int x = 0; x < cw; x++ ) d[x] = s[x] | 0xff000000;
+		}
+		D3DContext->Unmap(stg, 0);
+		ok = true;
+	} while(0);
+	if( stg )  stg->Release();
+	if( back ) back->Release();
+
+	// バックバッファを描き替えたので、次の Show() で描き直させる
+	ShouldShow = true;
+	return ok;
+}
 //---------------------------------------------------------------------------
 bool TJS_INTF_METHOD tTVPBasicDrawDevice::WaitForVBlank( tjs_int* in_vblank, tjs_int* delayed )
 {
@@ -1100,7 +1169,7 @@ void tTVPBasicDrawDevice::DialogHost_GetDestRect( int & x, int & y, int & w, int
 }
 #endif // KRKRZ_HAS_ELEMENTS
 //---------------------------------------------------------------------------
-void tTVPBasicDrawDevice::RenderVideoPresenters()
+void tTVPBasicDrawDevice::RenderVideoPresenters(bool clear)
 {
 	if( !VideoPresenter ) return;
 	if( !D3DDevice || !D3DContext || !BackBufferRTV ) return;
@@ -1118,11 +1187,13 @@ void tTVPBasicDrawDevice::RenderVideoPresenters()
 	ctx.SrcWidth  = sw;
 	ctx.SrcHeight = sh;
 
-	// RTV を束ねて黒でクリア (動画が全画面を覆う前提。レターボックス余白は黒)。
+	// RTV を束ね、動画が全画面を覆う場合は黒でクリア (レターボックス余白は黒)。
 	ID3D11RenderTargetView* rtvs[1] = { BackBufferRTV };
 	D3DContext->OMSetRenderTargets(1, rtvs, NULL);
-	const float black[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
-	D3DContext->ClearRenderTargetView(BackBufferRTV, black);
+	if( clear ) {
+		const float black[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+		D3DContext->ClearRenderTargetView(BackBufferRTV, black);
+	}
 
 	// ビューポートをバックバッファ全面に (DrawCompositedFrame を経ない present 経路のため)
 	D3D11_VIEWPORT vp; ZeroMemory(&vp, sizeof(vp));
@@ -1186,6 +1257,20 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/recreate)
 	return TJS_S_OK;
 }
 TJS_END_NATIVE_METHOD_DECL(/*func. name*/recreate)
+//----------------------------------------------------------------------
+TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/captureWithOverlay)
+{
+	// captureWithOverlay(bitmap) : 現在の画面を Elements オーバーレイ込みで bitmap へ写す。
+	// 写した画像はウィンドウ上の表示サイズ。戻り値 = 成功したか。
+	TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_BasicDrawDevice);
+	if( numparams < 1 ) return TJS_E_BADPARAMCOUNT;
+	tTJSNI_Bitmap * bmp = (tTJSNI_Bitmap*)TJSGetNativeInstance( tTJSNC_Bitmap::ClassID, param[0] );
+	if( !bmp ) return TJS_E_INVALIDPARAM;
+	bool ok = _this->GetDevice()->CaptureWithOverlay( bmp );
+	if( result ) *result = ok;
+	return TJS_S_OK;
+}
+TJS_END_NATIVE_METHOD_DECL(/*func. name*/captureWithOverlay)
 //----------------------------------------------------------------------
 
 

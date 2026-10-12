@@ -682,7 +682,7 @@ bool tTVPReplThread::ShouldStartREPL()
 // Windows GUI サブシステムで親プロセスから継承した / 持っていない console に
 // きちんと stdio をつなぎ直す。-repl 指定時にだけ呼ばれる。
 //---------------------------------------------------------------------------
-#ifdef _WIN32
+#ifdef TVP_WIN32_DESKTOP // コンソール API はデスクトップのみ
 // -repl=new / -repl=window 指定時は、親や継承した既存コンソールに attach せず
 // 必ず新規コンソールウィンドウを開く。ターミナル(や別アプリ)から GUI を起動しつつ
 // REPL を起動元のコンソールに食い込ませたくない場合に使う。

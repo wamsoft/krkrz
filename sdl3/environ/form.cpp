@@ -134,7 +134,8 @@ SDL3WindowForm::SDL3WindowForm(class tTJSNI_Window* win)
 #if defined(TVP_USE_OPENGL)
 	flags |= SDL_WINDOW_OPENGL;
 #endif
-#if defined(__ANDROID__) || defined(SDL_PLATFORM_IOS) || defined(__ORBIS__) || defined (__PROSPERO__)
+#if defined(__ANDROID__) || defined(SDL_PLATFORM_IOS) || defined(__ORBIS__) || defined (__PROSPERO__) || \
+    defined(SDL_PLATFORM_XBOXONE) || defined(SDL_PLATFORM_XBOXSERIES)
 	flags |= SDL_WINDOW_FULLSCREEN;
 	int width  = 1920;
 	int height = 1080; 

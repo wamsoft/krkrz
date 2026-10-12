@@ -208,6 +208,24 @@ elements_modal 側の追加 (詳細は elements_modal README)。 «窓»
 `PeekTopLevelSize` を使う (単純な文字列検索に戻すと、 入れ子の `"size"` を掴んで
 ダイアログがその大きさに縮む)。
 
+### スムーズスクロール一覧 (`virtual_scroller`) / スライダの `snap` — 2026-10-08 追加
+
+elements_modal 側の追加 (詳細は elements_modal README の «スムーズスクロール一覧» /
+«スライダの目盛» 節)。 ホスト (krkrz) 側の変更は不要。
+
+- `virtual_scroller` は窓に収まる行数 + 1 行ぶんのセルを 1px 単位で送り、 行の境目で
+  先頭行を `onAction(id, 行)` と `top_row_var` で知らせる。 送りのアニメーション /
+  慣性は session の毎フレームの更新 (`frame_ticker`) で進むので、 ホストは従来どおり
+  毎フレーム update を呼ぶだけでよい。 セルが «窓» (`index` + `index_offset_var`)
+  で一覧を引いていれば、 中身の差し替えもホスト実装なしで済む。
+- スライダ (`slider` / `slider_with_range` / `atlas_slider`) の `"snap": true` で値を
+  1 目盛単位に制約。 `atlas_slider` / `atlas_scrollbar` の `"active_var"` は押して
+  いる間 `"1"` を書く (一覧の `"bar_active_var"` へ渡して «離したら行へ揃う» に使う)。
+- 同時期の engine 側修正: WINVER の `WM_MOUSEWHEEL` は lParam がスクリーン座標なのに
+  そのまま `OnMouseWheel` へ渡していたため、 ウィンドウが画面の左上に無いとホイールの
+  位置がずれ、 カーソルの下の一覧にホイールが届かなかった (src/core `a68b3bf9` で
+  `ScreenToClient` してから渡すよう修正)。
+
 ### 変数 store の読出と変化通知 (`GetVar` / `DescribeVars` / `OnVar`)
 
 書込 (`SetVar`) の逆向き。 elements_modal 側には元から
@@ -1688,6 +1706,20 @@ elements_modal / host 別 runner 由来の C++ 例外 (`std::exception` およ�
 elements 側 pixmap が対象リソース名を例外メッセージに含め、 「不存在 (loader が
 empty)」 と 「デコード失敗 (バイト数 + 拡張子付き)」 を区別する。
 
+### システムイベント停止中のモーダル (SDL)
+
+未処理のスクリプト例外を表示している間など、 システムイベントが止まっている
+(`System.eventDisabled` 相当) ときに overlay のモーダルを開くと、 通常のイベント配送では
+ウィンドウ更新も入力も届かず、 ダイアログが描かれないまま / 操作できないまま入力待ちになる。
+SDL のモーダルループ (`sdl3/visual/SDLElementsModalRunner.cpp`) は、 停止中に限り
+**入力イベント (`TVPDeliverInputEvents`) とウィンドウ更新 (`TVPDeliverWindowUpdateEvents`) だけ**を
+自分で配送する (スクリプトのイベントやタイマーは止めたまま)。 パッドだけで操作する機種
+(コンソール機) ではこれが無いとエラーダイアログを閉じられない。
+
+⚠ ウィンドウ更新の配送中 (描画デバイスのイベント処理の中) にモーダルを開くと、 再入防止で
+ウィンドウ更新が配送されなくなる。 描画デバイスの初期化通知などからダイアログが出うるものは、
+イベントを即時でなく post で送ること (`SDLGpuDrawDevice` の `onInit` はこのため post)。
+
 ## 複数画面フロー (navigator)
 
 1 つの overlay 上で **複数の画面 (JSON) を遷移**させる仕組み。 各画面 JSON の
@@ -1829,8 +1861,8 @@ getter も `IsHandlerActive(this)` を返す。 ブロッキングモーダル�
 | 6b | TJS バインディング (`ElementsDialog.showJson` / `showFile` / `close` / `onAction`) | 完了 |
 | 6c | TJS `showModalJson` / `showModalFile` (独立 window + overlay 両モード) | 完了 |
 | 6d | `ElementsDialog.onAction` を showModal* でも発火 + `close_on_click` で閉じる ボタン明示 | 完了 |
-| 7  | UserConfig を Elements で実装 (SDL3 ビルド) | 完了 |
-| 7d | JsonLayout 要素拡張 / VT_String 編集 UI / plugin sidecar JSON 等 | 未着手 |
+| 7  | UserConfig を Elements で実装 (SDL3 ビルド) | 完了 → 2026-10-12 にブラウザ UI へ置き換えて削除 ([UserConfig.md](UserConfig.md)) |
+| 7d | JsonLayout 要素拡張 / VT_String 編集 UI / plugin sidecar JSON 等 | UserConfig 分はブラウザ UI 側で対応済み。JsonLayout 要素拡張は未着手 |
 | 8  | navigator 複数画面フロー (`showFlow` / `showFlowScreens` + `onScreen` / `onScreenLeave`、 manifest/inline 両対応、 Storages 資材解決) | 完了 |
 | 8t | **画面切替エフェクト** (`effect: fade / universal` + `rule` / `vague`、 CPU 合成で全 DrawDevice 対応) + `ElementsDialog.close()` の exit 演出協調 | 完了 (SDL / WINVER 実機検証済) |
 | R6 | **複数インスタンス同時表示** (z-order インスタンスリスト + layer 単位テクスチャ + `modal` フラグ + ヒットテスト入力ルーティング + 素通し)。 非モーダル常駐 UI の並存 / modal の重ね出しが可能に | 完了 (描画・ロジック実装済、 GUI 実機での重ね操作検証は未) |
@@ -1849,7 +1881,7 @@ getter も `IsHandlerActive(this)` を返す。 ブロッキングモーダル�
 | 画像 | `image`(path/scale/fit) — krkrz Storage 経由 | 別系統 |
 | 値 API | id ベースの `get_text` / `set_text` / `get_bool` / `set_bool` / `get_value` / `enable` / `select` / `show` / `refresh` | 現状は `OnAction` 一方向のみ |
 | 色形式 | `"#RGB"` `"#RRGGBB"` `"#RRGGBBAA"` / 名前色対応 | 現状は `[r,g,b,a]` 配列のみ |
-| 拡張 | plugin sidecar JSON 自動 scan (UserConfig 拡張) | |
+| 拡張 | plugin sidecar JSON 自動 scan (UserConfig 拡張) | ブラウザ UI 側で対応済み (`TVPMergeAllPluginCommandDesc`) |
 
 ## 終了処理 — ThorVG を畳む (対処済み)
 
@@ -1939,6 +1971,6 @@ AtExit の優先度は**昇順**に実行される (`SysInitIntf.cpp` の
   フィット。 `doc/D3D11Migration.md` 参照)。
 - ~~WINVER: 独立 OS ウィンドウ modal の本実装~~ → **実装済** (`TVPRunElementsModalWindow`、 上記参照)。
 - ~~WINVER: Agent 駆動 API~~ → **対応済** (`common/environ/AgentControlIntf.cpp` + `AgentInput` seam)。
-- WINVER の起動時 UserConfig UI (`-userconf`) は **Win32 ネイティブ版** (`ConfigFormUnit.cpp`) が既存で
-  動作する。 Elements 版 UserConfig (`SDLElementsUserConfig.cpp`) は SDL 専用のまま
-  (ゲーム窓生成前の独立ウィンドウ = 上記 modal 基盤とは別に UI 移植が要る)。
+- ~~起動時 UserConfig UI (`-userconf`) の WINVER / SDL の統一~~ → 2026-10-12 に両方ともブラウザ UI
+  (appserve) へ置き換え、Win32 版 (`ConfigFormUnit.cpp`) と Elements 版 (`SDLElementsUserConfig.cpp`) は
+  削除 ([UserConfig.md](UserConfig.md))。

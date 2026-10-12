@@ -250,6 +250,9 @@ static bool TVPGetEnvValue(const ttstr &name, ttstr &out)
 	if(!v) return false;
 	out = ttstr(reinterpret_cast<const tjs_char *>(v));
 	return true;
+#elif defined(__ORBIS__) || defined(__PROSPERO__)
+	// PlayStation には環境変数の概念が無い (SDK が getenv / setenv を宣言しない)
+	return false;
 #else
 	std::string n;
 	tjs_string ns(name.c_str());
@@ -270,6 +273,8 @@ static bool TVPSetEnvValue(const ttstr &name, const ttstr &value)
 #ifdef _WIN32
 	return ::_wputenv_s(reinterpret_cast<const wchar_t *>(name.c_str()),
 	                    reinterpret_cast<const wchar_t *>(value.c_str())) == 0;
+#elif defined(__ORBIS__) || defined(__PROSPERO__)
+	return false;
 #else
 	std::string n, v;
 	tjs_string ns(name.c_str()), vs(value.c_str());

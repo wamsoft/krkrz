@@ -24,6 +24,7 @@ class tTVPSDLDrawDevice : public tTVPDrawDevice
 {
 	typedef tTVPDrawDevice inherited;
 
+protected:
 	iTJSDispatch2 *Owner;
 	iTJSDispatch2 *Self;
 	tTJSVariant WindowObject;
@@ -45,8 +46,19 @@ public:
 
 	tTVPSDLDrawDevice(iTJSDispatch2 *tjs_obj); //!< コンストラクタ
 
-private:
-	~tTVPSDLDrawDevice(); //!< デストラクタ
+protected:
+	virtual ~tTVPSDLDrawDevice(); //!< デストラクタ
+
+	//---- 派生クラス (Canvas の GPU 版を載せる SDLGpuDrawDevice) 用のフック
+	//! SDL_Renderer を作る。既定は SDL_CreateRenderer(window, requested)
+	virtual SDL_Renderer * CreateSDLRenderer(SDL_Window *sdl_wnd, const char *requested);
+	//! SDL_Renderer を手放す。既定は SDL_DestroyRenderer
+	virtual void DestroySDLRenderer(SDL_Renderer *renderer);
+	//! renderer を作った直後 / 破棄する直前
+	virtual void OnRendererCreated() {}
+	virtual void OnRendererDestroying() {}
+	//! Show() で画面の中身 (レイヤー画像) を描く。dst はレイヤー画像の描画先
+	virtual void RenderContent(SDL_Renderer *renderer, const SDL_FRect &dst);
 
 	void InitRenderer(SDL_Window *sdl_wnd);
 	void DestroyRenderer();
@@ -93,12 +105,17 @@ public:
 	//---- iTVPSDLVideoPresenterHost
 	virtual void TJS_INTF_METHOD AddVideoPresenter( iTVPSDLVideoPresenter * presenter );
 	virtual void TJS_INTF_METHOD RemoveVideoPresenter( iTVPSDLVideoPresenter * presenter );
-	//! 現在 presenter が稼働中か (稼働中はレイヤ描画を省き動画のみ描く)。
+	//! 現在 presenter が稼働中か。
 	bool HasActiveVideoPresenter() const { return VideoPresenter != nullptr; }
+	//! 動画が表示中で画面全体を覆っているか (このときはレイヤ描画を省き動画のみ描く)。
+	//! 再生矩形が指定されている間はゲーム画面を描いてから動画を重ねるので false。
+	bool IsVideoCoveringScreen() const {
+		return VideoPresenter && VideoPresenter->IsVisible() && VideoPresenter->CoversScreen();
+	}
 
 	virtual void SetWaitVSync(bool enable);
 
-private:
+protected:
 	// 描画処理用
 	SDL_Renderer *mRenderer;
 	SDL_Texture* Texture;
@@ -119,8 +136,12 @@ private:
 	// overlay 動画 presenter (単一スロット、最後に登録した 1 つを pull する)。
 	// フレームバッファ / テクスチャは presenter 側 (SDLVideoPresenter.cpp) が持つ。
 	iTVPSDLVideoPresenter *VideoPresenter;
-	//! presenter 稼働中に動画を描く (Show() から)。何か描いたら true。
+	//! presenter 稼働中に動画を描く (Show() から)。動画が画面を覆っていて描いたら true。
 	bool ShowVideo();
+	//! 再生矩形が指定された動画を、描き終えたゲーム画面の上へ重ねる (Show() の描画中に呼ぶ)。
+	void RenderPartialVideo();
+	//! presenter に渡す描画コンテキストを作る。
+	tTVPSDLVideoPresenterContext MakeVideoContext();
 
 	// ビューポート余白 (背景色 + 壁紙)。壁紙テクスチャは base の ViewportWallpaperGen
 	// と mWallpaperGen を比較して遅延 (再)アップロードする。

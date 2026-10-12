@@ -10,7 +10,7 @@
 //---------------------------------------------------------------------------
 #include "tjsCommHead.h"
 #include "tjsDictionary.h"         // TJSCreateDictionaryObject
-#ifdef _WIN32
+#ifdef TVP_WIN32_DESKTOP
 #include <shellapi.h>              // TVPExecuteProgram: ShellExecuteW (App Paths 解決)
 #include "ApplicationSpecialPath.h"   // System.personalPath / appDataPath (WINVER 互換)
 #endif
@@ -189,7 +189,7 @@ bool TVPShellExecute(const ttstr &target, const ttstr &param)
 //---------------------------------------------------------------------------
 bool TVPExecuteProgram(const ttstr &exe, const ttstr &args)
 {
-#ifdef _WIN32
+#ifdef TVP_WIN32_DESKTOP
 	if(exe.IsEmpty()) return false;
 	return (INT_PTR)::ShellExecuteW(NULL, L"open",
 		(const wchar_t*)exe.c_str(),
@@ -905,7 +905,7 @@ TJS_BEGIN_NATIVE_PROP_DECL(personalPath)
 {
 	TJS_BEGIN_NATIVE_PROP_GETTER
 	{
-#ifdef _WIN32
+#ifdef TVP_WIN32_DESKTOP
 		// "My Documents" (無ければ RoamingAppData)。 WINVER の
 		// TVPGetPersonalPath と同じ解決順・同じ正規化。
 		tjs_string path = ApplicationSpecialPath::GetPersonalPath();
@@ -932,7 +932,7 @@ TJS_BEGIN_NATIVE_PROP_DECL(appDataPath)
 {
 	TJS_BEGIN_NATIVE_PROP_GETTER
 	{
-#ifdef _WIN32
+#ifdef TVP_WIN32_DESKTOP
 		// RoamingAppData (WINVER の TVPGetAppDataPath と同じ)
 		tjs_string path = ApplicationSpecialPath::GetAppDataPath();
 #else

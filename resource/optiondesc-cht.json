@@ -1020,7 +1020,7 @@
 			},
 			{
 				"caption": "啟動時的 DrawDevice",
-				"description": "選擇啟動時使用的預設 DrawDevice。\n\nSDL3 版本：'sdl'（經由 SDL_Renderer）/ 'sdlogl'（直接 OpenGL ES）/ 'ogl'（OpenGL ES + Canvas 等完整功能）。未指定時，啟用 OpenGL 的版本預設為 'sdlogl'，否則為 'sdl'。\n\nWINVER 版本：'basic'（Direct3D 11，預設）/ 'ogl'（OpenGL ES）/ 'null'（不繪製，用於驗證）。\n\n使用 'ogl' / 'sdlogl' 時需要 OpenGL ES 可用的環境（WINVER 版本，以及 SDL3 上無法原生建立 GLES 上下文的環境，需要 ANGLE 的 libEGL.dll / libGLESv2.dll）。執行中也可以透過給 Window.drawDevice 賦值來切換，但 SDL3 版本以 'sdl' 啟動時，執行中無法切換到 OpenGL 系裝置。",
+				"description": "選擇啟動時使用的預設 DrawDevice。\n\nSDL3 版本：'sdl'（經由 SDL_Renderer）/ 'sdlogl'（直接 OpenGL ES）/ 'ogl'（OpenGL ES + Canvas 等完整功能）。未指定時，啟用 OpenGL 的版本預設為 'sdlogl'，否則為 'sdl'。在以 SDL_GPU 執行 Canvas 的版本 (KRKRZ_CANVAS_GPU) 中，還可以選擇 'gpu'（SDL_GPU + Canvas 等），未指定時預設為 'gpu'。\n\nWINVER 版本：'basic'（Direct3D 11，預設）/ 'ogl'（OpenGL ES）/ 'null'（不繪製，用於驗證）。\n\n使用 'ogl' / 'sdlogl' 時需要 OpenGL ES 可用的環境（WINVER 版本，以及 SDL3 上無法原生建立 GLES 上下文的環境，需要 ANGLE 的 libEGL.dll / libGLESv2.dll）。執行中也可以透過給 Window.drawDevice 賦值來切換，但 SDL3 版本以 'sdl' 啟動時，執行中無法切換到 OpenGL 系裝置。",
 				"name": "drawdevice",
 				"type": "string",
 				"length": 16,
@@ -1031,6 +1031,15 @@
 				"caption": "SDL_Renderer 後端",
 				"description": "明確指定 SDLDrawDevice 使用的 SDL_Renderer 後端名稱（例：direct3d11 / vulkan / opengl / software）。未指定時由 SDL3 自動選擇。\n\n僅在 SDL3 版本使用 SDLDrawDevice (-drawdevice=sdl) 時有意義。",
 				"name": "renderer",
+				"type": "string",
+				"length": 32,
+				"user": false,
+				"value": ""
+			},
+			{
+				"caption": "SDL_GPU 驅動程式",
+				"description": "在以 SDL_GPU 執行 Canvas 的版本 (KRKRZ_CANVAS_GPU) 中，明確指定 GPUDrawDevice 使用的 SDL_GPU 驅動程式名稱（例：vulkan）。未指定時由 SDL3 自動選擇。\n\n在 Windows 上預設選擇 vulkan（著色器為 SPIR-V）。指定 direct3d12 時以 D3D12（著色器為 DXIL）執行，此時腳本的著色器也需要以 DXIL 形式準備的著色器包。",
+				"name": "gpudriver",
 				"type": "string",
 				"length": 32,
 				"user": false,

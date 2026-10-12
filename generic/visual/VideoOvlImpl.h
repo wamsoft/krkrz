@@ -69,6 +69,12 @@ class tTJSNI_VideoOverlay : public tTJSNI_BaseVideoOverlay
 	tTVPRect mMixerRect;        // プライマリレイヤ座標での配置矩形
 	tjs_real mMixerAlpha;       // 全体アルファ (0..1)
 	tjs_uint mMixerBGColor;     // 保持のみ (背景色。現状 presenter 未使用)
+	// 再生矩形 (setPos / setSize / setBounds、プライマリレイヤ座標)。overlay / mixer で使う。
+	// 初期値は WINVER と同じ (0,0,320,240)。未指定の間は動画を画面全体へ縦横比を保って
+	// 描き (画面を覆う)、どれかを指定した時点でこの矩形へ描くようになる。
+	tTVPRect Rect;
+	bool RectSpecified;
+	void ApplyPresenterRect();  // 再生矩形を presenter へ渡す
 	void PreparePresenter();    // Open 時: presenter を生成し device へ bind、YUV 対応を判定
 	void TryRegisterPresenter();// Play 時: presenter の pull を開始 (Activate)
 	void ReleasePresenter();
@@ -118,13 +124,13 @@ public:
 	void SetBounds(const tTVPRect & rect);
 
 	void SetLeft(tjs_int l);
-	tjs_int GetLeft() const { return 0; }
+	tjs_int GetLeft() const;
 	void SetTop(tjs_int t);
-	tjs_int GetTop() const { return 0; }
+	tjs_int GetTop() const;
 	void SetWidth(tjs_int w);
-	tjs_int GetWidth() const { return 0; }
+	tjs_int GetWidth() const;
 	void SetHeight(tjs_int h);
-	tjs_int GetHeight() const { return 0; }
+	tjs_int GetHeight() const;
 
 	void SetVisible(bool b);
 	bool GetVisible() const;

@@ -44,7 +44,7 @@
 #include "Exception.h"
 #include "ApplicationSpecialPath.h"
 #include "resource.h"
-#include "ConfigFormUnit.h"
+#include "UserConfig.h"
 #include "TVPScreen.h"
 
 #pragma comment(lib, "mpr")
@@ -2016,46 +2016,17 @@ static bool TVPWaitWritePermit(const tjs_string& fn)
 //---------------------------------------------------------------------------
 
 
-#if 0
 //---------------------------------------------------------------------------
-// TVPShowUserConfig
+// TVPGetUserConfigFilePath : 設定画面 (-userconf) が書く <exe名>.cfu のフルパス
+// (起動時に読む場所と同じ。 -datapath を反映したデータ保存場所)
 //---------------------------------------------------------------------------
-static void TVPShowUserConfig(std::string orgexe)
+tjs_string TVPGetUserConfigFilePath()
 {
-	TVPEnsureDataPathDirectory();
-
-	Application->SetTitle( ChangeFileExt(ExtractFileName(orgexe), "") );
-	TConfSettingsForm *form = new TConfSettingsForm(Application, true);
-	form->InitializeConfig(orgexe);
-	form->ShowModal();
-	delete form;
-}
-//---------------------------------------------------------------------------
-#endif
-
-//---------------------------------------------------------------------------
-// TVPExecuteUserConfig
-//---------------------------------------------------------------------------
-bool TVPExecuteUserConfig()
-{
-	// check command line argument
-
-	tjs_int i;
-	bool process = false;
-	for(i=1; i<_argc; i++)
-	{
-		if(!TJS_strcmp(_wargv[i], TJS_W("-userconf"))) // this does not refer TVPGetCommandLine
-			process = true;
-	}
-
-	if(!process) return false;
-
-	// execute user config mode
-	//TVPShowUserConfig(ExePath());
-	TVPShowUserConfig();
-
-	// exit
-	return true;
+	tTJSVariant val;
+	tjs_string datapath;
+	if(TVPGetCommandLine(TJS_W("-datapath"), &val))
+		datapath = ((ttstr)val).AsStdString();
+	return ApplicationSpecialPath::GetUserConfigFileName(datapath, ExePath());
 }
 //---------------------------------------------------------------------------
 

@@ -77,6 +77,8 @@ tTJSNI_VideoOverlay::tTJSNI_VideoOverlay()
 	Mode = vomOverlay;
 	Visible = false;
 	mMixerRect.left = mMixerRect.top = mMixerRect.right = mMixerRect.bottom = 0;
+	Rect.left = 0; Rect.top = 0; Rect.right = 320; Rect.bottom = 240;   // WINVER と同じ初期値
+	RectSpecified = false;
 
 	Bitmap[0] = nullptr;
 	Bitmap[1] = nullptr;
@@ -237,6 +239,8 @@ void tTJSNI_VideoOverlay::Open(const ttstr &name)
 				SetStatusAsync( mPlayer->IsPlaying() ? tTVPVideoOverlayStatus::Play : tTVPVideoOverlayStatus::Stop );
 		});
 	}
+	// 自前表示を持つ実装 (wasm <video>) へ open 前に指定された再生矩形を渡す
+	if (mPlayer) ApplyPresenterRect();
 	if (mPlayer && !mUseYUV) {
 		mPlayer->SetLayerMode(Mode == vomLayer);
 		mPlayer->SetOnVideoDecoded([this](int w, int h, iTVPMoviePlayer::DestUpdater updater) {
@@ -338,6 +342,8 @@ void tTJSNI_VideoOverlay::PreparePresenter()
 		mUseYUV = Presenter->SupportsYUV();
 		// open 前に visible を設定していた場合も反映 (既定は false = 非表示)。
 		Presenter->SetVisible( Visible );
+		// open 前に再生矩形を指定していた場合も反映 (未指定なら画面全体)。
+		ApplyPresenterRect();
 	}
 }
 //---------------------------------------------------------------------------
@@ -437,6 +443,18 @@ void tTJSNI_VideoOverlay::SetPeriodEvent( int eventFrame ) {}
 //---------------------------------------------------------------------------
 void tTJSNI_VideoOverlay::SetRectangleToVideoOverlay() {}
 //---------------------------------------------------------------------------
+void tTJSNI_VideoOverlay::ApplyPresenterRect() {
+	// overlay / mixer: 再生矩形を presenter へ渡す。指定済みなら DrawDevice はゲーム画面を
+	// 描いてからその矩形へ動画を重ね、未指定なら従来どおり動画が画面全体を覆う。
+	if( Presenter ) Presenter->SetVideoRect( RectSpecified ? &Rect : nullptr );
+	// 自前表示を持つ実装 (wasm <video>) にも渡す。通常実装では no-op
+	if( mPlayer && Mode != vomLayer ) {
+		tjs_int sw = 0, sh = 0;
+		if( Window && Window->GetDrawDevice() ) Window->GetDrawDevice()->GetSrcSize( sw, sh );
+		mPlayer->SetOverlayRect( RectSpecified, Rect.left, Rect.top, Rect.get_width(), Rect.get_height(), sw, sh );
+	}
+}
+//---------------------------------------------------------------------------
 void tTJSNI_VideoOverlay::SetPosition(tjs_int left, tjs_int top) {
 	if( Mode == vomLayer )
 	{
@@ -445,14 +463,30 @@ void tTJSNI_VideoOverlay::SetPosition(tjs_int left, tjs_int top) {
 	}
 	else
 	{
-		// XXX
+		Rect.set_offsets( left, top );
+		RectSpecified = true;
+		ApplyPresenterRect();
 	}
 }
 //---------------------------------------------------------------------------
 void tTJSNI_VideoOverlay::SetSize(tjs_int width, tjs_int height) {
+	// レイヤ再生では使えない (WINVER と同じ)
+	if( Mode == vomLayer ) return;
+	Rect.set_size( width, height );
+	RectSpecified = true;
+	ApplyPresenterRect();
 }
 //---------------------------------------------------------------------------
 void tTJSNI_VideoOverlay::SetBounds(const tTVPRect & rect) {
+	if( Mode == vomLayer )
+	{
+		// レイヤ再生では位置だけ反映し、大きさは無視する (WINVER と同じ)
+		SetPosition( rect.left, rect.top );
+		return;
+	}
+	Rect = rect;
+	RectSpecified = true;
+	ApplyPresenterRect();
 }
 //---------------------------------------------------------------------------
 void tTJSNI_VideoOverlay::SetLeft(tjs_int l) {
@@ -460,7 +494,9 @@ void tTJSNI_VideoOverlay::SetLeft(tjs_int l) {
 	{
 		if( Layer1 != NULL ) Layer1->SetLeft( l );
 		if( Layer2 != NULL ) Layer2->SetLeft( l );
+		return;
 	}
+	SetPosition( l, GetTop() );
 }
 //---------------------------------------------------------------------------
 void tTJSNI_VideoOverlay::SetTop(tjs_int t) 
@@ -469,13 +505,42 @@ void tTJSNI_VideoOverlay::SetTop(tjs_int t)
 	{
 		if( Layer1 != NULL ) Layer1->SetTop( t );
 		if( Layer2 != NULL ) Layer2->SetTop( t );
+		return;
 	}
-
+	SetPosition( GetLeft(), t );
 }
 //---------------------------------------------------------------------------
-void tTJSNI_VideoOverlay::SetWidth(tjs_int w) {}
+void tTJSNI_VideoOverlay::SetWidth(tjs_int w) {
+	if( Mode == vomLayer ) return;
+	SetSize( w, GetHeight() );
+}
 //---------------------------------------------------------------------------
-void tTJSNI_VideoOverlay::SetHeight(tjs_int h) {}
+void tTJSNI_VideoOverlay::SetHeight(tjs_int h) {
+	if( Mode == vomLayer ) return;
+	SetSize( GetWidth(), h );
+}
+//---------------------------------------------------------------------------
+// getter: 再生矩形 (WINVER と同じく未指定の間は初期値 0,0,320,240)。
+// レイヤ再生では動画レイヤの位置と大きさ。
+tjs_int tTJSNI_VideoOverlay::GetLeft() const {
+	if( Mode == vomLayer ) return Layer1 ? Layer1->GetLeft() : 0;
+	return Rect.left;
+}
+//---------------------------------------------------------------------------
+tjs_int tTJSNI_VideoOverlay::GetTop() const {
+	if( Mode == vomLayer ) return Layer1 ? Layer1->GetTop() : 0;
+	return Rect.top;
+}
+//---------------------------------------------------------------------------
+tjs_int tTJSNI_VideoOverlay::GetWidth() const {
+	if( Mode == vomLayer ) return Layer1 ? (tjs_int)Layer1->GetWidth() : 0;
+	return Rect.get_width();
+}
+//---------------------------------------------------------------------------
+tjs_int tTJSNI_VideoOverlay::GetHeight() const {
+	if( Mode == vomLayer ) return Layer1 ? (tjs_int)Layer1->GetHeight() : 0;
+	return Rect.get_height();
+}
 //---------------------------------------------------------------------------
 void tTJSNI_VideoOverlay::SetVisible(bool b) {
 	Visible = b;

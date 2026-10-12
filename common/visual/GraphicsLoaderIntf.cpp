@@ -841,7 +841,13 @@ void TVPSaveAsBMP( void* formatdata, iTJSBinaryStream* dst, const tTVPBaseBitmap
 		// write bitmap body
 		for(tjs_int y = bmp->GetHeight() - 1; y >= 0; y --)
 		{
-			if(!buf) buf = new tjs_uint8[bmppitch];
+			if(!buf)
+			{
+				buf = new tjs_uint8[bmppitch];
+				// 24bit / 8bit では行末の 4 バイト境界までの詰め物に書き込まないので、
+				// 0 で埋めておく (不定値のままだと同じ画像でも出力が毎回変わる)
+				memset(buf, 0, bmppitch);
+			}
 			if(pixelbytes == 4)
 			{
 				memcpy(buf, bmp->GetScanLine(y), bmppitch);

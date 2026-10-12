@@ -166,6 +166,8 @@ public:
 	void InitArgs(int argc, char **argv);
 	void InitArgs(int argc, tjs_char **argv);
 
+	// メッセージ資材の読み込み (1 回だけ。起動オプションの解決より前に呼ぶ)
+	bool LoadMessageResource();
 	// アプリ初期化
 	bool InitializeApplication();
 
@@ -187,6 +189,8 @@ public:
 
 protected:
 	void OnInitialize(tTJS *tjs){}
+
+	bool MessageResourceLoaded = false;
 
 	// ゲームパッド論理管理 (0=最後に操作したパッドの別名 / 1..N=実パッド)。
 	// 物理バックエンドは各プラットフォームの App が iTVPPhysicalPadProvider として

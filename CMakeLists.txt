@@ -11,7 +11,7 @@ add_link_options("$<$<AND:$<C_COMPILER_ID:MSVC>,$<COMPILE_LANGUAGE:C,CXX>>:/DEBU
 
 
 set(PROJECT_NAME krkrz)
-set(PROJECT_VERSION 2.5.0)
+set(PROJECT_VERSION 2.6.0)
 
 # ----------------------------------------------------
 # vcpkg マニフェスト統合
@@ -87,6 +87,13 @@ option(MASTER "build master version" OFF)
 
 option(KRKRZ_USE_SJIS "use sjis" OFF)
 option(KRKRZ_USE_OPENGL "use opengl" ON)
+# Canvas 系クラス (Canvas / Texture / Offscreen / ShaderProgram / VertexBuffer /
+# VertexBinder) を SDL_GPU で実装する。OpenGL 版とは排他、SDL ビルドのみ。
+# シェーダーは事前変換 (common/visual/gpu/gpushaderc.py)。設計は doc/CanvasGPU.md。
+option(KRKRZ_CANVAS_GPU "Canvas classes on SDL_GPU (exclusive with KRKRZ_USE_OPENGL)" OFF)
+if (KRKRZ_CANVAS_GPU AND KRKRZ_USE_OPENGL)
+	message(FATAL_ERROR "KRKRZ_CANVAS_GPU and KRKRZ_USE_OPENGL cannot be enabled together")
+endif()
 # wasm: リソースを wasm 本体へ埋め込む (ON) か、外部 (MEMFS /resource へ preload
 # し file://./resource/ で読む, OFF) か。OFF だと wasm がリソース非依存になり
 # 共有バイナリ化できる。案件別 charset は preload する config.cf で切替 (krkrz_web 側)。
@@ -120,7 +127,11 @@ add_compile_definitions(PICOJSON_USE_INT64)
 
 # デスクトップ判定 (Win/Mac/Linux)
 # Android/iOS/Emscripten はデスクトップ機能を無効化
-if(WIN32 OR (APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS") OR (UNIX AND NOT ANDROID AND NOT EMSCRIPTEN))
+# WIN32 が真でもデスクトップではない機種向けに、 外枠が先に KRKRZ_DESKTOP を
+# 決めておけばそれに従う
+if(DEFINED KRKRZ_DESKTOP)
+	# 外枠指定のまま
+elseif(WIN32 OR (APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS") OR (UNIX AND NOT ANDROID AND NOT EMSCRIPTEN))
 	set(KRKRZ_DESKTOP ON)
 else()
 	set(KRKRZ_DESKTOP OFF)
@@ -131,6 +142,10 @@ endif()
 if(KRKRZ_DESKTOP)
 	add_compile_definitions(KRKRZ_DESKTOP=1)
 endif()
+
+# エンジン設定 (-userconf) の設定画面をブラウザで開く (appserve。doc/UserConfig.md)。
+# デスクトップで既定 ON。量産 (MASTER) ビルドでも入れる (エンドユーザーが使う機能のため)。
+option(KRKRZ_USERCONF_WEB "enable the -userconf settings page (browser UI via appserve)" ${KRKRZ_DESKTOP})
 
 # REPL はデスクトップでのみデフォルト有効
 option(KRKRZ_REPL "enable interactive TJS REPL (requires icline)" ${KRKRZ_DESKTOP})
@@ -998,14 +1013,17 @@ endforeach()
 # (IconReset 等) も「リソースが見つからない」で失敗する。 ここで埋めておけば
 # ビルド直後から案件のアイコンが付く。 名前を MAINICON にしてあるのは既存の
 # 差し替えツールがその名前を前提にしているため (後から差し替えも効く)。
-if (KRKRZ_WIN_ICON)
-    if (EXISTS "${KRKRZ_WIN_ICON}")
-        file(APPEND ${RC_FILE} "MAINICON ICON \"${KRKRZ_WIN_ICON}\"\n")
-        list(APPEND RESOURCE_FILES "${KRKRZ_WIN_ICON}")   # 下の OBJECT_DEPENDS へ
-        message(STATUS "krkrz: app icon = ${KRKRZ_WIN_ICON}")
-    else()
-        message(WARNING "krkrz: KRKRZ_WIN_ICON not found: ${KRKRZ_WIN_ICON}")
-    endif()
+# 指定が無いときは WINVER と同じ吉里吉里の既定アイコン (tvpwin32.ico) を入れる。
+set(KRKRZ_APP_ICON "${KRKRZ_WIN_ICON}")
+if (NOT KRKRZ_APP_ICON)
+    set(KRKRZ_APP_ICON "${CMAKE_CURRENT_SOURCE_DIR}/win32/vcproj/tvpwin32.ico")
+endif()
+if (EXISTS "${KRKRZ_APP_ICON}")
+    file(APPEND ${RC_FILE} "MAINICON ICON \"${KRKRZ_APP_ICON}\"\n")
+    list(APPEND RESOURCE_FILES "${KRKRZ_APP_ICON}")   # 下の OBJECT_DEPENDS へ
+    message(STATUS "krkrz: app icon = ${KRKRZ_APP_ICON}")
+else()
+    message(WARNING "krkrz: KRKRZ_WIN_ICON not found: ${KRKRZ_APP_ICON}")
 endif()
 
 # .rc は参照先バイナリの「内容」を含めて .res へ埋め込むが、ビルドツールは
@@ -1312,7 +1330,7 @@ target_link_libraries( ${EXENAME} PRIVATE
 	${KRKRZ_LIB_PLATFORM}
 	${KRKRZ_LIB_DAP}
 	${RESOURCE_LIB}
-	$<$<PLATFORM_ID:Windows>:shell32>   # TVPExecuteProgram: ShellExecuteW (App Paths 解決)
+	$<$<AND:$<PLATFORM_ID:Windows>,$<BOOL:${KRKRZ_DESKTOP}>>:shell32>   # TVPExecuteProgram: ShellExecuteW (App Paths 解決)。 デスクトップのみ
 )
 
 # 外枠 (iOS など) がターゲット定義ディレクトリ内で処理したいこと
@@ -1419,6 +1437,13 @@ elseif(SDL_SHARED)
 		# libSDL3 が勝ってしまう。LD_LIBRARY_PATH より先に探される DT_RPATH にする。
 		set_target_properties(${EXENAME} PROPERTIES INSTALL_RPATH "\$ORIGIN")
 		target_link_options(${EXENAME} PRIVATE "LINKER:--disable-new-dtags")
+	endif()
+	if (APPLE)
+		# SDL3 は上の POST_BUILD で exe と同じ Contents/MacOS に置かれる。
+		# build ツリーの exe は _deps/sdl3-build を指す絶対 RPATH で動くが、install 後は
+		# それが消えて libSDL3.0.dylib を見つけられず起動しない。exe のフォルダを足す
+		# (既存の @executable_path/../Frameworks は ANGLE 用)
+		set_property(TARGET ${EXENAME} APPEND PROPERTY INSTALL_RPATH "@executable_path")
 	endif()
 
 else()
@@ -1547,6 +1572,39 @@ endif() # KRKRZ_VARIANT
 if(KRKRZ_EXE_NAME AND TARGET ${EXENAME})
 	set_target_properties(${EXENAME} PROPERTIES OUTPUT_NAME ${KRKRZ_EXE_NAME})
 	message(STATUS "executable output name: ${KRKRZ_EXE_NAME} (target ${EXENAME})")
+endif()
+
+# ----------------------------------------------------
+# エンジン設定 (-userconf) のブラウザ UI
+#   appserve (external/appserve) をライブラリとしてリンクし、画面
+#   (common/base/userconf_web/ + appserve の JS ランタイム) を exe に埋め込む。
+#   KRKRZ_USERCONF_WEB が無いと TVPExecuteUserConfig() は何もしない。
+# ----------------------------------------------------
+if(KRKRZ_USERCONF_WEB AND TARGET ${EXENAME})
+	set(APPSERVE_BUILD_APP OFF CACHE BOOL "" FORCE)
+	set(APPSERVE_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+	add_subdirectory(external/appserve EXCLUDE_FROM_ALL)
+	target_link_libraries(${EXENAME} PRIVATE appserve::core)
+	target_compile_definitions(${EXENAME} PRIVATE KRKRZ_USERCONF_WEB TVP_LICENSE_WITH_APPSERVE)
+
+	# 画面を 1 つのフォルダへ集めてから埋め込む (元ファイルを編集すれば次の configure で取り込み直す)
+	set(_ucw_stage "${CMAKE_CURRENT_BINARY_DIR}/userconf_web")
+	file(REMOVE_RECURSE "${_ucw_stage}")
+	file(MAKE_DIRECTORY "${_ucw_stage}/lib")
+	foreach(_ucw_pair
+			"${CMAKE_CURRENT_SOURCE_DIR}/external/appserve/web/lib|lib"
+			"${CMAKE_CURRENT_SOURCE_DIR}/common/base/userconf_web|.")
+		string(REPLACE "|" ";" _ucw_pair "${_ucw_pair}")
+		list(GET _ucw_pair 0 _ucw_src)
+		list(GET _ucw_pair 1 _ucw_dst)
+		file(GLOB_RECURSE _ucw_files RELATIVE "${_ucw_src}" "${_ucw_src}/*")
+		foreach(_f IN LISTS _ucw_files)
+			configure_file("${_ucw_src}/${_f}" "${_ucw_stage}/${_ucw_dst}/${_f}" COPYONLY)
+		endforeach()
+	endforeach()
+	set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/common/base/userconf_web")
+	appserve_embed_web(${EXENAME} WEB_DIR "${_ucw_stage}" NAME krkrz_userconf_web)
+	message(STATUS "krkrz: -userconf browser UI (appserve)")
 endif()
 
 # ----------------------------------------------------

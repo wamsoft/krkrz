@@ -545,6 +545,30 @@ static void _TVPDeliverEventByPrio(tjs_uint prio)
 }
 
 
+void TVPDeliverInputEvents()
+{
+	// 入力イベントキューだけを配送する (_TVPDeliverAllEvents2 の入力部分と同じ)。
+	// システムイベント停止中は TVPDeliverAllEvents 自体が呼ばれないため、 停止中に
+	// 出したモーダルダイアログへ入力を届けるときにだけ使う。 ダイアログが受けなかった
+	// 入力は、 停止中なのでスクリプトのイベントとしては配送されない。
+	while(TVPInputEventQueue.size())
+	{
+		std::vector<tTVPBaseInputEvent *>::iterator i = TVPInputEventQueue.begin();
+		tTVPBaseInputEvent *e = *i;
+		TVPInputEventQueue.erase(i);
+		try
+		{
+			e->Deliver();
+		}
+		catch(...)
+		{
+			delete e;
+			throw;
+		}
+		delete e;
+	}
+}
+//---------------------------------------------------------------------------
 static bool _TVPDeliverAllEvents2()
 {
 	TVPExclusiveEventPosted = false;

@@ -17,6 +17,8 @@
 
 #include <vector>
 #include <string>
+#include <filesystem>
+#include <memory>
 
 namespace {
 
@@ -77,4 +79,44 @@ tTVPCommandOptionList* TVPGetPluginCommandDesc(const tjs_char* name)
 	auto bytes = ReadFileBytes(path);
 	if (bytes.empty()) return nullptr; // sidecar 無しは正常 (plugin 任意)
 	return TVPParseCommandDescJson(bytes.data(), bytes.size());
+}
+
+//---------------------------------------------------------------------------
+// 全プラグインの option desc を dest へマージする (設定画面 -userconf 用)。
+// exe のフォルダとプラグインフォルダにある `<basename>.options.json` を読む。
+//---------------------------------------------------------------------------
+void TVPMergeAllPluginCommandDesc(tTVPCommandOptionList& dest)
+{
+	if (!Application) return;
+	std::vector<tjs_string> dirs;
+	dirs.push_back(Application->AppPath());
+	if (!Application->PluginPath().empty() && Application->PluginPath() != Application->AppPath())
+		dirs.push_back(Application->PluginPath());
+	static const tjs_char suffix[] = TJS_W(".options.json");
+	const size_t slen = sizeof(suffix) / sizeof(suffix[0]) - 1;
+	for (const tjs_string& dir : dirs) {
+		std::error_code ec;
+#ifdef _WIN32
+		std::filesystem::path dirpath(std::wstring(dir.begin(), dir.end()));
+#else
+		std::string dir8;
+		TVPUtf16ToUtf8(dir8, dir);
+		std::filesystem::path dirpath(dir8);
+#endif
+		for (std::filesystem::directory_iterator it(dirpath, ec), end; !ec && it != end; it.increment(ec)) {
+			if (!it->is_regular_file(ec)) continue;
+			tjs_string fn;
+#ifdef _WIN32
+			std::wstring wfn = it->path().filename().wstring();
+			fn.assign(wfn.begin(), wfn.end());
+#else
+			TVPUtf8ToUtf16(fn, it->path().filename().string());
+#endif
+			if (fn.size() <= slen || fn.compare(fn.size() - slen, slen, suffix) != 0) continue;
+			auto bytes = ReadFileBytes(dir + fn);
+			if (bytes.empty()) continue;
+			std::unique_ptr<tTVPCommandOptionList> options(TVPParseCommandDescJson(bytes.data(), bytes.size()));
+			if (options) TVPMargeCommandDesc(dest, *options);
+		}
+	}
 }

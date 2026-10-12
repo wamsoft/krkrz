@@ -137,7 +137,10 @@ Steam Deck 実機のネイティブ実行 / sniper コンテナ実行の両方�
   `~/.local/share/<orgname>/<appname>/` (`SDL_GetPrefPath` のローカルパス)。
   以前は exe の隣の `savedata` で、末尾 `/` が欠けて `savedataX` と書かれていた。
   配布物は `<exe名>.cf` に `orgname` / `appname` を書く (krkrz_linux が生成)。
-  実装は `sdl3/environ/app.cpp` の `GetDataPathDirectory` / `InitDataPath`
+  実装は `sdl3/environ/app.cpp` の `GetDataPathDirectory` / `InitDataPath`。
+  macOS も同じ経路 (`KRKRZ_LOCAL_DESKTOP_DATAPATH`。既定 `~/Library/Application Support/<orgname>/<appname>/`、
+  2026-10-12 から)。相対パスの `-datapath` はカレントディレクトリ基準の絶対パスにする
+  (以前は相対のままストレージ名と解釈され、起動時に «未対応のメディア» の例外で落ちていた)
 
 ## 関連
 

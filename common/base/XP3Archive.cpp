@@ -12,6 +12,7 @@
 #include "tjsCommHead.h"
 
 #include "XP3Archive.h"
+#include "ExecutableOverlay.h"
 #include "MsgIntf.h"
 #include "DebugIntf.h"
 #include "EventIntf.h"
@@ -272,46 +273,26 @@ static bool TVPGetXP3ArchiveOffset(iTJSBinaryStream *st, const ttstr name,
 
 	mark[0] = 0; // sentinel
 	TVPReadBuffer(st, mark, 11);
-	if(mark[0] == 0x4d/*'M'*/ && mark[1] == 0x5a/*'Z'*/)
+	if(TVPGetExecutableKind(mark, 11) != tTVPExecutableKind::None)
 	{
-		// "MZ" is a mark of Win32/DOS executables,
-		// TVP searches the first mark of XP3 archive
-		// in the executeble file.
-		bool found = false;
-
-		offset = 16;
-		TVPStreamSetPosition(st, 16);
-
-		// XP3 mark must be aligned by a paragraph ( 16 bytes )
-		const tjs_uint one_read_size = 256*1024;
-		tjs_uint read;
-		tjs_uint8 buffer[one_read_size]; // read 256kbytes at once
-
-		while(0!=(read = st->Read(buffer, one_read_size)))
-		{
-			tjs_uint p = 0;
-			while(p<read)
-			{
-				if(!memcmp(XP3Mark, buffer + p, 11))
-				{
-					// found the mark
-					offset += p;
-					found = true;
-					break;
-				}
-				p+=16;
-			}
-			if(found) break;
-			offset += one_read_size;
-		}
-
-		if(!found)
+		// 実行ファイル (PE "MZ" / ELF) に結合された XP3 を探す。
+		// XP3 のヘッダは 16 バイト境界にあり、実行ファイルのイメージの後ろに付く。
+		// イメージの終わりはヘッダから求める (ExecutableOverlay.h)。以前は先頭から
+		// exe 全体を調べていた
+		const tjs_uint64 size = st->GetSize();
+		tTVPReadAtFunc reader = [st](uint64_t pos, void *buf, size_t len) -> size_t {
+			TVPStreamSetPosition(st, pos);
+			return st->Read(buf, (tjs_uint)len);
+		};
+		uint64_t found_at = 0;
+		if(!TVPFindXP3InExecutable(reader, size, found_at))
 		{
 			if(raise)
 				TVPThrowExceptionMessage(TVPCannotUnbindXP3EXE, name);
 			else
 				return false;
 		}
+		offset = found_at;
 	}
 	else if(!memcmp(XP3Mark, mark, 11))
 	{

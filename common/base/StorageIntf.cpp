@@ -2268,6 +2268,10 @@ static void TVPForgetStoragePath(const ttstr &raw, const ttstr &normalized)
 //   (iTJSBinaryStream::SetEndOfStorage は generic では実ファイルを縮めない)。
 static bool TVPResizeLocalFile(const ttstr &nativeName, tjs_uint64 size)
 {
+#if defined(NN_NINTENDO_SDK)
+	// NX の libc++ は std::filesystem::resize_file を持たない
+	return false;
+#else
 #ifdef _WIN32
 	std::filesystem::path path(reinterpret_cast<const wchar_t *>(nativeName.c_str()));
 #else
@@ -2279,6 +2283,7 @@ static bool TVPResizeLocalFile(const ttstr &nativeName, tjs_uint64 size)
 	std::error_code ec;
 	std::filesystem::resize_file(path, (std::uintmax_t)size, ec);
 	return !ec;
+#endif
 }
 
 // FILETIME 相当 (1601-01-01 UTC 起点・100ns 刻み) を Date オブジェクトにする。
@@ -2314,6 +2319,10 @@ static void TVPStoreFileTimeAsDate(tTJSVariant &store, tjs_uint64 filetime)
 //   カレントディレクトリの概念が無い環境 (CS 機等) では空文字列。
 static ttstr TVPGetCurrentDirectoryStorageName()
 {
+#if defined(NN_NINTENDO_SDK)
+	// NX の libc++ は std::filesystem::current_path を持たない (カレントディレクトリの概念も無い)
+	return ttstr();
+#else
 	std::error_code ec;
 	std::filesystem::path path = std::filesystem::current_path(ec);
 	if(ec || path.empty()) return ttstr();
@@ -2327,6 +2336,7 @@ static ttstr TVPGetCurrentDirectoryStorageName()
 	native += TJS_W("/");
 #endif
 	return TVPNormalizeStorageName(native);
+#endif
 }
 //---------------------------------------------------------------------------
 // ストリームを 1 本ずつ開いて中身を写す。 from はアーカイブ内でもよい。

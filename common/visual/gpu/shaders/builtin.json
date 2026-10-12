@@ -1,0 +1,8 @@
+{
+  "programs": [
+    { "name": "default",              "vs": "default.vert", "fs": "default.frag" },
+    { "name": "fill",                 "vs": "fill.vert",    "fs": "fill.frag" },
+    { "name": "transition_crossfade", "vs": "default.vert", "fs": "transition_crossfade.frag" },
+    { "name": "transition_universal", "vs": "default.vert", "fs": "transition_universal.frag" }
+  ]
+}

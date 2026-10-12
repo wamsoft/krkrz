@@ -155,16 +155,18 @@ INSTALL_PREFIX=install make install
 | `KRKRZ_VARIANT` | `SDL` | ビルドバリアント (上表) |
 | `KRKRZ_USE_SJIS` | OFF | 既定のテキスト読み込みを SJIS (MBCS) にする |
 | `KRKRZ_USE_OPENGL` | ON | OpenGL ES 描画機構 (Canvas/Texture/Shader 等) |
+| `KRKRZ_CANVAS_GPU` | OFF | SDL3: Canvas 系クラスを SDL_GPU で動かす (`KRKRZ_USE_OPENGL=OFF` と組み合わせる。[CanvasGPU.md](doc/CanvasGPU.md)) |
 | `KRKRZ_USE_ELEMENTS` | ON | Elements ダイアログ UI (SDL/WIN)。OFF で `Dialog` クラスごと消える |
 | `KRKRZ_USE_GLYPHWARE` | ON | 統一フォントエンジン glyphware |
 | `KRKRZ_USE_MOVIE` | ON | 動画再生 (external/movie-player) |
 | `KRKRZ_REPL` | デスクトップ ON | 対話型 TJS REPL (`-repl` / `-replfile`) |
 | `KRKRZ_REPL_WEB` | `KRKRZ_REPL` に追従 | ブラウザ REPL / WebServer クラス (`-replweb`) |
+| `KRKRZ_USERCONF_WEB` | デスクトップ ON | エンジン設定 (`-userconf`) の画面をブラウザで開く (appserve。MASTER でも入る。[UserConfig.md](doc/UserConfig.md)) |
 | `KRKRZ_ENABLE_DAP` | ON | VSCode デバッグアダプタ (DAP) サーバ |
 | `KRKRZ_BUILD_TESTS` | ON | パリティテスト (画像 / サウンド SIMD) のビルド |
 | `KRKRZ_DRAW_STATS` | OFF | DrawThreadPool 利用率の計測 ([DrawStats.md](doc/DrawStats.md)) |
 | `KRKRZ_RESOURCE_DIR` | `resource/` | 埋め込みリソースフォルダ (案件用に差し替え可) |
-| `KRKRZ_WIN_ICON` | 無し | Windows: exe へ埋め込むアイコン (`.ico` の絶対パス) |
+| `KRKRZ_WIN_ICON` | 吉里吉里の既定アイコン | Windows (SDL 版): exe へ埋め込むアイコン (`.ico` の絶対パス) |
 | `KRKRZ_VERSION_BUILD` | `0` | バージョン 4 桁目 ([Versioning.md](doc/Versioning.md)) |
 | `MASTER` | OFF | ログレベルを WARNING 固定にする (INFO を出さない) |
 
@@ -174,7 +176,7 @@ INSTALL_PREFIX=install make install
 
 `KRKRZ_WIN_ICON` に `.ico` の絶対パスを渡すと、生成される `.rc` へ
 `MAINICON ICON <パス>` が追加され、ビルド直後から exe にアイコンが付きます
-(指定しない場合、exe にはアイコンリソースが 1 つも入りません)。リソース名を
+(指定しない場合は WINVER 版と同じ吉里吉里の既定アイコン `win32/vcproj/tvpwin32.ico` が入ります)。リソース名を
 `MAINICON` にしてあるのは、後からアイコンを差し替えるツール (IconReset /
 `iconreset.tjs`) がその名前を前提にしているためです。`.ico` の内容が変われば
 `.res` を作り直すよう依存関係も設定されます。
@@ -205,13 +207,17 @@ krkrz64.exe <repo>/data/gallery -demotest
 
 | ビルド | 選べる値 | 既定 |
 |---|---|---|
-| SDL3 | `sdl` (SDL_Renderer) / `sdlogl` (OpenGL ES 直接) / `ogl` (OpenGL ES + Canvas 等フル機能) | `sdlogl` (OpenGL 無効ビルドでは `sdl`) |
+| SDL3 | `sdl` (SDL_Renderer) / `sdlogl` (OpenGL ES 直接) / `ogl` (OpenGL ES + Canvas 等フル機能) / `gpu` (SDL_GPU + Canvas、`KRKRZ_CANVAS_GPU` ビルド) | `sdlogl` (OpenGL 無効ビルドでは `sdl`、`KRKRZ_CANVAS_GPU` ビルドでは `gpu`) |
 | WINVER | `basic` (Direct3D 11) / `ogl` / `null` (描画なし・検証用) | `basic` |
 
 実行中に `Window.drawDevice` へ代入して切り替えることもできますが、**SDL3 ビルドを
 `-drawdevice=sdl` で起動した場合は、実行中に OpenGL 系へ切り替えることはできません**
 (OpenGL の初期化が通りません)。OpenGL 機能を使う場合は最初から `sdlogl` / `ogl` で
 起動してください。
+
+`KRKRZ_CANVAS_GPU` ビルドの Canvas (GPU 版) は OpenGL を使わず、シェーダーを事前に変換して
+使います。ビルド・シェーダーの準備・起動オプション (`-gpudriver` / `-gpushaderpack` /
+`-gpushadercollect`) は [CanvasGPU.md](doc/CanvasGPU.md) を参照してください。
 
 ### OpenGL ES の実行環境
 
@@ -507,6 +513,7 @@ CSV の言語列は ja / en / chs / cht。**cht (繁体字) 未記入の行は c
 |---|---|
 | [REPL.md](doc/REPL.md) | 対話型 TJS シェル / ファイルチャネル / ブラウザ REPL / Agent 駆動 |
 | [CommandLinePresets.md](doc/CommandLinePresets.md) | コマンドラインのプリセット |
+| [PlatformPorting.md](doc/PlatformPorting.md) | 外枠ビルド (機種移植) から本体を組み込む口 (CMake 変数 / 判定マクロ / 機種専用 Application) |
 | [UserStorage.md](doc/UserStorage.md) | `user://` ストレージメディアの初期化とプラットフォーム差し替えフック |
 | [LocalFileOps.md](doc/LocalFileOps.md) | Storages のローカルファイル操作と環境変数 (旧 fstat / systemEx の本体化、プラグインとの分担) |
 | [WindowState.md](doc/WindowState.md) | Window の最大化 / 矩形 / 拡張イベントとモニタ情報 (旧 windowEx の本体化) |

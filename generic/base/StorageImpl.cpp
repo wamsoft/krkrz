@@ -285,7 +285,7 @@ static ttstr TVPDecideTempPath()
 		path += TJS_W("/");
 
 	bool isWindowsDir = false;
-#ifdef _WIN32
+#ifdef TVP_WIN32_DESKTOP // Windows ディレクトリはデスクトップのみ
 	{
 		wchar_t win[MAX_PATH + 1];
 		UINT wlen = ::GetWindowsDirectoryW(win, MAX_PATH + 1);
@@ -328,7 +328,11 @@ ttstr TVPGetTemporaryName()
 		if(!TVPTempPathInit)
 		{
 			TVPTempPath = TVPDecideTempPath();
+#ifdef _WIN32
+			TVPProcessID = static_cast<tjs_int>( ::GetCurrentProcessId() );
+#else
 			TVPProcessID = static_cast<tjs_int>( getpid() );
+#endif
 			TVPTempUniqueNum = static_cast<tjs_int>( TVPGetRoughTickCount32() );
 			TVPTempPathInit = true;
 		}

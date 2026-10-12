@@ -89,6 +89,12 @@ public:
   // 持つ実装のみ意味を持つ
   virtual void SetOverlayVisible(bool visible) {}
 
+  // 非 layer モードの再生矩形 (VideoOverlay.setPos / setSize / setBounds)。自前表示を持つ
+  // 実装のみ意味を持つ。specified=false は未指定 (画面全体へ内接)。矩形はプライマリレイヤ
+  // 座標で、srcW/srcH はプライマリレイヤの大きさ (表示先への写像に使う)
+  virtual void SetOverlayRect(bool specified, int left, int top, int width, int height,
+                              int srcW, int srcH) {}
+
 };
 
 // preferYUV=true で、可能なら YUV plane 出力 (COLOR_I420) の player を作る (mixer/presenter 経路用)。

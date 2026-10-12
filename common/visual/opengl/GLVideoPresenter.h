@@ -45,6 +45,10 @@ public:
 	//! @brief overlay が表示状態か (WINVER 仕様: 既定 false)。false の間は DrawDevice が
 	//!        presenter を pull せずゲーム画面を描く。既定実装は true (後方互換)。
 	virtual bool TJS_INTF_METHOD IsVisible() const { return true; }
+
+	//! @brief 動画が画面全体を覆うか (再生矩形が未指定)。false のとき DrawDevice は
+	//!        ゲーム画面を通常どおり描いてから RenderVideoFrame で動画を重ねる。既定実装は true。
+	virtual bool TJS_INTF_METHOD CoversScreen() const { return true; }
 };
 
 //! @brief OGLDrawDevice 側が実装する presenter 登録インターフェース

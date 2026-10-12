@@ -75,9 +75,15 @@ LRESULT WINAPI tTVPWindow::Proc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
 		}
 		return 0;
 
-	case WM_MOUSEWHEEL:
-		OnMouseWheel( GET_WHEEL_DELTA_WPARAM(wParam), GetShiftState(wParam), GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) );
+	case WM_MOUSEWHEEL: {
+		// WM_MOUSEWHEEL の位置はスクリーン座標なので、 他のマウスメッセージと
+		// 同じクライアント座標へ直す (OnMouseWheel はクライアント座標を前提に
+		// 描画領域の座標へ変換する)
+		POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+		::ScreenToClient( GetHandle(), &pt );
+		OnMouseWheel( GET_WHEEL_DELTA_WPARAM(wParam), GetShiftState(wParam), pt.x, pt.y );
 		return 0;
+	}
 
 	case WM_MOUSEMOVE:
 		if( ignore_touch_mouse_ == false || IsTouchEvent( ::GetMessageExtraInfo() ) == false ) {

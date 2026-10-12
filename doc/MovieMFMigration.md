@@ -745,3 +745,52 @@ movie-player 側も 2 点: シーク (`Flush`) で同じ絵を通知し直さな
 検証 (SDL x64、8fps・32 コマの webm と 24fps・96 コマの mpg): webm はコマ 0 が 16ms で通知、
 コマ番号 = 表示中のコマ、ループで最終コマを 1 コマ分表示してから `perLoop` 1 回で 2 周目へ、
 状態イベントは play 1 回のみ。mpg も同じ。prepare → play も webm / mpg で確認 (WINVER も再確認)。
+
+### overlay 動画の表示位置・大きさ (再生矩形) — 2026-10-11 調査、2026-10-12 実装
+
+`vomOverlay` / `vomMixer` で `setPos` / `setSize` / `setBounds` / `left` / `top` / `width` / `height` が
+効くようにした (SDL 版と WINVER の presenter 経路)。
+
+調査で分かったこと: SDL 版は再生矩形を保持すらしておらず (`SetPosition` は `// XXX`、`SetSize` /
+`SetBounds` は空、getter は常に 0)、**WINVER の presenter 経路 (BasicDrawDevice が動画を描く既定の
+経路。IMFMediaEngine の HW 再生を含む) も矩形を覚えるだけで、描くときはゲーム画面全体に描いていた**。
+矩形が効いていたのは WINVER の旧来の子ウィンドウ経路だけ。また、どの DrawDevice も «動画の再生中は
+動画だけを描く» 作りで、動画が画面の一部だけを覆う形を想定していなかった。
+
+仕様:
+
+- 座標はプライマリレイヤ座標。描くときはゲーム画面の表示矩形 (`DestRect`) へ写す (mixer 画像の
+  配置矩形と同じ規約)。ウィンドウの拡大縮小・レターボックスに追従する。矩形いっぱいに引き伸ばす
+- **未指定の間は従来どおり** 動画が画面全体を覆う (SDL は縦横比を保って内接、WINVER は表示領域全面)。
+  どれかを指定した時点から矩形へ描き、DrawDevice はゲーム画面を描いた上へ動画を重ねる
+- 矩形の初期値は WINVER と同じ (0,0,320,240)。未指定のまま `left` だけ変えると 320x240 になる
+  (KAG3 の `[video left=...]` は指定しなかった値を getter から読むので、両版で同じ結果になる)
+- `vomLayer` は従来どおり (位置は動画レイヤの位置、`setSize` は使えない、`setBounds` は位置だけ)
+
+実装:
+
+| 箇所 | 内容 |
+|---|---|
+| `generic/visual/VideoOvlImpl.{h,cpp}` | 矩形と «指定済み» の印を保持、getter を実装、presenter へ渡す |
+| 中立 IF `VideoOverlayPresenter.h` | `SetVideoRect(const tTVPRect*)` (nullptr = 未指定) |
+| `iTVPSDLVideoPresenter` / `iTVPGLVideoPresenter` / WINVER の `iTVPVideoPresenter` | `CoversScreen()` (矩形未指定なら true)。WINVER は `IsVisible()` も |
+| `SDLVideoPresenter.cpp` / `GLVideoPresenter.cpp` | 矩形があればプライマリ座標 → `DestRect` へ写した位置へ描く (mixer と同じ変換を共通化) |
+| `SDLDrawDevice` (GPUDrawDevice も継承) / `SDLOGLDrawDevice` / `OGLDrawDevice` | 動画が画面を覆わないときは `ShowVideo` を通らず、ゲーム画面 (レイヤ / Canvas) を描いてから `RenderPartialVideo` で重ねる |
+| `win32/visual/VideoOvlImpl.cpp` | 常に自分を presenter として登録し、`RenderVideoFrame` で描画先を矩形に差し替える。HW 経路は差し替えた ctx で HW presenter を呼ぶ |
+| `BasicDrawDevice::Show` | 覆う → 従来の黒クリア + 動画のみ、部分 / 非表示 → 毎フレーム `DrawCompositedFrame` + (表示中なら) 動画を重ねる |
+
+あわせて直したもの: SDLDrawDevice の動画だけを描く経路で画面キャプチャ要求を処理していなかった。
+WINVER で動画が非表示 (`visible=false`) のまま登録されている間、画面が黒になっていた (ゲーム画面を描くようにした)。
+
+確認 (2026-10-12): 全画面 / `setBounds` / 片方だけ (`left`) / `setSize` / 未指定から `left` だけ / mixer /
+ウィンドウを拡大してレターボックスが付く状態、を SDL 版 (SDLDrawDevice・SDLOGLDrawDevice・OGLDrawDevice。
+webm と MPEG-1) と WINVER (CPU 経路の webm、HW 経路の mp4) で画面を撮って比べた。
+
+ブラウザ版 (Emscripten): 動画は DOM の `<video>` を canvas に重ねて表示しているので、`iTVPMoviePlayer::SetOverlayRect`
+で矩形 (プライマリレイヤ座標) とプライマリレイヤの大きさを `sdl3/base/WebMoviePlayer.cpp` へ渡し、JS 側で
+canvas の表示矩形の中のゲーム画面 (プライマリレイヤを内接・中央寄せ) を求めて `<video>` を置く
+(`object-fit: fill` で引き伸ばす。未指定なら従来どおり canvas 全体に `contain`)。ウィンドウのリサイズにも追従する。
+確認 (2026-10-12): 矩形指定・`left` の変更・`setSize`・ブラウザの表示サイズを縮めた状態で位置と大きさが合う。
+
+GPU 版 (`KRKRZ_CANVAS_GPU=ON`、GPUDrawDevice・Vulkan) も同じ項目と、Canvas (onDraw で描いた画面) の上へ
+動画を重ねる場合・Canvas ありで画面を覆う場合を確認 (2026-10-12)。

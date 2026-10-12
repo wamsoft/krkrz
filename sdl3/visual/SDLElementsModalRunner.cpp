@@ -8,6 +8,7 @@
 #include "DialogEventHandler.h"
 #include "ElementsDialogManager.h"
 #include "DebugIntf.h"
+#include "EventIntf.h"     // TVPDeliverWindowUpdateEvents / TVPGetSystemEventDisabledState
 #include "LogIntf.h"       // TVPLOG_INFO (pump 診断ログ)
 #include "CharacterSet.h"
 #include "Application.h"
@@ -157,6 +158,20 @@ void PumpModalLoop(SDL3Application* app, tTVPElementsDialogManager& mgr,
 		app->SendPadEvent();
 		if (!app->IsInBackground()) app->RequestUpdate();
 		app->Dispatch();
+		// 未処理のスクリプト例外のダイアログ (TVPShowScriptException) はシステムイベントを
+		// 止めてから出る。 止まっている間は Dispatch がイベント配送ごと飛ばすので、
+		// ウィンドウ更新も配送されず、 ダイアログ (DrawDevice::Show で描く overlay) が
+		// 一度も描画されないまま入力待ちになる。 ウィンドウ更新だけはここで配送する
+		// (スクリプトのイベントやタイマーは止めたまま)。
+		if (TVPGetSystemEventDisabledState()) {
+			try {
+				// キー / パッド入力も同様に配送されないので、 入力イベントだけ届ける
+				TVPDeliverInputEvents();
+				TVPDeliverWindowUpdateEvents();
+			} catch (...) {
+				// 描画中の例外で modal を抜けない (次の周回で再試行)
+			}
+		}
 #ifdef KRKRZ_USE_REPL
 		TVPDrainREPL();   // modal ブロック中も -replfile / Agent を処理する
 			              // (boot ランチャー等のモーダルを外部エージェントで検証可能に)

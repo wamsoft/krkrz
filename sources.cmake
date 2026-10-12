@@ -92,10 +92,13 @@ common/base/PooledAllocator.cpp
 common/base/ScriptMgnIntf.cpp
 common/base/StorageIntf.cpp
 common/base/SysInitIntf.cpp
+common/base/UserConfig.h
+common/base/UserConfigWeb.cpp
 common/base/SystemIntf.cpp
 common/base/TextStream.cpp
 common/base/UtilStreams.cpp
 common/base/XP3Archive.cpp
+common/base/ExecutableOverlay.cpp
 common/base/BuiltinLicenses.cpp
 common/base/LicenseIntf.cpp
 common/base/LicenseIntf.h
@@ -298,7 +301,6 @@ win32/visual/OpenGLPlatform.cpp
 endif()
 
 set( KRKRZ_SRC_WIN32 
-win32/environ/ConfigFormUnit.cpp
 win32/environ/EmergencyExit.cpp
 win32/environ/MouseCursor.cpp
 win32/environ/SystemControl.cpp
@@ -599,6 +601,31 @@ list(APPEND KRKRZ_SRC_SDL3
 )
 endif()
 
+# Canvas 系クラスの GPU 版 (SDL_GPU)。OpenGL 版とは排他 (CMakeLists.txt の KRKRZ_CANVAS_GPU)
+if (KRKRZ_CANVAS_GPU)
+list(APPEND KRKRZ_SRC_SDL3
+	common/visual/gpu/GpuDevice.cpp
+	common/visual/gpu/GpuDevice.h
+	common/visual/gpu/GpuShaderLibrary.cpp
+	common/visual/gpu/GpuShaderLibrary.h
+	common/visual/gpu/GpuBuiltinShaders.inc
+	common/visual/gpu/GpuBuiltinShadersDXIL.inc
+	common/visual/gpu/GpuCanvasIntf.h
+	common/visual/gpu/GpuTextureIntf.cpp
+	common/visual/gpu/GpuVertexIntf.cpp
+	common/visual/gpu/GpuShaderProgramIntf.cpp
+	common/visual/gpu/GpuCanvasIntf.cpp
+	common/visual/opengl/Matrix32Intf.cpp
+	common/visual/opengl/Matrix44Intf.cpp
+	sdl3/visual/GpuDeviceSDL.cpp
+	sdl3/visual/GpuDeviceSDL.h
+	sdl3/visual/SDLGpuDrawDevice.cpp
+	sdl3/visual/SDLGpuDrawDevice.h
+)
+list(APPEND KRKRZ_INC common/visual/gpu)
+list(APPEND KRKRZ_DEFINES TVP_USE_GPU_CANVAS)
+endif()
+
 set(KRKRZ_INC_SDL3
 	sdl3/base
 	sdl3/environ
@@ -620,7 +647,6 @@ if (KRKRZ_USE_ELEMENTS)
 		common/visual/elements/DialogRenderer.h
 		common/visual/elements/ElementsDialogManager.cpp
 		common/visual/elements/ElementsDialogManager.h
-		common/visual/elements/ElementsUserConfig.h
 		# 出力先 (overlay / ホストのレイヤ) に依らない共通部。
 		# ElementsInputMap.h = VK / マウス → cycfi 中立入力型の対応表 (ヘッダのみ)。
 		# ElementsSessionBuild = 画面 JSON → overlay_session の組み立て。
@@ -660,14 +686,12 @@ if (KRKRZ_USE_ELEMENTS)
 			common/visual/opengl/OGLDialogRenderer.h
 		)
 	endif()
-	# Phase 3: SDL3 用 renderer アダプタ / Phase 7: UserConfig (SDL3 専用)
-	# Phase 6c: 独立 SDL_Window モーダルランナー (SDL3 専用、 TJS Dialog.showModal* と
-	# UserConfig から共用)。
+	# Phase 3: SDL3 用 renderer アダプタ
+	# Phase 6c: 独立 SDL_Window モーダルランナー (SDL3 専用、 TJS Dialog.showModal* から使う)。
 	list(APPEND KRKRZ_SRC_SDL3
 		${KRKRZ_SRC_ELEMENTS}
 		sdl3/visual/SDLDialogRenderer.cpp
 		sdl3/visual/SDLDialogRenderer.h
-		sdl3/visual/SDLElementsUserConfig.cpp
 		sdl3/visual/SDLElementsModalRunner.cpp
 		sdl3/visual/SDLElementsModalRunner.h
 	)
@@ -716,7 +740,7 @@ if (KRKRZ_USE_ELEMENTS)
 	# このファイル (sources.cmake) は include 順の都合で elements_modal target が
 	# まだ存在しない段階で評価されるため、ここで append しても TARGET 判定で抜ける。
 
-	# ElementsDialogManager.cpp / SDLElementsUserConfig.cpp / SDLElementsModalRunner.cpp
+	# ElementsDialogManager.cpp / SDLElementsModalRunner.cpp
 	# は <elements.hpp> または <elements_modal/modal.h> を include して std::variant
 	# 等を使うため C++20 必須。 DialogIntf.cpp も showModal* で SDLElementsModalRunner
 	# を呼ぶが、 自身は elements の型を露出しないので C++17 のままで OK。
@@ -729,7 +753,6 @@ if (KRKRZ_USE_ELEMENTS)
 		common/visual/elements/PanelIntf.cpp
 		common/visual/elements/StoragesResourceLoader.cpp
 		common/visual/elements/BlockTextBackend.cpp
-		sdl3/visual/SDLElementsUserConfig.cpp
 		sdl3/visual/SDLElementsModalRunner.cpp
 		PROPERTIES CXX_STANDARD 20
 	)
@@ -839,4 +862,20 @@ elseif(UNIX)
 		generic/app/objres.cpp
 		sdl3/utils/ThreadImpl.cpp
 	)
+endif()
+
+# KRKRZ_APP_PLATFORM_OVERRIDE が立っている場合は、 外枠が KRKRZ_SRC_PLATFORM で
+# 機種専用の Application (GetSDL3Application / TVPAppInit / InitPath 等) を供給する。
+# 上の分岐はコンパイラの判定 (WIN32 等) で stdapp.cpp を入れてしまうため、
+# WIN32 が真になるデスクトップ以外の機種ではここで外す。
+if (KRKRZ_APP_PLATFORM_OVERRIDE)
+	list(REMOVE_ITEM KRKRZ_SRC_SDL3 sdl3/environ/stdapp.cpp)
+endif()
+
+# KRKRZ_RESOURCE_EXTERNAL が立っている場合は、 エンジンリソース (config.cf /
+# messages.json / フォント等) を exe に埋め込まずファイルとして配置し、
+# Application が ResourcePath を file:// で指す (wasm と同じ考え方)。
+# WIN32 の resource:// メディア (EnumResourceNames を使う) は外す。
+if (KRKRZ_RESOURCE_EXTERNAL)
+	list(REMOVE_ITEM KRKRZ_SRC_SDL3 generic/app/winres.cpp)
 endif()

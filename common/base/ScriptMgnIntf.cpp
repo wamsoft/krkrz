@@ -61,6 +61,13 @@
 #include "VertexBufferIntf.h"
 #include "VertexBinderIntf.h"
 #endif
+#ifdef TVP_USE_GPU_CANVAS
+// Canvas 系クラスの GPU 版 (SDL_GPU)。TJS のクラス名は GL 版と同じ
+#include "GpuCanvasIntf.h"
+#include "Matrix44Intf.h"
+#include "Matrix32Intf.h"
+#include "SDLGpuDrawDevice.h"
+#endif
 
 #include "BitmapDrawDevice.h"
 
@@ -276,6 +283,16 @@ void TVPInitScriptEngine()
 	REGISTER_OBJECT(VertexBuffer, TVPCreateNativeClass_VertexBuffer());
 	REGISTER_OBJECT(VertexBinder, TVPCreateNativeClass_VertexBinder());
 #endif
+#ifdef TVP_USE_GPU_CANVAS
+	REGISTER_OBJECT(Canvas, TVPCreateNativeClass_GpuCanvas());
+	REGISTER_OBJECT(Texture, TVPCreateNativeClass_GpuTexture());
+	REGISTER_OBJECT(Offscreen, TVPCreateNativeClass_GpuOffscreen());
+	REGISTER_OBJECT(Matrix44, TVPCreateNativeClass_Matrix44());
+	REGISTER_OBJECT(Matrix32, TVPCreateNativeClass_Matrix32());
+	REGISTER_OBJECT(ShaderProgram, TVPCreateNativeClass_GpuShaderProgram());
+	REGISTER_OBJECT(VertexBuffer, TVPCreateNativeClass_GpuVertexBuffer());
+	REGISTER_OBJECT(VertexBinder, TVPCreateNativeClass_GpuVertexBinder());
+#endif
 
 	/* WaveSoundBuffer and its filters */
 	iTJSDispatch2 * waveclass = NULL;
@@ -321,6 +338,24 @@ void TVPInitScriptEngine()
 		windowclass->PropSet(TJS_MEMBERENSURE|TJS_IGNOREPROP|TJS_STATICMEMBER,
 			TJS_W("OGLDrawDevice"), NULL, &val, windowclass);
 	}
+#endif
+#ifdef TVP_USE_GPU_CANVAS
+	// Canvas (GPU 版) を載せる描画デバイス。GL 版が無いビルドでは既存スクリプトが
+	// そのまま動くように Window.OGLDrawDevice の名前でも登録する。
+	if (drawdevice_name != TJS_W("GPUDrawDevice")) {
+		dsp = new tTJSNC_SDLGpuDrawDevice(TJS_W("GPUDrawDevice"));
+		val = tTJSVariant(dsp);
+		dsp->Release();
+		windowclass->PropSet(TJS_MEMBERENSURE|TJS_IGNOREPROP|TJS_STATICMEMBER,
+			TJS_W("GPUDrawDevice"), NULL, &val, windowclass);
+	}
+#ifndef TVP_USE_OPENGL
+	dsp = new tTJSNC_SDLGpuDrawDevice(TJS_W("OGLDrawDevice"));
+	val = tTJSVariant(dsp);
+	dsp->Release();
+	windowclass->PropSet(TJS_MEMBERENSURE|TJS_IGNOREPROP|TJS_STATICMEMBER,
+		TJS_W("OGLDrawDevice"), NULL, &val, windowclass);
+#endif
 #endif
 
 	dsp = new tTJSNC_BitmapDrawDevice();

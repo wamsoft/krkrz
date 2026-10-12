@@ -8,7 +8,7 @@
 #include <cstdio>
 #include <string>
 
-#ifdef _WIN32
+#ifdef TVP_WIN32_DESKTOP
 #include <windows.h>
 
 static bool g_tvp_attached_console = false;
@@ -78,7 +78,7 @@ bool TVPIsAttachedWindowsConsole()
 	return g_tvp_attached_console;
 }
 
-#else // !_WIN32
+#else // !TVP_WIN32_DESKTOP
 
 void TVPWriteStdOutText(const tjs_char *text)
 {

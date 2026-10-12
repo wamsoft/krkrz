@@ -40,6 +40,7 @@
     { "name": "ANGLE",                           "group": "platform",    "license": "BSD-3-Clause",                "file": "texts/angle.txt", "when": "TVP_LICENSE_WITH_ANGLE", "note": "libEGL / libGLESv2 を同梱する構成で必要。現状どのビルドも同梱していないのでマクロを定義する箇所は無い" },
     { "name": "D3DCompiler",                     "group": "platform",    "license": "Microsoft 再頒布可能",        "file": "texts/d3dcompiler.txt", "when": "TVP_LICENSE_WITH_D3DCOMPILER", "note": "非 OSS。Windows SDK の再頒布可能コンポーネント。d3dcompiler へ直接リンクする WIN バリアントのみ" },
     { "name": "SDL_GameControllerDB",            "group": "platform",    "license": "Zlib",                        "file": "texts/gamecontrollerdb.txt" },
+    {"name": "appserve", "group": "platform", "license": "MIT", "file": "../external/appserve/LICENSE", "when": "TVP_LICENSE_WITH_APPSERVE", "note": "エンジン設定 (-userconf) の画面を出すローカル HTTP サーバ。KRKRZ_USERCONF_WEB (デスクトップ) のみ"},
 
     { "name": "Noto Fonts",                      "group": "font",        "license": "OFL-1.1",                     "file": "texts/fonts-noto.txt" },
     { "name": "Roboto",                          "group": "font",        "license": "Apache-2.0",                  "file": "texts/fonts-roboto.txt" },

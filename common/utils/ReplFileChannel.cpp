@@ -97,6 +97,53 @@ bool WriteWholeFile(const fs::path& p, const std::string& data)
 	return (bool)f;
 }
 
+// 改名直後や相手が片付けている最中は Windows で一瞬開けない / 消せないことがある。
+// 1 回で諦めると注文や返事が黙って消えるので、 少し粘る (5ms × 20 回)。
+const int kRetryCount = 20;
+const auto kRetryWait = std::chrono::milliseconds(5);
+
+bool ReadCommandFile(const fs::path& p, std::string& out)
+{
+	for (int i = 0; i < kRetryCount; ++i) {
+		if (ReadWholeFile(p, out)) return true;
+		std::this_thread::sleep_for(kRetryWait);
+	}
+	return false;
+}
+
+std::string MakeResponseJson(bool ok, const std::string& result_utf8,
+                             const std::string& error_utf8)
+{
+	std::string json = "{\"ok\":";
+	json += ok ? "true" : "false";
+	json += ",\"result\":\"" + JsonEscape(result_utf8) + "\"";
+	json += ",\"error\":\"" + JsonEscape(error_utf8) + "\"}";
+	return json;
+}
+
+// resp.tmp に書いて resp に rename (原子的に見せる)。 rename が弾かれたら
+// 粘り、 それでも駄目なら直接書き込み。 全部失敗したら黙らずにログへ出す。
+bool WriteResponseFile(const fs::path& resp, const fs::path& resp_tmp,
+                       const std::string& json)
+{
+	std::error_code ec;
+	for (int i = 0; i < kRetryCount; ++i) {
+		if (WriteWholeFile(resp_tmp, json)) {
+			fs::remove(resp, ec);
+			ec.clear();
+			fs::rename(resp_tmp, resp, ec);
+			if (!ec) return true;
+		}
+		std::this_thread::sleep_for(kRetryWait);
+	}
+	if (WriteWholeFile(resp, json)) {
+		fs::remove(resp_tmp, ec);
+		return true;
+	}
+	TVPAddImportantLog(TJS_W("ReplFileChannel: failed to write resp (the response is lost)"));
+	return false;
+}
+
 } // anonymous
 
 //---------------------------------------------------------------------------
@@ -159,7 +206,7 @@ void tTVPReplFileChannel::Execute()
 
 		if (has_cmd && !has_resp) {
 			std::string script_utf8;
-			if (ReadWholeFile(cmd, script_utf8)) {
+			if (ReadCommandFile(cmd, script_utf8)) {
 				fs::remove(cmd, ec);
 
 				bool ok = true;
@@ -205,22 +252,15 @@ void tTVPReplFileChannel::Execute()
 						error_utf8 = TtstrToUtf8Std(error);
 					}
 				}
-				std::string json = "{\"ok\":";
-				json += ok ? "true" : "false";
-				json += ",\"result\":\"" + JsonEscape(result_utf8) + "\"";
-				json += ",\"error\":\"" + JsonEscape(error_utf8) + "\"}";
-
-				// resp.tmp に書いて resp に rename (原子的に見せる)。
-				WriteWholeFile(resp_tmp, json);
-				fs::remove(resp, ec);
-				fs::rename(resp_tmp, resp, ec);
-				if (ec) {
-					// rename 失敗時は直接書き込みにフォールバック。
-					WriteWholeFile(resp, json);
-					ec.clear();
-				}
+				WriteResponseFile(resp, resp_tmp,
+				                  MakeResponseJson(ok, result_utf8, error_utf8));
 			} else {
+				// 粘っても読めない注文は消すが、 返事は必ず出す (相手を待たせない)。
 				fs::remove(cmd, ec);
+				TVPAddImportantLog(TJS_W("ReplFileChannel: failed to read cmd"));
+				WriteResponseFile(resp, resp_tmp,
+				                  MakeResponseJson(false, std::string(),
+				                                   "failed to read cmd file"));
 			}
 		}
 

@@ -126,7 +126,9 @@ private:
 	//   EndBitmapCompletion (レイヤ更新時) と Show() (動画 present 時) の双方から呼ぶ。
 	void DrawCompositedFrame();
 	//-- 登録された overlay 動画 presenter をバックバッファ RTV の上へ重ねる (Show() から)。
-	void RenderVideoPresenters();
+	//! 動画 presenter を描く。clear=true なら先にバックバッファを黒で塗る (動画が画面を覆う場合)。
+	//! false はゲーム画面を描いた上へ重ねる場合 (再生矩形が指定された動画)。
+	void RenderVideoPresenters(bool clear = true);
 	//-- 稼働中の overlay 動画 presenter があるか (毎フレーム present を強制するため)。
 	bool HasActiveVideoPresenter() const { return VideoPresenter != 0; }
 
@@ -145,6 +147,11 @@ private:
 
 public:
 	void SetToRecreateDrawer() { DestroyD3DDevice(); }
+
+	//! 現在の画面 (Layer の合成結果 + Elements オーバーレイ) をその場でバックバッファへ
+	//! 描き、ゲーム画面の範囲 (DestRect) を読み戻して bmp へ写す (Present はしない)。
+	//! 写した画像はウィンドウ上の表示サイズ (ゲーム解像度ではない)。
+	bool CaptureWithOverlay( class tTJSNI_Bitmap * bmp );
 
 	//! Track V-E: HW 動画 (IMFMediaEngine) が共有する engine の D3D11 デバイス。
 	ID3D11Device* GetD3DDevice() const { return D3DDevice; }

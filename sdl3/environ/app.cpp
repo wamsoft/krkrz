@@ -41,14 +41,16 @@
 #ifdef __EMSCRIPTEN__
 	#include <emscripten.h>
 #endif
-#if !defined(SDL_PLATFORM_WINDOWS) && !defined(__EMSCRIPTEN__)
+// PS5 SDK には dlfcn.h が無く、NX はヘッダはあるが dlopen の実体が無い
+// (どちらも下の RTLD_NODELETE 判定で固定処理ごと外れる)
+#if !defined(SDL_PLATFORM_WINDOWS) && !defined(__EMSCRIPTEN__) && !defined(NN_NINTENDO_SDK) && __has_include(<dlfcn.h>)
 	#include <dlfcn.h>   // SDL3Application::LoadLibrary (DLL の固定 RTLD_NODELETE)
 #endif
 
 static const char *GetOSVersion()
 {
 	static thread_local char osVersionBuffer[256] = {};
-	#if defined(SDL_PLATFORM_WINDOWS)
+	#if defined(TVP_WIN32_DESKTOP)
 		OSVERSIONINFOEX osvi = {};
 		osvi.dwOSVersionInfoSize = sizeof(OSVERSIONINFOEX);
 		if (GetVersionEx((OSVERSIONINFO*)&osvi)) {
@@ -1064,6 +1066,9 @@ SDL3Application::CreateAppLock(const ttstr &lockname)
 		return true;
 	}
 	return true;
+#elif defined(NN_NINTENDO_SDK)
+	// NX には flock が無く、アプリの多重起動も起きないので常に取得できた扱い
+	return true;
 #else
 	// flock は fd を閉じた時点 / プロセス終了時に必ず外れる
 	static int lockFd = -1;
@@ -1141,6 +1146,9 @@ SDL3Application::GetDensity() const
 }
 
 #include "SDLDrawDevice.h"
+#ifdef TVP_USE_GPU_CANVAS
+#include "SDLGpuDrawDevice.h"
+#endif
 #ifdef TVP_USE_OPENGL
 #include "SDLOGLDrawDevice.h"
 #include "OGLDrawDevice.h"
@@ -1163,6 +1171,12 @@ SDL3Application::GetDefaultDrawDevice()
 			TVPLOG_INFO("GetDefaultDrawDevice: -drawdevice=sdl -> SDLDrawDevice");
 			return new tTJSNC_SDLDrawDevice();
 		}
+#ifdef TVP_USE_GPU_CANVAS
+		if (name == TJS_W("gpu")) {
+			TVPLOG_INFO("GetDefaultDrawDevice: -drawdevice=gpu -> GPUDrawDevice");
+			return new tTJSNC_SDLGpuDrawDevice();
+		}
+#endif
 #ifdef TVP_USE_OPENGL
 		if (name == TJS_W("sdlogl")) {
 			TVPLOG_INFO("GetDefaultDrawDevice: -drawdevice=sdlogl -> SDLOGLDrawDevice");
@@ -1180,7 +1194,12 @@ SDL3Application::GetDefaultDrawDevice()
 	}
 
 	// 未指定時 default
-#ifdef TVP_USE_OPENGL
+#ifdef TVP_USE_GPU_CANVAS
+	// Canvas (GPU 版) 入りのビルドは最初から GPU の renderer を使う
+	// (途中で SDLDrawDevice から差し替えると、ドライバによっては画面の取り合いになる)
+	TVPLOG_INFO("GetDefaultDrawDevice: default -> GPUDrawDevice");
+	return new tTJSNC_SDLGpuDrawDevice();
+#elif defined(TVP_USE_OPENGL)
 	TVPLOG_INFO("GetDefaultDrawDevice: default -> SDLOGLDrawDevice");
 	return new tTJSNC_SDLOGLDrawDevice();
 #else
@@ -1437,7 +1456,7 @@ SDL3Application::GetKirikiriStorage()
 extern void InitStorageSystem(const char *orgname, const char *appname,
                               iTVPStorageMedia2 *platform_media);
 
-#if defined(SDL_PLATFORM_WINDOWS)
+#if defined(TVP_WIN32_DESKTOP)
 
 #include "ApplicationSpecialPath.h"
 #pragma comment(lib, "mpr.lib")
@@ -1448,17 +1467,20 @@ static tjs_string GetDataPathDirectory( tjs_string datapath, const tjs_string& e
 
 #else
 
-#if defined(SDL_PLATFORM_LINUX) && !defined(SDL_PLATFORM_ANDROID)
-#define KRKRZ_LINUX_DESKTOP_DATAPATH
+// Linux / macOS のデスクトップは、データ保存場所をローカルのフォルダで持つ
+// (-datapath が効き、getLocalName できる)。それ以外 (モバイル等) は user:// (SDL storage)
+#if (defined(SDL_PLATFORM_LINUX) && !defined(SDL_PLATFORM_ANDROID)) || defined(SDL_PLATFORM_MACOS)
+#define KRKRZ_LOCAL_DESKTOP_DATAPATH
 #endif
 
-// prefpath: Linux デスクトップでの $(appdatapath) 等の置き換え先 (末尾 '/' 付きの
+// prefpath: Linux / macOS デスクトップでの $(appdatapath) 等の置き換え先 (末尾 '/' 付きの
 // ローカルパス)。空なら従来どおり user:// に置き換える
 static tjs_string GetDataPathDirectory( tjs_string datapath, const tjs_string& exename,
                                         const tjs_string& prefpath = tjs_string() ) {
-#ifdef KRKRZ_LINUX_DESKTOP_DATAPATH
-	// Linux の既定はユーザ領域 (~/.local/share/<orgname>/<appname>/)。
-	// exe の隣は AppImage / Flatpak / /opt 配置では書き込めないため
+#ifdef KRKRZ_LOCAL_DESKTOP_DATAPATH
+	// 既定はユーザ領域 (Linux: ~/.local/share/<orgname>/<appname>/、
+	// macOS: ~/Library/Application Support/<orgname>/<appname>/ = 以前の user:// と同じ場所)。
+	// exe の隣は AppImage / Flatpak / /opt 配置や .app の中では書き込めないため
 	if(datapath == TJS_W("") ) datapath = tjs_string(TJS_W("$(appdatapath)"));
 #else
 	if(datapath == TJS_W("") ) datapath = tjs_string(TJS_W("$(exepath)\\savedata"));
@@ -1473,7 +1495,7 @@ static tjs_string GetDataPathDirectory( tjs_string datapath, const tjs_string& e
 	datapath = string_replace_all(datapath, tjs_string_view(TJS_W("$(appdatapath)")), userpath);
 	datapath = string_replace_all(datapath, tjs_string_view(TJS_W("$(vistapath)")), userpath );
 	datapath = string_replace_all(datapath, tjs_string_view(TJS_W("$(savedgamespath)")), userpath);
-#ifdef KRKRZ_LINUX_DESKTOP_DATAPATH
+#ifdef KRKRZ_LOCAL_DESKTOP_DATAPATH
 	// Windows 流の "\" 区切りで書かれた設定 ( 既定値や .cf の "$(exepath)\savedata" ) を
 	// 正規化し、末尾区切りを保証する。 以前は末尾 '/' が無く、 System.dataPath + "x" が
 	// exe の隣に "savedatax" として書かれていた
@@ -1492,6 +1514,21 @@ static tjs_string GetDataPathDirectory( tjs_string datapath, const tjs_string& e
 		datapath.swap(collapsed);
 	}
 	if(!datapath.empty() && datapath.back() != TJS_W('/')) datapath += TJS_W('/');
+	// 相対パス (-datapath=rel/ 等) はカレントディレクトリ基準の絶対パスにする
+	// (WINVER / Windows の SDL 版は ExpandUNCFileName で同じく絶対化している)。
+	// 相対のままだとストレージ名として解釈され、«未対応のメディア» で起動時に落ちていた
+	if(!datapath.empty() && datapath.front() != TJS_W('/') &&
+	   datapath.find(TJS_W("://")) == tjs_string::npos) {
+		std::error_code ec;
+		std::filesystem::path cwd = std::filesystem::current_path(ec);
+		if(!ec) {
+			tjs_string base;
+			TVPUtf8ToUtf16(base, cwd.string());
+			if(!base.empty() && base.back() != TJS_W('/')) base += TJS_W('/');
+			if(datapath.compare(0, 2, TJS_W("./")) == 0) datapath.erase(0, 2);
+			datapath = base + datapath;
+		}
+	}
 #endif
 	return datapath;
 }
@@ -1517,15 +1554,16 @@ SDL3Application::InitDataPath()
 	InitStorageSystem(orgname.c_str(), appname.c_str(),
 	                  CreateUserStorageMedia(orgname.c_str(), appname.c_str()));
 
-#if defined(SDL_PLATFORM_WINDOWS) || defined(SDL_PLATFORM_LINUX)
+#if defined(TVP_WIN32_DESKTOP) || defined(SDL_PLATFORM_LINUX) || defined(SDL_PLATFORM_MACOS)
 	// -datapth オプションで保存先を差し替え・未定義時は
 	//   Windows: 実行ファイルの場所にある savedata
 	//   Linux  : ユーザ領域 (SDL_GetPrefPath = ~/.local/share/<orgname>/<appname>/)
+	//   macOS  : ユーザ領域 (SDL_GetPrefPath = ~/Library/Application Support/<orgname>/<appname>/)
 	tjs_string config_datapath;
 	if (TVPGetCommandLine(TJS_W("-datapath"), &val)) {
 		config_datapath = ((ttstr)val).AsStdString();
 	}
-#ifdef KRKRZ_LINUX_DESKTOP_DATAPATH
+#ifdef KRKRZ_LOCAL_DESKTOP_DATAPATH
 	// user:// (SDL storage) と同じフォルダを、 getLocalName が使えるローカルパスで渡す
 	tjs_string prefpath;
 	if (char *pref = SDL_GetPrefPath(orgname.c_str(), appname.c_str())) {
@@ -1535,6 +1573,7 @@ SDL3Application::InitDataPath()
 		TVPLOG_ERROR("SDL_GetPrefPath failed: {}", SDL_GetError());
 	}
 	_DataPath = GetDataPathDirectory(config_datapath, ExePath(), prefpath);
+#if defined(SDL_PLATFORM_LINUX)
 	if (config_datapath.empty()) {
 		std::string dp;
 		TVPUtf16ToUtf8(dp, _DataPath);
@@ -1558,10 +1597,12 @@ SDL3Application::InitDataPath()
 			               "datapath=\"$(exepath)/savedata\" in the .cf file", exedir, dp);
 		}
 	}
+#endif // SDL_PLATFORM_LINUX
 #else
 	_DataPath = GetDataPathDirectory(config_datapath, ExePath());
 #endif
 #else
+	// モバイル / WIN32 でもデスクトップでない機種 (Xbox 等) は user:// (SDL storage)
 	_DataPath = TJS_W("user://./");
 #endif
 

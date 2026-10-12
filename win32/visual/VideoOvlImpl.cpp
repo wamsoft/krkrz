@@ -171,6 +171,7 @@ tTJSNI_VideoOverlay::tTJSNI_VideoOverlay()
 	Rect.top = 0;
 	Rect.right = 320;
 	Rect.bottom = 240;
+	RectSpecified = false;
 	Visible = false;
 	OwnerWindow = NULL;
 	LocalTempStorageHolder = NULL;
@@ -495,7 +496,8 @@ void tTJSNI_VideoOverlay::RegisterPresenter()
 {
 	if( UsePresenter && PresenterHost && ActivePresenter && !PresenterRegistered )
 	{
-		PresenterHost->AddVideoPresenter( ActivePresenter );
+		// HW 経路でも自分を登録し、RenderVideoFrame で再生矩形を当てて ActivePresenter へ渡す
+		PresenterHost->AddVideoPresenter( static_cast<iTVPVideoPresenter*>(this) );
 		PresenterRegistered = true;
 	}
 }
@@ -503,7 +505,7 @@ void tTJSNI_VideoOverlay::RegisterPresenter()
 void tTJSNI_VideoOverlay::UnregisterPresenter()
 {
 	if( PresenterRegistered && PresenterHost && ActivePresenter )
-		PresenterHost->RemoveVideoPresenter( ActivePresenter );
+		PresenterHost->RemoveVideoPresenter( static_cast<iTVPVideoPresenter*>(this) );
 	PresenterRegistered = false;
 }
 //---------------------------------------------------------------------------
@@ -511,7 +513,21 @@ bool TJS_INTF_METHOD tTJSNI_VideoOverlay::RenderVideoFrame( const tTVPVideoPrese
 {
 	// DrawDevice の Show() (描画スレッド) から毎フレーム呼ばれる。最新フレームを engine の
 	// D3D11 テクスチャへ上げ、ゲーム画面領域 (DestRect) 全面へ描く (動画が画面を覆う前提)。
-	if( !UsePresenter || !VideoOverlay || !Visible || !HasFrame ) return false;
+	if( !UsePresenter || !VideoOverlay || !Visible ) return false;
+
+	// 再生矩形 (setPos / setSize / setBounds) が指定されていればプライマリレイヤ座標から
+	// 描画先へ写した矩形へ、未指定ならゲーム画面領域 (DestRect) 全面へ描く。矩形指定時は
+	// DrawDevice がゲーム画面を描いた上へ重ねる (CoversScreen() == false)。
+	tTVPRect dst = RectSpecified ? TVPMapOverlayRectToClient( ctx, Rect ) : ctx.DestRect;
+
+	// HW 経路 (IMFMediaEngine): 描画は VideoOverlay 側の presenter が持つので、描画先だけ差し替えて渡す
+	if( HWMode && ActivePresenter && ActivePresenter != static_cast<iTVPVideoPresenter*>(this) )
+	{
+		tTVPVideoPresenterContext hwctx = ctx;
+		hwctx.DestRect = dst;
+		return ActivePresenter->RenderVideoFrame( hwctx );
+	}
+	if( !HasFrame ) return false;
 
 	if( !VideoBlit ) VideoBlit = new tTVPVideoPresenterD3D();
 
@@ -522,7 +538,7 @@ bool TJS_INTF_METHOD tTJSNI_VideoOverlay::RenderVideoFrame( const tTVPVideoPrese
 	if( VideoOverlay->GetI420Frame( &iy, &ys, &iu, &us, &iv, &vs, &iw, &ih ) &&
 	    iy && iu && iv && iw > 0 && ih > 0 )
 	{
-		VideoBlit->RenderI420( ctx, iy, ys, iu, us, iv, vs, iw, ih, ctx.DestRect, (float)MovieAlpha );
+		VideoBlit->RenderI420( ctx, iy, ys, iu, us, iv, vs, iw, ih, dst, (float)MovieAlpha );
 		renderedI420 = true;
 	}
 
@@ -546,7 +562,7 @@ bool TJS_INTF_METHOD tTJSNI_VideoOverlay::RenderVideoFrame( const tTVPVideoPrese
 		if( h > 1 )
 			pitch = (int)( (const BYTE*)raw->GetScanLine(1) - top );
 
-		VideoBlit->Render( ctx, top, pitch, w, h, ctx.DestRect, (float)MovieAlpha );
+		VideoBlit->Render( ctx, top, pitch, w, h, dst, (float)MovieAlpha );
 	}
 
 	// mixer 追加画像 (旧 setMixingLayer の後継)。動画の上へアルファ合成で重ねる。
@@ -706,6 +722,7 @@ void tTJSNI_VideoOverlay::SetPosition(tjs_int left, tjs_int top)
 	else
 	{
 		Rect.set_offsets(left, top);
+		RectSpecified = true;
 		SetRectangleToVideoOverlay();
 	}
 }
@@ -715,6 +732,7 @@ void tTJSNI_VideoOverlay::SetSize(tjs_int width, tjs_int height)
 	if( Mode == vomLayer ) return;
 
 	Rect.set_size(width, height);
+	RectSpecified = true;
 	SetRectangleToVideoOverlay();
 }
 //---------------------------------------------------------------------------
@@ -723,6 +741,7 @@ void tTJSNI_VideoOverlay::SetBounds(const tTVPRect & rect)
 	if( Mode == vomLayer ) return;
 
 	Rect = rect;
+	RectSpecified = true;
 	SetRectangleToVideoOverlay();
 }
 //---------------------------------------------------------------------------
@@ -736,6 +755,7 @@ void tTJSNI_VideoOverlay::SetLeft(tjs_int l)
 	else
 	{
 		Rect.set_offsets(l, Rect.top);
+		RectSpecified = true;
 		SetRectangleToVideoOverlay();
 	}
 }
@@ -750,6 +770,7 @@ void tTJSNI_VideoOverlay::SetTop(tjs_int t)
 	else
 	{
 		Rect.set_offsets(Rect.left, t);
+		RectSpecified = true;
 		SetRectangleToVideoOverlay();
 	}
 }
@@ -759,6 +780,7 @@ void tTJSNI_VideoOverlay::SetWidth(tjs_int w)
 	if( Mode == vomLayer ) return;
 
 	Rect.right = Rect.left + w;
+	RectSpecified = true;
 	SetRectangleToVideoOverlay();
 }
 //---------------------------------------------------------------------------
@@ -767,6 +789,7 @@ void tTJSNI_VideoOverlay::SetHeight(tjs_int h)
 	if( Mode == vomLayer ) return;
 
 	Rect.bottom = Rect.top + h;
+	RectSpecified = true;
 	SetRectangleToVideoOverlay();
 }
 //---------------------------------------------------------------------------

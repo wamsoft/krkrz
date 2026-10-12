@@ -47,6 +47,12 @@
    static const int      SOCK_ERR     = -1;
 #endif
 
+// 送信先が先に閉じた socket へ send() すると SIGPIPE が飛ぶ。既定動作は
+// プロセス終了、デバッガ配下ではプロセス全体が停止するので必ず抑止する。
+#ifndef MSG_NOSIGNAL
+#  define MSG_NOSIGNAL 0
+#endif
+
 // listen_sock_ptr_ / client_sock_ptr_ は void* で持つので reinterpret する
 static inline socket_t SockOf(void* p)
 {
@@ -246,7 +252,7 @@ bool tTVPDAPServerThread::DrainSocketWrite()
 
 	size_t sent = 0;
 	while (sent < framed.size()) {
-		int n = ::send(cs, framed.data() + sent, (int)(framed.size() - sent), 0);
+		int n = ::send(cs, framed.data() + sent, (int)(framed.size() - sent), MSG_NOSIGNAL);
 		if (n <= 0) return false;
 		sent += (size_t)n;
 	}

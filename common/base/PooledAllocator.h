@@ -198,7 +198,8 @@ private:
 	// --- メンバ ---
 	const char         *name_;
 	TVPAllocTag         default_tag_;
-	char               *pool_buf_     = nullptr; // malloc'd backing
+	char               *pool_buf_     = nullptr; // pool 先頭 (ALIGN 境界に揃えたもの)
+	void               *pool_raw_     = nullptr; // malloc'd backing (free 用)
 	size_t              pool_size_    = 0;
 	Block              *sentinel_end_ = nullptr; // 末尾 dummy (USED, size=0)、coalesce 越境防止
 

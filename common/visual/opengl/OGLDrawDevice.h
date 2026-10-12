@@ -152,7 +152,12 @@ private:
 	// overlay 動画 presenter (単一スロット、最後に登録した 1 つを pull する)。
 	// フレームバッファ / GLTexture は presenter 側 (GLVideoPresenter.cpp) が持つ。
 	iTVPGLVideoPresenter *VideoPresenter;
+	//! presenter 稼働中に動画を描く。動画が画面を覆っていて描いたら true。
 	bool ShowVideo();
+	//! 再生矩形が指定された動画を、描き終えたゲーム画面の上へ重ねる。
+	void RenderPartialVideo();
+	//! presenter に渡す描画コンテキストを作る。
+	tTVPGLVideoPresenterContext MakeVideoContext();
 
 #endif // __GENERIC__
 

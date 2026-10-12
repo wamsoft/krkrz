@@ -19,6 +19,7 @@
 #include "FilePathUtil.h"
 #include "SysInitIntf.h"
 #include "SysInitImpl.h"
+#include "UserConfig.h"
 #include "DebugIntf.h"
 #include "LogIntf.h"
 #include "MsgImpl.h"
@@ -454,7 +455,7 @@ bool tTVPApplication::StartApplication( int argc, tjs_char* argv[] ) {
 		Initialize();
 
 		if(TVPCheckPrintDataPath()) return true;
-		if(TVPExecuteUserConfig()) return true;
+		if(TVPExecuteUserConfig()) return true;   // -userconf: ブラウザで設定画面 (UserConfig.h)
 		
 		image_load_thread_ = new tTVPAsyncImageLoader();
 		file_cache_thread_ = new tTVPStorageCacheThread();

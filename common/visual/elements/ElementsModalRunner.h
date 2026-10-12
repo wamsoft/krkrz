@@ -10,7 +10,6 @@
 //
 // 主用途:
 //   - TJS `ElementsDialog.showModalJson` / `showModalFile` (DialogIntf.cpp)
-//   - `-userconf` 起動時の UserConfig UI (SDL host のみ)
 //
 // 戻り値の仕組み:
 //   - 内部ハンドラが button click を「閉じるアクション」、 state widget の

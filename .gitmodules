@@ -8,3 +8,6 @@
 [submodule "external/glyphware"]
 	path = external/glyphware
 	url = https://github.com/wamsoft/glyphware.git
+[submodule "external/appserve"]
+	path = external/appserve
+	url = https://github.com/wamsoft/appserve.git

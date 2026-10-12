@@ -92,6 +92,8 @@ void TJS_INTF_METHOD tTVPSDLOGLDrawDevice::Show()
 			SurfaceWidth, SurfaceHeight, _position,
 			TextureInstance->GetWidth(),
 			TextureInstance->GetHeight());
+		// 再生矩形が指定された動画はゲーム画面の上へ重ねる (画面を覆う動画は ShowVideo 側)
+		RenderPartialVideo();
 	}
 
 	// Layer 合成完了直後 + memoverlay の前に Elements ダイアログを上に貼る
@@ -431,18 +433,30 @@ bool tTVPSDLOGLDrawDevice::ShowVideo()
 	// (GLVideoPresenter.cpp) が行い、ここでは描画スレッド (GL context current) から pull する。
 	// overlay の Visible=false (WINVER 仕様: 既定 false) の間は画面を占有せず、false を返して
 	// 通常のゲーム描画へ戻す。WINVER が RenderVideoFrame 内で Visible を判定するのと等価。
-	if( !VideoPresenter ) return false;
-	if( !VideoPresenter->IsVisible() ) return false;
+	// 再生矩形が指定されている (画面を覆わない) ときも false を返し、Show() がゲーム画面を
+	// 描いてから RenderPartialVideo() で動画を重ねる。
+	if( !VideoPresenter || !VideoPresenter->IsVisible() || !VideoPresenter->CoversScreen() ) return false;
 	glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+	VideoPresenter->RenderVideoFrame(MakeVideoContext());
+	return true;
+}
+
+tTVPGLVideoPresenterContext tTVPSDLOGLDrawDevice::MakeVideoContext()
+{
 	tTVPGLVideoPresenterContext ctx;
 	ctx.TextureDrawer = &TextureDrawer;
 	ctx.TargetWidth   = SurfaceWidth;
 	ctx.TargetHeight  = SurfaceHeight;
 	ctx.DestRect      = ToPhysicalRect(DestRect, SurfaceWidth, SurfaceHeight);
 	{	tjs_int sw = 0, sh = 0; GetSrcSize( sw, sh ); ctx.SrcWidth = sw; ctx.SrcHeight = sh; }
-	VideoPresenter->RenderVideoFrame(ctx);
-	return true;
+	return ctx;
+}
+
+void tTVPSDLOGLDrawDevice::RenderPartialVideo()
+{
+	if( !VideoPresenter || !VideoPresenter->IsVisible() || VideoPresenter->CoversScreen() ) return;
+	VideoPresenter->RenderVideoFrame(MakeVideoContext());
 }
 
 void tTVPSDLOGLDrawDevice::SetWaitVSync(bool enable)

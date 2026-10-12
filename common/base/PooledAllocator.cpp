@@ -407,18 +407,18 @@ TVPPooledAllocator::TVPPooledAllocator(size_t pool_size,
 		TVPLOG_INFO("PooledAllocator [{}]: pool disabled (size too small or 0), using system malloc only", name_);
 		return;
 	}
-	pool_buf_ = static_cast<char *>(std::malloc(pool_size_));
-	if (!pool_buf_) {
+	// 先頭は 16 byte 境界に揃える。malloc が保証するのは max_align_t までで、
+	// wasm32 では 8 byte 境界のことがある。揃えないと validateBlock の整列
+	// チェックが最初の確保で «破損» と判定し、pool ごと使われなくなる。
+	pool_raw_ = std::malloc(pool_size_ + ALIGN);
+	if (!pool_raw_) {
 		TVPLOG_WARNING("PooledAllocator [{}]: failed to malloc pool of {} bytes; falling back to system malloc only",
 		               name_, pool_size_);
 		pool_size_ = 0;
 		return;
 	}
-	// 16 byte align チェック (malloc は max_align_t alignment を保証するので通常 OK)
-	if ((reinterpret_cast<uintptr_t>(pool_buf_) & (ALIGN - 1)) != 0) {
-		TVPLOG_WARNING("PooledAllocator [{}]: pool not 16-byte aligned ({})",
-		               name_, reinterpret_cast<uintptr_t>(pool_buf_));
-	}
+	pool_buf_ = reinterpret_cast<char *>(
+		(reinterpret_cast<uintptr_t>(pool_raw_) + (ALIGN - 1)) & ~static_cast<uintptr_t>(ALIGN - 1));
 
 	// 初期構造: [first free block (size = pool_size_ - 2*HEADER)] [sentinel (size=0, USED)]
 	Block *first = reinterpret_cast<Block *>(pool_buf_);
@@ -439,7 +439,8 @@ TVPPooledAllocator::TVPPooledAllocator(size_t pool_size,
 }
 
 TVPPooledAllocator::~TVPPooledAllocator() {
-	std::free(pool_buf_);
+	std::free(pool_raw_);
+	pool_raw_ = nullptr;
 	pool_buf_ = nullptr;
 }
 

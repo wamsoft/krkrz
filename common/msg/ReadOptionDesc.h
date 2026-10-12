@@ -58,4 +58,8 @@ extern tTVPCommandOptionList* TVPGetPluginCommandDesc(const tjs_char* name);
 //!        Win32: PE リソースから。SDL3: resource/optiondesc.json から。
 extern tTVPCommandOptionList* TVPGetEngineCommandDesc();
 
+//! @brief 全プラグインの option desc を dest へマージする (設定画面 -userconf 用)。
+//!        Win32: exe フォルダと plugin64 (plugin) の .dll / .tpm。SDL3: 同じフォルダの <basename>.options.json。
+extern void TVPMergeAllPluginCommandDesc(tTVPCommandOptionList& dest);
+
 #endif // __READ_OPTION_DESC_H__

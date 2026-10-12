@@ -5,7 +5,9 @@
 #include "StorageIntf.h"
 
 #include "app.h"
+#include "ExecutableOverlay.h"
 #include <filesystem>
+#include <fstream>
 #include <iterator>
 #include <SDL3/SDL_dialog.h>
 
@@ -35,6 +37,28 @@ static inline void checkLastDelimiter(std::string &path, char delimiter)
 	if (path.empty() || path.back() != delimiter) {
 		path += delimiter;
 	}
+}
+
+// ---------------------------------------------------------------------------
+// 実行ファイル自身に xp3 が結合されているか (WINVER の «自分自身» の探索と同じ)。
+// ストレージ層の準備前なので、ファイルを直接読む
+// ---------------------------------------------------------------------------
+static bool HasXP3InExecutable(const tjs_string &exePath)
+{
+	std::error_code ec;
+	const std::filesystem::path path(exePath.c_str());
+	const uint64_t size = std::filesystem::file_size(path, ec);
+	if(ec || size < 64) return false;
+	std::ifstream f(path, std::ios::binary);
+	if(!f) return false;
+	tTVPReadAtFunc reader = [&f](uint64_t pos, void *buf, size_t len) -> size_t {
+		f.clear();
+		f.seekg((std::streamoff)pos);
+		f.read(static_cast<char *>(buf), (std::streamsize)len);
+		return (size_t)f.gcount();
+	};
+	uint64_t offset = 0;
+	return TVPFindXP3InExecutable(reader, size, offset);
 }
 
 // ---------------------------------------------------------------------------
@@ -171,9 +195,22 @@ bool MySDL3Application::InitPath()
 		}
 		checkLastDelimiter(projectPath, delimiter);
 	} else {
+		// 自分自身に結合された xp3 (WINVER と同じく data.xp3 の次、data/ より前に見る)
+		tjs_string selfExe;
+#if !defined(SDL_PLATFORM_ANDROID) && !defined(SDL_PLATFORM_IOS) && !defined(__EMSCRIPTEN__)
+		{
+			tjs_string appPathW;
+			TVPUtf8ToUtf16(appPathW, appPath);
+			selfExe = ResolveExePath(appPathW);
+		}
+#endif
 		if (IsExistent((appPath + "data.xp3").c_str())) {
 			projectPath = appPath + "data.xp3>";
 			TVPLOG_INFO("data.xp3 found, using as project path");
+		} else if (!selfExe.empty() && HasXP3InExecutable(selfExe)) {
+			TVPUtf16ToUtf8(projectPath, selfExe);
+			projectPath += ">";
+			TVPLOG_INFO("xp3 archive bound to the executable found, using as project path");
 		} else if (IsExistent((appPath + "data/startup.tjs").c_str())) {
 			projectPath = appPath + "data/";
 			TVPLOG_INFO("data/startup.tjs found, using data/ as project path");
