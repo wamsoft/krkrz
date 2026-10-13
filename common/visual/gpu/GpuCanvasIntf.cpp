@@ -4,14 +4,17 @@
 // GL 版 (common/visual/opengl/CanvasIntf.cpp) と同じ TJS API を TVPGpu::Device の上に作る。
 //   - 座標は左上原点。Texture / Offscreen とも UV (0,0) が左上
 //   - 組み込みシェーダーは shaders/ のもの (GL 版と同じ GLSL を事前変換)
-//   - 未対応 (今後): beginEffect/endEffect、beginMaskClip/endMaskClip、
-//     beginStencilClip/endStencilClip、drawText
+//   - クリップ (beginMaskClip / beginStencilClip) とポストエフェクト (beginEffect / endEffect) は
+//     GL 版と同じ結果になるように作る (シェーダーは shaders/clip_*.frag / effect_*.frag。
+//     エフェクトのコマンド配列の解釈は GL 版と共通の EffectCommand.cpp)
+//   - 未対応 (今後): drawText
 //---------------------------------------------------------------------------
 #include "tjsCommHead.h"
 
 #include "tjsArray.h"
 #include "GpuCanvasIntf.h"
 #include "GpuShaderLibrary.h"
+#include "EffectCommand.h"
 #include "Matrix32Intf.h"
 #include "RectItf.h"
 #include "BitmapIntf.h"
@@ -24,6 +27,9 @@
 #include <algorithm>
 
 using namespace TVPGpu;
+
+// 描画中の Canvas (入れ子: onDraw の中で GLCompositor.capture など)。内側が終わったら外側の描画先を付け直す
+static std::vector<tTJSNI_GpuCanvas*> TVPDrawingGpuCanvases;
 
 // GL の enum 値 (TJS の ptXXX / dtXXX と互換)
 enum : tjs_int {
@@ -136,8 +142,19 @@ void TJS_INTF_METHOD tTJSNI_GpuCanvas::Invalidate()
 	inval( EmbeddedDefaultShaderObject );
 	inval( EmbeddedDefaultFillShaderObject );
 	for( int i = 0; i < 2; i++ ) { inval( TransitionShaderObject[i] ); TransitionShaderInstance[i] = nullptr; }
+	for( int i = 0; i < 2; i++ ) { inval( ClipShaderObject[i] ); ClipShaderInstance[i] = nullptr; }
+	for( int i = 0; i < 3; i++ ) { inval( EffectShaderObject[i] ); EffectShaderInstance[i] = nullptr; }
+	LutTextures.clear();
+	CaptureStack.clear();
+	CapturePool.clear();
+	ScreenStencil.reset();
+	CaptureStencil.reset();
+	StencilClipEnabled = false;
+	StencilTarget = nullptr;
 	ScreenTarget = nullptr;
 	CurrentTarget = nullptr;
+	auto& st = TVPDrawingGpuCanvases;
+	st.erase( std::remove( st.begin(), st.end(), this ), st.end() );
 }
 
 //---------------------------------------------------------------------------
@@ -162,12 +179,33 @@ void tTJSNI_GpuCanvas::BindTarget()
 		CanvasWidth = SurfaceWidth;
 		CanvasHeight = SurfaceHeight;
 	}
+	BindPass( target );
+}
+
+void tTJSNI_GpuCanvas::BindPass( Texture* target )
+{
 	CurrentTarget = target;
 	if( !target ) return;
 	Device* dev = Device::Get();
-	dev->BeginPass( target, nullptr );
+	dev->BeginPass( target, StencilActive() ? StencilFor( target ) : nullptr );
 	dev->SetViewport( { 0, 0, CanvasWidth, CanvasHeight } );
 	ApplyScissor();
+}
+
+//! 描画先に付けるステンシル (描画先と同じ大きさ。無ければ作る)
+Texture* tTJSNI_GpuCanvas::StencilFor( Texture* target )
+{
+	if( RenderTargetInstance && target == RenderTargetInstance->GetGpuTexture() )
+		return RenderTargetInstance->GetStencilTexture();
+	std::unique_ptr<Texture>& ds = target == ScreenTarget ? ScreenStencil : CaptureStencil;
+	if( !ds || ds->Width() != target->Width() || ds->Height() != target->Height() ) {
+		TextureDesc d;
+		d.width = target->Width(); d.height = target->Height();
+		d.format = TextureFormat::D32F_S8;
+		d.renderTarget = true;
+		ds = Device::Get()->CreateTexture( d );
+	}
+	return ds.get();
 }
 
 void tTJSNI_GpuCanvas::ApplyScissor()
@@ -189,6 +227,7 @@ void tTJSNI_GpuCanvas::ApplyScissor()
 
 void tTJSNI_GpuCanvas::BeginDrawing()
 {
+	if( !InDrawing ) TVPDrawingGpuCanvases.push_back( this );
 	InDrawing = true;
 	StateStack.clear();
 	BindTarget();
@@ -201,6 +240,13 @@ void tTJSNI_GpuCanvas::BeginDrawing()
 
 void tTJSNI_GpuCanvas::EndDrawing()
 {
+	// beginMaskClip の取りこぼしがあれば破棄して描画先を戻す
+	if( !CaptureStack.empty() ) {
+		TVPAddLog( TJS_W("Canvas: unbalanced beginEffect/beginMaskClip - discarded") );
+		UnwindCaptures();
+	}
+	StencilClipEnabled = false;
+	StencilTarget = nullptr;
 	StateStack.clear();
 	InDrawing = false;
 	if( CurrentTarget ) {
@@ -208,6 +254,9 @@ void tTJSNI_GpuCanvas::EndDrawing()
 		Device::Get()->Submit();
 	}
 	CurrentTarget = nullptr;
+	auto& st = TVPDrawingGpuCanvases;
+	st.erase( std::remove( st.begin(), st.end(), this ), st.end() );
+	if( !st.empty() && st.back()->InDrawing ) st.back()->BindPass( st.back()->CurrentTarget );
 }
 
 //---------------------------------------------------------------------------
@@ -279,6 +328,31 @@ tTJSNI_GpuShaderProgram* tTJSNI_GpuCanvas::EnsureTransitionShader( bool universa
 	return TransitionShaderInstance[i];
 }
 
+tTJSNI_GpuShaderProgram* tTJSNI_GpuCanvas::EnsureClipShader( bool mask )
+{
+	const int i = mask ? 1 : 0;
+	if( !ClipShaderInstance[i] ) {
+		const char* name = mask ? "clip_mask" : "clip_stencil";
+		ClipShaderObject[i] = CreateShaderObject(
+			ShaderLibrary::BuiltinSource( name, ShaderStage::Vertex ),
+			ShaderLibrary::BuiltinSource( name, ShaderStage::Fragment ), false );
+		ClipShaderInstance[i] = ShaderOf( ClipShaderObject[i] );
+	}
+	return ClipShaderInstance[i];
+}
+
+tTJSNI_GpuShaderProgram* tTJSNI_GpuCanvas::EnsureEffectShader( int kind )
+{
+	if( !EffectShaderInstance[kind] ) {
+		static const char* names[3] = { "effect_pointwise", "effect_lut", "effect_blur" };
+		EffectShaderObject[kind] = CreateShaderObject(
+			ShaderLibrary::BuiltinSource( names[kind], ShaderStage::Vertex ),
+			ShaderLibrary::BuiltinSource( names[kind], ShaderStage::Fragment ), false );
+		EffectShaderInstance[kind] = ShaderOf( EffectShaderObject[kind] );
+	}
+	return EffectShaderInstance[kind];
+}
+
 //---------------------------------------------------------------------------
 // 描画の共通部分
 //---------------------------------------------------------------------------
@@ -329,6 +403,13 @@ void tTJSNI_GpuCanvas::FillCommon( DrawCall& dc, tTJSNI_GpuShaderProgram* shader
 	dc.state.program = shader->GetProgram();
 	dc.state.blend = MakeBlendState();
 	dc.state.cull = EnableCulling ? CullMode::Back : CullMode::None;
+	if( StencilActive() ) {
+		// beginStencilClip で 1 を書いたところだけに描く
+		dc.state.stencil.enable = true;
+		dc.state.stencil.compare = CompareOp::Equal;
+		dc.state.stencil.writeMask = 0;
+		dc.stencilReference = 1;
+	}
 	for( int s = 0; s < 2; s++ ) {
 		const std::vector<uint8_t>& blk = shader->GetBlock( (ShaderStage)s );
 		dc.uniforms[s] = blk.empty() ? nullptr : blk.data();
@@ -420,6 +501,7 @@ void tTJSNI_GpuCanvas::Clear( tjs_uint32 color )
 	DrawCall dc;
 	FillCommon( dc, shader );
 	dc.state.blend = BlendState();   // ブレンド無し (書き込みのみ)
+	dc.state.stencil = StencilState();   // glClear と同じくステンシルクリップを受けない
 	dc.state.cull = CullMode::None;
 	dc.state.attributes.push_back( { pos->location, VertexFormat::Float2, 0, 0 } );
 	dc.state.attributes.push_back( { col->location, VertexFormat::Float4, 8, 0 } );
@@ -763,6 +845,297 @@ void tTJSNI_GpuCanvas::Restore()
 }
 
 //---------------------------------------------------------------------------
+// クリップ・ポストエフェクト
+//---------------------------------------------------------------------------
+void tTJSNI_GpuCanvas::DrawFullQuad( tTJSNI_GpuShaderProgram* shader, Texture* const* textures, tjs_uint count,
+	tjs_int x, tjs_int y, tjs_int w, tjs_int h, float u1, float v1, QuadMode mode )
+{
+	if( !CurrentTarget || !shader ) return;
+	const ShaderReflection& r = shader->Reflection();
+	const ShaderReflection::Attribute* pos = r.FindAttribute( "a_pos" );
+	const ShaderReflection::Attribute* uv = r.FindAttribute( "a_texCoord" );
+	if( !pos || !uv ) return;
+	static const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+	shader->SetUniformFloats( "a_modelMat4", identity, 16 );
+	const float size[2] = { (float)CanvasWidth, (float)CanvasHeight };
+	shader->SetUniformFloats( "a_size", size, 2 );
+
+	DrawCall dc;
+	FillCommon( dc, shader );
+	static const char* names[2] = { "s_tex0", "s_tex1" };
+	for( tjs_uint i = 0; i < count && i < 2; i++ ) {
+		const ShaderReflection::Sampler* s = r.FindSampler( names[i] );
+		if( !s || s->stage != ShaderStage::Fragment || s->slot >= dc.textureCount || !textures[i] ) continue;
+		dc.textures[s->slot] = textures[i];
+		dc.samplers[s->slot] = SamplerDesc();
+	}
+	dc.state.cull = CullMode::None;
+	if( mode == QuadMode::StencilWrite ) {
+		// 色は書かず、ステンシルに 1 を書く
+		dc.state.blend = BlendState();
+		dc.state.blend.writeMask = 0;
+		dc.state.stencil = StencilState();
+		dc.state.stencil.enable = true;
+		dc.state.stencil.compare = CompareOp::Always;
+		dc.state.stencil.pass = StencilOp::Replace;
+		dc.stencilReference = 1;
+	} else if( mode == QuadMode::Copy ) {
+		dc.state.blend = BlendState();
+		dc.state.stencil = StencilState();
+	}
+	const float l = (float)x, t = (float)y, rr = (float)( x + w ), b = (float)( y + h );
+	const float verts[] = {
+		l,  t, 0,  0,
+		l,  b, 0,  v1,
+		rr, t, u1, 0,
+		rr, b, u1, v1,
+	};
+	dc.state.attributes.push_back( { pos->location, VertexFormat::Float2, 0, 0 } );
+	dc.state.attributes.push_back( { uv->location, VertexFormat::Float2, 8, 0 } );
+	dc.state.strides[0] = 16;
+	dc.state.vertexBufferCount = 1;
+	dc.state.primitive = PrimitiveType::TriangleStrip;
+	Device* dev = Device::Get();
+	dev->AllocTransient( false, verts, sizeof(verts), &dc.vertexBuffers[0], &dc.vertexOffsets[0] );
+	dc.count = 4;
+	dev->Draw( dc );
+}
+
+std::unique_ptr<Texture> tTJSNI_GpuCanvas::AcquireIntermediate()
+{
+	for( auto it = CapturePool.begin(); it != CapturePool.end(); ++it ) {
+		if( (*it)->Width() == (uint32_t)CanvasWidth && (*it)->Height() == (uint32_t)CanvasHeight ) {
+			std::unique_ptr<Texture> tex = std::move( *it );
+			CapturePool.erase( it );
+			return tex;
+		}
+	}
+	// 大きさの変わった古いものは捨てる
+	while( CapturePool.size() > 4 ) CapturePool.erase( CapturePool.begin() );
+	TextureDesc d;
+	d.width = CanvasWidth; d.height = CanvasHeight;
+	d.format = TextureFormat::BGRA8;
+	d.renderTarget = true;
+	return Device::Get()->CreateTexture( d );
+}
+
+void tTJSNI_GpuCanvas::ReleaseIntermediate( std::unique_ptr<Texture> tex )
+{
+	if( !tex ) return;
+	// 返したテクスチャに付いていたステンシルクリップはそこで終わり
+	if( StencilTarget == tex.get() ) { StencilClipEnabled = false; StencilTarget = nullptr; }
+	CapturePool.push_back( std::move( tex ) );
+}
+
+void tTJSNI_GpuCanvas::UnwindCaptures()
+{
+	while( !CaptureStack.empty() ) {
+		ReleaseIntermediate( std::move( CaptureStack.back().Tex ) );
+		CaptureStack.pop_back();
+	}
+}
+
+std::unique_ptr<Texture> tTJSNI_GpuCanvas::PopCapture()
+{
+	CaptureEntry cap = std::move( CaptureStack.back() );
+	CaptureStack.pop_back();
+	if( StencilTarget == cap.Tex.get() ) { StencilClipEnabled = false; StencilTarget = nullptr; }
+	BindPass( cap.PrevTarget );
+	return std::move( cap.Tex );
+}
+
+void tTJSNI_GpuCanvas::EffectPass( Texture* dst, tTJSNI_GpuShaderProgram* shader, Texture* src, Texture* src2 )
+{
+	BindPass( dst );
+	Device::Get()->SetScissor( nullptr );   // 中間のパスは全面を処理する
+	Texture* tex[2] = { src, src2 };
+	DrawFullQuad( shader, tex, 2, 0, 0, CanvasWidth, CanvasHeight, 1.0f, 1.0f, QuadMode::Copy );
+}
+
+void tTJSNI_GpuCanvas::CompositeCapture( Texture* capture, const iTVPGpuDrawable* mask, float x, float y )
+{
+	tTJSNI_GpuShaderProgram* shader = EnsureClipShader( true );
+	if( !shader ) return;
+	const float res[2] = { (float)CanvasWidth, (float)CanvasHeight };
+	shader->SetUniformFloats( "a_res", res, 2 );
+	const float useMask = mask && mask->GetGpuTexture() ? 1.0f : 0.0f;
+	shader->SetUniformFloats( "a_useMask", &useMask, 1 );
+	Texture* tex[2] = { capture, nullptr };
+	if( useMask != 0.0f ) {
+		const float rect[4] = { x, y, (float)mask->GetWidth(), (float)mask->GetHeight() };
+		shader->SetUniformFloats( "a_maskRect", rect, 4 );
+		const float uv[2] = { (float)mask->GetWidth() / mask->GetMemoryWidth(), (float)mask->GetHeight() / mask->GetMemoryHeight() };
+		shader->SetUniformFloats( "a_maskUV", uv, 2 );
+		tex[1] = mask->GetGpuTexture();
+	}
+	DrawFullQuad( shader, tex, 2, 0, 0, CanvasWidth, CanvasHeight, 1.0f, 1.0f, QuadMode::Blend );
+}
+
+// 以降の描画を中間テクスチャ (透明でクリア) へ捕捉する。ネスト可
+void tTJSNI_GpuCanvas::BeginEffect()
+{
+	if( CanvasWidth <= 0 || CanvasHeight <= 0 )
+		TVPThrowExceptionMessage( TVPCanvasBeginEffectNoCanvasSizeCallWhileDrawing );
+	if( !CurrentTarget ) return;
+	std::unique_ptr<Texture> tex = AcquireIntermediate();
+	Texture* t = tex.get();
+	CaptureStack.push_back( { std::move( tex ), CurrentTarget } );
+	BindPass( t );
+	const float zero[4] = { 0, 0, 0, 0 };
+	Device::Get()->ClearColor( zero );
+}
+
+// 捕捉内容に commands (gles プラグイン互換の加工コマンド配列) を適用し、
+// 直前の描画先へ現在の blendMode で合成する。commands が無ければ素通し
+void tTJSNI_GpuCanvas::EndEffect( const tTJSVariant& commands )
+{
+	if( CaptureStack.empty() ) {
+		TVPAddLog( TJS_W("Canvas.endEffect: unbalanced (no beginEffect).") );
+		return;
+	}
+	std::unique_ptr<Texture> cap = PopCapture();
+	Texture* prevTarget = CurrentTarget;
+
+	std::vector<tTVPEffectStage> stages;
+	TVPCompileEffectCommands( commands, stages );
+	EffectSeed += 1.0f;   // noise を毎回変える
+
+	// 段ごとに中間テクスチャへ書き写していく (結果は result)
+	Texture* input = cap.get();
+	std::unique_ptr<Texture> result;
+	size_t lutIndex = 0;
+	Device* dev = Device::Get();
+	for( const tTVPEffectStage& st : stages ) {
+		std::unique_ptr<Texture> out = AcquireIntermediate();
+		switch( st.kind ) {
+		case tTVPEffectStage::Lut: {
+			tTJSNI_GpuShaderProgram* shader = EnsureEffectShader( 1 );
+			if( lutIndex >= LutTextures.size() ) {
+				TextureDesc d;
+				d.width = 256; d.height = 1;
+				d.format = TextureFormat::BGRA8;
+				LutTextures.push_back( dev->CreateTexture( d ) );
+			}
+			Texture* lut = LutTextures[lutIndex++].get();
+			tjs_uint8 data[256 * 4];
+			for( int i = 0; i < 256; i++ ) {
+				data[i*4+0] = st.lut[2][i];   // B
+				data[i*4+1] = st.lut[1][i];   // G
+				data[i*4+2] = st.lut[0][i];   // R
+				data[i*4+3] = 255;
+			}
+			dev->UploadTexture( lut, 0, 0, 0, 256, 1, data, 256 * 4 );
+			EffectPass( out.get(), shader, input, lut );
+			break;
+		}
+		case tTVPEffectStage::Pointwise: {
+			tTJSNI_GpuShaderProgram* shader = EnsureEffectShader( 0 );
+			float ops[TVP_EFFECT_MAX_OPS] = {};
+			const size_t n = std::min<size_t>( st.ops.size(), TVP_EFFECT_MAX_OPS );
+			for( size_t i = 0; i < n; i++ ) ops[i] = (float)st.ops[i];
+			const float cnt = (float)n;
+			shader->SetUniformFloats( "u_count", &cnt, 1 );
+			shader->SetUniformFloats( "u_ops", ops, (tjs_uint)n );
+			if( n ) shader->SetUniformFloats( "u_params", st.params.data(), (tjs_uint)( n * 4 ) );
+			shader->SetUniformFloats( "u_seed", &EffectSeed, 1 );
+			const float res[2] = { (float)CanvasWidth, (float)CanvasHeight };
+			shader->SetUniformFloats( "u_res", res, 2 );
+			EffectPass( out.get(), shader, input );
+			break;
+		}
+		case tTVPEffectStage::Blur: {
+			// 横 → 縦の 2 パスを iterations 回
+			tTJSNI_GpuShaderProgram* shader = EnsureEffectShader( 2 );
+			const int radius = std::min( std::max( st.radius, 0 ), TVP_EFFECT_MAX_BLUR );
+			const float rad = (float)radius;
+			shader->SetUniformFloats( "u_radius", &rad, 1 );
+			shader->SetUniformFloats( "u_weights", st.weights.data(), (tjs_uint)std::min<size_t>( st.weights.size(), 2 * radius + 1 ) );
+			const float dx = 1.0f / CanvasWidth, dy = 1.0f / CanvasHeight;
+			Texture* in = input;
+			std::unique_ptr<Texture> carried;
+			for( int it = 0; it < st.iterations; it++ ) {
+				const bool last = it == st.iterations - 1;
+				std::unique_ptr<Texture> hbuf = AcquireIntermediate();
+				const float dirH[2] = { dx, 0.0f };
+				shader->SetUniformFloats( "u_dir", dirH, 2 );
+				EffectPass( hbuf.get(), shader, in );
+				std::unique_ptr<Texture> vout = last ? nullptr : AcquireIntermediate();
+				const float dirV[2] = { 0.0f, dy };
+				shader->SetUniformFloats( "u_dir", dirV, 2 );
+				EffectPass( last ? out.get() : vout.get(), shader, hbuf.get() );
+				ReleaseIntermediate( std::move( hbuf ) );
+				ReleaseIntermediate( std::move( carried ) );
+				if( !last ) { in = vout.get(); carried = std::move( vout ); }
+			}
+			break;
+		}
+		}
+		ReleaseIntermediate( std::move( result ) );
+		result = std::move( out );
+		input = result.get();
+	}
+
+	// 直前の描画先へ合成 (矩形クリップ・ステンシルクリップはここで効く)
+	BindPass( prevTarget );
+	CompositeCapture( input, nullptr, 0, 0 );
+	ReleaseIntermediate( std::move( result ) );
+	ReleaseIntermediate( std::move( cap ) );
+}
+
+// 以降の描画を中間テクスチャへ捕捉する (beginEffect と同じ)
+void tTJSNI_GpuCanvas::BeginMaskClip()
+{
+	BeginEffect();
+}
+
+// 捕捉内容に mask の α を掛けて直前の描画先へ現在の blendMode で合成する。
+// mask が nullptr なら素通し (矩形クリップだけを合成時に効かせる)。マスク矩形の外は α=0
+void tTJSNI_GpuCanvas::EndMaskClip( const iTVPGpuDrawable* mask, float x, float y )
+{
+	if( CaptureStack.empty() ) {
+		TVPAddLog( TJS_W("Canvas.endMaskClip: unbalanced (no beginMaskClip).") );
+		return;
+	}
+	std::unique_ptr<Texture> cap = PopCapture();
+	CompositeCapture( cap.get(), mask, x, y );
+	ReleaseIntermediate( std::move( cap ) );
+}
+
+// mask の α が threshold (1..255) 以上のところをステンシルに書き、以降の描画をそこに限る。
+// ステンシルは今の描画先に付くので、別の描画先 (renderTarget の変更や beginMaskClip の捕捉先) には効かない
+void tTJSNI_GpuCanvas::BeginStencilClip( const iTVPGpuDrawable* mask, float x, float y, tjs_int threshold )
+{
+	if( CanvasWidth <= 0 || CanvasHeight <= 0 )
+		TVPThrowExceptionMessage( TVPCanvasBeginStencilClipNoCanvasSizeCallWhileDrawing );
+	if( !mask || !mask->GetGpuTexture() || !CurrentTarget ) return;
+	tTJSNI_GpuShaderProgram* shader = EnsureClipShader( false );
+	if( !shader ) return;
+
+	StencilClipEnabled = true;
+	StencilTarget = CurrentTarget;
+	BindPass( CurrentTarget );   // ステンシルを付け直す
+	Device* dev = Device::Get();
+	dev->ClearStencil( 0 );
+
+	threshold = std::min<tjs_int>( 255, std::max<tjs_int>( 1, threshold ) );
+	const float th = threshold / 255.0f;
+	shader->SetUniformFloats( "a_threshold", &th, 1 );
+	Texture* tex[1] = { mask->GetGpuTexture() };
+	const float u1 = (float)mask->GetWidth() / mask->GetMemoryWidth();
+	const float v1 = (float)mask->GetHeight() / mask->GetMemoryHeight();
+	// ステンシルは矩形クリップに関係なく書く
+	dev->SetScissor( nullptr );
+	DrawFullQuad( shader, tex, 1, (tjs_int)x, (tjs_int)y, (tjs_int)mask->GetWidth(), (tjs_int)mask->GetHeight(), u1, v1, QuadMode::StencilWrite );
+	ApplyScissor();
+}
+
+void tTJSNI_GpuCanvas::EndStencilClip()
+{
+	StencilClipEnabled = false;
+	StencilTarget = nullptr;
+}
+
+//---------------------------------------------------------------------------
 // tTJSNC_GpuCanvas
 //---------------------------------------------------------------------------
 static tTJSNI_GpuShaderProgram* GetShaderParam( tTJSVariant* v )
@@ -1009,17 +1382,67 @@ tTJSNC_GpuCanvas::tTJSNC_GpuCanvas() : tTJSNativeClass( TJS_W("Canvas") )
 	TJS_END_NATIVE_METHOD_DECL( restore )
 
 	// 未対応 (今後): エフェクト・マスク・ステンシルクリップ。描画はそのまま素通しになる
-	TJS_BEGIN_NATIVE_METHOD_DECL( beginEffect ) { WarnUnsupportedOnce( TJS_W("beginEffect/endEffect") ); return TJS_S_OK; }
+	// beginEffect()  以降の描画を中間テクスチャへ捕捉する。ネスト可
+	TJS_BEGIN_NATIVE_METHOD_DECL( beginEffect )
+	{
+		TJS_GET_NATIVE_INSTANCE( _this, tTJSNI_GpuCanvas );
+		_this->BeginEffect();
+		return TJS_S_OK;
+	}
 	TJS_END_NATIVE_METHOD_DECL( beginEffect )
-	TJS_BEGIN_NATIVE_METHOD_DECL( endEffect ) { return TJS_S_OK; }
+	// endEffect(commands=void)  捕捉内容に加工コマンド配列を適用して現在の blendMode で合成する
+	TJS_BEGIN_NATIVE_METHOD_DECL( endEffect )
+	{
+		TJS_GET_NATIVE_INSTANCE( _this, tTJSNI_GpuCanvas );
+		tTJSVariant commands;
+		if( numparams >= 1 ) commands = *param[0];
+		_this->EndEffect( commands );
+		return TJS_S_OK;
+	}
 	TJS_END_NATIVE_METHOD_DECL( endEffect )
-	TJS_BEGIN_NATIVE_METHOD_DECL( beginMaskClip ) { WarnUnsupportedOnce( TJS_W("beginMaskClip/endMaskClip") ); return TJS_S_OK; }
+	// beginMaskClip()  以降の描画を中間テクスチャへ捕捉する
+	TJS_BEGIN_NATIVE_METHOD_DECL( beginMaskClip )
+	{
+		TJS_GET_NATIVE_INSTANCE( _this, tTJSNI_GpuCanvas );
+		_this->BeginMaskClip();
+		return TJS_S_OK;
+	}
 	TJS_END_NATIVE_METHOD_DECL( beginMaskClip )
-	TJS_BEGIN_NATIVE_METHOD_DECL( endMaskClip ) { return TJS_S_OK; }
+	// endMaskClip(mask=void, x=0, y=0)  捕捉内容に mask の α を掛けて合成する
+	TJS_BEGIN_NATIVE_METHOD_DECL( endMaskClip )
+	{
+		TJS_GET_NATIVE_INSTANCE( _this, tTJSNI_GpuCanvas );
+		const iTVPGpuDrawable* mask = nullptr;
+		if( numparams >= 1 && param[0]->Type() == tvtObject ) {
+			mask = TVPGetGpuDrawable( param[0] );
+			if( !mask ) return TJS_E_INVALIDPARAM;
+		}
+		float x = ( numparams >= 2 ) ? (float)(tjs_real)*param[1] : 0.0f;
+		float y = ( numparams >= 3 ) ? (float)(tjs_real)*param[2] : 0.0f;
+		_this->EndMaskClip( mask, x, y );
+		return TJS_S_OK;
+	}
 	TJS_END_NATIVE_METHOD_DECL( endMaskClip )
-	TJS_BEGIN_NATIVE_METHOD_DECL( beginStencilClip ) { WarnUnsupportedOnce( TJS_W("beginStencilClip/endStencilClip") ); return TJS_S_OK; }
+	// beginStencilClip(mask, x=0, y=0, threshold=1)  mask の α が threshold 以上の領域に描画を限る
+	TJS_BEGIN_NATIVE_METHOD_DECL( beginStencilClip )
+	{
+		TJS_GET_NATIVE_INSTANCE( _this, tTJSNI_GpuCanvas );
+		if( numparams < 1 ) return TJS_E_BADPARAMCOUNT;
+		const iTVPGpuDrawable* mask = TVPGetGpuDrawable( param[0] );
+		if( !mask ) return TJS_E_INVALIDPARAM;
+		float x = ( numparams >= 2 ) ? (float)(tjs_real)*param[1] : 0.0f;
+		float y = ( numparams >= 3 ) ? (float)(tjs_real)*param[2] : 0.0f;
+		tjs_int threshold = ( numparams >= 4 ) ? (tjs_int)*param[3] : 1;
+		_this->BeginStencilClip( mask, x, y, threshold );
+		return TJS_S_OK;
+	}
 	TJS_END_NATIVE_METHOD_DECL( beginStencilClip )
-	TJS_BEGIN_NATIVE_METHOD_DECL( endStencilClip ) { return TJS_S_OK; }
+	TJS_BEGIN_NATIVE_METHOD_DECL( endStencilClip )
+	{
+		TJS_GET_NATIVE_INSTANCE( _this, tTJSNI_GpuCanvas );
+		_this->EndStencilClip();
+		return TJS_S_OK;
+	}
 	TJS_END_NATIVE_METHOD_DECL( endStencilClip )
 
 	//-- properties

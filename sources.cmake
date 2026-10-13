@@ -268,6 +268,8 @@ common/visual/opengl/GLCompositorIntf.cpp
 common/visual/opengl/GLCompositorIntf.h
 common/visual/opengl/GLTexture.cpp
 common/visual/opengl/GLFrameBufferObject.cpp
+common/visual/opengl/EffectCommand.cpp
+common/visual/opengl/EffectCommand.h
 common/visual/opengl/GLEffect.cpp
 common/visual/opengl/GLEffect.h
 common/visual/opengl/GLClip.cpp
@@ -615,8 +617,14 @@ list(APPEND KRKRZ_SRC_SDL3
 	common/visual/gpu/GpuVertexIntf.cpp
 	common/visual/gpu/GpuShaderProgramIntf.cpp
 	common/visual/gpu/GpuCanvasIntf.cpp
+	common/visual/gpu/GpuCompositorIntf.cpp
+	common/visual/gpu/GpuCompositorIntf.h
 	common/visual/opengl/Matrix32Intf.cpp
 	common/visual/opengl/Matrix44Intf.cpp
+	common/visual/opengl/EffectCommand.cpp
+	common/visual/opengl/EffectCommand.h
+	common/visual/opengl/TextureLayerTreeOwner.cpp
+	common/visual/opengl/TextureLayerTreeOwner.h
 	sdl3/visual/GpuDeviceSDL.cpp
 	sdl3/visual/GpuDeviceSDL.h
 	sdl3/visual/SDLGpuDrawDevice.cpp

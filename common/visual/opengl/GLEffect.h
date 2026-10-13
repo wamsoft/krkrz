@@ -31,29 +31,14 @@
 #include "tjsNative.h"
 #include "OpenGLHeader.h"
 #include "GLFrameBufferObject.h"
+#include "EffectCommand.h"
 
 #include <vector>
 
-// 混合系点処理を1パスに融合できる最大オペレーション数
-#define GLEFFECT_MAX_OPS 32
-// 分離ブラーの最大半径(片側)
-#define GLEFFECT_MAX_BLUR 64
-
-// 混合系点処理オペコード（シェーダ内の分岐と一致させること）
-enum GLEffectOp {
-	GLEOP_NONE       = 0,
-	GLEOP_GRAYSCALE  = 1,
-	GLEOP_COLORIZE   = 2,
-	GLEOP_MODULATE   = 3,
-	GLEOP_NOISE      = 4,
-	GLEOP_WHITENOISE = 5,
-};
-
-// overcolor(指定色塗りつぶし合成) はオペコードに合成モードを載せる。
-//   op = GLEFFECT_OVERCOLOR_BASE + type
-//   type は吉里吉里 tTVPBlendOperationMode(=tTVPLayerType) の値(1..28)。
-//   param は塗り色 (r,g,b,a) を 0..1 で格納(a は color.a * opacity)。
-#define GLEFFECT_OVERCOLOR_BASE 100
+// 定数・オペコードはコマンド解釈 (EffectCommand.h) と共通
+#define GLEFFECT_MAX_OPS TVP_EFFECT_MAX_OPS
+#define GLEFFECT_MAX_BLUR TVP_EFFECT_MAX_BLUR
+#define GLEFFECT_OVERCOLOR_BASE TVP_EFFECT_OVERCOLOR_BASE
 
 // ---------------------------------------------------------------------------
 // 中間FBOプール
@@ -145,7 +130,7 @@ public:
 	void clear();
 	bool empty() const { return mStages.empty(); }
 
-	// コマンド配列(Array of Dictionary)からステージ列を構築。
+	// コマンド配列(Array of Dictionary)からステージ列を構築 (解釈は TVPCompileEffectCommands)。
 	void compile(const tTJSVariant &commandArray);
 
 	// srcTex に全ステージを適用し、結果を保持するプールFBOを返す。

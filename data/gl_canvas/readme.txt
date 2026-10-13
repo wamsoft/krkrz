@@ -9,9 +9,15 @@ OGLDrawDevice に切り替え、Canvas クラスの機能をページ単位で�
   2. カスタムシェーダ        … ShaderProgram でフラグメント加工 (波打ち)。
                                u_time / u_amp を時間で更新
   3. Offscreen (RTT)        … オフスクリーンに描いてから画面へ再描画 (2 パス)
-  4. ポストエフェクト        … beginEffect/endEffect のコマンド
-                               (grayscale / gamma / light / colorize / blur …)
+  4. ポストエフェクト        … beginEffect/endEffect のコマンド (E で切替)
+                               (grayscale / gamma / light / colorize / gaussianBlur /
+                                modulate / lut / overcolor / boxBlur / noise と組み合わせ)
   5. マスククリップ          … beginMaskClip/endMaskClip。円形アルファでくり抜き
+  6. ステンシルクリップ      … beginStencilClip/endStencilClip。マスクの形の中にだけ
+                               何回でも描ける (塗り + 回転するカード)
+  7. エフェクトをレイヤーへ  … GLCompositor で、Layer の API で描いた普通のレイヤーに
+                               ぼかし・色調整をかけて別のレイヤーへ書き戻す
+                               (capture のコールバック内で beginEffect / copyLayer)
 
 ■ 実装メモ
 
@@ -31,11 +37,13 @@ OGLDrawDevice に切り替え、Canvas クラスの機能をページ単位で�
 
   bin/<preset>/<config>/krkrz64.exe  src/core/data/gl_canvas
 
-SDL3 + OpenGL ビルドが必要 (OGLDrawDevice が無い環境では案内を表示)。
+SDL3 + OpenGL ビルド、または Canvas の GPU 版のビルド (GPUDrawDevice) が必要
+(OGLDrawDevice が無い環境では案内を表示)。GPU 版ではページ 2 のカスタムシェーダーに
+事前変換したシェーダーパックが要る (無ければ通常描画になる)。
 
 ■ 操作
 
-  ←→ / 1〜5 : ページ切替
+  ←→ / 1〜7 : ページ切替
   E         : ポストエフェクトのコマンド切替 (ページ 4)
   SPACE     : アニメーション一時停止
   ESC       : 終了

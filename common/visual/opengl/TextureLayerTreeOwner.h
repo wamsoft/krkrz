@@ -12,8 +12,16 @@
 #define TextureLayerTreeOwner_H
 
 #include "LayerTreeOwnerImpl.h"
-#include "TextureUpdateRect.h"
 #include <functional>
+#ifdef TVP_USE_GPU_CANVAS
+// GPU 版 (SDL_GPU) の Texture に描く。転送は合成された矩形ごと
+class tTJSNI_GpuTexture;
+typedef tTJSNI_GpuTexture tTVPLayerTreeOwnerTexture;
+#else
+#include "TextureUpdateRect.h"
+class tTJSNI_Texture;
+typedef tTJSNI_Texture tTVPLayerTreeOwnerTexture;
+#endif
 
 class tTJSNI_TextureLayerTreeOwner : public tTJSNativeInstance, public tTVPLayerTreeOwner
 {
@@ -22,12 +30,13 @@ class tTJSNI_TextureLayerTreeOwner : public tTJSNativeInstance, public tTVPLayer
 	// primaryLayer 描画用テクスチャ
 	tTJSNativeClass *TextureClass;
 	tTJSVariant TextureObject;
-	class tTJSNI_Texture *TextureInstance;
+	tTVPLayerTreeOwnerTexture *TextureInstance;
+#ifndef TVP_USE_GPU_CANVAS
 	TextureUpdateRect mTextureUpdateRect;
+#endif
 
 	void CreateTexture();
 	void DestroyTexture();
-	void UpdateTexture(int x, int y, int w, int h, std::function<void(char *dest, int pitch)> updator);
 
 public:
 	tTJSNI_TextureLayerTreeOwner();

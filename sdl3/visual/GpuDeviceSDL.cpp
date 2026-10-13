@@ -154,6 +154,11 @@ struct Hasher {
 //---------------------------------------------------------------------------
 // リソース
 //---------------------------------------------------------------------------
+// 描画は記録して区間の終わりにまとめて積むので、記録した描画が使うリソースを
+// 先に手放すと積むときに解放済みを触る。手放す前に記録分を積ませる (SDL 側は
+// 積んだコマンドが終わるまで実体の解放を待つ)
+static void FlushBeforeRelease( const void* res );
+
 class SDLTexture : public Texture {
 public:
 	SDL_GPUDevice* Dev;
@@ -163,7 +168,7 @@ public:
 	bool ExpandAlpha;  // A8 を 4ch で持っている (A8 非対応機種)
 	SDLTexture( SDL_GPUDevice* dev, SDL_GPUTexture* tex, const TextureDesc& d, SDL_GPUTextureFormat f, bool swap, bool expand )
 		: Dev( dev ), Tex( tex ), GpuFormat( f ), SwapRB( swap ), ExpandAlpha( expand ) { Desc = d; }
-	~SDLTexture() override { if( Tex ) SDL_ReleaseGPUTexture( Dev, Tex ); }
+	~SDLTexture() override { FlushBeforeRelease( this ); if( Tex ) SDL_ReleaseGPUTexture( Dev, Tex ); }
 	void* NativeHandle() const override { return Tex; }
 };
 
@@ -174,7 +179,7 @@ public:
 	bool Owned;
 	SDLBuffer( SDL_GPUDevice* dev, SDL_GPUBuffer* b, uint32_t size, bool index, bool owned )
 		: Dev( dev ), Buf( b ), Owned( owned ) { BufSize = size; Index = index; }
-	~SDLBuffer() override { if( Owned && Buf ) SDL_ReleaseGPUBuffer( Dev, Buf ); }
+	~SDLBuffer() override { if( Owned && Buf ) { FlushBeforeRelease( this ); SDL_ReleaseGPUBuffer( Dev, Buf ); } }
 	void* NativeHandle() const override { return Buf; }
 };
 
@@ -186,6 +191,7 @@ public:
 	uint64_t Id;
 	SDLProgram( SDL_GPUDevice* dev, uint64_t id, const ShaderReflection& r ) : Dev( dev ), Id( id ) { Refl = r; }
 	~SDLProgram() override {
+		FlushBeforeRelease( this );
 		if( VS ) SDL_ReleaseGPUShader( Dev, VS );
 		if( FS ) SDL_ReleaseGPUShader( Dev, FS );
 	}
@@ -238,6 +244,16 @@ public:
 	SDL_GPUBuffer* TransientIBGpu = nullptr; uint32_t TransientIBGpuSize = 0;
 	SDL_GPUTransferBuffer* TransientTB = nullptr; uint32_t TransientTBSize = 0;
 
+	static SDLDevice* TheDevice;
+
+	//! リソースを手放す前に呼ばれる (FlushBeforeRelease)
+	void FlushForRelease( const void* res )
+	{
+		if( !Draws.empty() || PendingClear || PendingStencilClear ) CloseSegment();
+		if( Target == res ) Target = nullptr;
+		if( DepthStencil == res ) DepthStencil = nullptr;
+	}
+
 	std::unordered_map<uint64_t, SDL_GPUGraphicsPipeline*> Pipelines;
 	std::unordered_map<uint64_t, SDL_GPUSampler*> Samplers;
 	uint64_t NextProgramId = 1;
@@ -253,11 +269,13 @@ public:
 		// 一時バッファのハンドル (中身の SDL_GPUBuffer は区間ごとに差し替える)
 		TransientVBHandle = new SDLBuffer( Dev, nullptr, 0, false, false );
 		TransientIBHandle = new SDLBuffer( Dev, nullptr, 0, true, false );
+		TheDevice = this;
 		TVPLOG_INFO( "GPU device: driver={} spirv={} private={} dxil={} bgra8={} a8={}",
 			SDL_GetGPUDeviceDriver( Dev ), Spirv, Private, Dxil, HasBGRA, HasA8 );
 	}
 	~SDLDevice() override
 	{
+		TheDevice = nullptr;
 		Submit();
 		SDL_WaitForGPUIdle( Dev );
 		for( auto& p : Pipelines ) SDL_ReleaseGPUGraphicsPipeline( Dev, p.second );
@@ -844,6 +862,13 @@ public:
 		return p;
 	}
 };
+
+SDLDevice* SDLDevice::TheDevice = nullptr;
+
+static void FlushBeforeRelease( const void* res )
+{
+	if( SDLDevice::TheDevice ) SDLDevice::TheDevice->FlushForRelease( res );
+}
 
 } // anonymous namespace
 

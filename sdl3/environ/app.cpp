@@ -18,7 +18,7 @@
 #include "app.h"
 
 #include <vector>
-#include <filesystem>        // InitDataPath (旧既定 savedata の検出)
+#include <filesystem>        // InitDataPath (相対パスの -datapath をカレントディレクトリ基準に)
 #ifdef KRKRZ_HAS_ELEMENTS
 #include "ElementsModalRunner.h"   // TVPInputStringElements
 #endif
@@ -1233,9 +1233,19 @@ SDL3Application::_SendAppEvent(tjs_int message, tjs_int64 wparam, tjs_int64 lpar
 	return ok;
 }
 
+extern void DoneAudioSystem();
+extern void DoneStorageSystem();
+
+// System.exit (TVPTerminateSync) は TVPSystemUninit の後ここで std::exit する。
+// SDL_AppQuit を通らないので、 機種側の後始末 (AppQuit) と音声・ストレージの
+// 停止をここで済ませる (SDL_AppQuit と同じ順)。 音声スレッドや機種側の worker が
+// 生きたまま静的オブジェクトの破棄に入ると、 破棄済みの mutex に触れて落ちる。
 void
 SDL3Application::Exit(int code)
 {
+	AppQuit();
+	DoneAudioSystem();
+	DoneStorageSystem();
 	std::exit(code);
 }
 
@@ -1580,15 +1590,16 @@ SDL3Application::InitDataPath()
 		TVPLOG_INFO("datapath (Linux default, orgname={} appname={}): {}", orgname, appname, dp);
 		// 2026-10 の変更: 既定が exe の隣 (savedata) からユーザ領域に変わった。
 		// 旧既定で作られたセーブが exe の隣に残っていれば、 移行を促す
+		const ttstr exedirT = TVPExtractStoragePath(ExePath());
 		std::string exedir;
-		TVPUtf16ToUtf8(exedir, TVPExtractStoragePath(ExePath()).AsStdString());
-		std::error_code ec;
-		bool legacy = std::filesystem::is_directory(std::filesystem::path(exedir + "savedata"), ec);
+		TVPUtf16ToUtf8(exedir, exedirT.AsStdString());
+		bool legacy = TVPCheckExistentLocalFolder(exedirT + TJS_W("savedata"));
 		if (!legacy) {
-			for (const auto &e : std::filesystem::directory_iterator(std::filesystem::path(exedir), ec)) {
-				const std::string name = e.path().filename().string();
-				if (name.size() > 8 && name.compare(0, 8, "savedata") == 0) { legacy = true; break; }
-			}
+			// savedata で始まる名前 (savedata_old など) も旧既定のセーブとみなす
+			TVPGetLocalFolderListAt(exedirT, [&](const tjs_char *name, bool isDir) {
+				const tjs_string n(name);
+				if (n.size() > 8 && n.compare(0, 8, TJS_W("savedata")) == 0) legacy = true;
+			}, true);
 		}
 		if (legacy) {
 			TVPLOG_WARNING("Legacy save data found next to the executable ({}savedata*). "

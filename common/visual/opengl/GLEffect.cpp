@@ -2,69 +2,18 @@
 // 描画後処理（ポストエフェクト）基盤 (GLEffect.h 参照)
 //   gles プラグイン (GLESAdaptor) の GLEffect.cpp からの移植。
 //   ncbind 依存を TJS ネイティブ API に置き換えている以外はロジック同一。
+//   コマンド配列の解釈は GPU 版と共通 (EffectCommand.cpp)。
 // ---------------------------------------------------------------------------
 #include "tjsCommHead.h"
 #include "GLEffect.h"
 #include "GLShaderUtil.h"
 #include "DebugIntf.h"
-#include "tjsArray.h"
 
 #include <string>
 #include <cmath>
 
 typedef unsigned char u8;
 
-// ===========================================================================
-// TJS 辞書/配列アクセスヘルパ (ncbPropAccessor 相当の最小機能)
-// ===========================================================================
-namespace {
-
-bool DictGet(iTJSDispatch2 *obj, const tjs_char *name, tTJSVariant &out)
-{
-	if (!obj) return false;
-	return TJS_SUCCEEDED(obj->PropGet(TJS_MEMBERMUSTEXIST, name, nullptr, &out, obj));
-}
-
-bool DictHas(iTJSDispatch2 *obj, const tjs_char *name)
-{
-	tTJSVariant v;
-	return DictGet(obj, name, v) && v.Type() != tvtVoid;
-}
-
-double DictReal(iTJSDispatch2 *obj, const tjs_char *name, double def)
-{
-	tTJSVariant v;
-	if (DictGet(obj, name, v) && v.Type() != tvtVoid) return (double)v.AsReal();
-	return def;
-}
-
-tjs_int DictInt(iTJSDispatch2 *obj, const tjs_char *name, tjs_int def)
-{
-	tTJSVariant v;
-	if (DictGet(obj, name, v) && v.Type() != tvtVoid) return (tjs_int)v.AsInteger();
-	return def;
-}
-
-ttstr DictStr(iTJSDispatch2 *obj, const tjs_char *name)
-{
-	tTJSVariant v;
-	if (DictGet(obj, name, v) && v.Type() != tvtVoid) return ttstr(v);
-	return ttstr();
-}
-
-// Array インスタンスの Items を得る (Array でなければ nullptr)
-tTJSArrayNI *GetArrayNI(const tTJSVariant &v)
-{
-	if (v.Type() != tvtObject) return nullptr;
-	iTJSDispatch2 *obj = v.AsObjectNoAddRef();
-	if (!obj) return nullptr;
-	tTJSArrayNI *ni = nullptr;
-	if (TJS_FAILED(obj->NativeInstanceSupport(TJS_NIS_GETINSTANCE,
-			TJSGetArrayClassID(), (iTJSNativeInstance **)&ni))) return nullptr;
-	return ni;
-}
-
-} // anonymous
 
 // ===========================================================================
 // GLFboPool
@@ -443,76 +392,6 @@ void GLEffectContext::drawBlur(GLuint srcTex, float dx, float dy, int radius, co
 }
 
 // ===========================================================================
-// CPU 側テーブル生成(kirikiri / LayerExImage の演算を厳密移植)
-// ===========================================================================
-
-// TVPInitGammaAdjustTempData 相当(1チャンネル)
-static void buildGammaTable(u8 out[256], double gamma, int floorv, int ceilv)
-{
-	if (gamma <= 0.0) gamma = 1.0;
-	double amp = (double)(ceilv - floorv);
-	double g = 1.0 / gamma;
-	for (int i = 0; i < 256; i++) {
-		int n;
-		if (i == 0) {
-			n = (int)(0.0 * amp + 0.5 + (double)floorv);
-		} else {
-			double rate = log((double)i / 255.0);
-			n = (int)(exp(rate * g) * amp + 0.5 + (double)floorv);
-		}
-		if (n < 0) n = 0; else if (n > 255) n = 255;
-		out[i] = (u8)n;
-	}
-}
-
-// LayerExImage::light 相当(明度/コントラスト)
-static void buildLightTable(u8 out[256], int brightness, int contrast)
-{
-	float c = (100 + contrast) / 100.0f;
-	int b = brightness + 128;
-	for (int i = 0; i < 256; i++) {
-		int v = (int)((i - 128) * c + b);
-		if (v < 0) v = 0; else if (v > 255) v = 255;
-		out[i] = (u8)v;
-	}
-}
-
-// gen_convolve_matrix の移植(正規化ガウス行列、長さを返す)
-static int genConvolveMatrix(float radius, std::vector<float> &matrix)
-{
-	radius = (float)fabs(0.5 * radius) + 0.25f;
-	float std_dev = radius;
-	radius = std_dev * 2;
-
-	int matrix_length = (int)(2 * ceil(radius - 0.5) + 1);
-	if (matrix_length <= 0) matrix_length = 1;
-	matrix.assign(matrix_length, 0.0f);
-
-	for (int i = matrix_length / 2 + 1; i < matrix_length; i++) {
-		float base_x = i - (float)floor((float)(matrix_length / 2)) - 0.5f;
-		float sum = 0;
-		for (int j = 1; j <= 50; j++) {
-			if (base_x + 0.02 * j <= radius)
-				sum += (float)exp(-(base_x + 0.02 * j) * (base_x + 0.02 * j) / (2 * std_dev * std_dev));
-		}
-		matrix[i] = sum / 50;
-	}
-	for (int i = 0; i <= matrix_length / 2; i++)
-		matrix[i] = matrix[matrix_length - 1 - i];
-
-	float sum = 0;
-	for (int j = 0; j <= 50; j++)
-		sum += (float)exp(-(0.5 + 0.02 * j) * (0.5 + 0.02 * j) / (2 * std_dev * std_dev));
-	matrix[matrix_length / 2] = sum / 51;
-
-	sum = 0;
-	for (int i = 0; i < matrix_length; i++) sum += matrix[i];
-	for (int i = 0; i < matrix_length; i++) matrix[i] /= sum;
-
-	return matrix_length;
-}
-
-// ===========================================================================
 // ステージ実装
 // ===========================================================================
 
@@ -643,140 +522,26 @@ void GLEffectChain::clear()
 void GLEffectChain::compile(const tTJSVariant &commandArray)
 {
 	clear();
-	tTJSArrayNI *arr = GetArrayNI(commandArray);
-	if (!arr) return;
-
-	GLLutStage       *lut = nullptr;   // 連続するLUT系の合成先
-	GLPointwiseStage *pw  = nullptr;   // 連続する混合系の融合先
-
-	for (const tTJSVariant &elm : arr->Items) {
-		if (elm.Type() != tvtObject) continue;
-		iTJSDispatch2 *cmd = elm.AsObjectNoAddRef();
-		if (!cmd) continue;
-		ttstr name = DictStr(cmd, TJS_W("cmd"));
-
-		// ---- LUT系 ----
-		if (name == TJS_W("gamma") || name == TJS_W("adjustGamma")) {
-			pw = nullptr;
-			if (!lut) { lut = new GLLutStage(); mStages.push_back(lut); }
-			u8 tr[256], tg[256], tb[256];
-			if (DictHas(cmd, TJS_W("value"))) {
-				double v = DictReal(cmd, TJS_W("value"), 1.0);
-				buildGammaTable(tr, v, 0, 255);
-				buildGammaTable(tg, v, 0, 255);
-				buildGammaTable(tb, v, 0, 255);
-			} else {
-				buildGammaTable(tr, DictReal(cmd, TJS_W("rgamma"), 1.0),
-				                DictInt(cmd, TJS_W("rfloor"), 0), DictInt(cmd, TJS_W("rceil"), 255));
-				buildGammaTable(tg, DictReal(cmd, TJS_W("ggamma"), 1.0),
-				                DictInt(cmd, TJS_W("gfloor"), 0), DictInt(cmd, TJS_W("gceil"), 255));
-				buildGammaTable(tb, DictReal(cmd, TJS_W("bgamma"), 1.0),
-				                DictInt(cmd, TJS_W("bfloor"), 0), DictInt(cmd, TJS_W("bceil"), 255));
-			}
-			lut->compose(tr, tg, tb);
-
-		} else if (name == TJS_W("light")) {
-			pw = nullptr;
-			if (!lut) { lut = new GLLutStage(); mStages.push_back(lut); }
-			u8 t[256];
-			buildLightTable(t, DictInt(cmd, TJS_W("brightness"), 0), DictInt(cmd, TJS_W("contrast"), 0));
-			lut->composeAll(t);
-
-		} else if (name == TJS_W("lut")) {
-			pw = nullptr;
-			if (!lut) { lut = new GLLutStage(); mStages.push_back(lut); }
-			u8 t[256];
-			tTJSVariant tableVar;
-			DictGet(cmd, TJS_W("table"), tableVar);
-			tTJSArrayNI *tbl = GetArrayNI(tableVar);
-			if (tbl) {
-				int n = (int)tbl->Items.size();
-				for (int k = 0; k < 256; k++) {
-					int v = (k < n) ? (int)tbl->Items[k].AsInteger() : k;
-					if (v < 0) v = 0; else if (v > 255) v = 255;
-					t[k] = (u8)v;
-				}
-				lut->composeAll(t);
-			}
-
-		// ---- 混合系 ----
-		} else if (name == TJS_W("grayscale")) {
-			lut = nullptr;
-			if (!pw || pw->full()) { pw = new GLPointwiseStage(); mStages.push_back(pw); }
-			pw->add(GLEOP_GRAYSCALE, 0, 0, 0, 0);
-
-		} else if (name == TJS_W("colorize")) {
-			lut = nullptr;
-			if (!pw || pw->full()) { pw = new GLPointwiseStage(); mStages.push_back(pw); }
-			float hue = (float)DictInt(cmd, TJS_W("hue"), 0) / 255.0f;
-			float sat = (float)DictInt(cmd, TJS_W("sat"), DictInt(cmd, TJS_W("saturation"), 0)) / 255.0f;
-			float blend = (float)DictReal(cmd, TJS_W("blend"), 1.0);
-			if (blend < 0.0f) blend = 0.0f;
-			if (blend > 1.0f) blend = 1.0f;
-			pw->add(GLEOP_COLORIZE, hue, sat, blend, 0);
-
-		} else if (name == TJS_W("modulate")) {
-			lut = nullptr;
-			if (!pw || pw->full()) { pw = new GLPointwiseStage(); mStages.push_back(pw); }
-			float h = (float)(DictInt(cmd, TJS_W("hue"), 0) / 360.0);
-			float s = (float)(DictInt(cmd, TJS_W("sat"), DictInt(cmd, TJS_W("saturation"), 0)) / 100.0);
-			float l = (float)(DictInt(cmd, TJS_W("lum"), DictInt(cmd, TJS_W("luminance"), 0)) / 100.0);
-			pw->add(GLEOP_MODULATE, h, s, l, 0);
-
-		} else if (name == TJS_W("noise")) {
-			lut = nullptr;
-			if (!pw || pw->full()) { pw = new GLPointwiseStage(); mStages.push_back(pw); }
-			pw->add(GLEOP_NOISE, (float)DictInt(cmd, TJS_W("level"), 0), 0, 0, 0);
-
-		} else if (name == TJS_W("generateWhiteNoise") || name == TJS_W("whiteNoise")) {
-			lut = nullptr;
-			if (!pw || pw->full()) { pw = new GLPointwiseStage(); mStages.push_back(pw); }
-			pw->add(GLEOP_WHITENOISE, 0, 0, 0, 0);
-
-		} else if (name == TJS_W("overcolor")) {
-			// 指定色での全体塗りつぶし合成(吉里吉里 fillOperateRect 準拠)
-			lut = nullptr;
-			if (!pw || pw->full()) { pw = new GLPointwiseStage(); mStages.push_back(pw); }
-			tjs_uint32 col = (tjs_uint32)DictInt(cmd, TJS_W("color"), 0);
-			float a = (float)((col >> 24) & 0xff) / 255.0f;
-			float r = (float)((col >> 16) & 0xff) / 255.0f;
-			float g = (float)((col >>  8) & 0xff) / 255.0f;
-			float b = (float)((col      ) & 0xff) / 255.0f;
-			int opacity = DictInt(cmd, TJS_W("opacity"), 255);
-			a *= (float)opacity / 255.0f;
-			int type = DictInt(cmd, TJS_W("type"), 2);  // 既定 omAlpha(2)
-			pw->add(GLEFFECT_OVERCOLOR_BASE + type, r, g, b, a);
-
-		// ---- 近傍系 ----
-		} else if (name == TJS_W("boxBlur")) {
-			lut = nullptr; pw = nullptr;
-			int radius = DictInt(cmd, TJS_W("area"), DictInt(cmd, TJS_W("radius"), 1));
-			int iter   = DictInt(cmd, TJS_W("iter"), 1);
-			if (radius < 0) radius = 0;
-			if (radius > GLEFFECT_MAX_BLUR) radius = GLEFFECT_MAX_BLUR;
-			std::vector<float> weights(2 * radius + 1, 1.0f / (float)(2 * radius + 1));
-			mStages.push_back(new GLWeightedBlurStage(radius, iter, weights));
-
-		} else if (name == TJS_W("gaussianBlur")) {
-			lut = nullptr; pw = nullptr;
-			float r = (float)DictReal(cmd, TJS_W("radius"), 1.0);
-			std::vector<float> matrix;
-			int mlen = genConvolveMatrix(r, matrix);
-			int radius = mlen / 2;
-			if (radius > GLEFFECT_MAX_BLUR) {
-				// 行列が大きすぎる場合は中心を切り出してクランプ(裾を捨てる)
-				TVPAddLog(TJS_W("GLEffect: gaussianBlur radius clamped"));
-				int start = radius - GLEFFECT_MAX_BLUR;
-				std::vector<float> trimmed(matrix.begin() + start, matrix.begin() + start + (2 * GLEFFECT_MAX_BLUR + 1));
-				float s = 0; for (size_t k = 0; k < trimmed.size(); k++) s += trimmed[k];
-				for (size_t k = 0; k < trimmed.size(); k++) trimmed[k] /= s;
-				matrix.swap(trimmed);
-				radius = GLEFFECT_MAX_BLUR;
-			}
-			mStages.push_back(new GLWeightedBlurStage(radius, 1, matrix));
-
-		} else {
-			TVPAddLog(TJS_W("GLEffect: unknown command: ") + name);
+	std::vector<tTVPEffectStage> stages;
+	TVPCompileEffectCommands(commandArray, stages);
+	for (const tTVPEffectStage &st : stages) {
+		switch (st.kind) {
+		case tTVPEffectStage::Lut: {
+			GLLutStage *lut = new GLLutStage();
+			lut->compose(st.lut[0], st.lut[1], st.lut[2]);
+			mStages.push_back(lut);
+			break;
+		}
+		case tTVPEffectStage::Pointwise: {
+			GLPointwiseStage *pw = new GLPointwiseStage();
+			for (size_t i = 0; i < st.ops.size(); i++)
+				pw->add(st.ops[i], st.params[i * 4 + 0], st.params[i * 4 + 1], st.params[i * 4 + 2], st.params[i * 4 + 3]);
+			mStages.push_back(pw);
+			break;
+		}
+		case tTVPEffectStage::Blur:
+			mStages.push_back(new GLWeightedBlurStage(st.radius, st.iterations, st.weights));
+			break;
 		}
 	}
 }

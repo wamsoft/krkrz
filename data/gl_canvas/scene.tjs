@@ -140,6 +140,33 @@ class GLCanvasDevice extends global.Window.OGLDrawDevice
             var my = (canvas.height - mask.height) / 2 + Math.cos(t * 1.3) * 90;
             canvas.endMaskClip(mask, mx \ 1, my \ 1);
             break;
+        case "stencil":
+            // マスクの α が 128 以上のところにだけ、以降の描画 (何回描いてもよい) を通す
+            var sx = (canvas.width - mask.width) / 2 + Math.sin(t * 0.8) * 260;
+            var sy = (canvas.height - mask.height) / 2 + 40;
+            canvas.matrix.reset();
+            canvas.beginStencilClip(mask, sx \ 1, sy \ 1, 128);
+                canvas.fill(canvas.width, canvas.height, [ 0xff203860, 0xff602038, 0xff203860, 0xff602038 ]);
+                for (var i = 0; i < 3; i++) {
+                    canvas.save();
+                    canvas.matrix.reset();
+                    canvas.matrix.translate(sx + 128 + Math.cos(t * 2 + i * 2.1) * 90, sy + 128 + Math.sin(t * 2 + i * 2.1) * 90);
+                    canvas.matrix.rotate(t * 90 + i * 40);
+                    canvas.matrix.scale(0.6, 0.6);
+                    canvas.matrix.translate(-card.width / 2, -card.height / 2);
+                    canvas.drawTexture(card);
+                    canvas.restore();
+                }
+            canvas.endStencilClip();
+            // ステンシルの外には普通に描ける
+            canvas.matrix.reset();
+            canvas.matrix.translate(canvas.width - card.width * 0.5 - 40, canvas.height - card.height * 0.5 - 70);
+            canvas.matrix.scale(0.5, 0.5);
+            canvas.drawTexture(card);
+            break;
+        case "layer":
+            // 加工はレイヤー側 (owner.updateLayerEffect)。ここでは背景だけ
+            break;
         }
 
         // HUD (レイヤツリー = this.texture) を GL の上に合成
@@ -168,15 +195,24 @@ class GLCanvasScene extends DemoScene
             %[ id:"shader", title:"2. カスタムシェーダ (ShaderProgram)", desc:"フラグメントシェーダで波打ち。u_time/u_amp を時間更新" ],
             %[ id:"rtt",    title:"3. Offscreen (RTT)", desc:"オフスクリーンに描いてから画面へ (2 パス)" ],
             %[ id:"effect", title:"4. ポストエフェクト", desc:"beginEffect/endEffect のコマンド (E で切替)" ],
-            %[ id:"mask",   title:"5. マスククリップ", desc:"beginMaskClip/endMaskClip。円形アルファでくり抜き" ]
+            %[ id:"mask",   title:"5. マスククリップ", desc:"beginMaskClip/endMaskClip。円形アルファでくり抜き" ],
+            %[ id:"stencil", title:"6. ステンシルクリップ", desc:"beginStencilClip/endStencilClip。マスクの形の中にだけ描く" ],
+            %[ id:"layer",  title:"7. エフェクトをレイヤーへ (GLCompositor)", desc:"左のレイヤーをぼかし・色調整して右のレイヤーへ書き戻す" ]
         ];
+        var negative = [];
+        for (var i = 0; i < 256; i++) negative[i] = 255 - i;
         effects = [
             %[ name:"grayscale",      cmds:[ %[ cmd:"grayscale" ] ] ],
             %[ name:"gamma 1.8",      cmds:[ %[ cmd:"gamma", value:1.8 ] ] ],
             %[ name:"light",          cmds:[ %[ cmd:"light", brightness:40, contrast:40 ] ] ],
             %[ name:"colorize",       cmds:[ %[ cmd:"colorize", hue:150, sat:200, blend:0.7 ] ] ],
             %[ name:"gaussianBlur 6", cmds:[ %[ cmd:"gaussianBlur", radius:6 ] ] ],
-            %[ name:"gray + gamma",   cmds:[ %[ cmd:"grayscale" ], %[ cmd:"gamma", value:1.5 ] ] ]
+            %[ name:"gray + gamma",   cmds:[ %[ cmd:"grayscale" ], %[ cmd:"gamma", value:1.5 ] ] ],
+            %[ name:"modulate (色相 +120)", cmds:[ %[ cmd:"modulate", hue:120, sat:20, lum:0 ] ] ],
+            %[ name:"lut (ネガ反転)", cmds:[ %[ cmd:"lut", table:negative ] ] ],
+            %[ name:"セピア (grayscale + overcolor)", cmds:[ %[ cmd:"grayscale" ], %[ cmd:"overcolor", color:0xffb08050, opacity:255, type:16 ] ] ],
+            %[ name:"boxBlur ×2", cmds:[ %[ cmd:"boxBlur", area:4, iter:2 ] ] ],
+            %[ name:"noise",          cmds:[ %[ cmd:"noise", level:80 ] ] ]
         ];
 
         // 資材の検索パス (単体起動 = image/、束ね起動 = デモフォルダ配下)
@@ -195,7 +231,7 @@ class GLCanvasScene extends DemoScene
         dev = new GLCanvasDevice(this);
         enableGL(dev);          // drawDevice 差替 + ツリー透過
         drawHud();
-        setInfo("←→ / 1〜5: ページ   E: エフェクト切替   SPACE: 一時停止");
+        setInfo("←→ / 1〜7: ページ   E: エフェクト切替   SPACE: 一時停止");
     }
 
     // GL モードの stage (ltAlpha) に HUD を描く。透明部は GL が透けて見える。
@@ -216,7 +252,61 @@ class GLCanvasScene extends DemoScene
         s.update();
     }
 
-    function setPage(i) { page = (i + pages.count) % pages.count; drawHud(); }
+    function setPage(i)
+    {
+        page = (i + pages.count) % pages.count;
+        showLayerPage(pages[page].id == "layer");
+        drawHud();
+    }
+
+    // ---- 7. エフェクトをレイヤーへ ----
+    var photoSrc, photoOut, compositor;
+
+    // 加工元のレイヤーを作る (Layer の API で描いた普通のレイヤー)
+    function buildPhoto()
+    {
+        photoSrc = new Layer(window, stage);
+        photoSrc.setImageSize(520, 360);
+        photoSrc.setSizeToImageSize();
+        photoSrc.setPos(80, 180);
+        for (var y = 0; y < 360; y += 24)
+            photoSrc.fillRect(0, y, 520, 24, (y \ 24) % 2 ? 0xff2a3c5c : 0xff34507a);
+        var tmp = new Layer(window, stage);
+        tmp.loadImages("testcard.png");
+        photoSrc.operateRect(30, 40, tmp, 0, 0, tmp.imageWidth, tmp.imageHeight);
+        photoSrc.operateStretch(300, 120, 180, 180, tmp, 0, 0, tmp.imageWidth, tmp.imageHeight);
+        invalidate tmp;
+        photoSrc.font.height = 36;
+        photoSrc.drawText(30, 300, "Layer にエフェクト", 0xffffff, 255, true, 0, 0x000000, 0, 2, 2);
+        photoOut = new Layer(window, stage);
+        photoOut.setImageSize(520, 360);
+        photoOut.setSizeToImageSize();
+        photoOut.setPos(680, 180);
+    }
+
+    function showLayerPage(on)
+    {
+        if (on && photoSrc === void) {
+            buildPhoto();
+            compositor = new GLCompositor(window);
+        }
+        if (photoSrc !== void) { photoSrc.visible = on; photoOut.visible = on; }
+    }
+
+    // photoSrc を GPU で加工して photoOut へ書き戻す (onDraw の外で呼ぶ)
+    function updateLayerEffect()
+    {
+        var blur = 2 + (Math.sin(animTime * 1.5) + 1) * 4;
+        compositor.capture(photoOut, function(w, h, p) {
+            canvas.beginEffect();
+                copyLayer(p.src, 0, 0);
+            canvas.endEffect([
+                %[ cmd:"gaussianBlur", radius:p.blur ],
+                %[ cmd:"modulate", hue:0, sat:-40, lum:10 ],
+                %[ cmd:"overcolor", color:0xff80a0ff, opacity:60, type:2 ]
+            ]);
+        }, %[ src:photoSrc, blur:blur ], 0x00000000);
+    }
 
     function onDemoFrame(tick)
     {
@@ -224,6 +314,12 @@ class GLCanvasScene extends DemoScene
         var dt = (now - lastTick) / 1000.0;
         lastTick = now;
         if (!paused) animTime += dt;
+        if (compositor !== void && pages[page].id == "layer") updateLayerEffect();
+    }
+
+    function onExit()
+    {
+        if (compositor !== void) { invalidate compositor; compositor = void; }
     }
 
     function onKeyDown(key, shift)
@@ -233,7 +329,7 @@ class GLCanvasScene extends DemoScene
         case VK_RIGHT: setPage(page + 1); break;
         case VK_SPACE: paused = !paused; drawHud(); break;
         case VK_E:     effectIndex = (effectIndex + 1) % effects.count; drawHud(); break;
-        case VK_1: case VK_2: case VK_3: case VK_4: case VK_5:
+        case VK_1: case VK_2: case VK_3: case VK_4: case VK_5: case VK_6: case VK_7:
             setPage(key - VK_1); break;
         }
     }

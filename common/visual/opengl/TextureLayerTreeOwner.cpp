@@ -16,8 +16,17 @@
 #include "TextureLayerTreeOwner.h"
 #include "MsgIntf.h"
 #include "RectItf.h"
+#ifdef TVP_USE_GPU_CANVAS
+#include "GpuCanvasIntf.h"
+#define TVPCreateNativeClass_OwnerTexture TVPCreateNativeClass_GpuTexture
+typedef tTJSNC_GpuTexture tTVPLayerTreeOwnerTextureClass;
+#else
 #include "TextureIntf.h"
+#define TVPCreateNativeClass_OwnerTexture TVPCreateNativeClass_Texture
+typedef tTJSNC_Texture tTVPLayerTreeOwnerTextureClass;
+#endif
 #include "LayerManager.h"
+#include <vector>
 
 #include <assert.h>
 
@@ -25,7 +34,7 @@ tTJSNI_TextureLayerTreeOwner::tTJSNI_TextureLayerTreeOwner()
 : Owner(nullptr), TextureInstance(nullptr)
 {
 	// TextureClass
-	TextureClass = TVPCreateNativeClass_Texture();
+	TextureClass = TVPCreateNativeClass_OwnerTexture();
 }
 //----------------------------------------------------------------------
 tTJSNI_TextureLayerTreeOwner::~tTJSNI_TextureLayerTreeOwner() {
@@ -71,7 +80,7 @@ void tTJSNI_TextureLayerTreeOwner::CreateTexture() {
 			if (TextureObject.Type() == tvtObject) {
 				tTJSVariantClosure clo = TextureObject.AsObjectClosureNoAddRef();
 				if( clo.Object ) {
-					if(TJS_FAILED(clo.Object->NativeInstanceSupport(TJS_NIS_GETINSTANCE, tTJSNC_Texture::ClassID, (iTJSNativeInstance**)&TextureInstance)))
+					if(TJS_FAILED(clo.Object->NativeInstanceSupport(TJS_NIS_GETINSTANCE, tTVPLayerTreeOwnerTextureClass::ClassID, (iTJSNativeInstance**)&TextureInstance)))
 					{
 						TextureInstance = nullptr;
 						TVPThrowExceptionMessage(TVPCannotRetriveInstance, TJS_W("texture"));
@@ -79,7 +88,9 @@ void tTJSNI_TextureLayerTreeOwner::CreateTexture() {
 				}
 			}
 
+#ifndef TVP_USE_GPU_CANVAS
 			mTextureUpdateRect.Resize(w, h);
+#endif
 
 			// 再送要求
 			iTVPLayerManager * manager = GetLayerManagerAt(PrimaryLayerManagerIndex);
@@ -89,15 +100,6 @@ void tTJSNI_TextureLayerTreeOwner::CreateTexture() {
 		}
 	}
 }
-
-void 
-tTJSNI_TextureLayerTreeOwner::UpdateTexture(int x, int y, int w, int h, std::function<void(char *dest, int pitch)> updator)
-{
-	if (TextureInstance) {
-		TextureInstance->UpdateTexture(x, y, w, h, updator);
-	}
-}
-
 
 tjs_int tTJSNI_TextureLayerTreeOwner::GetWidth() const
 {
@@ -133,7 +135,9 @@ tTJSVariant & tTJSNI_TextureLayerTreeOwner::GetTextureObject() {
 //----------------------------------------------------------------------
 // tTVPLayerTreeOwner
 void TJS_INTF_METHOD tTJSNI_TextureLayerTreeOwner::StartBitmapCompletion(iTVPLayerManager * manager) {
+#ifndef TVP_USE_GPU_CANVAS
 	mTextureUpdateRect.Clear();
+#endif
 }
 //----------------------------------------------------------------------
 void TJS_INTF_METHOD tTJSNI_TextureLayerTreeOwner::NotifyBitmapCompleted(class iTVPLayerManager * manager,
@@ -183,14 +187,24 @@ void TJS_INTF_METHOD tTJSNI_TextureLayerTreeOwner::NotifyBitmapCompleted(class i
 			src_pitch = -_pitch;
 		}
 
+#ifdef TVP_USE_GPU_CANVAS
+		// 矩形ごとに上から詰めて転送する
+		std::vector<tjs_uint32> buf( (size_t)src_w * src_h );
+		for( int row = 0; row < src_h; row++ )
+			memcpy( &buf[(size_t)src_w * row], src_p + src_pitch * ( src_y + row ) + src_x * 4, (size_t)src_w * 4 );
+		TextureInstance->UpdateDirect( x, y, src_w, src_h, buf.data(), src_w * 4 );
+#else
 		mTextureUpdateRect.Update(TextureInstance, x, y, src_w, src_h, src_p, src_pitch, src_x, src_y);
+#endif
 	}
 }
 //----------------------------------------------------------------------
 void TJS_INTF_METHOD tTJSNI_TextureLayerTreeOwner::EndBitmapCompletion(iTVPLayerManager * manager) {
+#ifndef TVP_USE_GPU_CANVAS
 	if (TextureInstance) {
 		mTextureUpdateRect.RenderToTexture(TextureInstance);
 	}
+#endif
 }
 //----------------------------------------------------------------------
 void tTJSNI_TextureLayerTreeOwner::OnSetMouseCursor( tjs_int cursor ) {

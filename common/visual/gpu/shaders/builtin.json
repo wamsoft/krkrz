@@ -3,6 +3,11 @@
     { "name": "default",              "vs": "default.vert", "fs": "default.frag" },
     { "name": "fill",                 "vs": "fill.vert",    "fs": "fill.frag" },
     { "name": "transition_crossfade", "vs": "default.vert", "fs": "transition_crossfade.frag" },
-    { "name": "transition_universal", "vs": "default.vert", "fs": "transition_universal.frag" }
+    { "name": "transition_universal", "vs": "default.vert", "fs": "transition_universal.frag" },
+    { "name": "clip_stencil",         "vs": "default.vert", "fs": "clip_stencil.frag" },
+    { "name": "clip_mask",            "vs": "default.vert", "fs": "clip_mask.frag" },
+    { "name": "effect_pointwise",     "vs": "default.vert", "fs": "effect_pointwise.frag" },
+    { "name": "effect_lut",           "vs": "default.vert", "fs": "effect_lut.frag" },
+    { "name": "effect_blur",          "vs": "default.vert", "fs": "effect_blur.frag" }
   ]
 }

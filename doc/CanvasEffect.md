@@ -5,8 +5,14 @@ gles プラグイン (`GLESAdaptor`) で拡張されていたポストエフェ�
 プラグインと互換で、プラグイン前提で書かれた加工処理を本体の Canvas 描画
 (OGLDrawDevice) 単体で再現できる。
 
-実装: `common/visual/opengl/GLEffect.{h,cpp}` (エフェクトチェーン) /
-`GLClip.{h,cpp}` (マスク・ステンシル) / `CanvasIntf.cpp` (Canvas 統合)。
+実装: `common/visual/opengl/EffectCommand.{h,cpp}` (コマンド配列の解釈。GPU 版と共通) /
+`GLEffect.{h,cpp}` (エフェクトチェーン) / `GLClip.{h,cpp}` (マスク・ステンシル) /
+`CanvasIntf.cpp` (Canvas 統合)。
+
+SDL_GPU 版 (GPUDrawDevice、[CanvasGPU.md](CanvasGPU.md)) も同じ API・同じ結果で動く
+(`common/visual/gpu/GpuCanvasIntf.cpp`、シェーダーは `gpu/shaders/clip_*.frag` / `effect_*.frag`)。
+GPU 版のステンシルは描画先ごとに付くので、ステンシルクリップは書いたときの描画先
+(画面 / Offscreen / 捕捉先) に描くときだけ効く。
 
 ## ポストエフェクト
 

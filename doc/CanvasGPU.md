@@ -183,18 +183,28 @@ SDLDrawDevice (SDL_Renderer) と GPU デバイスを共有する (SDL 3.4.0 以�
 5. 後回し: ステンシル・マスククリップ、beginEffect/endEffect、GLCompositor、TextureLayerTreeOwner、動画テクスチャ
 6. GLES バックエンドへの移し替え (既存 GL 実装の置き換え)
 
-## 実装状況 (2026-10-11)
+### 記録した描画とリソースの寿命
+
+SDL_GPU のバックエンドは描画を記録しておき、描画先が変わるときや送信のときにまとめて積む。
+記録した描画が使うテクスチャ・バッファ・シェーダーを先に手放すと積むときに解放済みを触るので、
+これらを手放す前に記録分を積む (`GpuDeviceSDL.cpp` の `FlushBeforeRelease`。SDL 側は積んだ
+コマンドが終わるまで実体の解放を待つ)。スクリプトが描画の途中で Texture を invalidate しても安全。
+
+Canvas の描画区間は入れ子にできる (onDraw の中で GLCompositor.capture など)。内側の Canvas が
+描画を終えると、外側の Canvas の描画先を付け直す。
+
+## 実装状況 (2026-10-13)
 
 | 段階 | 状況 |
 |---|---|
 | 1. シェーダー変換 (`common/visual/gpu/gpushaderc.py`) | 済。SPIR-V / 機種専用形式 (PRIVATE) / DXIL (D3D12) のパックを作れる |
 | 2. 抽象層 + SDL_GPU バックエンド | 済 (`GpuDevice.h` / `sdl3/visual/GpuDeviceSDL.cpp`) |
-| 3. Canvas コア | 済: draw / clear / fill / drawTexture (1〜3 枚) / drawTransition / drawTextureAtlas / draw9Patch / drawMesh / capture / save・restore / blendMode / clipRect / matrix。未: beginEffect・マスク・ステンシルクリップ・drawText (呼ぶとログを出して素通し) |
+| 3. Canvas コア | 済: draw / clear / fill / drawTexture (1〜3 枚) / drawTransition / drawTextureAtlas / draw9Patch / drawMesh / capture / save・restore / blendMode / clipRect / matrix。未: drawText (呼ぶとログを出して素通し) |
 | 4. 描画デバイス | 済: `Window.GPUDrawDevice` (`sdl3/visual/SDLGpuDrawDevice.cpp`、SDLDrawDevice の派生)。GL 版の無いビルドでは `Window.OGLDrawDevice` としても登録 |
-| 5. 後回しにしたもの | 未: ステンシル・マスククリップ、beginEffect/endEffect、GLCompositor、TextureLayerTreeOwner、動画テクスチャ |
+| 5. 後回しにしたもの | 済: マスク・ステンシルクリップ (2026-10-13。shaders/clip_*.frag、ステンシルは描画先ごとの D32F_S8、捕捉先は描画先と同じ大きさの中間テクスチャを使い回す)、beginEffect/endEffect (2026-10-13。shaders/effect_*.frag、コマンド配列の解釈は GL 版と共通の EffectCommand.cpp)、TextureLayerTreeOwner (2026-10-13。GL 版と同じファイルで、テクスチャを GPU 版にして合成された矩形ごとに転送)、GLCompositor (2026-10-13。`gpu/GpuCompositorIntf.cpp`、TJS のクラス名は同じ。makeCurrent は何もせず GLGetProcAddress は 0)。動画テクスチャ (GL 版の GLVideoPresenter) は不要: GPUDrawDevice は SDLDrawDevice の SDL presenter (`sdlVideoPresenterHost`) をそのまま使い、SDL_Renderer (同じ GPU デバイス) が YUV のまま GPU で変換して Canvas の上に出す。2026-10-13 に再確認 (webm / mpg、全面・矩形・vomMixer・Canvas の上) |
 | 6. GLES バックエンドへの移し替え | 未 |
-| Windows での確認 | data/gl_canvas の drawTexture・カスタムシェーダー・Offscreen を目視確認 (Vulkan) |
-| PS5 | 実機で確認済み: 回転描画 (drawTexture + Matrix32)・カスタムシェーダー・GPU パーティクル (点スプライト)。全画面表示と点スプライトの修正を含む |
+| Windows での確認 | data/gl_canvas の drawTexture・カスタムシェーダー・Offscreen を目視確認 (Vulkan)。クリップは GL 版と同じスクリプト (マスク / mask 無し+矩形クリップ / ステンシル / ステンシル+矩形クリップ / Offscreen 上のステンシル / 入れ子 / begin の閉じ忘れ) の画面を画素比較し、Vulkan・D3D12 ともマスク境界の数画素以外一致。エフェクトも全コマンド (gamma / light / lut / grayscale / colorize / modulate / overcolor / boxBlur / gaussianBlur、連結・矩形クリップ・入れ子) で差 3 以内 (modulate の色相境界の数十画素のみ大きい。noise は乱数なので対象外) (2026-10-13) |
+| PS5 | 実機で確認済み: 回転描画 (drawTexture + Matrix32)・カスタムシェーダー・GPU パーティクル (点スプライト)。全画面表示と点スプライトの修正を含む。2026-10-13 に足した組み込みシェーダー (clip_stencil / clip_mask / effect_pointwise / effect_lut / effect_blur) は機種専用形式のパックの作り直しが要る (機種側のビルドで自動再生成)。2026-10-13 に実機確認: クリップ・エフェクト・TextureLayerTreeOwner・GLCompositor (onDraw 内 / タイマーからの capture) の全 22 テストが完走し、GL 版の基準画像と一致 (差は縮小による輪郭と既定フォントの違いのみ。uniform 配列も問題なし) |
 | Xbox (D3D12, GDK) | 実機 (Xbox Series devkit) で確認済み: GPU パーティクル (点スプライトを四角形のインスタンス描画で代用)・カスタムシェーダー。組み込み・スクリプトのシェーダーとも GXDK の dxc で事前コンパイルして実行時の再コンパイル無し。Xbox One 版は Series の互換動作で確認 |
 | Windows (D3D12) | `-gpudriver=direct3d12` で DXIL を使う。2026-10-11 に確認: drawTexture + Matrix32・Offscreen が Vulkan と同じ絵、カスタムシェーダー・GPU パーティクル (点スプライトの四角形化) も動作 (スクリプトのシェーダーは `-gpushadercollect` で集めて `--target dxil` でパックにし exe の隣に置く。汎用 dxc の DXIL)。SDL_Renderer 側の線描画・Elements も表示 |
 | Switch (Vulkan) | コンソール側のビルドで OpenGL の代わりに Vulkan を選んだとき組み込む。実機確認はまだ |
@@ -260,8 +270,8 @@ SDL ビルドの GPU 描画を SDL_GPU に寄せたもの (KRKRZ_CANVAS_GPU の�
 «GPU モード» と呼ぶ。まず本体の内蔵機能を GPU モードで一通り動かし、**コンソール機 (PS5) まで含めて**
 動作を確立させる。
 
-- Canvas の後回し分: ステンシル・マスククリップ、beginEffect/endEffect、drawText
-- GL 版にあって GPU 版に無いもの: GLCompositor、TextureLayerTreeOwner、動画テクスチャ (GLVideoPresenter 相当)
+- Canvas の後回し分: ~~ステンシル・マスククリップ~~ (済)、~~beginEffect/endEffect~~ (済)、drawText
+- GL 版にあって GPU 版に無いもの: ~~GLCompositor~~ (済)、~~TextureLayerTreeOwner~~ (済)、~~動画テクスチャ (GLVideoPresenter 相当)~~ (SDL presenter の経路で足りる)
 - GPU の renderer 上で、レイヤー合成・動画・Elements のオーバーレイがこれまでどおり出ること
 - 機種: Windows (Vulkan) → PS5 → Switch (Vulkan)。Linux / Steam Deck (Vulkan) も同じ SPIR-V で動く見込み。
   macOS (Metal) は SPIR-V を受け付けないので、MSL への変換を gpushaderc.py に足すかどうかを決める

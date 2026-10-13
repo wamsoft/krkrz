@@ -208,8 +208,16 @@ bool tTJSNI_GpuShaderProgram::SetUniformFloats( const char* name, const float* v
 					if( u.offset + stride * c + r * 4 + 4 <= blk.size() )
 						memcpy( blk.data() + u.offset + stride * c + r * 4, &v[c * rows + r], 4 );
 		} else {
-			const tjs_uint n = std::min( count, UniformComponentCount( u.type ) );
-			if( u.offset + n * 4 <= blk.size() ) memcpy( blk.data() + u.offset, v, n * 4 );
+			// 配列は要素を詰めて渡す (書き込み先は arrayStride ごと)
+			const tjs_uint comps = UniformComponentCount( u.type );
+			const tjs_uint elems = u.arrayCount ? u.arrayCount : 1;
+			const tjs_uint stride = u.arrayStride ? u.arrayStride : comps * 4;
+			for( tjs_uint e = 0; e < elems && e * comps < count; e++ ) {
+				const tjs_uint n = std::min( comps, count - e * comps );
+				const size_t off = u.offset + (size_t)e * stride;
+				if( off + n * 4 > blk.size() ) break;
+				memcpy( blk.data() + off, v + e * comps, n * 4 );
+			}
 		}
 		found = true;
 	}

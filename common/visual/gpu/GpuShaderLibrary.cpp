@@ -120,6 +120,11 @@ const char* ShaderLibrary::BuiltinSource( const char* program, ShaderStage stage
 		{ "fill",                 TVPGpuBuiltinVS_fill,                 TVPGpuBuiltinFS_fill },
 		{ "transition_crossfade", TVPGpuBuiltinVS_transition_crossfade, TVPGpuBuiltinFS_transition_crossfade },
 		{ "transition_universal", TVPGpuBuiltinVS_transition_universal, TVPGpuBuiltinFS_transition_universal },
+		{ "clip_stencil",         TVPGpuBuiltinVS_clip_stencil,         TVPGpuBuiltinFS_clip_stencil },
+		{ "clip_mask",            TVPGpuBuiltinVS_clip_mask,            TVPGpuBuiltinFS_clip_mask },
+		{ "effect_pointwise",     TVPGpuBuiltinVS_effect_pointwise,     TVPGpuBuiltinFS_effect_pointwise },
+		{ "effect_lut",           TVPGpuBuiltinVS_effect_lut,           TVPGpuBuiltinFS_effect_lut },
+		{ "effect_blur",          TVPGpuBuiltinVS_effect_blur,          TVPGpuBuiltinFS_effect_blur },
 	};
 	for( auto& e : table ) {
 		if( strcmp( e.name, program ) == 0 ) return stage == ShaderStage::Vertex ? e.vs : e.fs;

@@ -67,6 +67,8 @@
 #include "Matrix44Intf.h"
 #include "Matrix32Intf.h"
 #include "SDLGpuDrawDevice.h"
+#include "TextureLayerTreeOwner.h"
+#include "GpuCompositorIntf.h"
 #endif
 
 #include "BitmapDrawDevice.h"
@@ -285,7 +287,9 @@ void TVPInitScriptEngine()
 #endif
 #ifdef TVP_USE_GPU_CANVAS
 	REGISTER_OBJECT(Canvas, TVPCreateNativeClass_GpuCanvas());
+	REGISTER_OBJECT(GLCompositor, TVPCreateNativeClass_GpuCompositor());
 	REGISTER_OBJECT(Texture, TVPCreateNativeClass_GpuTexture());
+	REGISTER_OBJECT(TextureLayerTreeOwner, TVPCreateNativeClass_TextureLayerTreeOwner());
 	REGISTER_OBJECT(Offscreen, TVPCreateNativeClass_GpuOffscreen());
 	REGISTER_OBJECT(Matrix44, TVPCreateNativeClass_Matrix44());
 	REGISTER_OBJECT(Matrix32, TVPCreateNativeClass_Matrix32());

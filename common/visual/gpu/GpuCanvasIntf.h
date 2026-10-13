@@ -301,10 +301,53 @@ class tTJSNI_GpuCanvas : public tTJSNativeInstance {
 	tTJSVariant TransitionShaderObject[2];
 	tTJSNI_GpuShaderProgram* TransitionShaderInstance[2] = { nullptr, nullptr };
 
+	tTJSVariant ClipShaderObject[2];   // 0=ステンシル書き込み 1=マスク合成
+	tTJSNI_GpuShaderProgram* ClipShaderInstance[2] = { nullptr, nullptr };
+
+	// ステンシルクリップ: StencilTarget へ描くときだけステンシルを付けて判定する
+	bool StencilClipEnabled = false;
+	TVPGpu::Texture* StencilTarget = nullptr;
+	std::unique_ptr<TVPGpu::Texture> ScreenStencil;    // 画面用
+	std::unique_ptr<TVPGpu::Texture> CaptureStencil;   // 捕捉先用
+
+	// beginMaskClip の捕捉先 (ネスト可)。描画先の大きさの中間テクスチャ
+	struct CaptureEntry {
+		std::unique_ptr<TVPGpu::Texture> Tex;
+		TVPGpu::Texture* PrevTarget;
+	};
+	std::vector<CaptureEntry> CaptureStack;
+	std::vector<std::unique_ptr<TVPGpu::Texture>> CapturePool;   // 捕捉先・エフェクトの中間で共用
+
+	// ポストエフェクト (beginEffect / endEffect)
+	tTJSVariant EffectShaderObject[3];   // 0=点処理 1=LUT 2=ブラー
+	tTJSNI_GpuShaderProgram* EffectShaderInstance[3] = { nullptr, nullptr, nullptr };
+	std::vector<std::unique_ptr<TVPGpu::Texture>> LutTextures;   // LUT 段ごとの 256x1 の表
+	float EffectSeed = 0.0f;
+
 	tTJSVariant CreateShaderObject( const char* vs, const char* fs, bool opacityOne );
 	tTJSNI_GpuShaderProgram* EnsureTransitionShader( bool universal );
+	tTJSNI_GpuShaderProgram* EnsureClipShader( bool mask );
+	tTJSNI_GpuShaderProgram* EnsureEffectShader( int kind );
 
 	void BindTarget();
+	//! 描画先を切り替える (ステンシルクリップ中ならその描画先のステンシルも付ける)
+	void BindPass( TVPGpu::Texture* target );
+	TVPGpu::Texture* StencilFor( TVPGpu::Texture* target );
+	bool StencilActive() const { return StencilClipEnabled && CurrentTarget && CurrentTarget == StencilTarget; }
+	void UnwindCaptures();
+	//! 描画先と同じ大きさの中間テクスチャを借りる / 返す
+	std::unique_ptr<TVPGpu::Texture> AcquireIntermediate();
+	void ReleaseIntermediate( std::unique_ptr<TVPGpu::Texture> tex );
+	//! 捕捉を 1 段戻す (戻した捕捉先を返す。描画先は直前のものへ戻る)
+	std::unique_ptr<TVPGpu::Texture> PopCapture();
+	enum class QuadMode { Blend, StencilWrite, Copy };
+	//! 生のテクスチャを (x,y,w,h) に描く (クリップ・エフェクト用。行列は使わない)
+	void DrawFullQuad( tTJSNI_GpuShaderProgram* shader, TVPGpu::Texture* const* textures, tjs_uint count,
+		tjs_int x, tjs_int y, tjs_int w, tjs_int h, float u1, float v1, QuadMode mode );
+	//! エフェクトの 1 パス: src を shader で dst へ書き写す (ブレンド・クリップ無し)
+	void EffectPass( TVPGpu::Texture* dst, tTJSNI_GpuShaderProgram* shader, TVPGpu::Texture* src, TVPGpu::Texture* src2 = nullptr );
+	//! 捕捉内容を直前の描画先へ現在の blendMode で合成する (mask は nullptr で素通し)
+	void CompositeCapture( TVPGpu::Texture* tex, const iTVPGpuDrawable* mask, float x, float y );
 	void ApplyScissor();
 	TVPGpu::BlendState MakeBlendState() const;
 	void FillCommon( TVPGpu::DrawCall& dc, tTJSNI_GpuShaderProgram* shader );
@@ -349,6 +392,12 @@ public:
 	void Draw9Patch( tTJSNI_GpuTexture* tex, tjs_int width, tjs_int height, tTVPRect& margin, tTJSNI_GpuShaderProgram* shader );
 	void Save();
 	void Restore();
+	void BeginEffect();
+	void EndEffect( const tTJSVariant& commands );
+	void BeginMaskClip();
+	void EndMaskClip( const iTVPGpuDrawable* mask, float x, float y );
+	void BeginStencilClip( const iTVPGpuDrawable* mask, float x, float y, tjs_int threshold );
+	void EndStencilClip();
 
 	// prop
 	void SetClearColor( tjs_uint32 c ) { ClearColor = c; }

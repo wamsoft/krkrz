@@ -17,7 +17,6 @@
 
 #include <vector>
 #include <string>
-#include <filesystem>
 #include <memory>
 
 namespace {
@@ -95,24 +94,15 @@ void TVPMergeAllPluginCommandDesc(tTVPCommandOptionList& dest)
 	static const tjs_char suffix[] = TJS_W(".options.json");
 	const size_t slen = sizeof(suffix) / sizeof(suffix[0]) - 1;
 	for (const tjs_string& dir : dirs) {
-		std::error_code ec;
-#ifdef _WIN32
-		std::filesystem::path dirpath(std::wstring(dir.begin(), dir.end()));
-#else
-		std::string dir8;
-		TVPUtf16ToUtf8(dir8, dir);
-		std::filesystem::path dirpath(dir8);
-#endif
-		for (std::filesystem::directory_iterator it(dirpath, ec), end; !ec && it != end; it.increment(ec)) {
-			if (!it->is_regular_file(ec)) continue;
-			tjs_string fn;
-#ifdef _WIN32
-			std::wstring wfn = it->path().filename().wstring();
-			fn.assign(wfn.begin(), wfn.end());
-#else
-			TVPUtf8ToUtf16(fn, it->path().filename().string());
-#endif
-			if (fn.size() <= slen || fn.compare(fn.size() - slen, slen, suffix) != 0) continue;
+		// 列挙は機種の iTVPLocalFileSystem に任せる (std::filesystem が無い機種もある)
+		std::vector<tjs_string> files;
+		TVPGetLocalFolderListAt(ttstr(dir.c_str()), [&](const tjs_char* name, bool isDir) {
+			if (isDir) return;
+			tjs_string fn(name);
+			if (fn.size() <= slen || fn.compare(fn.size() - slen, slen, suffix) != 0) return;
+			files.push_back(fn);
+		}, false);
+		for (const tjs_string& fn : files) {
 			auto bytes = ReadFileBytes(dir + fn);
 			if (bytes.empty()) continue;
 			std::unique_ptr<tTVPCommandOptionList> options(TVPParseCommandDescJson(bytes.data(), bytes.size()));
