@@ -1435,6 +1435,11 @@ public:
 	SDL3GLContext(SDL_Window *window, bool separateShared)
 	: mWindow(window), mGLContext(nullptr), mOwned(false), mRefCount(1)
 	{
+#ifdef __EMSCRIPTEN__
+		// WebGL は 1 ウィンドウ (canvas) に 1 コンテキストしか作れないので、分離コンテキストは
+		// 作らず主コンテキストを使う (GLCompositor は自前の FBO に描くので画面とは混ざらない)
+		separateShared = false;
+#endif
 		if (separateShared) {
 			SDL_GLContext prev = SDL_GL_GetCurrentContext();
 			// 現在のコンテキストがあれば共有グループにする (無ければ単独コンテキスト)
