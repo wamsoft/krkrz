@@ -46,7 +46,8 @@ namespace {
 //
 // 注: pre-init で確保したポインタが post-init で free されるケース
 // (tracking on 後の magic check) は magic mismatch → 素 std::free 経路で
-// 一貫処理される。逆に post-init alloc を pre-init 中に free することは
+// 一貫処理される (手前が読めない位置のポインタは header_crosses_page で
+// 読む前に弾く)。逆に post-init alloc を pre-init 中に free することは
 // 起こらない (tracking が一度 on になったら off にしない前提)。
 std::atomic<bool> g_tracking_active{false};
 
@@ -66,7 +67,7 @@ struct Header {
 	uint64_t size;     // 8 (size_t だと 32bit 環境で 4 byte になり 16 byte 前提が崩れる)
 	uint32_t magic;    // 4
 	uint16_t tag;      // 2 (TVPAllocTag as raw uint16)
-	uint16_t pad;      // 2 (alignment, unused)
+	uint16_t shift;    // 2 (確保ブロック先頭から Header までのずらし量。0 or sizeof(Header))
 #ifdef KRKRZ_ENABLE_MEMSTAT_DETAIL
 	// 診断ビルドだけ 32 byte にして確保元サイト番号 (AllocSiteStats) を持つ。
 	uint32_t site;     // 4 (0 = 記録なし)
@@ -81,6 +82,18 @@ struct Header {
 static_assert(sizeof(Header) == 16, "Header must be exactly 16 bytes");
 #endif
 static_assert(sizeof(Header) % 16 == 0, "Header must be 16-byte aligned");
+
+// header なしのポインタ (pre-init で確保 / 別アロケータ由来) も free には来るが、
+// その手前を読むと、ポインタがマップ領域の先頭 (例: macOS/iOS の MALLOC 領域先頭、
+// jemalloc の extent 先頭) にある場合は手前が未マップで SIGSEGV になる。
+// そこで「Header がページ境界をまたぐ位置のポインタ」は header 付きでは返さない
+// (do_malloc で配置をずらす) と決め、free / realloc 側はその位置のポインタを
+// 手前を読まずに header なし扱いにする。ページは最小の 4KB 単位で見る
+// (16KB ページでも境界は 4KB 境界に含まれる)。
+constexpr uintptr_t kGuardPage = 4096;
+inline bool header_crosses_page(const void *p) {
+	return (reinterpret_cast<uintptr_t>(p) & (kGuardPage - 1)) < sizeof(Header);
+}
 
 #ifdef KRKRZ_ENABLE_MEMSTAT_DETAIL
 // 生存サイズ分布のビン: [2^k, 2^(k+1)) を 2 分割した半オクターブ刻み。
@@ -274,18 +287,10 @@ std::atomic<bool> g_deferred_log_pending{false};
 Collector g_krkrz;
 Collector g_sdl;
 
-// pre-init: 素 malloc/free 直行。tracking スイッチが立つ前は本パスのみ通る。
-inline void *do_malloc(Collector &c, size_t size) {
-	if (!g_tracking_active.load(std::memory_order_acquire)) {
-		// header なし、stats 触らず、pool 触らず。CRT default と同等。
-		return std::malloc(size);
-	}
-
-	// post-init: header + 経路振り分け。tag は thread-local stack top を採用。
-	uint16_t tag = static_cast<uint16_t>(TVPCurrentAllocTag());
-	size_t total = size + sizeof(Header);
+// header 付き確保の下回り。pool 優先、ダメなら std::malloc。magic に経路を返す。
+inline void *raw_allocate(Collector &c, size_t total, uint32_t &magic) {
 	void *raw = nullptr;
-	uint32_t magic = kMagicRaw;
+	magic = kMagicRaw;
 
 	if (iTVPMemoryAllocator *alloc = c.pool()) {
 		// fallback 検出を行う (非 pool ベース allocator は常に 0 を返すので無影響)
@@ -309,13 +314,55 @@ inline void *do_malloc(Collector &c, size_t size) {
 		raw = std::malloc(total);
 		magic = kMagicRaw;
 	}
+	return raw;
+}
 
+// raw_allocate で確保したブロックを返す。
+inline void raw_release(Collector &c, void *raw, uint32_t magic) {
+	// pool は bindPool 後 unbind しない前提。
+	iTVPMemoryAllocator *alloc = (magic == kMagicPool) ? c.pool() : nullptr;
+	if (alloc) {
+		alloc->free(raw);
+	} else {
+		std::free(raw);
+	}
+}
+
+// pre-init: 素 malloc/free 直行。tracking スイッチが立つ前は本パスのみ通る。
+inline void *do_malloc(Collector &c, size_t size) {
+	if (!g_tracking_active.load(std::memory_order_acquire)) {
+		// header なし、stats 触らず、pool 触らず。CRT default と同等。
+		return std::malloc(size);
+	}
+
+	// post-init: header + 経路振り分け。tag は thread-local stack top を採用。
+	uint16_t tag = static_cast<uint16_t>(TVPCurrentAllocTag());
+	size_t total = size + sizeof(Header);
+	uint32_t magic;
+	void *raw = raw_allocate(c, total, magic);
 	if (!raw) return nullptr;
-	Header *h = static_cast<Header *>(raw);
+
+	// 返すポインタで Header がページ境界をまたぐ場合は、Header 1 個分大きく
+	// 取り直して位置をずらす (header_crosses_page 参照)。ずらし量 0 か
+	// sizeof(Header) のどちらかは必ず境界をまたがない。
+	uint16_t shift = 0;
+	if (header_crosses_page(static_cast<char *>(raw) + sizeof(Header))) {
+		uint32_t magic2;
+		void *raw2 = raw_allocate(c, total + sizeof(Header), magic2);
+		raw_release(c, raw, magic);
+		if (!raw2) return nullptr;
+		raw = raw2;
+		magic = magic2;
+		if (header_crosses_page(static_cast<char *>(raw) + sizeof(Header))) {
+			shift = static_cast<uint16_t>(sizeof(Header));
+		}
+	}
+
+	Header *h = reinterpret_cast<Header *>(static_cast<char *>(raw) + shift);
 	h->size  = size;
 	h->magic = magic;
 	h->tag   = tag;
-	h->pad   = 0;
+	h->shift = shift;
 #ifdef KRKRZ_ENABLE_MEMSTAT_DETAIL
 	h->site  = (&c == &g_krkrz) ? TVPAllocSiteStats::Capture() : 0;
 	h->pad2  = 0;
@@ -323,7 +370,7 @@ inline void *do_malloc(Collector &c, size_t size) {
 	TVPAllocSiteStats::OnAlloc(h->site, size);
 #endif
 	c.recordAlloc(size, tag);
-	return static_cast<char *>(raw) + sizeof(Header);
+	return reinterpret_cast<char *>(h) + sizeof(Header);
 }
 
 inline void do_free(Collector &c, void *p) {
@@ -334,30 +381,21 @@ inline void do_free(Collector &c, void *p) {
 		return;
 	}
 
-	// post-init モード: header magic で経路を識別。
-	Header *h = reinterpret_cast<Header *>(static_cast<char *>(p) - sizeof(Header));
-	if (h->magic == kMagicPool) {
-		size_t size = static_cast<size_t>(h->size);
-		uint16_t tag = h->tag;
-		c.recordFree(size, tag);
-#ifdef KRKRZ_ENABLE_MEMSTAT_DETAIL
-		TVPAllocSiteStats::OnFree(h->site, size);
-#endif
-		// pool は bindPool 後 unbind しない前提。
-		iTVPMemoryAllocator *alloc = c.pool();
-		if (alloc) {
-			alloc->free(h);
-		} else {
-			std::free(h);
-		}
+	// Header がページ境界をまたぐ位置のポインタは header 付きでは返していない。
+	// 手前が未マップの可能性があるので読まずに素の free へ。
+	if (header_crosses_page(p)) {
+		std::free(p);
 		return;
 	}
-	if (h->magic == kMagicRaw) {
+
+	// post-init モード: header magic で経路を識別。
+	Header *h = reinterpret_cast<Header *>(static_cast<char *>(p) - sizeof(Header));
+	if (h->magic == kMagicPool || h->magic == kMagicRaw) {
 		c.recordFree(static_cast<size_t>(h->size), h->tag);
 #ifdef KRKRZ_ENABLE_MEMSTAT_DETAIL
 		TVPAllocSiteStats::OnFree(h->site, static_cast<size_t>(h->size));
 #endif
-		std::free(h);
+		raw_release(c, reinterpret_cast<char *>(h) - h->shift, h->magic);
 		return;
 	}
 	// magic 不一致 = pre-init で確保されたポインタ (header なし)、または
@@ -383,6 +421,10 @@ inline void *do_realloc(Collector &c, void *p, size_t size) {
 	if (size == 0) {
 		do_free(c, p);
 		return nullptr;
+	}
+	if (header_crosses_page(p)) {
+		// header なし確定 (do_free と同じ判定)。手前は読まない。
+		return std::realloc(p, size);
 	}
 	Header *oldH = reinterpret_cast<Header *>(static_cast<char *>(p) - sizeof(Header));
 	if (oldH->magic != kMagicRaw && oldH->magic != kMagicPool) {

@@ -647,17 +647,25 @@ void TTVPWindowForm::SetAspectLock( tjs_int w, tjs_int h )
 {
 	if( w < 0 || h < 0 ) return;
 	if( w == 0 || h == 0 ) { w = 0; h = 0; }
-	aspect_lock_w_ = w;
-	aspect_lock_h_ = h;
-	ApplyAspectLock();
+	if( w > 0 && h > 0 && aspect_lock_w_ > 0 ) {
+		// 比率の切り替え: 前の比率の拘束を先に外す (残っているとサイズ合わせが
+		// 前の比率で縮められる)。 macOS は解除を SDL に渡せないので拘束が残る (既知の制限)。
+		aspect_lock_w_ = aspect_lock_h_ = 0;
+		ApplyAspectLock();
+	}
 	if( w > 0 && h > 0 ) {
-		// 今のサイズを比率へ合わせる (幅基準)
+		// 今のサイズを比率へ合わせる (幅基準)。 比率の固定 (ApplyAspectLock) より先に行う。
+		// SDL は比率を設定した時点で高さを保って窓を縮めるので、 後からでは幅基準に
+		// ならない (800x450 に 4:3 を設定すると 600x450 になっていた)。
 		tjs_int cw = GetInnerWidth(), ch = GetInnerHeight();
 		if( cw > 0 && ch > 0 ) {
 			tjs_int nh = (tjs_int)( (tjs_int64)cw * h / w );
 			if( nh > 0 && nh != ch ) SetInnerSize( cw, nh );
 		}
 	}
+	aspect_lock_w_ = w;
+	aspect_lock_h_ = h;
+	ApplyAspectLock();
 }
 //---------------------------------------------------------------------------
 void TTVPWindowForm::SetZoom( tjs_int numer, tjs_int denom, bool set_logical )

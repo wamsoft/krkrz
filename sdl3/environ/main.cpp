@@ -196,6 +196,39 @@ void TVPProcessDeviceSDLEvent(const SDL_Event *event)
     }
 }
 
+#if defined(SDL_PLATFORM_IOS)
+#include <pthread.h>
+#include <unistd.h>
+#include <stdlib.h>
+//---------------------------------------------------------------------------
+// iOS: メインスレッド以外からの exit() で静的破棄に入らせない
+//
+// OS がアプリを終了させるとき (デバイスのシャットダウン等) は、
+// applicationWillTerminate (= SDL_EVENT_TERMINATING) のあと、 UIKit が
+// BackBoard との XPC 接続切断の通知スレッドから exit() を呼ぶことがある。
+// このときメインスレッドはまだ SDL_AppQuit (TVPSystemUninit) を実行中で、
+// 別スレッドの exit() による静的オブジェクトの破棄 (__cxa_finalize) と
+// 重なってデータ競合になり落ちる (tTJSMessageHolder の破棄などで NULL 参照)。
+//
+// atexit ハンドラは、 それより前に構築済みの静的オブジェクトの破棄より先に
+// 呼ばれる。 そこでメインスレッド以外から来た exit() は _exit で即終了させる。
+// 後始末 (セーブ等) は TERMINATING の処理でメインスレッドが済ませている前提。
+// メインスレッドからの exit (通常終了 / System.exit) は従来どおり進める。
+// 遅れて構築された関数内 static より先に走るよう、 TERMINATING 受信時にも
+// 登録し直す (二重に呼ばれても害はない)。
+//---------------------------------------------------------------------------
+static void TVPAtExitFromOtherThread()
+{
+    if (!pthread_main_np()) {
+        _exit(0);
+    }
+}
+static void TVPRegisterAtExitFromOtherThread()
+{
+    atexit(TVPAtExitFromOtherThread);
+}
+#endif
+
 SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event)
 {
     switch (event->type) {
@@ -258,6 +291,9 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event)
         // 以前は break していたためアプリが動き続け、 CS 機ではシステムが
         // 「終了中」の表示のまま待ち続けていた。
         {
+#if defined(SDL_PLATFORM_IOS)
+            TVPRegisterAtExitFromOtherThread();
+#endif
             TVPFireOnApplicationTerminating();
             SDL3Application *app = static_cast<SDL3Application *>(appstate);
             if (app) {
@@ -509,6 +545,10 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
 
     app->AppInitDone();
     app->OnTerminatingStart();
+
+#if defined(SDL_PLATFORM_IOS)
+    TVPRegisterAtExitFromOtherThread();
+#endif
 
     *appstate = app;
     return SDL_APP_CONTINUE;

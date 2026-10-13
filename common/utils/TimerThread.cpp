@@ -68,6 +68,9 @@ void tTVPTimerThread::Execute()
 		tjs_uint64 step_next = (tjs_uint64)(tjs_int64)-1L; // invalid value
 		tjs_uint64 curtick = TVPGetTickCount() << TVP_SUBMILLI_FRAC_BITS;
 		tjs_uint sleeptime;
+#ifndef __WINVER__
+		bool post_wake = false;	// ロックを抜けてから SendAppEvent する
+#endif
 
 		{	// thread-protected
 			tTJSCriticalSectionHolder holder(TVPTimerCS);
@@ -149,14 +152,25 @@ void tTVPTimerThread::Execute()
 					if( EventQueue.PostEvent( NativeEvent(TVP_EV_TIMER_THREAD) ) )
 						PendingEventsAvailable = true;
 #else
-					// SendAppEvent は失敗時にリトライキューへ積むので取りこぼさない
+					// SendAppEvent は失敗時にリトライキューへ積むので取りこぼさない。
+					// 送信自体は TVPTimerCS の外で行う (下記)。
 					PendingEventsAvailable = true;
-					Application->SendAppEvent( TVP_EV_TIMER_THREAD, 0, 0 );
+					post_wake = true;
 #endif
 				}
 			}
 
 		}	// end-of-thread-protected
+
+#ifndef __WINVER__
+		// TVPTimerCS を持ったまま SendAppEvent すると、 SDL のイベントウォッチャーの
+		// ロック (SDL_PushEvent 内) とメインスレッドの Timer 生成 (AddItem →
+		// TVPTimerCS) とで逆順にロックを取り合い、 デッドロックする。 iOS では
+		// 起動スクリプトがライフサイクルイベントのウォッチャー内で走るため
+		// 起動直後に必ず止まった。
+		if(post_wake)
+			Application->SendAppEvent( TVP_EV_TIMER_THREAD, 0, 0 );
+#endif
 
 		// now, sleeptime has sub-milliseconds precision but we need millisecond
 		// precision time.

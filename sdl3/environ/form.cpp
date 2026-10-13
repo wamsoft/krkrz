@@ -68,13 +68,27 @@ static bool TVPIsSteamDeck()
 	return SDL_GetHintBoolean("SteamDeck", false);
 }
 
+// iOS も Steam Deck と同じ扱いにする。 UIKit のキーボードは浮動オーバレイで、
+// SDL_HasKeyboard() は GameController の GCKeyboard の有無しか見ないため
+// 「UIKit が仮想キーボードを出すか」と一致しない (シミュレータは Mac の
+// キーボードが常に GCKeyboard に見え、 Connect Hardware Keyboard を切っていても
+// true)。 ベースラインで StartTextInput すると入力欄が無くても仮想キーボードが出る。
+static bool TVPIsFloatingScreenKeyboardPlatform()
+{
+#if defined(SDL_PLATFORM_IOS)
+	return true;
+#else
+	return TVPIsSteamDeck();
+#endif
+}
+
 // ベースライン (常時有効) にしてよい環境か。 デスクトップ = true。
 // スクリーンキーボード環境は物理キーボードがあるときだけ true。
 // Steam Deck は上記の通り SDL_HasKeyboard() が当てにならないので常に false。
 static bool TVPBaselineTextInputWanted()
 {
 	if (!SDL_HasScreenKeyboardSupport()) return true;
-	return SDL_HasKeyboard() && !TVPIsSteamDeck();
+	return SDL_HasKeyboard() && !TVPIsFloatingScreenKeyboardPlatform();
 }
 
 // OS のスクリーンキーボードが「非ブロッキングの浮動オーバレイ」か。
@@ -85,7 +99,7 @@ static bool TVPBaselineTextInputWanted()
 // 対になる判定。
 static bool TVPScreenKeyboardIsFloating()
 {
-	return TVPIsSteamDeck();
+	return TVPIsFloatingScreenKeyboardPlatform();
 }
 
 // imeMode = focus レイヤの imeMode (focus 無し・起動直後は imDisable)。
@@ -122,6 +136,7 @@ SDL3WindowForm::SDL3WindowForm(class tTJSNI_Window* win)
  , mImeMode(::imDisable)
  , mBorderStyle(bsSizeable)
  , mMinWidth(0), mMinHeight(0), mMaxWidth(0), mMaxHeight(0)
+ , mAspectApplied(false)
  , mStartupDisplayApplied(false)
  , mFixedSurfaceWidth(0), mFixedSurfaceHeight(0)
  , mWheelAccum(0.0f)
@@ -137,6 +152,12 @@ SDL3WindowForm::SDL3WindowForm(class tTJSNI_Window* win)
 #if defined(__ANDROID__) || defined(SDL_PLATFORM_IOS) || defined(__ORBIS__) || defined (__PROSPERO__) || \
     defined(SDL_PLATFORM_XBOXONE) || defined(SDL_PLATFORM_XBOXSERIES)
 	flags |= SDL_WINDOW_FULLSCREEN;
+#if defined(SDL_PLATFORM_IOS)
+	// Retina の実ピクセルで描く。 指定しないと UIKit は描画バッファを論理ポイント
+	// (iPhone 11 なら 896x414) で作り、 画面へ 2 倍に引き伸ばすので文字が粗くなる。
+	// 描画バッファの実サイズは GetSurfaceSize (SDL_GetWindowSizeInPixels) で取る。
+	flags |= SDL_WINDOW_HIGH_PIXEL_DENSITY;
+#endif
 	int width  = 1920;
 	int height = 1080; 
 	// 常にフルスクリーンの環境では、 SDL が返すウィンドウサイズは実
@@ -149,6 +170,12 @@ SDL3WindowForm::SDL3WindowForm(class tTJSNI_Window* win)
 	mFixedSurfaceHeight = height;
 #else
 	flags |= SDL_WINDOW_RESIZABLE;
+#if defined(SDL_PLATFORM_MACOS)
+	// Retina の実ピクセルで描く (iOS と同じ。 指定しないと描画バッファが論理ポイントで
+	// 作られ、 OS が 2 倍に引き伸ばす)。 ウィンドウ / inner サイズの意味 (論理ポイント) は
+	// 変わらない。 描画バッファの実サイズは GetSurfaceSize (SDL_GetWindowSizeInPixels) で取る。
+	flags |= SDL_WINDOW_HIGH_PIXEL_DENSITY;
+#endif
 	int width = 32;
 	int height = 32;
 #endif
@@ -858,7 +885,17 @@ void SDL3WindowForm::ApplyAspectLock()
 	if (!mWindow) return;
 	int aw = GetAspectLockW(), ah = GetAspectLockH();
 	float r = (aw > 0 && ah > 0) ? (float)aw / (float)ah : 0.0f;
+	// 一度も固定していないなら SDL に触らない。 macOS (Cocoa) は (0,0) を渡すと
+	// setContentAspectRatio(0,0) になり、 枠ドラッグのリサイズやフルスクリーン解除で
+	// AppKit 内部 (_adjustNeedsDisplayRegionForNewFrame) が落ちる。
+	if (r == 0.0f && !mAspectApplied) return;
+#if defined(SDL_PLATFORM_MACOS)
+	// 同じ理由で macOS では解除も SDL に渡さない (既知の制限: 一度固定した比率は
+	// ウィンドウを作り直すまで残る)。
+	if (r == 0.0f) return;
+#endif
 	SDL_SetWindowAspectRatio(mWindow, r, r);
+	mAspectApplied = (r != 0.0f);
 }
 
 // min/max は「内側 (クライアント) サイズ」基準。SDL の
@@ -1481,7 +1518,9 @@ public:
 	void GetSurfaceSize(int *width, int *height) 
 	{
 		if (mWindow) {
-			SDL_GetWindowSize(mWindow, width, height);
+			// GL の描画バッファの実サイズ (glViewport 等の基準)。 高解像度ウィンドウ
+			// (iOS の Retina 等) では論理サイズ (SDL_GetWindowSize) と異なる
+			SDL_GetWindowSizeInPixels(mWindow, width, height);
 		}
 	}
 

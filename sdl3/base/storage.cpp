@@ -35,12 +35,11 @@ public:
     ~StorageMemoryStream() {
         if (Storage) {
             // 書き込みモードの場合、保存する
+            // (0 バイトも書く。省くと空で保存しても古い中身が残る)
             Uint64 size = static_cast<Uint64>(GetSize());
-            if (size > 0) {
-                if (!SDL_WriteStorageFile(Storage, Path.c_str(), GetInternalBuffer(), size)) {
-                    const char *err = SDL_GetError();
-                    TVPLOG_ERROR("Failed to write storage file: {}", err);
-                }
+            if (!SDL_WriteStorageFile(Storage, Path.c_str(), GetInternalBuffer(), size)) {
+                const char *err = SDL_GetError();
+                TVPLOG_ERROR("Failed to write storage file: {}", err);
             }
         }
     }
@@ -119,16 +118,24 @@ public:
 
         if (access == TJS_BS_READ) {
             Uint64 size = 0;
-            if (SDL_GetStorageFileSize(Storage, path_utf8.c_str(), &size) && size > 0) {
-                auto stream = new tTVPMemoryStream(nullptr, static_cast<size_t>(size));
-                void *data = stream->GetInternalBuffer();
-                if (!SDL_ReadStorageFile(Storage, path_utf8.c_str(), data, size)) {
-                    const char *err = SDL_GetError();
-                    TVPLOG_ERROR("Failed to read storage file: {}", err);
-                }
-                return stream;
+            if (!SDL_GetStorageFileSize(Storage, path_utf8.c_str(), &size)) {
+                // 呼び出し側は NULL を想定していないので、他のメディア同様に例外にする
+                TVPThrowExceptionMessage(TVPCannotOpenStorage, name);
             }
-            return nullptr;
+            if (size == 0) {
+                // 0 バイトのファイルは空のストリームとして返す
+                // (NULL を返すとテキスト読み込み等が NULL 参照で落ちる)
+                return new tTVPMemoryStream();
+            }
+            auto stream = new tTVPMemoryStream(nullptr, static_cast<size_t>(size));
+            void *data = stream->GetInternalBuffer();
+            if (!SDL_ReadStorageFile(Storage, path_utf8.c_str(), data, size)) {
+                const char *err = SDL_GetError();
+                TVPLOG_ERROR("Failed to read storage file: {}", err);
+                delete stream;
+                TVPThrowExceptionMessage(TVPCannotOpenStorage, name);
+            }
+            return stream;
         }
 
         if (readonly) {

@@ -22,6 +22,7 @@ protected:
 	tTVPImeMode mImeMode;	//< focus レイヤの imeMode (focus 無しは imDisable)
 	enum tTVPBorderStyle mBorderStyle;	//< SDL には枠スタイルの概念が無いので値を保持する
 	int mMinWidth, mMinHeight, mMaxWidth, mMaxHeight;
+	bool mAspectApplied;	//< 縦横比固定を SDL に設定したことがあるか (ApplyAspectLock)
 	bool mStartupDisplayApplied;		//< -display= 指定ディスプレイへの初回配置が済んだか
 	//! 論理サーフェスのサイズ (0 = 実ウィンドウに追従)。
 	//! コンソールのように常にフルスクリーンで、 実フレームバッファが

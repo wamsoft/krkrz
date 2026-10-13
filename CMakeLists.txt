@@ -11,7 +11,7 @@ add_link_options("$<$<AND:$<C_COMPILER_ID:MSVC>,$<COMPILE_LANGUAGE:C,CXX>>:/DEBU
 
 
 set(PROJECT_NAME krkrz)
-set(PROJECT_VERSION 2.6.2)
+set(PROJECT_VERSION 2.6.3)
 
 # ----------------------------------------------------
 # vcpkg マニフェスト統合

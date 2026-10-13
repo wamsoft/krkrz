@@ -42,6 +42,13 @@ status: **完了 (方針確定 2026-08-16 / P1〜P5 実装 2026-08-17)**
 実サイズへの引き伸ばしは従来どおり `SDL_SetRenderLogicalPresentation` が行う。
 NX はこの分岐に入らず、従来どおり実ウィンドウサイズに追従する。
 
+GL 経路では、描画デバイスが論理面の座標 (DestRect) を GL の実フレームバッファ
+(`iTVPGLContext::GetSurfaceSize` = `SDL_GetWindowSizeInPixels`) へ縦横同率・中央寄せで
+換算して描く (`TVPScaleRectToSurface`)。 Elements の overlay も同じ換算で入力座標を
+実ピクセルへ移す ([ElementsDialog](ElementsDialog.md) の「描画密度」節の末尾)。
+iOS はウィンドウに `SDL_WINDOW_HIGH_PIXEL_DENSITY` を付けて Retina の実ピクセルで描く
+(付けないと UIKit が描画バッファを論理ポイントで作り、2 倍に引き伸ばされて粗くなる)。
+
 したがって「**元の WIN に合わせる**」は
 **「WIN の *API 意味論* に合わせる。ただし *基準面* は inner に取り直す」**
 と読み替える。表示するだけの値なら outer でも許容できるが、
@@ -336,11 +343,18 @@ P3 で「未指定なら OS 既定の最小 (`SM_CXMINTRACK`) を残さない」
 ## 8. 未決 / フォローアップ
 
 
-- **macOS の point / pixel**: `SDL3WindowForm::GetSurfaceSize` は
-  `SDL_GetWindowSize` (= macOS では point) を使っている。Retina では
-  描画解像度が半分になる可能性がある。`SDL_GetWindowSizeInPixels` との
-  使い分けを別途整理する。**未検証 (macOS 実機確認が前提)**。
-  umbrella の [TODO.md](../../../TODO.md) 「将来課題」に登録済 (優先度 低)。
+- ~~**macOS の point / pixel**~~ ✅ (2026-10) GL コンテキストの `GetSurfaceSize` は
+  `SDL_GetWindowSizeInPixels` (実ピクセル) を返し、iOS / macOS のウィンドウには
+  `SDL_WINDOW_HIGH_PIXEL_DENSITY` を付けて Retina の実ピクセルで描く。ウィンドウ /
+  inner サイズの意味 (論理ポイント) は変わらない (`displayDensity` が 192 になる)。
+  macOS は 4K (2 倍) ディスプレイで、描画・マウス・Elements・`setInnerSize`・
+  フルスクリーンを確認済み。1x ディスプレイの Mac では実ピクセル = 論理サイズなので変化しない。
+- **macOS の縦横比固定 (`aspectLock`)**: SDL の Cocoa バックエンドは比率に (0,0) を渡すと
+  `setContentAspectRatio(0,0)` になり、枠ドラッグのリサイズやフルスクリーン解除で AppKit が
+  落ちる。そのため比率を一度も固定していなければ SDL に触らず、macOS では解除も SDL に
+  渡さない。**既知の制限: macOS では一度固定した比率はウィンドウを作り直すまで残る**
+  (`aspectLock=""` で読み出し値は空になるが、枠ドラッグの拘束は残る)。
+  SDL 側で解除を `setContentResizeIncrements` 等で行うよう直せば解消できる (SDL への報告候補)。
 - ~~**`Window.width` の非推奨化**~~ ✅ リファレンス (`width` / `height` /
   `setSize`) に「内側基準の API を推奨」の注記を追加済み。仕様上は残す。
 - ~~**`viewportFit = "none"` の案内**~~ ✅ `viewportFit` / `setViewport` の

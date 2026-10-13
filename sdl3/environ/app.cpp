@@ -1311,14 +1311,13 @@ static tjs_uint64 getTotalPhysMemoryBytes() {
     return memInfo.ullTotalPhys;
 }
 
-#elif defined(sysconf) // LinuxやmacOSなどのUnix系
-#include <unistd.h>
-static tjs_uint64 getTotalPhysMemoryBytes() {
-    return (tjs_uint64)sysconf(_SC_PHYS_PAGES) * (tjs_uint64)sysconf(_SC_PAGE_SIZE);
-}
 #else
+// Windows 以外は SDL に任せる (MB 単位)。 以前は `#elif defined(sysconf)` で
+// 分岐していたが sysconf はマクロではないので常に 0 が返り、 起動時に
+// 「非常に少ないメモリ」扱い (ハッシュ/セグメントキャッシュ無効等) になっていた。
 static tjs_uint64 getTotalPhysMemoryBytes() {
-    return 0;
+    const int mb = SDL_GetSystemRAM();
+    return mb > 0 ? (tjs_uint64)mb * 1024ull * 1024ull : 0;
 }
 #endif
 

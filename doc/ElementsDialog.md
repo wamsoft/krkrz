@@ -579,6 +579,15 @@ ElementsDialog.baseSize = void;          // 既定へ戻す (基準面 = primary
 かけて dialog 論理座標へ戻すため、 どのモードでもマウス操作は authored
 座標系の hit-test に正しく届く。
 
+常にフルスクリーンで論理面を固定している環境 (iOS / Android / コンソール。
+[WindowGeometry](WindowGeometry.md) §1 の例外) では、 マウス/タッチ入力と DestRect が
+論理面 (例 1920x1080) で届く一方、 overlay の配置と hit-test は描画面の実ピクセル
+(例 iPhone 11 で 1792x828) で行う。 manager は `RenderInstance` で DrawDevice と同じ式
+(縦横同率・中央寄せ = `TVPScaleRectToSurface`) の「論理面 → 実ピクセル」換算を求め
+(`Instance::in_scale` / `in_off_x` / `in_off_y`)、 入力座標と `"content"` 基準の
+DestRect に適用する (cursor-warp は逆変換)。 論理面と実ピクセルが一致する環境では
+素通し。 WINVER の描画側はこの換算をしないので SDL ホストだけで行う。
+
 > フルスクリーン (4K 等) では auto 密度の全面ラスタが高価になる
 > (実測: 3840x2160 全面 ThorVG ≈ 70ms)。 `ElementsDialog.partialRedraw = true`
 > (既定) なら hover 等の変化は矩形限定 (~12ms) で済むので、 全面描画へ
@@ -1181,6 +1190,15 @@ Elements 側はこれを受けて [keyboard / arrow / gamepad ナビゲーショ
 | デスクトップ (WINVER / Windows SDL) | ソフトキーボードは出さない。 text 入力は常時有効 (form 生成時に `SDL_StartTextInput`)。 WINVER は別途 IME を focus 追従で開閉する (下記) |
 | 物理キーボードあり (`SDL_HasKeyboard()`) | `SDL_StartTextInput` のみ。 OS のソフトキーボードは SDL の auto 判定で出ない |
 | 物理キーボード無し | **内蔵仮想キーボード**を overlay で表示 (OS のキーボードは出さない) |
+| Steam Deck / iOS (OS のキーボードが浮動オーバレイ) | テキスト欄に focus がある間だけ `SDL_StartTextInput` → OS のキーボード (Steam OSK / UIKit) が出る。 focus が外れると `SDL_StopTextInput` で閉じる |
+
+Steam Deck と iOS は `SDL_HasKeyboard()` が実態を返さない (Deck は Xwayland が常に
+コアキーボードを出す / iOS は GameController の GCKeyboard の有無だけを見るため、
+シミュレータでは Mac のキーボードで常に真) ので、 物理キーボード無しとして focus 駆動に
+載せ、 OS の浮動キーボードを使う (`HostHasPhysicalKeyboard()` / `HostScreenKeyboardIsFloating()`、
+ホスト側のベースラインは `sdl3/environ/form.cpp` の `TVPIsFloatingScreenKeyboardPlatform()`)。
+これをしないと、 入力欄の無い画面でもベースラインの `SDL_StartTextInput` で OS の
+キーボードが出てしまう。
 
 **内蔵仮想キーボード**は英数 4 段 + SPACE / BS / DONE の Elements ダイアログで、
 `BuildVirtualKeyboardJson()` がレイアウトを組む。 押鍵は貯めずに**その場で入力先の

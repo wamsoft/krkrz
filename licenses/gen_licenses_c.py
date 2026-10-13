@@ -125,12 +125,22 @@ def generate(entries, mode, func):
     else:
         out.append(f"void {func}()")
         out.append("{")
+        # plugin: ビルド時の tp_stub が License API を持っていても、読み込む本体が古いと
+        # TVPRegisterLicense が無く、tp_stub が「関数が無い」例外を投げてプラグインの
+        # 読み込み自体が失敗する。登録は付加情報なので、例外は受け止めて登録を諦める。
+        ind = "\t\t" if mode == "plugin" else "\t"
+        if mode == "plugin":
+            out.append("\ttry {")
         for name, group, sym, csz, osz, when in table:
             if when:
                 out.append(f"#if defined({when})")
-            out.append(f"\tTVPRegisterLicense(TJS_W({cstr(name)}), TJS_W({cstr(group)}), {sym}, {csz}, {osz});")
+            out.append(f"{ind}TVPRegisterLicense(TJS_W({cstr(name)}), TJS_W({cstr(group)}), {sym}, {csz}, {osz});")
             if when:
                 out.append("#endif")
+        if mode == "plugin":
+            out.append("\t} catch (...) {")
+            out.append("\t\t/* 本体が License API を持たない (古い本体) ときは登録しない */")
+            out.append("\t}")
         out.append("}")
         if mode == "plugin":
             out.append("")

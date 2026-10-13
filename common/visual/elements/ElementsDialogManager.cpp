@@ -203,7 +203,13 @@ inline bool HostHasPhysicalKeyboard()
 	// StartTextInput が即 Steam OSK を出す。 Deck は常に「物理キーボード無し」
 	// として focus 駆動に載せる。
 	if (SDL_GetHintBoolean("SteamDeck", false)) return false;
+#if defined(SDL_PLATFORM_IOS)
+	// iOS も同様に SDL_HasKeyboard() が当てにならない (GCKeyboard の有無のみ。
+	// シミュレータは常に true)。 物理キーボード無しとして focus 駆動に載せる。
+	return false;
+#else
 	return SDL_HasKeyboard();
+#endif
 }
 
 // OS のスクリーンキーボードが focus 駆動でそのまま使える「非ブロッキングの
@@ -213,7 +219,11 @@ inline bool HostHasPhysicalKeyboard()
 // キーボードを使う。
 inline bool HostScreenKeyboardIsFloating()
 {
+#if defined(SDL_PLATFORM_IOS)
+	return true;   // UIKit のキーボードは非ブロッキングの浮動オーバレイ
+#else
 	return SDL_GetHintBoolean("SteamDeck", false);
+#endif
 }
 
 inline const char* HostGetEnv(const char* name) { return SDL_getenv(name); }
@@ -421,6 +431,16 @@ struct tTVPElementsDialogManager::Impl
 		// 届く (スケールは掛かっていない) ので、 ウィンドウ座標へ足し戻す。
 		int dest_offset_x = 0;
 		int dest_offset_y = 0;
+
+		// ウィンドウの論理座標 (inner サイズ基準) → 描画面の実ピクセルの変換。
+		// 常にフルスクリーンで論理面を固定している環境 (iOS / Android / コンソール)
+		// では、 マウス入力と DestRect は論理面 (例 1920x1080) で届く一方、
+		// overlay の配置と hit-test は描画面の実ピクセル (例 1792x828) で行う。
+		// DrawDevice と同じ式 (TVPScaleRectToSurface: 縦横同率・中央寄せ) で
+		// 換算する。 論理面 = 実ピクセルの環境は 1 / 0 (素通し)。
+		float in_scale = 1.0f;
+		float in_off_x = 0.0f;
+		float in_off_y = 0.0f;
 
 		// 直近 render_to_buffer の描画矩形 (dialog 論理座標)。 ヒットテスト用。
 		elements_modal::overlay_session::render_rect last_rect{};
@@ -670,13 +690,24 @@ struct tTVPElementsDialogManager::Impl
 	// (session 内 hit-test は論理座標のため)。
 	static float ToSurfaceX(const Instance& inst, tjs_int draw_x)
 	{
-		return (static_cast<float>(draw_x + inst.dest_offset_x)
-		        - inst.present_off_x) / inst.present_scale;
+		const float px = static_cast<float>(draw_x + inst.dest_offset_x)
+		                 * inst.in_scale + inst.in_off_x;   // 論理 → 実ピクセル
+		return (px - inst.present_off_x) / inst.present_scale;
 	}
 	static float ToSurfaceY(const Instance& inst, tjs_int draw_y)
 	{
-		return (static_cast<float>(draw_y + inst.dest_offset_y)
-		        - inst.present_off_y) / inst.present_scale;
+		const float py = static_cast<float>(draw_y + inst.dest_offset_y)
+		                 * inst.in_scale + inst.in_off_y;
+		return (py - inst.present_off_y) / inst.present_scale;
+	}
+	// 実ピクセル → ウィンドウの論理座標 (ToSurfaceX/Y の論理→実ピクセルの逆)。
+	static float PhysToLogicalX(const Instance& inst, float px)
+	{
+		return (px - inst.in_off_x) / inst.in_scale;
+	}
+	static float PhysToLogicalY(const Instance& inst, float py)
+	{
+		return (py - inst.in_off_y) / inst.in_scale;
 	}
 
 	// 指定 surface 座標が inst の描画矩形内か。
@@ -2706,6 +2737,29 @@ void tTVPElementsDialogManager::Impl::RenderInstance(
 	inst.dest_offset_x = dx;
 	inst.dest_offset_y = dy;
 
+	// 論理面 (ウィンドウの inner サイズ) → 描画面 (実ピクセル) の換算
+	// (Instance::in_scale のコメント参照)。 DestRect も論理面で来るので、
+	// "content" 基準の配置に使う前に実ピクセルへ移す。
+	// WINVER の描画側 (D3D11) はこの換算をしないので SDL ホストだけで行う。
+	inst.in_scale = 1.0f;
+	inst.in_off_x = inst.in_off_y = 0.0f;
+#ifndef __WINVER__
+	if (iTVPWindow* win = ImeTargetWindow()) {
+		const int iw = static_cast<tTJSNI_Window*>(win)->GetInnerWidth();
+		const int ih = static_cast<tTJSNI_Window*>(win)->GetInnerHeight();
+		if (iw > 0 && ih > 0 && (iw != sw || ih != sh)) {
+			const float s = std::min((float)sw / iw, (float)sh / ih);
+			inst.in_scale = s;
+			inst.in_off_x = (sw - iw * s) * 0.5f;
+			inst.in_off_y = (sh - ih * s) * 0.5f;
+			dx = (int)(dx * s + inst.in_off_x + 0.5f);
+			dy = (int)(dy * s + inst.in_off_y + 0.5f);
+			dw = (int)(dw * s + 0.5f);
+			dh = (int)(dh * s + 0.5f);
+		}
+	}
+#endif
+
 	// 配置 / 拡縮の基準領域は、 画面 JSON の top-level "base" で選べる:
 	//   "window" (既定) — **ウィンドウ (surface) 全体**。 Dot by dot 等の
 	//     インセット表示でもパネルはウィンドウ全面基準に置かれる。
@@ -4353,11 +4407,11 @@ void tTVPElementsDialogManager::PaintOverlay(iTVPDrawDevice* device)
 				// 仮想カーソル位置は「描画矩形内の座標」を受ける契約
 				// (実装側で DestRect 原点を足し戻す) ため、 window client へ
 				// 直したあと DestRect 原点を引いて渡す。
-				tjs_int lx = static_cast<tjs_int>(
-					sx * f->present_scale + f->present_off_x + 0.5f)
+				tjs_int lx = static_cast<tjs_int>(Impl::PhysToLogicalX(*f,
+					sx * f->present_scale + f->present_off_x) + 0.5f)
 					- f->dest_offset_x;
-				tjs_int ly = static_cast<tjs_int>(
-					sy * f->present_scale + f->present_off_y + 0.5f)
+				tjs_int ly = static_cast<tjs_int>(Impl::PhysToLogicalY(*f,
+					sy * f->present_scale + f->present_off_y) + 0.5f)
 					- f->dest_offset_y;
 				_impl->warp_seq++;
 				if (NavLogEnabled()) {
