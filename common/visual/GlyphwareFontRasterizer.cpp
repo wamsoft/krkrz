@@ -103,15 +103,20 @@ void GlyphwareFontRasterizer::ApplyFont(const tTVPFont& font) {
 	for (auto& f : Chain) if (f) f->setPixelSize(PixelSize);
 	if (!Chain.empty() && Chain[0]) {
 		// baseline (ascent) must match the FreeType rasterizer's
-		// tFreeTypeFace::GetAscent() = ascender * ppem / unitsPerEm (truncating
-		// integer division). lineMetrics().ascent comes from FreeType's
-		// size->metrics.ascender which is FT_PIX_CEIL'ed, so using it directly
-		// draws glyphs up to 1px lower than the FreeType path.
+		// tFreeTypeFace::GetAscent(): OS/2 sTypoAscender (falling back to the
+		// hhea ascender when there is no OS/2 table / it is 0) * ppem / unitsPerEm,
+		// rounded to nearest. That is the same value GDI uses (otmAscent), so
+		// text lands at the same height as the WINVER GDI path.
+		// lineMetrics().ascent comes from FreeType's size->metrics.ascender
+		// (hhea, FT_PIX_CEIL'ed), so it is not used here.
 		glyphware::LineMetrics lm = Chain[0]->lineMetrics();
-		if (lm.unitsPerEm > 0 && lm.ppemY > 0)
-			Ascent = static_cast<tjs_int>(lm.ascenderUnits) * static_cast<tjs_int>(lm.ppemY)
-			         / static_cast<tjs_int>(lm.unitsPerEm);
-		else
+		if (lm.unitsPerEm > 0 && lm.ppemY > 0) {
+			const tjs_int asc = lm.typoAscenderUnits > 0
+				? static_cast<tjs_int>(lm.typoAscenderUnits)
+				: static_cast<tjs_int>(lm.ascenderUnits);
+			const tjs_int upe = static_cast<tjs_int>(lm.unitsPerEm);
+			Ascent = (asc * static_cast<tjs_int>(lm.ppemY) + upe / 2) / upe;
+		} else
 			Ascent = static_cast<tjs_int>(std::lround(lm.ascent));  // bitmap-only faces etc.
 	}
 	HasFont = true;

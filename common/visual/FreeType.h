@@ -24,6 +24,7 @@
 #endif
 #include <ft2build.h>
 #include FT_FREETYPE_H
+#include FT_TRUETYPE_TABLES_H
 #ifdef _MSC_VER
 #pragma warning(pop)
 #endif
@@ -167,7 +168,17 @@ public:
 		FT_Face face = Faces[0]->FTFace;
 		tjs_int ppem = face->size->metrics.y_ppem;
 		tjs_int upe = face->units_per_EM;
-		if( upe > 0 ) return face->ascender * ppem / upe;
+		if( upe > 0 ) {
+			// Windows (GDI) の baseline = otmAscent = OS/2 sTypoAscender に揃える。
+			// face->ascender (hhea) は sTypoAscender より大きいフォントが多く
+			// (源柔ゴシック 1101/881、源ノ角ゴシック 1160/880)、そのまま使うと
+			// 同じ座標指定で文字が GDI より 0.2em 前後下に描かれる。
+			// OS/2 が無い/値が 0 のフォントは従来どおり hhea を使う。
+			tjs_int asc = face->ascender;
+			TT_OS2* os2 = static_cast<TT_OS2*>( FT_Get_Sfnt_Table( face, FT_SFNT_OS2 ) );
+			if( os2 && os2->version != 0xFFFF && os2->sTypoAscender > 0 ) asc = os2->sTypoAscender;
+			return ( asc * ppem + upe / 2 ) / upe;
+		}
 		// bitmap-strike のみのフォント (CBDT/sbix カラー絵文字等) は
 		// units_per_EM が 0 でゼロ除算になる (face に直接指定されると
 		// Faces[0] がこの種のフォントになり得る)。グリフは strike から

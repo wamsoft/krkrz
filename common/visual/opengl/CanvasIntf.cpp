@@ -804,11 +804,17 @@ void tTJSNI_Canvas::DrawTextureAtlas( const tTJSNI_Rect* rect, const iTVPTexture
 		width, 0.0f,	// 右上
 		width, height,	// 右下
 	};
+	// v の向きはテクスチャの種類で違う。Offscreen (FBO) はボトムアップ (v=1 が画像上端)、
+	// Texture はトップダウン (v=0 が画像上端。LoadTexture が上の行から詰める)。
+	// 以前は Offscreen 前提の式だけだったため、Texture を渡すと切り出し位置も絵も上下逆になっていた
+	const bool bottomUp = dynamic_cast<const tTJSNI_Offscreen*>( texture ) != nullptr;
+	const float vtop    = bottomUp ? ( th - r.top ) / th    : r.top / th;
+	const float vbottom = bottomUp ? ( th - r.bottom ) / th : r.bottom / th;
 	const GLfloat uvs[] = {
-		r.left / tw,  ( th - r.top ) / th,
-		r.left / tw,  ( th - r.bottom ) / th,
-		r.right / tw, ( th - r.top ) / th,
-		r.right / tw, ( th - r.bottom ) / th,
+		r.left / tw,  vtop,
+		r.left / tw,  vbottom,
+		r.right / tw, vtop,
+		r.right / tw, vbottom,
 	};
 	glBindBuffer( GL_ARRAY_BUFFER, 0 );
 	glVertexAttribPointer( posLoc, 2, GL_FLOAT, GL_FALSE, 2 * sizeof( GLfloat ), vertices );
@@ -861,12 +867,15 @@ void tTJSNI_Canvas::Draw9PatchTexture( class tTJSNI_Texture* tex, tjs_int width,
 	const float tx_center_right = (scale.right-1) / tw;
 	const float tx_right_left = scale.right / tw;
 	const float tx_right = 1.0f;
-	const float tx_top = 1.0f;
-	const float tx_top_bottom = ( th - ( scale.top - 1 ) ) / th;
-	const float tx_center_top = ( th - scale.top ) / th;
-	const float tx_center_bottom = ( th - ( scale.bottom - 1 ) ) / th;
-	const float tx_bottom_top = ( th - scale.bottom ) / th;
-	const float tx_bottom = 0.0f;
+	// v はトップダウン (v=0 が画像上端)。Texture は LoadTexture が上の行から詰めるので、
+	// 以前の Offscreen (FBO、ボトムアップ) 前提の式 (tx_top = 1.0) では上下逆に描かれていた。
+	// GPU 版 (tTJSNI_GpuCanvas::Draw9Patch) と同じ寄せ方
+	const float tx_top = 0.0f;
+	const float tx_top_bottom = ( scale.top - 1 ) / th;
+	const float tx_center_top = scale.top / th;
+	const float tx_center_bottom = ( scale.bottom - 1 ) / th;
+	const float tx_bottom_top = scale.bottom / th;
+	const float tx_bottom = 1.0f;
 	// 36頂点
 	// 縦方向基準に並べる
 	const GLfloat uvs[] = {

@@ -90,6 +90,31 @@
   フォールバック (`EntryForToken`) 等の解決堅牢化は
   `GlyphwareHost.cpp` / `FontServiceIntf.cpp` を参照。
 
+## 文字の縦位置 (baseline) 【2026-10-19〜】
+
+`drawText` / `drawGlyph` (cell-stepping 経路) の baseline = ペン位置の y からの ascent は、
+3 つのラスタライザで同じ値にする。
+
+| ラスタライザ | 値 | 実装 |
+|---|---|---|
+| GDI (WINVER) | `OUTLINETEXTMETRIC::otmAscent` (= OS/2 `sTypoAscender` を ppem で換算) | `win32/visual/TVPSysFont.cpp` |
+| FreeType | OS/2 `sTypoAscender` × ppem / unitsPerEm、四捨五入 | `tFreeTypeFace::GetAscent()` (`common/visual/FreeType.h`) |
+| glyphware | 同上 (`LineMetrics::typoAscenderUnits`) | `GlyphwareFontRasterizer::ApplyFont` |
+
+- OS/2 テーブルが無い / `sTypoAscender` が 0 のフォントは hhea の `ascender` を使う。
+  ビットマップだけのフォント (CBDT / sbix のカラー絵文字等、unitsPerEm = 0) は FreeType の
+  `size->metrics.ascender` に落ちる。
+- 以前の FreeType / glyphware 経路は hhea の `ascender` を使っていた。hhea の方が大きいフォント
+  (源柔ゴシック 1101/881、源ノ角ゴシック 1160/880 など CJK フォントに多い) では、同じ座標指定で
+  SDL 版 / CS 版の文字が GDI より 0.2〜0.28em 下に描かれていた (不具合として修正。src/core
+  8552c8e7 / 2182df8e)。以前の位置に合わせて座標を補正していたタイトルは、補正を外すと
+  WINVER と揃う。
+- グリフのビットマップは全グリフ共通の baseline (先頭フェイスの値) に載せる。sTypoAscender より
+  上へ出るグリフ (アクセント付きの大文字など) はセルの上へはみ出して描かれる (GDI と同じ)。
+  下線・取消線も同じ値から位置を出すので文字と一緒に動く。
+- `drawShapedText` 系 (`GlyphwareText.cpp`) と Elements は独自の行送り
+  (ascent + descent + lineGap) を持つので対象外。
+
 ## 矩形テキストレイアウト (折返し / 禁則 / count)
 
 **段落分割・単語/文字単位の折返し・行頭行末禁則・整列・クラスタ `count` 制限は
