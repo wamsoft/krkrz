@@ -79,8 +79,9 @@ public:
 
 	// 混合系点処理を1パス適用。ops/params は count 個(0なら素通し=合成用)。
 	// scissorBox は合成時の矩形クリップ (GL 座標系4要素、nullptr で無効)。
+	// opacity は結果の α に掛ける不透明度 (0.0〜1.0。endEffect の合成で使う)。
 	void drawPointwise(GLuint srcTex, const int *ops, const float *params, int count, int w, int h,
-	                   const GLint *scissorBox = nullptr);
+	                   const GLint *scissorBox = nullptr, float opacity = 1.0f);
 	// per-channel LUT を1パス適用。lutTex は 256x1 の RGBA8(NEAREST)。
 	void drawLut(GLuint srcTex, GLuint lutTex);
 	// 重み付き分離ブラー1方向ぶんを適用。dx,dy はテクセル単位の1ステップ。
@@ -93,7 +94,7 @@ private:
 	// 混合系点処理プログラム
 	GLuint mPwProgram;
 	GLint  mPwAttrPos, mPwAttrUV;
-	GLint  mPwUnifTex, mPwUnifCount, mPwUnifOps, mPwUnifParams, mPwUnifSeed, mPwUnifRes;
+	GLint  mPwUnifTex, mPwUnifCount, mPwUnifOps, mPwUnifParams, mPwUnifSeed, mPwUnifRes, mPwUnifOpacity;
 
 	// LUTプログラム
 	GLuint mLutProgram;

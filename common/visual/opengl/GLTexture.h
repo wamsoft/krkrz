@@ -325,8 +325,14 @@ public:
 	//!        (動画ミキサ等) は false のまま。 これを間違えるとアルファが
 	//!        二重に掛かり、 半透明部分 (文字のアンチエイリアス等) が薄くなる。
 	void DrawTexture(GLTexture *tex, int scr_w, int scr_h, float position[], int tex_w=0, int tex_h=0, bool blend=false, bool premultiplied=false);
+	//! テクスチャ ID を直接描く (GLFrameBufferObject の色テクスチャ等)。 テクスチャ全体を貼る。
+	//! @param bottom_up  true なら行が下から上に並んだテクスチャ (FBO に描いた絵) として
+	//!                   上下を合わせる。 false は DrawTexture と同じ (上から下)。
+	void DrawTextureId(GLuint tex_id, int scr_w, int scr_h, float position[], bool bottom_up);
 
 private:
+	void DrawImpl(GLuint tex_id, int scr_w, int scr_h, float position[], GLfloat u, GLfloat v, bool flip, bool blend, bool premultiplied);
+
 	GLuint _shader_program;
 	GLint _attr_position;
 	GLint _attr_texCoord;

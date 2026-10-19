@@ -13,6 +13,7 @@
 #include "tjsDictionary.h"   // TJSCreateDictionaryObject
 #include "tjsArray.h"        // TJSCreateArrayObject (ElementsDialog.baseSize getter)
 #include "StoragesResourceLoader.h"   // TVPRegisterElementsFont(Dir)
+#include "LayerIntf.h"       // tTJSNI_BaseLayer / tTJSNC_Layer::ClassID (registerLayerImage)
 #include "VariantJsonUtil.h" // TVPVariantToJsonUtf8 (showDict / showModalDict)
 
 // モーダル実行 API (host 非依存の宣言)。 実装は host 別: SDL host =
@@ -2160,6 +2161,55 @@ tTJSNC_Dialog::tTJSNC_Dialog() : inherited(TJS_W("ElementsDialog"))
 		return TJS_S_OK;
 	}
 	TJS_END_NATIVE_METHOD_DECL(/*func. name*/registerImage)
+	//---------------------------------------------------------------------------
+	// registerLayerImage(name, layer [, left, top, width, height])
+	//
+	// layer の画像 (メイン画像) の画素を、 エンコードもファイルも介さずに
+	// 実行時画像ストアへ name で登録する。 jsonc からは registerImage と同じく
+	// "mem://<name>" で参照し、 登録し直すと表示中の image もその場で差し替わる。
+	// Elements 側はデコードせずにそのまま ThorVG の画像にする (色の並び替えも
+	// しない)。 範囲を省略したら画像全体。 範囲は画像の内側に丸める。
+	// 画素の扱いはレイヤの種類で決める: ltAddAlpha は乗算済み、 ltOpaque は
+	// アルファを無視して不透明、 それ以外は乗算していないアルファとして
+	// 登録時に乗算する。 戻り値 = 登録できたか (画像が無い / 範囲が空なら false)。
+	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/registerLayerImage)
+	{
+		if (numparams < 2) return TJS_E_BADPARAMCOUNT;
+		ttstr name(*param[0]);
+		tTJSVariantClosure clo = param[1]->AsObjectClosureNoAddRef();
+		tTJSNI_BaseLayer* lay = nullptr;
+		if (!clo.Object || TJS_FAILED(clo.Object->NativeInstanceSupport(TJS_NIS_GETINSTANCE,
+				tTJSNC_Layer::ClassID, (iTJSNativeInstance**)&lay)) || !lay) {
+			TVPThrowExceptionMessage(
+				TJS_W("ElementsDialog.registerLayerImage: 第 2 引数には Layer を渡してください"));
+		}
+		bool ok = false;
+		const void* base = lay->GetHasImage() ? lay->GetMainImagePixelBuffer() : nullptr;
+		if (base) {
+			const tjs_int iw = (tjs_int)lay->GetImageWidth();
+			const tjs_int ih = (tjs_int)lay->GetImageHeight();
+			const tjs_int pitch = lay->GetMainImagePixelBufferPitch();
+			auto arg = [&](tjs_int i, tjs_int dflt) {
+				return (numparams > i && param[i]->Type() != tvtVoid) ? (tjs_int)*param[i] : dflt;
+			};
+			tjs_int l = arg(2, 0), t = arg(3, 0);
+			tjs_int w = arg(4, iw - l), h = arg(5, ih - t);
+			if (l < 0) { w += l; l = 0; }
+			if (t < 0) { h += t; t = 0; }
+			if (l + w > iw) w = iw - l;
+			if (t + h > ih) h = ih - t;
+			if (w > 0 && h > 0) {
+				const auto* top = static_cast<const tjs_uint8*>(base)
+					+ static_cast<std::ptrdiff_t>(t) * pitch + static_cast<std::ptrdiff_t>(l) * 4;
+				const tTVPLayerType type = lay->GetType();
+				ok = TVPRegisterElementsImagePixels(name, top, pitch, w, h,
+					/*premultiplied=*/type == ltAddAlpha, /*opaque=*/type == ltOpaque);
+			}
+		}
+		if (result) *result = ok;
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_METHOD_DECL(/*func. name*/registerLayerImage)
 	//---------------------------------------------------------------------------
 	// unregisterImage(name) — 実行時画像ストアから name を削除。
 	TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/unregisterImage)

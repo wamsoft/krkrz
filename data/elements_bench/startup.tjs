@@ -26,4 +26,4 @@ Scripts.execStorage(demolibPath + "demo_common.tjs");
 Scripts.execStorage(Storages.isExistentStorage("scene.tjs")
                     ? "scene.tjs" : "elements_bench/scene.tjs");
 
-runDemoShell([new ElementsBenchScene()], "Elements 負荷計測");
+runDemoShell([new ElementsBenchScene()], I18n.entry("elements_bench.shell"));

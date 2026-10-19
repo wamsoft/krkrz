@@ -271,6 +271,12 @@ SDL ビルドの GPU 描画を SDL_GPU に寄せたもの (KRKRZ_CANVAS_GPU の�
 動作を確立させる。
 
 - Canvas の後回し分: ~~ステンシル・マスククリップ~~ (済)、~~beginEffect/endEffect~~ (済)、drawText
+- ~~endEffect の opacity 引数~~ (済): 2026-10-15 に OpenGL 版 Canvas へ `endEffect(commands, opacity)` を
+  追加し (gles プラグイン互換。合成時に捕捉内容の α へ掛ける。src/core `e5e0d390`)、同日 GPU 版も対応した。
+  最後の合成 (`CompositeCapture` が使う組み込みシェーダ `clip_mask`) に `a_opacity` を足し、`EndEffect` から
+  渡す (マスククリップの合成は 1.0 のまま)。組み込みのパック (SPIR-V / DXIL) は作り直し済み。
+  GLCompositor で読み戻して OpenGL 版と同じ画素になることを Vulkan・D3D12 で確認 (省略 / 255 / 128 / 0 /
+  範囲外の丸め / エフェクト内のマスククリップ)。**機種専用形式 (PS5 等) のパックは機種側のビルドで作り直しが要る**
 - GL 版にあって GPU 版に無いもの: ~~GLCompositor~~ (済)、~~TextureLayerTreeOwner~~ (済)、~~動画テクスチャ (GLVideoPresenter 相当)~~ (SDL presenter の経路で足りる)
 - GPU の renderer 上で、レイヤー合成・動画・Elements のオーバーレイがこれまでどおり出ること
 - 機種: Windows (Vulkan) → PS5 → Switch (Vulkan)。Linux / Steam Deck (Vulkan) も同じ SPIR-V で動く見込み。

@@ -72,6 +72,22 @@ function(krkrz_plugin PROJECT_NAME)
         target_link_options(${PROJECT_NAME} PRIVATE "LINKER:--disable-new-dtags")
     endif()
 
+    # 共有プラグイン (Windows 以外): シンボルを既定で非公開にし、 明示指定した
+    # V2Link / V2Unlink (DLL_EXPORT = visibility("default")) だけを公開する。
+    # Linux では inline static なクラス静的メンバ (ncbind の自動登録リスト
+    # ncbAutoRegister::_top 等) が STB_GNU_UNIQUE で公開され、 RTLD_LOCAL で
+    # dlopen してもプロセス全体で 1 つにまとめられる。 そのため ncbind を使う
+    # プラグインを 2 本読むと、 後の V2Link が前のプラグインのクラスまで登録しようと
+    # して二重登録の例外で abort していた (layerExVector + layerExImage など)。
+    # Windows の DLL はモジュールごとに別のコピーなので元から起きない。
+    if (TVP_LIBRARY_TYPE STREQUAL "SHARED" AND NOT WIN32)
+        set_target_properties(${PROJECT_NAME} PROPERTIES
+            C_VISIBILITY_PRESET hidden
+            CXX_VISIBILITY_PRESET hidden
+            VISIBILITY_INLINES_HIDDEN ON
+        )
+    endif()
+
     if (KRKRZ_DEFINITIONS)
         target_compile_definitions(${PROJECT_NAME} PRIVATE ${KRKRZ_DEFINITIONS})
     endif()

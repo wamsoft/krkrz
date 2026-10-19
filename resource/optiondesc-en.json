@@ -1064,6 +1064,24 @@
 				]
 			},
 			{
+				"caption": "Follow the OS display scaling",
+				"description": "Specifies whether to enlarge the window according to the OS display scaling (Windows \"Scale\", macOS Retina, etc.).\n\nWith \"No\" (the default), window sizes (Window.innerWidth / innerHeight, setInnerSize, etc.) are in actual screen pixels. On a 200% display a 1280x720 window looks half as large, but the picture is shown pixel for pixel.\n\nWith \"Yes\", window sizes are in virtual pixels (actual pixels divided by the OS scaling), and the picture is enlarged by the scaling factor (at 200%, a 1280x720 window is actually 2560x1440 pixels). It looks the same size as on a 100% display, and mouse coordinates are converted to virtual pixels as well.The window position and the screen size such as System.screenWidth / desktopWidth use the same unit.\n\nEffective on SDL3 builds (Windows / macOS / Linux) and the WINVER build. With \"Yes\", moving the window to a display with a different scaling changes the window size (in virtual pixels) and raises onResize.",
+				"name": "dpiscaling",
+				"type": "select",
+				"user": true,
+				"values": [
+					{
+						"value": "no",
+						"desc": "No (actual pixels)",
+						"default": true
+					},
+					{
+						"value": "yes",
+						"desc": "Yes (follow the OS scaling)"
+					}
+				]
+			},
+			{
 				"caption": "Startup display",
 				"description": "Specifies the display (monitor) on which the window first appears in a multi-display environment.\n\nAccepts a 1-based display number, part of a monitor name, 'primary' (the primary display), or 'list' (only prints the display list to the log). Intended mainly for testing.",
 				"name": "display",

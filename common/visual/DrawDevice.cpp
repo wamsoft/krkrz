@@ -27,6 +27,7 @@
 // Elements ダイアログがアクティブなら入力を Elements 側へ転送する。 Forward*
 // が「消費した (true)」を返したときだけ return してゲーム入力処理を止める。
 // 非モーダル UI で、 ダイアログに当たらない入力は素通しさせるため。
+// Window が取り次ぎ済みの入力 (tTVPDialogInputForwardedScope の区間) は飛ばす。
 //
 // ゲートは「この DrawDevice (= このウィンドウ) に overlay が載っているか」で
 // 判定する。 プロセス全体の IsModalActive() で判定すると、 overlay を載せて
@@ -34,7 +35,8 @@
 // 転送されて食われ、 そのウィンドウのボタンが一切押せなくなる。
 #define TVP_DIALOG_INTERCEPT(forward_call) \
 	do { \
-		if (tTVPElementsDialogManager::Instance().IsActiveOnDevice(this)) { \
+		if (!tTVPDialogInputForwardedScope::Active() && \
+		    tTVPElementsDialogManager::Instance().IsActiveOnDevice(this)) { \
 			if (tTVPElementsDialogManager::Instance().forward_call) \
 				return; \
 		} \

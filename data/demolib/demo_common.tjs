@@ -10,6 +10,11 @@
 //    nf(x)               … 実数を JSON 妥当な固定小数文字列へ ("%.3f")
 //    tryPlugin(dll)      … canLink ガード付き Plugins.link (成否を返す)
 //    hasElements()       … ElementsDialog クラスが利用可能か
+//    I18n                … 多言語文字列 (demo_i18n.tjs、本ファイルが自動で読む)。
+//                          I18n.t(id) / I18n.add(table) / I18n.setLanguage(lang) 等。
+//                          パネル辞書は locale / lang を省けば現在言語で補う
+//                          (i18nPanelDict)。DemoShell は F2 で言語を切り替え、
+//                          現在シーンを入り直させる (DemoScene.onLanguageChanged)
 //    class DemoPanel     … onAction を owner.onPanelAction へ中継する ElementsDialog
 //                          (Elements が無い環境では定義されない)
 //    class DemoWindow    … デモ用ウィンドウ基底クラス
@@ -42,6 +47,22 @@
 
 var DEMOLIB_VERSION = 1;
 
+// 多言語文字列 (global.I18n)。demolibPath は各 startup.tjs の読み込みブロックが置く。
+if (typeof global.demolibPath != "undefined" && global.demolibPath !== void &&
+    Storages.isExistentStorage(global.demolibPath + "demo_i18n.tjs"))
+    Scripts.execStorage(global.demolibPath + "demo_i18n.tjs");
+
+// demolib 自身の文字列 (シェル / メニュー)
+I18n.add(%[
+    "common.demo_title"   => %[ ja : "krkrz デモ",                 en : "krkrz demos" ],
+    "common.menu"         => %[ ja : "メニュー",                   en : "Menu" ],
+    "common.menu.prompt"  => %[ ja : "デモを選んで起動してください", en : "Choose a demo to start" ],
+    "common.menu.info"    => %[ ja : "↑↓: 選択   Enter / クリック: 起動   ホイール: スクロール   ESC: 終了   F2: 言語   パッド: 十字+Ⓐ / Ⓑ戻る",
+                                en : "Up/Down: select   Enter / click: start   Wheel: scroll   ESC: quit   F2: language   Pad: D-pad + (A) / (B) back" ],
+    "common.back_to_menu" => %[ ja : "← メニュー (ESC)",           en : "← Menu (ESC)" ],
+    "common.pgupdn"       => %[ ja : "PgUp/PgDn 切替",             en : "PgUp/PgDn: switch" ]
+]);
+
 function dm(x) { Debug.message(x); }
 
 // 実数を JSON 妥当かつ整った文字列へ整形する。
@@ -67,6 +88,35 @@ function tryPlugin(dll)
 
 // ElementsDialog (SDL3 ビルド + KRKRZ_USE_ELEMENTS=ON) が使えるか
 function hasElements() { return typeof global.ElementsDialog != "undefined"; }
+
+// パネルの画面 JSON に、方向キー / パッドの十字でフォーカスを動かす設定
+// ("input": {"arrow_focus_nav": true}) を足す。elements のフォーカスナビは
+// 既定で無効なので、これが無いとマウスの無い機種でパネルを操作できない。
+// 画面側が "input" を書いていればそちらを優先する (方向キーをゲームに渡したい
+// シーンは %[ input : %[ arrow_focus_nav : false ] ] で外せる)。
+function withPadNav(json)
+{
+    if (json.indexOf("\"input\"") >= 0) return json;
+    var p = json.indexOf("{");
+    if (p < 0) return json;
+    return json.substring(0, p + 1) + "\"input\":{\"arrow_focus_nav\":true}," + json.substring(p + 1);
+}
+
+// パネル辞書に現在言語を補う。"locale" が無ければ I18n.locale (字形選択用)、
+// "strings" があって "lang" が無ければ I18n.language を入れる。
+// 呼び出し側の辞書は書き換えない (浅いコピーに足す)。
+function i18nPanelDict(dict)
+{
+    if (typeof global.I18n == "undefined") return dict;
+    var d = %[];
+    (Dictionary.assign incontextof d)(dict);
+    if (d.locale === void) d.locale = I18n.locale;
+    if (d.strings !== void && d.lang === void) d.lang = I18n.language;
+    return d;
+}
+
+// 言語切替キー (DemoShell がホストホットキーとして登録する)
+var DEMO_LANG_KEY = VK_F2;
 
 //----------------------------------------------------------------------
 // 子レイヤを含めてまるごと invalidate する。エンジンの Layer.invalidate は
@@ -277,13 +327,13 @@ class DemoWindow extends Window
             dm("ElementsDialog.dictToJson が無い (古いビルド) ためパネルをスキップします");
             return false;
         }
-        return showPanelJson(global.ElementsDialog.dictToJson(dict));
+        return showPanelJson(global.ElementsDialog.dictToJson(i18nPanelDict(dict)));
     }
     function _tryShowPanel(json)
     {
         closePanel();
         panel = new global.DemoPanel(this);
-        var ok = panel.showJson(json);
+        var ok = panel.showJson(withPadNav(json));
         if (!ok) { invalidate panel; panel = void; }
         return ok;
     }
@@ -334,11 +384,12 @@ class DemoScene
 {
     var window;      // DemoShell (Layer owner)
     var stage;       // 描画先 (shell が用意する全画面 opaque レイヤ)
-    var sceneTitle = "scene";
+    var sceneTitle = "scene";   // 文字列 or %[ja:…, en:…] (I18n.entry(id) で表の項目を渡せる)
     var rawPadKeys = false;  // true: VK_PAD* を論理キーへ読み替えず生のまま受ける
     var _fps = false;
 
     function DemoScene(title) { if (title !== void) sceneTitle = title; }
+    function titleText() { return I18n.text(sceneTitle); }   // 現在言語の見出し
 
     // shell が切替時に呼ぶ内部バインド (override 不要)
     function _bind(shell, stageLayer) { window = shell; stage = stageLayer; }
@@ -357,6 +408,9 @@ class DemoScene
     function onMouseUp(x, y, button, shift) {}
     function onMouseMove(x, y, shift) {}
     function onMouseWheel(shift, delta, x, y) {}
+    // 言語が切り替わった。既定 (false を返す) はシェルがシーンを入り直させる
+    // (onExit → create)。自前で描き直して済ませるシーンは true を返す。
+    function onLanguageChanged(lang) { return false; }
 
     // --- shell へ委譲するヘルパ (DemoWindow と同じ使い勝手) ---
     function setInfo(text)        { window.shellSetInfo(text); }
@@ -366,7 +420,7 @@ class DemoScene
     {
         if (!hasElements()) { dm("Elements 無しのためパネルをスキップ"); return false; }
         if (typeof global.ElementsDialog.dictToJson == "undefined") { dm("ElementsDialog.dictToJson 無し"); return false; }
-        return window.shellShowPanel(this, global.ElementsDialog.dictToJson(dict));
+        return window.shellShowPanel(this, global.ElementsDialog.dictToJson(i18nPanelDict(dict)));
     }
     function closePanel()         { window.shellClosePanel(); }
     // GL シーン用: OGLDrawDevice 派生を drawDevice に設定し、ツリーを透過にする。
@@ -386,14 +440,14 @@ class MenuScene extends DemoScene
     var itemTop = 150, itemH = 52, catText;
     var viewBottom = 674;      // 一覧の下端 (下部バー H-BAR_H=680 の手前)
 
-    function MenuScene(caption) { super.DemoScene("メニュー"); catText = caption; }
+    function MenuScene(caption) { super.DemoScene(I18n.entry("common.menu")); catText = caption; }
 
     function itemCount() { return window.scenes.count - 1; }   // 自分 (index 0) を除く
     function maxVisible() { return ((viewBottom - itemTop) / itemH) \ 1; }
 
     function create()
     {
-        setInfo("↑↓: 選択   Enter / クリック: 起動   ホイール: スクロール   ESC: 終了   パッド: 十字+Ⓐ / Ⓑ戻る");
+        setInfo(I18n.t("common.menu.info"));
         ensureVisible();
         draw();
     }
@@ -417,9 +471,9 @@ class MenuScene extends DemoScene
         s.fillRect(0, 0, 1280, 110, 0xff1f2530);
         s.fillRect(0, 110, 1280, 2, 0xff3a4456);
         s.font.height = 44;
-        s.drawText(44, 26, (catText !== void) ? catText : "krkrz デモ", 0xffffff, 255, true, 0, 0x000000, 0, 2, 2);
+        s.drawText(44, 26, (catText !== void) ? I18n.text(catText) : I18n.t("common.demo_title"), 0xffffff, 255, true, 0, 0x000000, 0, 2, 2);
         s.font.height = 20;
-        s.drawText(48, 80, "デモを選んで起動してください", 0x9aa4b8, 255);
+        s.drawText(48, 80, I18n.t("common.menu.prompt"), 0x9aa4b8, 255);
 
         var n = itemCount();
         var vis = maxVisible();
@@ -431,7 +485,7 @@ class MenuScene extends DemoScene
             s.fillRect(40, y, 1200, itemH - 8, sel ? 0xff2d4266 : 0xff1c212c);
             if (sel) s.fillRect(40, y, 6, itemH - 8, 0xff64a0ff);
             s.font.height = 26;
-            s.drawText(72, y + 8, (i + 1) + ". " + sc.sceneTitle, sel ? 0xffffff : 0xc8d0e0, 255);
+            s.drawText(72, y + 8, (i + 1) + ". " + sc.titleText(), sel ? 0xffffff : 0xc8d0e0, 255);
         }
 
         // スクロールバー + 件数表示 (項目が入りきらないときのみ)
@@ -565,13 +619,15 @@ class DemoShell extends Window
     var NAV_MENU;              // 「← メニュー」ボタンのクリック領域 (x範囲)
     var _glMode = false;       // GL シーン中 (ツリーを透過にして GL を見せる)
     var hub = false;           // hub モード (scenes[0]=メニュー、ESC でそこへ戻る)
+    var _title;                // ウィンドウ見出し (文字列 or %[ja:…, en:…])
 
     function DemoShell(sceneList, title, hubMode)
     {
         super.Window();
         scenes = sceneList;
         hub = (hubMode === true);
-        caption = (title !== void) ? title : "krkrz デモ";
+        _title = title;
+        caption = (title !== void) ? I18n.text(title) : I18n.t("common.demo_title");
         setInnerSize(W, H);
 
         buildTree();
@@ -602,7 +658,9 @@ class DemoShell extends Window
             ElementsDialog.registerHotKey(VK_PAD2);   // B  = 戻る (ESC 相当)
             ElementsDialog.registerHotKey(VK_PAD5);   // LB = PgUp 相当
             ElementsDialog.registerHotKey(VK_PAD6);   // RB = PgDn 相当
+            ElementsDialog.registerHotKey(DEMO_LANG_KEY);   // 言語切替
         }
+        I18n.addListener(this);
 
         System.addContinuousHandler(onShellCont);
         switchTo(0);
@@ -611,6 +669,7 @@ class DemoShell extends Window
     function finalize()
     {
         System.removeContinuousHandler(onShellCont);
+        I18n.removeListener(this);
         if (scene !== void) scene.onExit();
         shellClosePanel();
         super.finalize(...);
@@ -705,6 +764,19 @@ class DemoShell extends Window
         drawBar();
     }
 
+    // I18n からの通知。パネルのボタン (onAction の中) から切り替えられることも
+    // あり、その場でパネルを閉じると呼び出し元のダイアログを壊すので、反映は
+    // 次フレームの onShellCont で行う。
+    var _pendingLang;
+    function onLanguageChanged(lang) { _pendingLang = lang; }
+    function _applyLanguage(lang)
+    {
+        caption = (_title !== void) ? I18n.text(_title) : I18n.t("common.demo_title");
+        if (scene === void) return;
+        if (scene.onLanguageChanged(lang)) drawBar();
+        else switchTo(index);   // シーンを入り直させる (onExit → create)
+    }
+
     function next() { switchTo(index + 1); }
     function prev() { switchTo(index - 1); }
 
@@ -718,7 +790,7 @@ class DemoShell extends Window
         if (hub && index != 0) {
             bar.fillRect(10, 6, 150, 28, 0xff2d4266);
             bar.font.height = 18;
-            bar.drawText(20, 10, "← メニュー (ESC)", 0xffffff, 255);
+            bar.drawText(20, 10, I18n.t("common.back_to_menu"), 0xffffff, 255);
             NAV_MENU = [ 10, 160 ];
             bar.font.height = 18;
             bar.drawText(178, 11, infoText, 0xffe080, 255);
@@ -728,7 +800,7 @@ class DemoShell extends Window
         }
         if (!hub && scenes.count > 1) {
             // 右側にナビ: ◀  [i/N name]  ▶
-            var label = @"${index + 1}/${scenes.count}  ${scene.sceneTitle}";
+            var label = @"${index + 1}/${scenes.count}  ${scene.titleText()}";
             bar.font.height = 19;
             var lw = bar.font.getTextWidth(label);
             var rx = W - 16;
@@ -744,7 +816,7 @@ class DemoShell extends Window
             bar.fillRect(lxr - 28, 6, 28, 28, 0xff2d4266);
             bar.drawText(lxr - 22, 10, "◀", 0xffffff, 255);
             bar.font.height = 14;
-            bar.drawText(rx - 40 - lw - 44 - 150, 13, "PgUp/PgDn 切替", 0x8090a8, 255);
+            bar.drawText(rx - 40 - lw - 44 - 150, 13, I18n.t("common.pgupdn"), 0x8090a8, 255);
         }
         bar.update();
     }
@@ -796,7 +868,7 @@ class DemoShell extends Window
         // ホスト Window (シェル) へ素通しする。シェル操作に必須のキー (ESC /
         // PgUp/PgDn / パッド B/LB/RB) は registerHotKey 済みなのでパネルより
         // 優先で onKeyDown へ届く (キーを奪われてシーン切替不能にはならない)。
-        var ok = panel.showJson(json, true, false);
+        var ok = panel.showJson(withPadNav(json), true, false);
         if (!ok) { invalidate panel; panel = void; }
         return ok;
     }
@@ -816,6 +888,7 @@ class DemoShell extends Window
     {
         var tick = System.getTickCount();
 
+        if (_pendingLang !== void) { var l = _pendingLang; _pendingLang = void; _applyLanguage(l); }
         if (_pendingPanelJson !== void && hasElements()) {
             if (_tryPanel(_pendingPanelJson)) _pendingPanelJson = void;
         }
@@ -839,7 +912,7 @@ class DemoShell extends Window
                 if (typeof _autoTested[index] == "undefined") {
                     _autoTested[index] = 1;
                     scene.onDemoTest();
-                    dm(@"@demotest:scene ${index + 1}/${scenes.count} ${scene.sceneTitle}");
+                    dm(@"@demotest:scene ${index + 1}/${scenes.count} ${scene.titleText()}");
                 }
                 if (index + 1 < scenes.count) { switchTo(index + 1); _autoTest = 40; }
                 else { dm("@demotest:ok"); System.exit(0); }
@@ -854,7 +927,7 @@ class DemoShell extends Window
         if (no.length < 2) no = "0" + no;
         var path = _autoCapDir + "scene" + no + ".png";
         System.captureScreen(path);
-        dm(@"@demotest:cap ${path} ${scene.sceneTitle}");
+        dm(@"@demotest:cap ${path} ${scene.titleText()}");
     }
 
     // --- 入力: ナビはシェル、その他は現在シーンへ ------------------------
@@ -867,6 +940,7 @@ class DemoShell extends Window
             if (scene !== void && scene.rawPadKeys) { scene.onKeyDown(key, shift); return; }
             key = lk;
         }
+        if (key == DEMO_LANG_KEY) { I18n.cycleLanguage(); return; }
         if (key == VK_ESCAPE) {
             // hub では ESC は「デモ→メニュー」のみ。System.exit しない (web で
             // メニューに戻った直後の ESC 連打で終了しないように)。ESC は

@@ -11,6 +11,50 @@
 //    触ってよい (ロック不要)。
 // ======================================================================
 
+I18n.add(%[
+    "webui.title"          => %[ ja : "ブラウザ UI (WebServer)",          en : "Browser UI (WebServer)" ],
+    "webui.shell"          => %[ ja : "webui — ブラウザ UI (WebServer)",  en : "webui — Browser UI (WebServer)" ],
+    "webui.message.init"   => %[ ja : "ブラウザから書き換えてください",     en : "Change this from the browser" ],
+    "webui.info.open"      => %[ ja : "ブラウザで ${url}ui/ を開く (パネルのボタンでも開けます)",
+                                 en : "Open ${url}ui/ in a browser (or use the panel button)" ],
+    "webui.info.nows"      => %[ ja : "このビルドには WebServer がありません (KRKRZ_REPL_WEB=OFF)",
+                                 en : "This build has no WebServer (KRKRZ_REPL_WEB=OFF)" ],
+    "webui.heading"        => %[ ja : "ブラウザ UI (内蔵 HTTP + SSE サーバ)", en : "Browser UI (built-in HTTP + SSE server)" ],
+    "webui.desc1"          => %[ ja : "本体が HTTP サーバを持っているので、ブラウザ側にツール UI を置いてゲームを操作できる。",
+                                 en : "The engine has an HTTP server, so a tool UI in the browser can control the game." ],
+    "webui.desc2"          => %[ ja : "ハンドラはメインスレッドで実行されるため、TJS の状態をそのまま触ってよい (ロック不要)。",
+                                 en : "Handlers run on the main thread, so they may touch TJS state directly (no locks)." ],
+    "webui.card.server"    => %[ ja : "サーバ",                            en : "Server" ],
+    "webui.nows.value"     => %[ ja : "(このビルドには無い)",              en : "(not in this build)" ],
+    "webui.nows.hint"      => %[ ja : "KRKRZ_REPL_WEB=ON でビルドすると使えます", en : "Available when built with KRKRZ_REPL_WEB=ON" ],
+    "webui.row.status"     => %[ ja : "状態",                              en : "Status" ],
+    "webui.status.on"      => %[ ja : "稼働中",                            en : "running" ],
+    "webui.status.off"     => %[ ja : "停止中",                            en : "stopped" ],
+    "webui.row.origin"     => %[ ja : "起動元",                            en : "Started by" ],
+    "webui.origin.me"      => %[ ja : "このデモ (WebServer.start)",        en : "this demo (WebServer.start)" ],
+    "webui.origin.repl"    => %[ ja : "-replweb (相乗り)",                 en : "-replweb (shared)" ],
+    "webui.ep.ui"          => %[ ja : "GET  /ui/          ページ配信 (serveStatic)", en : "GET  /ui/          page (serveStatic)" ],
+    "webui.ep.state"       => %[ ja : "GET  /api/state    現在の状態 (JSON)",       en : "GET  /api/state    current state (JSON)" ],
+    "webui.ep.message"     => %[ ja : "POST /api/message  body = 表示文字列 (UTF-8)", en : "POST /api/message  body = text to show (UTF-8)" ],
+    "webui.ep.bump"        => %[ ja : "POST /api/bump     ?by=N (既定 1)",         en : "POST /api/bump     ?by=N (default 1)" ],
+    "webui.ep.sub"         => %[ ja : "GET  /sub/webui    ゲームからの push (SSE)",  en : "GET  /sub/webui    push from the game (SSE)" ],
+    "webui.card.state"     => %[ ja : "ブラウザから操作される状態",        en : "State controlled from the browser" ],
+    "webui.counter"        => %[ ja : "カウンタ: %d",                      en : "Counter: %d" ],
+    "webui.sync"           => %[ ja : "ページ側は 3 秒ごとに GET /api/state でも同期している",
+                                 en : "The page also syncs with GET /api/state every 3 seconds" ],
+    "webui.card.log"       => %[ ja : "リクエスト / push ログ",            en : "Request / push log" ],
+    "webui.log.empty"      => %[ ja : "(まだアクセスがありません)",        en : "(no requests yet)" ],
+    "webui.info.opened"    => %[ ja : "ブラウザで ${url}ui/ を開きました", en : "Opened ${url}ui/ in a browser" ],
+    "webui.push.counter"   => %[ ja : "ゲーム側でカウンタを %d にしました", en : "The game set the counter to %d" ],
+    "webui.info.stopped"   => %[ ja : "サーバを停止しました",              en : "Server stopped" ],
+    "webui.info.started"   => %[ ja : "サーバを起動しました: ${url}",      en : "Server started: ${url}" ],
+    "webui.panel.title"    => %[ ja : "ブラウザ UI",                       en : "Browser UI" ],
+    "webui.panel.open"     => %[ ja : "ブラウザで開く",                    en : "Open in browser" ],
+    "webui.panel.push"     => %[ ja : "ブラウザへ push (SSE)",             en : "Push to browser (SSE)" ],
+    "webui.panel.toggle"   => %[ ja : "サーバ 起動 / 停止",                en : "Start / stop server" ],
+    "webui.panel.clear"    => %[ ja : "ログ消去",                          en : "Clear log" ]
+]);
+
 class WebUIScene extends DemoScene
 {
     // --- レイアウト ---
@@ -26,7 +70,7 @@ class WebUIScene extends DemoScene
     var url = "";
 
     // ブラウザから操作される状態
-    var message = "ブラウザから書き換えてください";
+    var message = "";
     var color = "ffd76a";
     var count = 0;
 
@@ -34,13 +78,13 @@ class WebUIScene extends DemoScene
     var LOG_MAX = 16;
     var dirty = false;
 
-    function WebUIScene() { super.DemoScene("ブラウザ UI (WebServer)"); }
+    function WebUIScene() { super.DemoScene(I18n.entry("webui.title")); }
 
     function create()
     {
         logs = [];
         count = 0;
-        message = "ブラウザから書き換えてください";
+        message = I18n.t("webui.message.init");
         color = "ffd76a";
 
         stage.fillRect(0, 0, 1280, 720, 0xff141821);
@@ -55,8 +99,8 @@ class WebUIScene extends DemoScene
         redrawInfo();
         redrawState();
         redrawLog();
-        setInfo(available ? ("ブラウザで " + url + "ui/ を開く (パネルのボタンでも開けます)")
-                          : "このビルドには WebServer がありません (KRKRZ_REPL_WEB=OFF)");
+        setInfo(available ? I18n.t("webui.info.open", %[ url : url ])
+                          : I18n.t("webui.info.nows"));
         showPanelDict(panelDict());
     }
 
@@ -196,10 +240,10 @@ class WebUIScene extends DemoScene
     function drawStatic()
     {
         stage.font.height = 19;
-        stage.drawText(24, 44, "ブラウザ UI (内蔵 HTTP + SSE サーバ)", 0xffd76a, 255);
+        stage.drawText(24, 44, I18n.t("webui.heading"), 0xffd76a, 255);
         stage.font.height = 15;
-        stage.drawText(24, 76, "本体が HTTP サーバを持っているので、ブラウザ側にツール UI を置いてゲームを操作できる。", 0xc8d2e4, 255);
-        stage.drawText(24, 98, "ハンドラはメインスレッドで実行されるため、TJS の状態をそのまま触ってよい (ロック不要)。", 0xc8d2e4, 255);
+        stage.drawText(24, 76, I18n.t("webui.desc1"), 0xc8d2e4, 255);
+        stage.drawText(24, 98, I18n.t("webui.desc2"), 0xc8d2e4, 255);
         stage.update();
     }
 
@@ -221,35 +265,35 @@ class WebUIScene extends DemoScene
 
     function redrawInfo()
     {
-        card(IX, IY, IW, IH, "サーバ");
+        card(IX, IY, IW, IH, I18n.t("webui.card.server"));
         var y = IY + 40;
         if (!available) {
-            y = row(IX, y, "WebServer", "(このビルドには無い)", 0xff9a9a);
+            y = row(IX, y, "WebServer", I18n.t("webui.nows.value"), 0xff9a9a);
             stage.font.height = 14;
-            stage.drawText(IX + 12, y + 6, "KRKRZ_REPL_WEB=ON でビルドすると使えます", 0x9fb0c8, 255);
+            stage.drawText(IX + 12, y + 6, I18n.t("webui.nows.hint"), 0x9fb0c8, 255);
             stage.font.height = 15;
             stage.update(IX, IY, IW, IH);
             return;
         }
-        y = row(IX, y, "状態", WebServer.active ? "稼働中" : "停止中",
+        y = row(IX, y, I18n.t("webui.row.status"), WebServer.active ? I18n.t("webui.status.on") : I18n.t("webui.status.off"),
                 WebServer.active ? 0x9fd6a0 : 0xff9a9a);
         y = row(IX, y, "URL", url != "" ? url : "-");
-        y = row(IX, y, "起動元", startedByMe ? "このデモ (WebServer.start)" : "-replweb (相乗り)");
+        y = row(IX, y, I18n.t("webui.row.origin"), startedByMe ? I18n.t("webui.origin.me") : I18n.t("webui.origin.repl"));
         y += 8;
         stage.font.height = 14;
-        stage.drawText(IX + 12, y, "GET  /ui/          ページ配信 (serveStatic)", 0x9fd6a0, 255); y += 20;
-        stage.drawText(IX + 12, y, "GET  /api/state    現在の状態 (JSON)", 0x9fd6a0, 255); y += 20;
-        stage.drawText(IX + 12, y, "POST /api/message  body = 表示文字列 (UTF-8)", 0x9fd6a0, 255); y += 20;
+        stage.drawText(IX + 12, y, I18n.t("webui.ep.ui"), 0x9fd6a0, 255); y += 20;
+        stage.drawText(IX + 12, y, I18n.t("webui.ep.state"), 0x9fd6a0, 255); y += 20;
+        stage.drawText(IX + 12, y, I18n.t("webui.ep.message"), 0x9fd6a0, 255); y += 20;
         stage.drawText(IX + 12, y, "POST /api/color    body = \"rrggbb\"", 0x9fd6a0, 255); y += 20;
-        stage.drawText(IX + 12, y, "POST /api/bump     ?by=N (既定 1)", 0x9fd6a0, 255); y += 20;
-        stage.drawText(IX + 12, y, "GET  /sub/webui    ゲームからの push (SSE)", 0x9fd6a0, 255);
+        stage.drawText(IX + 12, y, I18n.t("webui.ep.bump"), 0x9fd6a0, 255); y += 20;
+        stage.drawText(IX + 12, y, I18n.t("webui.ep.sub"), 0x9fd6a0, 255);
         stage.font.height = 15;
         stage.update(IX, IY, IW, IH);
     }
 
     function redrawState()
     {
-        card(SX, SY, SW, SH, "ブラウザから操作される状態");
+        card(SX, SY, SW, SH, I18n.t("webui.card.state"));
         var y = SY + 44;
         // color は "rrggbb" 文字列。 drawText の色は 24bit RGB なので 0x を付けて数値化する
         var col = (int)("0x" + color);
@@ -261,20 +305,20 @@ class WebUIScene extends DemoScene
         stage.drawText(SX + 150, y + 10, "#" + color, 0xdfe6f2, 255);
         y += 58;
         stage.font.height = 22;
-        stage.drawText(SX + 16, y, "カウンタ: " + count, 0xdfe6f2, 255);
+        stage.drawText(SX + 16, y, I18n.t("webui.counter", count), 0xdfe6f2, 255);
         stage.font.height = 14;
-        stage.drawText(SX + 16, SY + SH - 30, "ページ側は 3 秒ごとに GET /api/state でも同期している", 0x8899b0, 255);
+        stage.drawText(SX + 16, SY + SH - 30, I18n.t("webui.sync"), 0x8899b0, 255);
         stage.font.height = 15;
         stage.update(SX, SY, SW, SH);
     }
 
     function redrawLog()
     {
-        card(LX, LY, LW, LH, "リクエスト / push ログ");
+        card(LX, LY, LW, LH, I18n.t("webui.card.log"));
         var y = LY + 40;
         stage.font.height = 13;
         if (logs.count == 0) {
-            stage.drawText(LX + 12, y, "(まだアクセスがありません)", 0x9fb0c8, 255);
+            stage.drawText(LX + 12, y, I18n.t("webui.log.empty"), 0x9fb0c8, 255);
         } else {
             for (var i = 0; i < logs.count; i++) {
                 var t = logs[i];
@@ -311,14 +355,14 @@ class WebUIScene extends DemoScene
         case "open":
             if (available && WebServer.active) {
                 WebServer.openBrowser(url + "ui/");
-                setInfo("ブラウザで " + url + "ui/ を開きました");
+                setInfo(I18n.t("webui.info.opened", %[ url : url ]));
             }
             break;
 
         case "push":
             // ゲーム側の変化をブラウザへ通知する例
             count++;
-            push("ゲーム側でカウンタを " + count + " にしました");
+            push(I18n.t("webui.push.counter", count));
             dirty = true;
             break;
 
@@ -328,10 +372,10 @@ class WebUIScene extends DemoScene
                 unregisterAll();
                 WebServer.stop();
                 startedByMe = false;
-                setInfo("サーバを停止しました");
+                setInfo(I18n.t("webui.info.stopped"));
             } else {
                 startServer();
-                setInfo("サーバを起動しました: " + url);
+                setInfo(I18n.t("webui.info.started", %[ url : url ]));
             }
             dirty = true;
             break;
@@ -352,19 +396,19 @@ class WebUIScene extends DemoScene
     function panelDict()
     {
         return %[
-            size : [320, 300], background : [26, 30, 40, 236], locale : "ja-JP",
+            size : [320, 300], background : [26, 30, 40, 236],
             align : "bottom_right", margin : 16,
             content : %[ type : "margin", padding : 14, child : %[ type : "vtile", children : [
                 %[ type : "vsize", height : 0, child : %[ type : "hspacer", width : 288 ] ],
-                %[ type : "align_center", child : %[ type : "label", text : "ブラウザ UI", size_scale : 1.2 ] ],
+                %[ type : "align_center", child : %[ type : "label", text : I18n.t("webui.panel.title"), size_scale : 1.2 ] ],
                 %[ type : "vspacer", height : 10 ],
-                %[ type : "button", id : "open",   text : "ブラウザで開く" ],
+                %[ type : "button", id : "open",   text : I18n.t("webui.panel.open") ],
                 %[ type : "vspacer", height : 8 ],
-                %[ type : "button", id : "push",   text : "ブラウザへ push (SSE)" ],
+                %[ type : "button", id : "push",   text : I18n.t("webui.panel.push") ],
                 %[ type : "vspacer", height : 8 ],
-                %[ type : "button", id : "toggle", text : "サーバ 起動 / 停止" ],
+                %[ type : "button", id : "toggle", text : I18n.t("webui.panel.toggle") ],
                 %[ type : "vspacer", height : 8 ],
-                %[ type : "button", id : "clear",  text : "ログ消去" ]
+                %[ type : "button", id : "clear",  text : I18n.t("webui.panel.clear") ]
             ] ] ]
         ];
     }

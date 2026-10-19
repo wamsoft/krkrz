@@ -346,8 +346,8 @@ class tTJSNI_GpuCanvas : public tTJSNativeInstance {
 		tjs_int x, tjs_int y, tjs_int w, tjs_int h, float u1, float v1, QuadMode mode );
 	//! エフェクトの 1 パス: src を shader で dst へ書き写す (ブレンド・クリップ無し)
 	void EffectPass( TVPGpu::Texture* dst, tTJSNI_GpuShaderProgram* shader, TVPGpu::Texture* src, TVPGpu::Texture* src2 = nullptr );
-	//! 捕捉内容を直前の描画先へ現在の blendMode で合成する (mask は nullptr で素通し)
-	void CompositeCapture( TVPGpu::Texture* tex, const iTVPGpuDrawable* mask, float x, float y );
+	//! 捕捉内容を直前の描画先へ現在の blendMode で合成する (mask は nullptr で素通し、opacity は α に掛ける)
+	void CompositeCapture( TVPGpu::Texture* tex, const iTVPGpuDrawable* mask, float x, float y, float opacity = 1.0f );
 	void ApplyScissor();
 	TVPGpu::BlendState MakeBlendState() const;
 	void FillCommon( TVPGpu::DrawCall& dc, tTJSNI_GpuShaderProgram* shader );
@@ -393,7 +393,7 @@ public:
 	void Save();
 	void Restore();
 	void BeginEffect();
-	void EndEffect( const tTJSVariant& commands );
+	void EndEffect( const tTJSVariant& commands, tjs_int opacity = 255 );
 	void BeginMaskClip();
 	void EndMaskClip( const iTVPGpuDrawable* mask, float x, float y );
 	void BeginStencilClip( const iTVPGpuDrawable* mask, float x, float y, tjs_int threshold );

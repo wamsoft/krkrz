@@ -1141,7 +1141,7 @@ void tTJSNI_Canvas::BeginEffect() {
 	RestoreClipState();
 }
 //----------------------------------------------------------------------
-void tTJSNI_Canvas::EndEffect( const tTJSVariant & commands ) {
+void tTJSNI_Canvas::EndEffect( const tTJSVariant & commands, tjs_int opacity ) {
 	if( EffectCaptureStack.empty() ) {
 		TVPAddLog( TJS_W("Canvas.endEffect: unbalanced (no beginEffect).") );
 		return;
@@ -1165,8 +1165,10 @@ void tTJSNI_Canvas::EndEffect( const tTJSVariant & commands ) {
 	glBindFramebuffer( GL_FRAMEBUFFER, prevFb );
 	glViewport( 0, 0, w, h );
 	ApplyBlendMode();
-	// 素通し描画 (矩形クリップが有効ならこの合成にも適用する)
-	EffectCtx.drawPointwise( resultTex, nullptr, nullptr, 0, w, h, CurrentScissorBox() );
+	// 素通し描画 (矩形クリップが有効ならこの合成にも適用する)。opacity は合成時の α に掛ける
+	if( opacity < 0 ) opacity = 0;
+	if( opacity > 255 ) opacity = 255;
+	EffectCtx.drawPointwise( resultTex, nullptr, nullptr, 0, w, h, CurrentScissorBox(), opacity / 255.0f );
 
 	// 後始末
 	if( produced ) EffectFboPool.release( produced );
@@ -1857,16 +1859,17 @@ TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/beginEffect )
 }
 TJS_END_NATIVE_METHOD_DECL(/*func. name*/beginEffect )
 //----------------------------------------------------------------------
-// endEffect(commands)
+// endEffect(commands, opacity=255)
 //   直前の beginEffect() 以降の描画内容へ commands (加工コマンド配列、
 //   gles プラグイン互換) を適用し、現在の blendMode で合成する。
-//   commands 省略時は素通し合成。
+//   commands 省略時は素通し合成。opacity (0〜255) は合成時の不透明度 (gles プラグイン互換)。
 TJS_BEGIN_NATIVE_METHOD_DECL(/*func. name*/endEffect )
 {
 	TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Canvas );
 	tTJSVariant commands;
 	if( numparams >= 1 ) commands = *param[0];
-	_this->EndEffect( commands );
+	tjs_int opacity = ( numparams >= 2 && param[1]->Type() != tvtVoid ) ? (tjs_int)*param[1] : 255;
+	_this->EndEffect( commands, opacity );
 	return TJS_S_OK;
 }
 TJS_END_NATIVE_METHOD_DECL(/*func. name*/endEffect )

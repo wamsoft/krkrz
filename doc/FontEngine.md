@@ -610,6 +610,14 @@ MS Gothic → Hiragino → IPA / VL / Takao → Noto Sans CJK JP / Noto Sans JP 
   `TVPRetryDefaultFontName` が選び直し、変わったら `DefaultFont.Face` を差し替える。
   当たっていれば選び直さない (実行中に既定の見た目が変わらないように)。
 - `-deffont` / `TVPSetDefaultFontName` は選び直しの対象外。
+- **`Font.face = ""` (空) は既定書体**。 classic FreeType 経路
+  (`FreeTypeFontRasterizer::ApplyFont`) は既定名にも `EnsureLazyFontLoaded` を掛けてから
+  使う (OS のフォント / fonts.json の宣言は名前だけ登録されていてファイルは初回使用まで
+  開かないため。 2026-10-15 までは掛けておらず、 fonts.json の無いデータで既定書体が
+  OS のフォントになると名前を引けず、 下の最後の手段に落ちていた)。
+- 名前がどれも引けないときの最後の手段 (`tTVPFreeTypeFaceList::GetDefaultFace`) は
+  最初に読み込んだ内蔵フォント。 内蔵フォントはファイル名順に読むので、 Elements の
+  アイコン専用フォント `elements_basic` (矢印・チェック等の記号だけ) は飛ばす。
 - WINVER は GDI の既定フォント (選び直しなし)。
 
 ## どのフォントにも無い文字 (代替表示)

@@ -26,9 +26,12 @@ zlib deflate で圧縮し、C++ ソースへ埋め込む。3 モード:
   一覧表 (Markdown):
     python licenses/gen_licenses_c.py --mode table \
         --plugins <umbrella>/src/plugins \
-        --out <umbrella>/doc/guide/BundledLicenses.md
+        --out <umbrella>/doc/guide/BundledLicenses.md --i18n <umbrella>/doc/i18n
       → 本体 / プラグイン / その他 (フォント) に分けた対応表を生成。
         種別は manifest の "license" フィールドをそのまま使う (推測しない)。
+        --i18n を付けると <i18n>/<lang>/bundled_licenses.json がある言語ぶん
+        BundledLicenses.<lang>.md も出す (固定文言は TABLE_TEXT、manifest 由来の
+        日本語の文言はそのカタログで訳す。訳の無い文言は原文のまま出して警告)。
 
 manifest のエントリに "when": "MACRO" を付けると、そのエントリ (バイト配列と
 テーブル行/登録呼び出し) が #if defined(MACRO) で囲まれる。ビルド構成で
@@ -39,7 +42,7 @@ JerryScript / RapidJSON は 1 行もコンパイルされない) を、一覧へ
 出力はバイト一致なら書き換えない (mtime 保護)。テキストは UTF-8 として
 収録される (収録元が UTF-8/ASCII であること)。
 """
-import argparse, json, os, sys, zlib
+import argparse, hashlib, json, os, sys, zlib
 
 
 def load_manifest(path):
@@ -153,15 +156,90 @@ def generate(entries, mode, func):
     return "\n".join(out)
 
 
-GROUP_LABEL = {
-    "engine":      "エンジン基盤",
-    "font-engine": "文字組み (glyphware)",
-    "audio":       "音声",
-    "video":       "動画",
-    "ui":          "UI (Elements)",
-    "platform":    "プラットフォーム",
-    "font":        "フォント",
+# 一覧表 (--mode table) の固定文言。 言語ごとに持ち、 出力時にそれぞれ出し直す。
+# 言語を足すときはここに 1 組足し、 manifest 由来の文言 (license / note) の訳を
+# <i18n>/<lang>/bundled_licenses.json に置く。
+TABLE_TEXT = {
+    "ja": {
+        "title": "同梱ライセンス一覧",
+        "intro": "配布物に載る第三者コンポーネントの対応表です。本体 {body} 件 / "
+                 "プラグイン {plugs} 件 / フォント {fonts} 件 (うち構成依存 {cond} 件)。",
+        "source": "正本は各 `licenses/manifest.json`、仕組みの説明は "
+                  "`src/core/doc/LicenseSystem.md` です。"
+                  "ライセンス原文は配布物の `licenses/` フォルダに全文が入ります。",
+        "h_engine": "本体",
+        "engine_desc": "エンジン本体 (exe) に内蔵され、`make install` で `licenses/` へ書き出される分です。",
+        "h_plugins": "プラグイン",
+        "plugins_desc": "各プラグインの DLL 側が実行時に登録します "
+                        "(`System.getLicenseList()` / `-license` に合流)。"
+                        "原文は install 時に配布物の `licenses/plugins/` へも書き出されます "
+                        "(実際にビルドしたプラグインのぶんだけ)。",
+        "no_plugins": "(プラグインの manifest が見つかりませんでした)",
+        "h_other": "その他 (フォント・データ)",
+        "other_desc": "コードではなくデータですが、配布物に載る以上は同じ一覧で扱います。"
+                      "案件が独自フォントを足す場合は manifest ではなく "
+                      "**ゲームデータ側の `licenses/*.txt`** に置けば実行時に合流します。",
+        "title_row": "| 案件が置く分 | 案件ごと | `<データ>/licenses/*.txt` を実行時に列挙 |",
+        "h_cond": "構成依存のエントリ",
+        "cond_desc": "ビルド構成によっては 1 行もコンパイルされないコンポーネントです。"
+                     "マクロが定義されない構成では内蔵テーブルにも配布物にも出ません。",
+        "th3": "| コンポーネント | ライセンス | 備考 |",
+        "th4": "| プラグイン | コンポーネント | ライセンス | 備考 |",
+        "th_macro": "| マクロ | 対象 |",
+        "when": "**`{macro}` 有効時のみ**",
+        "groups": {
+            "engine":      "エンジン基盤",
+            "font-engine": "文字組み (glyphware)",
+            "audio":       "音声",
+            "video":       "動画",
+            "ui":          "UI (Elements)",
+            "platform":    "プラットフォーム",
+            "font":        "フォント",
+        },
+    },
+    "en": {
+        "title": "Bundled Licenses",
+        "intro": "This table lists the third-party components included in the distribution: "
+                 "{body} in the engine, {plugs} in plugins, and {fonts} fonts "
+                 "({cond} of them depend on the build configuration).",
+        "source": "The source of truth is each `licenses/manifest.json`; the mechanism is described in "
+                  "`src/core/doc/LicenseSystem.md`. The full license texts are included in the "
+                  "`licenses/` folder of the distribution.",
+        "h_engine": "Engine",
+        "engine_desc": "Components built into the engine executable and written out to `licenses/` "
+                       "by `make install`.",
+        "h_plugins": "Plugins",
+        "plugins_desc": "Each plugin DLL registers these at runtime (they are merged into "
+                        "`System.getLicenseList()` / `-license`). At install time, the original texts "
+                        "are also written to `licenses/plugins/` in the distribution (only for the "
+                        "plugins actually built).",
+        "no_plugins": "(No plugin manifests were found)",
+        "h_other": "Other (Fonts and Data)",
+        "other_desc": "These are data rather than code, but since they ship in the distribution, they "
+                      "are handled in the same list. If a title adds its own fonts, put the license in "
+                      "**`licenses/*.txt` on the game data side** instead of a manifest, and it is "
+                      "merged in at runtime.",
+        "title_row": "| Added by each title | Per title | `<data>/licenses/*.txt` is enumerated at runtime |",
+        "h_cond": "Configuration-Dependent Entries",
+        "cond_desc": "Depending on the build configuration, these components are not compiled at all. "
+                     "In configurations where the macro is not defined, they appear neither in the "
+                     "built-in table nor in the distribution.",
+        "th3": "| Component | License | Notes |",
+        "th4": "| Plugin | Component | License | Notes |",
+        "th_macro": "| Macro | Target |",
+        "when": "**Only when `{macro}` is enabled**",
+        "groups": {
+            "engine":      "Engine Foundation",
+            "font-engine": "Text Layout (glyphware)",
+            "audio":       "Sound",
+            "video":       "Movie",
+            "ui":          "UI (Elements)",
+            "platform":    "Platform",
+            "font":        "Fonts",
+        },
+    },
 }
+GROUP_LABEL = TABLE_TEXT["ja"]["groups"]
 
 
 def load_meta(path):
@@ -180,17 +258,45 @@ def md_escape(s):
     return s.replace("|", "\\|")
 
 
-def remark(e):
+def _has_cjk(s):
+    return any(ord(c) >= 0x3000 for c in s)
+
+
+class Terms:
+    """manifest 由来の文言 (license / note) の訳。 日本語ならそのまま返す。
+
+    訳の無い日本語の文言は原文のまま出し、 missing に溜める (生成後に警告する)。"""
+
+    def __init__(self, lang, table=None):
+        self.lang = lang
+        self.table = table or {}
+        self.missing = []
+
+    def __call__(self, s):
+        if self.lang == "ja" or not s or not _has_cjk(s):
+            return s
+        t = self.table.get(s)
+        if t is None:
+            if s not in self.missing:
+                self.missing.append(s)
+            return s
+        return t
+
+
+def remark(e, tx, terms):
     """備考欄。 構成依存なら条件を頭に出す。"""
     parts = []
     if e.get("when"):
-        parts.append(f'**`{e["when"]}` 有効時のみ**')
+        parts.append(tx["when"].format(macro=e["when"]))
     if e.get("note"):
-        parts.append(e["note"])
+        parts.append(terms(e["note"]))
     return " / ".join(md_escape(p) for p in parts)
 
 
-def generate_table(core_manifest, plugins_dir):
+def generate_table(core_manifest, plugins_dir, lang="ja", terms=None):
+    tx = TABLE_TEXT[lang]
+    if terms is None:
+        terms = Terms(lang)
     core = load_meta(core_manifest)
     body = [e for e in core if e.get("group") != "font"]
     fonts = [e for e in core if e.get("group") == "font"]
@@ -205,24 +311,23 @@ def generate_table(core_manifest, plugins_dir):
 
     cond = sum(1 for e in core if e.get("when")) + sum(1 for _, e in plugs if e.get("when"))
 
+    def row3(e):
+        return f'| {md_escape(e["name"])} | {md_escape(terms(e["license"]))} | {remark(e, tx, terms)} |'
+
     o = []
-    o.append("# 同梱ライセンス一覧")
+    o.append(f'# {tx["title"]}')
     o.append("")
     o.append("<!-- generated by src/core/licenses/gen_licenses_c.py --mode table — 手編集禁止。")
     o.append("     各 licenses/manifest.json を編集して再生成する。 -->")
     o.append("")
-    o.append(f"配布物に載る第三者コンポーネントの対応表です。本体 {len(body)} 件 / "
-             f"プラグイン {len(plugs)} 件 / フォント {len(fonts)} 件 "
-             f"(うち構成依存 {cond} 件)。")
+    o.append(tx["intro"].format(body=len(body), plugs=len(plugs), fonts=len(fonts), cond=cond))
     o.append("")
-    o.append("正本は各 `licenses/manifest.json`、仕組みの説明は "
-             "`src/core/doc/LicenseSystem.md` です。"
-             "ライセンス原文は配布物の `licenses/` フォルダに全文が入ります。")
+    o.append(tx["source"])
     o.append("")
 
-    o.append("## 本体")
+    o.append(f'## {tx["h_engine"]}')
     o.append("")
-    o.append("エンジン本体 (exe) に内蔵され、`make install` で `licenses/` へ書き出される分です。")
+    o.append(tx["engine_desc"])
     o.append("")
     cur = None
     for e in body:
@@ -231,51 +336,45 @@ def generate_table(core_manifest, plugins_dir):
             cur = g
             if o[-1] != "":
                 o.append("")
-            o.append(f"### {GROUP_LABEL.get(g, g)}")
+            o.append(f'### {tx["groups"].get(g, g)}')
             o.append("")
-            o.append("| コンポーネント | ライセンス | 備考 |")
+            o.append(tx["th3"])
             o.append("|---|---|---|")
-        o.append(f'| {md_escape(e["name"])} | {md_escape(e["license"])} | {remark(e)} |')
+        o.append(row3(e))
     o.append("")
 
-    o.append("## プラグイン")
+    o.append(f'## {tx["h_plugins"]}')
     o.append("")
-    o.append("各プラグインの DLL 側が実行時に登録します "
-             "(`System.getLicenseList()` / `-license` に合流)。"
-             "原文は install 時に配布物の `licenses/plugins/` へも書き出されます "
-             "(実際にビルドしたプラグインのぶんだけ)。")
+    o.append(tx["plugins_desc"])
     o.append("")
     if plugs:
-        o.append("| プラグイン | コンポーネント | ライセンス | 備考 |")
+        o.append(tx["th4"])
         o.append("|---|---|---|---|")
         for d, e in plugs:
             o.append(f'| {md_escape(d)} | {md_escape(e["name"])} | '
-                     f'{md_escape(e["license"])} | {remark(e)} |')
+                     f'{md_escape(terms(e["license"]))} | {remark(e, tx, terms)} |')
     else:
-        o.append("(プラグインの manifest が見つかりませんでした)")
+        o.append(tx["no_plugins"])
     o.append("")
 
-    o.append("## その他 (フォント・データ)")
+    o.append(f'## {tx["h_other"]}')
     o.append("")
-    o.append("コードではなくデータですが、配布物に載る以上は同じ一覧で扱います。"
-             "案件が独自フォントを足す場合は manifest ではなく "
-             "**ゲームデータ側の `licenses/*.txt`** に置けば実行時に合流します。")
+    o.append(tx["other_desc"])
     o.append("")
-    o.append("| コンポーネント | ライセンス | 備考 |")
+    o.append(tx["th3"])
     o.append("|---|---|---|")
     for e in fonts:
-        o.append(f'| {md_escape(e["name"])} | {md_escape(e["license"])} | {remark(e)} |')
-    o.append("| 案件が置く分 | 案件ごと | `<データ>/licenses/*.txt` を実行時に列挙 |")
+        o.append(row3(e))
+    o.append(tx["title_row"])
     o.append("")
 
     conds = [e for e in core if e.get("when")] + [e for _, e in plugs if e.get("when")]
     if conds:
-        o.append("## 構成依存のエントリ")
+        o.append(f'## {tx["h_cond"]}')
         o.append("")
-        o.append("ビルド構成によっては 1 行もコンパイルされないコンポーネントです。"
-                 "マクロが定義されない構成では内蔵テーブルにも配布物にも出ません。")
+        o.append(tx["cond_desc"])
         o.append("")
-        o.append("| マクロ | 対象 |")
+        o.append(tx["th_macro"])
         o.append("|---|---|")
         by_macro = {}
         for e in conds:
@@ -288,31 +387,14 @@ def generate_table(core_manifest, plugins_dir):
     return "\n".join(o)
 
 
-def main():
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["core", "plugin", "module", "table"], default="core")
-    ap.add_argument("--manifest", default=os.path.join(script_dir, "manifest.json"))
-    ap.add_argument("--out", default=os.path.join(script_dir, "..", "common", "base", "BuiltinLicenses.cpp"))
-    ap.add_argument("--func", default="RegisterPluginLicenses")
-    ap.add_argument("--plugins", default=None,
-                    help="table モード: プラグイン群のフォルダ (<name>/licenses/manifest.json を走査)")
-    a = ap.parse_args()
+def source_hash(text):
+    """訳ページの source_hash (tools/docgen/check_translations.py と同じ計算)。"""
+    return hashlib.sha1(text.replace("\r\n", "\n").encode("utf-8")).hexdigest()[:12]
 
-    if a.mode == "table":
-        if a.out == ap.get_default("out"):
-            ap.error("--mode table では --out を指定してください")
-        text = generate_table(a.manifest, a.plugins)
-        count = len(load_meta(a.manifest))
-        summary = f"{count} entries + plugins"
-    else:
-        entries = load_manifest(a.manifest)
-        text = generate(entries, a.mode, a.func)
-        total_o = sum(len(d) for _, _, d, _w in entries)
-        summary = f"{len(entries)} entries, {total_o} bytes original"
 
+def write_if_changed(out, text, summary):
     data = text.encode("utf-8")
-    out = os.path.abspath(a.out)
+    out = os.path.abspath(out)
     try:
         with open(out, "rb") as f:
             if f.read() == data:
@@ -323,6 +405,50 @@ def main():
     with open(out, "wb") as f:
         f.write(data)
     print(f"wrote {out} ({summary})")
+
+
+def main():
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--mode", choices=["core", "plugin", "module", "table"], default="core")
+    ap.add_argument("--manifest", default=os.path.join(script_dir, "manifest.json"))
+    ap.add_argument("--out", default=os.path.join(script_dir, "..", "common", "base", "BuiltinLicenses.cpp"))
+    ap.add_argument("--func", default="RegisterPluginLicenses")
+    ap.add_argument("--plugins", default=None,
+                    help="table モード: プラグイン群のフォルダ (<name>/licenses/manifest.json を走査)")
+    ap.add_argument("--i18n", default=None,
+                    help="table モード: 訳のフォルダ (umbrella の doc/i18n)。"
+                         "<dir>/<lang>/bundled_licenses.json がある言語ぶん <out>.<lang>.md も出す")
+    a = ap.parse_args()
+
+    if a.mode == "table":
+        if a.out == ap.get_default("out"):
+            ap.error("--mode table では --out を指定してください")
+        text = generate_table(a.manifest, a.plugins)
+        count = len(load_meta(a.manifest))
+        write_if_changed(a.out, text, f"{count} entries + plugins")
+        # 訳ページ: 固定文言は TABLE_TEXT、 manifest 由来の文言はカタログで訳す
+        if a.i18n and os.path.isdir(a.i18n):
+            stem, ext = os.path.splitext(a.out)
+            for lang in sorted(os.listdir(a.i18n)):
+                cat = os.path.join(a.i18n, lang, "bundled_licenses.json")
+                if lang == "ja" or not os.path.isfile(cat):
+                    continue
+                if lang not in TABLE_TEXT:
+                    raise SystemExit(f"TABLE_TEXT に '{lang}' の固定文言がありません ({cat})")
+                with open(cat, encoding="utf-8") as f:
+                    terms = Terms(lang, json.load(f))
+                body = generate_table(a.manifest, a.plugins, lang, terms)
+                page = f"---\nsource_hash: {source_hash(text)}\n---\n\n" + body
+                write_if_changed(f"{stem}.{lang}{ext}", page, f"lang {lang}")
+                for s in terms.missing:
+                    print(f"warning: [{lang}] 訳の無い文言 (原文のまま出力): {s}", file=sys.stderr)
+        return
+
+    entries = load_manifest(a.manifest)
+    text = generate(entries, a.mode, a.func)
+    total_o = sum(len(d) for _, _, d, _w in entries)
+    write_if_changed(a.out, text, f"{len(entries)} entries, {total_o} bytes original")
 
 
 if __name__ == "__main__":

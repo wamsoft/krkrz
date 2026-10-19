@@ -1064,6 +1064,24 @@
 				]
 			},
 			{
+				"caption": "跟随操作系统的显示缩放",
+				"description": "指定是否按照操作系统的显示缩放（Windows 的“缩放”、macOS 的 Retina 等）放大窗口。\n\n“否”（默认）时，窗口大小（Window.innerWidth / innerHeight、setInnerSize 等）以实际屏幕像素处理。在 200% 缩放的屏幕上，1280x720 的窗口看起来只有一半大小，但画面按像素原样显示。\n\n“是”时，窗口大小以虚拟像素（实际像素除以缩放比例）处理，画面按缩放比例放大显示（200% 时 1280x720 的窗口实际为 2560x1440 像素）。看起来与 100% 缩放的屏幕大小相同，鼠标坐标也会换算为虚拟像素。窗口位置以及 System.screenWidth / desktopWidth 等屏幕大小也使用相同的单位。\n\n在 SDL3 构建（Windows / macOS / Linux）和 WINVER 构建中有效。选择“是”时，将窗口移到缩放比例不同的显示器上会改变窗口大小（虚拟像素）并触发 onResize。",
+				"name": "dpiscaling",
+				"type": "select",
+				"user": true,
+				"values": [
+					{
+						"value": "no",
+						"desc": "否（实际像素）",
+						"default": true
+					},
+					{
+						"value": "yes",
+						"desc": "是（跟随系统缩放）"
+					}
+				]
+			},
+			{
 				"caption": "启动显示器",
 				"description": "在多显示器环境中，指定窗口最初显示在哪个显示器上。\n\n可指定从 1 开始的编号、显示器名称的一部分、'primary'（主显示器）、或 'list'（仅将显示器列表输出到日志）。主要用于测试。",
 				"name": "display",

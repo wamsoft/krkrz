@@ -1,0 +1,280 @@
+// -*- mode:tjs2 -*-
+// ======================================================================
+//  demolib/demo_i18n.tjs — デモ用 i18n (多言語文字列) 基礎ライブラリ
+// ----------------------------------------------------------------------
+//  demo_common.tjs が自動で読み込み、global.I18n (DemoI18n) を用意する。
+//  Elements 以外の描画 (drawText / setInfo / メニュー / samples.tjs の
+//  title・desc) を多言語化するためのもの。Elements パネルは従来どおり
+//  text_id 等を使い、**文字列表はこちらと共用**する (形が同じ)。
+//
+//  文字列表の形 (Elements 画面 JSON の "strings" と同じ):
+//    %[ "sysinfo.title" => %[ ja : "システム情報", en : "System information" ], ... ]
+//
+//  使い方:
+//    I18n.add(table)                 表を追加 (同じ id は後勝ち)
+//    I18n.load("strings.tjs")        TJS 辞書リテラルのファイルを読んで add
+//    I18n.t(id)                      現在言語の文字列 (無ければ代替順 → id そのもの)
+//    I18n.t(id, n, …)                訳文を sprintf の書式として args を埋める
+//                                    (書式は表の訳文側に書く: "%d 件" / "%d items")
+//    I18n.t(id, %[ name : v ])       訳文中の ${name} を辞書の値で置換
+//    I18n.pick(%[ ja : "…", en : "…" ])   表を介さないその場限りの文字列
+//    I18n.text(v)                    v が文字列ならそのまま、辞書なら pick
+//    I18n.entry(id)                  表の項目そのもの (後から I18n.text で引く用。
+//                                    DemoScene の見出しなど)
+//    I18n.language                   現在の言語コード ("ja" / "en" …)
+//    I18n.locale                     現在言語の locale タグ (パネルの "locale" 用)
+//    I18n.setLanguage("en")          切替。登録済みリスナー (シェル等) へ通知し、
+//                                    ElementsDialog.language も合わせる
+//    I18n.panelStrings(prefix)       prefix で始まる id だけの表 (パネル辞書の
+//                                    strings へ渡す用)。prefix 省略で全部
+//
+//  言語の決め方: System.uiLanguageCandidates (エンジンの実効表示言語を丸めた
+//  候補順 = -language= → OS 言語) をそのまま使う。プロパティの無い古い
+//  エンジンでは -language= / System.systemLanguage から自前で丸める。
+//
+//  言語を増やすとき (chs 等): 下の LANG_FALLBACK / LANG_LOCALE に 1 行足し、
+//  各表に chs : "…" を書き足すだけ。コード側に言語名を直書きしないこと。
+//
+//  -demotest 時は、引けなかった id を "@demotest:i18n-missing <lang> <id>" で
+//  1 回ずつ出す (-language=en で巡回すれば訳し漏れが分かる)。
+// ======================================================================
+
+class DemoI18n
+{
+    // 言語ごとの代替順 (自分の後に試す言語)。エンジンの
+    // TVPGetMessageResourceSuffixesForTag (common/msg/MsgLanguage.cpp) と同じ規則。
+    var LANG_FALLBACK = %[
+        ja  : [],
+        en  : [ "ja" ],
+        chs : [ "en", "ja" ],
+        cht : [ "chs", "en", "ja" ]
+    ];
+    // 言語 → locale タグ (Elements パネルの "locale"、字形選択に使われる)
+    var LANG_LOCALE = %[
+        ja  : "ja-JP",
+        en  : "en-US",
+        chs : "zh-CN",
+        cht : "zh-TW"
+    ];
+
+    var table = %[];        // id → %[ lang → text ]
+    var candidates = [];    // 現在の言語の優先順 (先頭 = 現在言語)
+    var listeners = [];     // 言語切替の通知先 (onLanguageChanged(lang) を持つオブジェクト)
+    var _missing = %[];     // 報告済みの未訳 id (lang + ":" + id)
+    var _reportMissing = false;
+
+    function DemoI18n()
+    {
+        _reportMissing = (System.getArgument("-demotest") !== void
+                          || System.getArgument("-demotestcap") !== void);
+        candidates = _initialCandidates();
+        // Elements パネルの text_id も同じ言語で引かせる
+        if (typeof global.ElementsDialog != "undefined" &&
+            typeof global.ElementsDialog.language != "undefined") {
+            try { global.ElementsDialog.language = candidates[0]; } catch (e) {}
+        }
+    }
+
+    // --- 言語の決定 -----------------------------------------------------
+    function _initialCandidates()
+    {
+        var list = [];
+        if (typeof System.uiLanguageCandidates != "undefined") {
+            list.assign(System.uiLanguageCandidates);
+            if (list.count > 0) return list;
+        }
+        // 古いエンジン: -language= → OS 言語 を自前で丸める
+        var tag = System.getArgument("-language");
+        if (tag === void || tag == "") tag = System.systemLanguage;
+        return candidatesFor(normalize(tag));
+    }
+
+    // 言語タグ (BCP-47 / 短縮形) を言語コードへ丸める。MsgLanguage.cpp と同じ規則。
+    function normalize(tag)
+    {
+        var t = (tag === void) ? "" : ("" + tag).toLowerCase();
+        if (typeof LANG_FALLBACK[t] != "undefined") return t;
+        if (t == "" || t.indexOf("ja") == 0) return "ja";
+        if (t.indexOf("zh") == 0) {
+            if (t.indexOf("hant") >= 0 || t.indexOf("-tw") >= 0 ||
+                t.indexOf("-hk") >= 0 || t.indexOf("-mo") >= 0) return "cht";
+            return "chs";
+        }
+        return "en";
+    }
+
+    // 言語コード → [自分, 代替…]。表に無い言語は自分 + en + ja。
+    function candidatesFor(lang)
+    {
+        var list = [ lang ];
+        var fb = LANG_FALLBACK[lang];
+        if (fb === void) fb = [ "en", "ja" ];
+        for (var i = 0; i < fb.count; i++) if (list.find(fb[i]) < 0) list.add(fb[i]);
+        if (list.find("ja") < 0) list.add("ja");
+        return list;
+    }
+
+    property language { getter() { return candidates[0]; } }
+    property locale
+    {
+        getter() {
+            var l = LANG_LOCALE[candidates[0]];
+            return (l !== void) ? l : "en-US";
+        }
+    }
+
+    // 切替。同じ言語なら何もしない。
+    function setLanguage(lang)
+    {
+        lang = normalize(lang);
+        if (lang == candidates[0]) return;
+        candidates = candidatesFor(lang);
+        if (typeof global.ElementsDialog != "undefined" &&
+            typeof global.ElementsDialog.language != "undefined") {
+            try { global.ElementsDialog.language = lang; } catch (e) {}
+        }
+        var ls = [];
+        ls.assign(listeners);
+        for (var i = 0; i < ls.count; i++) {
+            if (isvalid ls[i]) ls[i].onLanguageChanged(lang);
+        }
+    }
+
+    // 切替候補 (表に一度でも出てきた言語を、代替表の順に)。言語切替キー用。
+    function availableLanguages()
+    {
+        var seen = %[];
+        var ids = [];
+        ids.assign(table);       // [id, entry, id, entry, ...]
+        for (var i = 1; i < ids.count; i += 2) {
+            var langs = [];
+            langs.assign(ids[i]);
+            for (var j = 0; j < langs.count; j += 2) seen[langs[j]] = 1;
+        }
+        var order = [];
+        order.assign(LANG_FALLBACK);
+        var list = [];
+        for (var i = 0; i < order.count; i += 2) if (seen[order[i]] !== void) list.add(order[i]);
+        if (list.count == 0) list.add(candidates[0]);
+        return list;
+    }
+
+    // 次の言語へ (availableLanguages を一巡)
+    function cycleLanguage()
+    {
+        var list = availableLanguages();
+        var i = list.find(candidates[0]);
+        setLanguage(list[(i + 1) % list.count]);
+    }
+
+    function addListener(obj)    { if (listeners.find(obj) < 0) listeners.add(obj); }
+    function removeListener(obj) { listeners.remove(obj, true); }
+
+    // --- 表 ------------------------------------------------------------
+    function add(t)
+    {
+        if (t === void) return;
+        var kv = [];
+        kv.assign(t);
+        for (var i = 0; i < kv.count; i += 2) table[kv[i]] = kv[i + 1];
+    }
+
+    // TJS 辞書リテラル 1 個だけを書いたファイルを読む (JSON プラグイン不要)
+    function load(storage)
+    {
+        add(Scripts.evalStorage(storage));
+    }
+
+    // --- 引く ----------------------------------------------------------
+    function pick(entry)
+    {
+        if (entry === void) return "";
+        for (var i = 0; i < candidates.count; i++) {
+            var s = entry[candidates[i]];
+            if (s !== void) return s;
+        }
+        // 表に無い言語だけ書かれている場合は何か 1 つ返す
+        var kv = [];
+        kv.assign(entry);
+        return (kv.count >= 2) ? kv[1] : "";
+    }
+
+    // 表の項目そのもの (%[ja:…, en:…])。無ければ id 文字列。後で I18n.text() で
+    // 引けば、その時点の言語で出る (シーン見出しなど、生成後に言語が変わるもの用)。
+    function entry(id)
+    {
+        var e = table[id];
+        if (e === void) { _missingId(id); return id; }
+        return e;
+    }
+
+    function text(v)
+    {
+        if (v === void) return "";
+        if (typeof v == "Object") return pick(v);
+        return v;
+    }
+
+    function t(id, args*)
+    {
+        var entry = table[id];
+        var s;
+        if (entry !== void) {
+            for (var i = 0; i < candidates.count; i++) {
+                s = entry[candidates[i]];
+                if (s !== void) break;
+            }
+            if (entry[candidates[0]] === void) _missingId(id);   // 代替言語で出した = 未訳
+        } else {
+            _missingId(id);
+        }
+        if (s === void) s = id;
+        if (args.count == 0) return s;
+        if (args.count == 1 && typeof args[0] == "Object" && args[0] instanceof "Dictionary")
+            return _subst(s, args[0]);
+        return s.sprintf(args*);
+    }
+
+    function _subst(s, dict)
+    {
+        var out = "";
+        var p = 0;
+        while (true) {
+            var a = s.indexOf("${", p);
+            if (a < 0) break;
+            var b = s.indexOf("}", a + 2);
+            if (b < 0) break;
+            var key = s.substring(a + 2, b - a - 2);
+            var v = dict[key];
+            out += s.substring(p, a - p) + ((v !== void) ? ("" + v) : s.substring(a, b - a + 1));
+            p = b + 1;
+        }
+        return out + s.substring(p);
+    }
+
+    function _missingId(id)
+    {
+        if (!_reportMissing) return;
+        var k = candidates[0] + ":" + id;
+        if (_missing[k] !== void) return;
+        _missing[k] = 1;
+        Debug.message(@"@demotest:i18n-missing ${candidates[0]} ${id}");
+    }
+
+    // パネル辞書の strings へ渡す表 (prefix で絞る)。
+    // パネル側は "lang" : I18n.language と一緒に渡す。
+    function panelStrings(prefix)
+    {
+        var out = %[];
+        var kv = [];
+        kv.assign(table);
+        for (var i = 0; i < kv.count; i += 2) {
+            if (prefix === void || kv[i].indexOf(prefix) == 0) out[kv[i]] = kv[i + 1];
+        }
+        return out;
+    }
+}
+
+// 複数回読み込まれても表とリスナーを保つ (gallery 等が demolib を再 exec する場合)
+if (typeof global.I18n == "undefined" || !(global.I18n instanceof "DemoI18n"))
+    global.I18n = new DemoI18n();

@@ -401,6 +401,8 @@ void TVPSDLSetWindowPositionKeepingSize(SDL_Window *window, int x, int y)
 	}
 }
 //---------------------------------------------------------------------------
+// form.cpp (macOS は SDL_GetWindowBordersSize が未実装なので NSWindow から取る)
+extern bool TVPGetWindowBordersSize(SDL_Window *w, int *top, int *left, int *bottom, int *right);
 void TVPMoveWindowToStartupDisplay(SDL_Window *window)
 {
 	if (!window) return;
@@ -416,7 +418,7 @@ void TVPMoveWindowToStartupDisplay(SDL_Window *window)
 	// SDL の位置/サイズはクライアント領域基準。作業領域への収まりを見るには
 	// 枠 (タイトルバー含む) を足した外側の矩形で判定する必要がある
 	int bt = 0, bl = 0, bb = 0, br = 0;
-	SDL_GetWindowBordersSize(window, &bt, &bl, &bb, &br);
+	TVPGetWindowBordersSize(window, &bt, &bl, &bb, &br);
 	int ow = w + bl + br;
 	int oh = h + bt + bb;
 
@@ -460,6 +462,27 @@ SDL3Application::BaseDisplayID() const
 	return SDL_GetPrimaryDisplay();
 }
 
+//---------------------------------------------------------------------------
+// System.screen* / desktop* / getMonitorInfo は、 ウィンドウのサイズ・位置と同じ
+// 「吉里吉里のピクセル」(SDL の座標 × PointScale) で返す。 既定は実ピクセル、
+// -dpiscaling=yes では OS の拡大率で割った仮想ピクセル。 メインウィンドウが無い間は
+// SDL の座標のまま (倍率 1)。 src/core/doc/WindowGeometry.md §4。
+//---------------------------------------------------------------------------
+float
+SDL3Application::ScreenScriptScale() const
+{
+	if (SDL3WindowForm *mainForm = (SDL3WindowForm*)MainWindowForm()) {
+		float s = mainForm->PointScale();
+		if (s > 0.0f) return s;
+	}
+	return 1.0f;
+}
+static tjs_int TVPScaleScreenCoord(const SDL3Application *app, int v)
+{
+	float s = app->ScreenScriptScale();
+	return s == 1.0f ? (tjs_int)v : (tjs_int)(v * s + (v >= 0 ? 0.5f : -0.5f));
+}
+
 tjs_int
 SDL3Application::ScreenWidth() const
 {
@@ -470,7 +493,7 @@ SDL3Application::ScreenWidth() const
 		// 「成功で 0」から変わっている)。== 0 で見ると成功時に 0 を返して
 		// しまい、System.screenWidth / screenHeight が常に 0 になる。
 		if (SDL_GetDisplayBounds(display, &bounds)) {
-			return bounds.w;
+			return TVPScaleScreenCoord(this, bounds.w);
 		}
 	}
 	return 0;
@@ -486,7 +509,7 @@ SDL3Application::ScreenHeight() const
 		// 「成功で 0」から変わっている)。== 0 で見ると成功時に 0 を返して
 		// しまい、System.screenWidth / screenHeight が常に 0 になる。
 		if (SDL_GetDisplayBounds(display, &bounds)) {
-			return bounds.h;
+			return TVPScaleScreenCoord(this, bounds.h);
 		}
 	}
 	return 0;
@@ -527,8 +550,10 @@ SDL3Application::GetMonitorInfoAt(tjs_int index, tTVPMonitorInfo &info) const
 	SDL_Rect bounds, usable;
 	if (!SDL_GetDisplayBounds(id, &bounds)) return false;
 	if (!SDL_GetDisplayUsableBounds(id, &usable)) usable = bounds;
-	info.mx = bounds.x; info.my = bounds.y; info.mw = bounds.w; info.mh = bounds.h;
-	info.wx = usable.x; info.wy = usable.y; info.ww = usable.w; info.wh = usable.h;
+	info.mx = TVPScaleScreenCoord(this, bounds.x); info.my = TVPScaleScreenCoord(this, bounds.y);
+	info.mw = TVPScaleScreenCoord(this, bounds.w); info.mh = TVPScaleScreenCoord(this, bounds.h);
+	info.wx = TVPScaleScreenCoord(this, usable.x); info.wy = TVPScaleScreenCoord(this, usable.y);
+	info.ww = TVPScaleScreenCoord(this, usable.w); info.wh = TVPScaleScreenCoord(this, usable.h);
 	info.primary = (id == SDL_GetPrimaryDisplay());
 	const char *name = SDL_GetDisplayName(id);
 	info.name.clear();
@@ -560,6 +585,14 @@ tjs_int
 SDL3Application::FindMonitorForRect(tjs_int x, tjs_int y, tjs_int w, tjs_int h,
 									bool nearest) const
 {
+	// 引数は吉里吉里のピクセル。 SDL の座標へ戻して判定する
+	{
+		const float s = ScreenScriptScale();
+		if (s != 1.0f) {
+			x = (tjs_int)(x / s); y = (tjs_int)(y / s);
+			w = (tjs_int)(w / s); h = (tjs_int)(h / s);
+		}
+	}
 	int count = 0;
 	SDL_DisplayID *ids = SDL_GetDisplays(&count);
 	if (!ids) return -1;
@@ -602,28 +635,28 @@ tjs_int
 SDL3Application::DesktopLeft() const
 {
 	SDL_Rect rect;
-	return TVPGetDesktopRect(this, rect) ? rect.x : 0;
+	return TVPGetDesktopRect(this, rect) ? TVPScaleScreenCoord(this, rect.x) : 0;
 }
 
 tjs_int
 SDL3Application::DesktopTop() const
 {
 	SDL_Rect rect;
-	return TVPGetDesktopRect(this, rect) ? rect.y : 0;
+	return TVPGetDesktopRect(this, rect) ? TVPScaleScreenCoord(this, rect.y) : 0;
 }
 
 tjs_int
 SDL3Application::DesktopWidth() const
 {
 	SDL_Rect rect;
-	return TVPGetDesktopRect(this, rect) ? rect.w : ScreenWidth();
+	return TVPGetDesktopRect(this, rect) ? TVPScaleScreenCoord(this, rect.w) : ScreenWidth();
 }
 
 tjs_int
 SDL3Application::DesktopHeight() const
 {
 	SDL_Rect rect;
-	return TVPGetDesktopRect(this, rect) ? rect.h : ScreenHeight();
+	return TVPGetDesktopRect(this, rect) ? TVPScaleScreenCoord(this, rect.h) : ScreenHeight();
 }
 
 // アクティブかどうか

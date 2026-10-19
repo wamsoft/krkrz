@@ -23,4 +23,4 @@ Scripts.execStorage(demolibPath + "demo_common.tjs");
 Scripts.execStorage(Storages.isExistentStorage("scene.tjs")
                     ? "scene.tjs" : "upload_bench/scene.tjs");
 
-runDemoShell([new UploadBenchScene()], "転送コスト計測");
+runDemoShell([new UploadBenchScene()], I18n.entry("upload_bench.title"));

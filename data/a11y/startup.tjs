@@ -15,4 +15,4 @@ if (demolibPath === void) { System.inform("demolib が見つかりません"); S
 Scripts.execStorage(demolibPath + "demo_common.tjs");
 Scripts.execStorage("scene.tjs");
 
-runDemoShell([ new A11yScene() ], "a11y — 読み上げ (スクリーンリーダー)");
+runDemoShell([ new A11yScene() ], I18n.entry("a11y.shell"));

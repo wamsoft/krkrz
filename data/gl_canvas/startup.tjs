@@ -22,4 +22,4 @@ if (System.getArgument("-genassets") !== void) {
 }
 
 Scripts.execStorage("scene.tjs");
-runDemoShell([ new GLCanvasScene() ], "gl_canvas — OpenGL / Canvas 基礎");
+runDemoShell([ new GLCanvasScene() ], I18n.entry("gl_canvas.shell"));

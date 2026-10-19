@@ -200,7 +200,7 @@ public:
 	// コマンド仕様は gles プラグイン (GLESAdaptor.beginEffect/endEffect) 互換。
 	// ネスト可。
 	void BeginEffect();
-	void EndEffect( const tTJSVariant & commands );
+	void EndEffect( const tTJSVariant & commands, tjs_int opacity = 255 );
 
 	// マスククリップ: begin〜end で囲んだ描画を捕捉し、マスク画像の α を
 	// 乗算しながら合成する (マスク矩形の外側は α=0)。mask=nullptr で素通し。

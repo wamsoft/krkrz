@@ -35,6 +35,32 @@ var GLC_WAVE_FS =
   + "  gl_FragColor = texture2D(s_tex0, uv);\n"
   + "}\n";
 
+I18n.add(%[
+    "gl_canvas.title"         => %[ ja : "OpenGL / Canvas 基礎",              en : "OpenGL / Canvas basics" ],
+    "gl_canvas.shell"         => %[ ja : "gl_canvas — OpenGL / Canvas 基礎",  en : "gl_canvas — OpenGL / Canvas basics" ],
+    "gl_canvas.p1.desc"       => %[ ja : "テクスチャをアフィン変換 (回転・拡縮・平行移動)", en : "Affine transform of a texture (rotate / scale / translate)" ],
+    "gl_canvas.p2.title"      => %[ ja : "2. カスタムシェーダ (ShaderProgram)", en : "2. Custom shader (ShaderProgram)" ],
+    "gl_canvas.p2.desc"       => %[ ja : "フラグメントシェーダで波打ち。u_time/u_amp を時間更新", en : "Wave by a fragment shader; u_time/u_amp updated over time" ],
+    "gl_canvas.p3.desc"       => %[ ja : "オフスクリーンに描いてから画面へ (2 パス)", en : "Draw to an offscreen, then to the screen (2 passes)" ],
+    "gl_canvas.p4.title"      => %[ ja : "4. ポストエフェクト",               en : "4. Post effects" ],
+    "gl_canvas.p4.desc"       => %[ ja : "beginEffect/endEffect のコマンド (E で切替)", en : "beginEffect/endEffect commands (E to switch)" ],
+    "gl_canvas.p5.title"      => %[ ja : "5. マスククリップ",                 en : "5. Mask clip" ],
+    "gl_canvas.p5.desc"       => %[ ja : "beginMaskClip/endMaskClip。円形アルファでくり抜き", en : "beginMaskClip/endMaskClip; cut out by a circular alpha" ],
+    "gl_canvas.p6.title"      => %[ ja : "6. ステンシルクリップ",             en : "6. Stencil clip" ],
+    "gl_canvas.p6.desc"       => %[ ja : "beginStencilClip/endStencilClip。マスクの形の中にだけ描く", en : "beginStencilClip/endStencilClip; draw only inside the mask shape" ],
+    "gl_canvas.p7.title"      => %[ ja : "7. エフェクトをレイヤーへ (GLCompositor)", en : "7. Effects to a layer (GLCompositor)" ],
+    "gl_canvas.p7.desc"       => %[ ja : "左のレイヤーをぼかし・色調整して右のレイヤーへ書き戻す", en : "Blur and color-adjust the left layer, write back to the right layer" ],
+    "gl_canvas.eff.modulate"  => %[ ja : "modulate (色相 +120)",              en : "modulate (hue +120)" ],
+    "gl_canvas.eff.lut"       => %[ ja : "lut (ネガ反転)",                    en : "lut (negative)" ],
+    "gl_canvas.eff.sepia"     => %[ ja : "セピア (grayscale + overcolor)",    en : "sepia (grayscale + overcolor)" ],
+    "gl_canvas.noogl"         => %[ ja : "この環境では OGLDrawDevice が使えません", en : "OGLDrawDevice is not available here" ],
+    "gl_canvas.noogl.info"    => %[ ja : "OGLDrawDevice 非対応",              en : "OGLDrawDevice not supported" ],
+    "gl_canvas.info"          => %[ ja : "←→ / 1〜7: ページ   E: エフェクト切替   SPACE: 一時停止",
+                                    en : "←→ / 1-7: page   E: switch effect   SPACE: pause" ],
+    "gl_canvas.current"       => %[ ja : "   [現在: ${name}]",                en : "   [current: ${name}]" ],
+    "gl_canvas.photo.label"   => %[ ja : "Layer にエフェクト",                en : "Effect on a Layer" ]
+]);
+
 //----------------------------------------------------------------------
 // OGL 描画デバイス (owner = シーン)
 //----------------------------------------------------------------------
@@ -186,18 +212,18 @@ class GLCanvasScene extends DemoScene
     var page = 0, effectIndex = 0, paused = false, animTime = 0.0, lastTick = 0;
     var dev;
 
-    function GLCanvasScene() { super.DemoScene("OpenGL / Canvas 基礎"); }
+    function GLCanvasScene() { super.DemoScene(I18n.entry("gl_canvas.title")); }
 
     function create()
     {
         pages = [
-            %[ id:"matrix", title:"1. drawTexture + Matrix32", desc:"テクスチャをアフィン変換 (回転・拡縮・平行移動)" ],
-            %[ id:"shader", title:"2. カスタムシェーダ (ShaderProgram)", desc:"フラグメントシェーダで波打ち。u_time/u_amp を時間更新" ],
-            %[ id:"rtt",    title:"3. Offscreen (RTT)", desc:"オフスクリーンに描いてから画面へ (2 パス)" ],
-            %[ id:"effect", title:"4. ポストエフェクト", desc:"beginEffect/endEffect のコマンド (E で切替)" ],
-            %[ id:"mask",   title:"5. マスククリップ", desc:"beginMaskClip/endMaskClip。円形アルファでくり抜き" ],
-            %[ id:"stencil", title:"6. ステンシルクリップ", desc:"beginStencilClip/endStencilClip。マスクの形の中にだけ描く" ],
-            %[ id:"layer",  title:"7. エフェクトをレイヤーへ (GLCompositor)", desc:"左のレイヤーをぼかし・色調整して右のレイヤーへ書き戻す" ]
+            %[ id:"matrix", title:"1. drawTexture + Matrix32", desc:I18n.t("gl_canvas.p1.desc") ],
+            %[ id:"shader", title:I18n.t("gl_canvas.p2.title"), desc:I18n.t("gl_canvas.p2.desc") ],
+            %[ id:"rtt",    title:"3. Offscreen (RTT)", desc:I18n.t("gl_canvas.p3.desc") ],
+            %[ id:"effect", title:I18n.t("gl_canvas.p4.title"), desc:I18n.t("gl_canvas.p4.desc") ],
+            %[ id:"mask",   title:I18n.t("gl_canvas.p5.title"), desc:I18n.t("gl_canvas.p5.desc") ],
+            %[ id:"stencil", title:I18n.t("gl_canvas.p6.title"), desc:I18n.t("gl_canvas.p6.desc") ],
+            %[ id:"layer",  title:I18n.t("gl_canvas.p7.title"), desc:I18n.t("gl_canvas.p7.desc") ]
         ];
         var negative = [];
         for (var i = 0; i < 256; i++) negative[i] = 255 - i;
@@ -208,9 +234,9 @@ class GLCanvasScene extends DemoScene
             %[ name:"colorize",       cmds:[ %[ cmd:"colorize", hue:150, sat:200, blend:0.7 ] ] ],
             %[ name:"gaussianBlur 6", cmds:[ %[ cmd:"gaussianBlur", radius:6 ] ] ],
             %[ name:"gray + gamma",   cmds:[ %[ cmd:"grayscale" ], %[ cmd:"gamma", value:1.5 ] ] ],
-            %[ name:"modulate (色相 +120)", cmds:[ %[ cmd:"modulate", hue:120, sat:20, lum:0 ] ] ],
-            %[ name:"lut (ネガ反転)", cmds:[ %[ cmd:"lut", table:negative ] ] ],
-            %[ name:"セピア (grayscale + overcolor)", cmds:[ %[ cmd:"grayscale" ], %[ cmd:"overcolor", color:0xffb08050, opacity:255, type:16 ] ] ],
+            %[ name:I18n.t("gl_canvas.eff.modulate"), cmds:[ %[ cmd:"modulate", hue:120, sat:20, lum:0 ] ] ],
+            %[ name:I18n.t("gl_canvas.eff.lut"), cmds:[ %[ cmd:"lut", table:negative ] ] ],
+            %[ name:I18n.t("gl_canvas.eff.sepia"), cmds:[ %[ cmd:"grayscale" ], %[ cmd:"overcolor", color:0xffb08050, opacity:255, type:16 ] ] ],
             %[ name:"boxBlur ×2", cmds:[ %[ cmd:"boxBlur", area:4, iter:2 ] ] ],
             %[ name:"noise",          cmds:[ %[ cmd:"noise", level:80 ] ] ]
         ];
@@ -222,16 +248,16 @@ class GLCanvasScene extends DemoScene
 
         if (typeof global.Window.OGLDrawDevice == "undefined") {
             stage.font.height = 26;
-            stage.drawText(40, 40, "この環境では OGLDrawDevice が使えません", 0xd0a0a0, 255);
+            stage.drawText(40, 40, I18n.t("gl_canvas.noogl"), 0xd0a0a0, 255);
             stage.update();
-            setInfo("OGLDrawDevice 非対応");
+            setInfo(I18n.t("gl_canvas.noogl.info"));
             return;
         }
         lastTick = System.getTickCount();
         dev = new GLCanvasDevice(this);
         enableGL(dev);          // drawDevice 差替 + ツリー透過
         drawHud();
-        setInfo("←→ / 1〜7: ページ   E: エフェクト切替   SPACE: 一時停止");
+        setInfo(I18n.t("gl_canvas.info"));
     }
 
     // GL モードの stage (ltAlpha) に HUD を描く。透明部は GL が透けて見える。
@@ -245,7 +271,7 @@ class GLCanvasScene extends DemoScene
         s.drawText(28, 14, p.title, 0xffffff, 255, true, 0, 0x000000, 0, 2, 2);
         s.font.height = 20;
         var d = p.desc;
-        if (page == 3) d += "   [現在: " + effects[effectIndex].name + "]";
+        if (page == 3) d += I18n.t("gl_canvas.current", %[ name : effects[effectIndex].name ]);
         s.drawText(30, 56, d, 0xaac0e8, 255);
         s.font.height = 18;
         s.drawText(1280 - 130, 20, @"${page + 1} / ${pages.count}" + (paused ? "  ‖" : ""), 0x90a0c0, 255);
@@ -277,7 +303,7 @@ class GLCanvasScene extends DemoScene
         photoSrc.operateStretch(300, 120, 180, 180, tmp, 0, 0, tmp.imageWidth, tmp.imageHeight);
         invalidate tmp;
         photoSrc.font.height = 36;
-        photoSrc.drawText(30, 300, "Layer にエフェクト", 0xffffff, 255, true, 0, 0x000000, 0, 2, 2);
+        photoSrc.drawText(30, 300, I18n.t("gl_canvas.photo.label"), 0xffffff, 255, true, 0, 0x000000, 0, 2, 2);
         photoOut = new Layer(window, stage);
         photoOut.setImageSize(520, 360);
         photoOut.setSizeToImageSize();
@@ -320,6 +346,9 @@ class GLCanvasScene extends DemoScene
     function onExit()
     {
         if (compositor !== void) { invalidate compositor; compositor = void; }
+        // レイヤはシェルが stage ごと破棄する。参照を残すと再入場 (言語切替を含む) で
+        // 7 ページ目を作り直さず、破棄済みレイヤを使ってしまう
+        photoSrc = void; photoOut = void;
     }
 
     function onKeyDown(key, shift)

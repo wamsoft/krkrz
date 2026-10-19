@@ -579,4 +579,25 @@ private:
 //!        Phase 3 MVP のデバッグ用 (例: F12 キーから呼ぶ)。
 void TVPShowElementsTestDialog();
 
+//---------------------------------------------------------------------------
+// Window が Elements へ取り次いだ入力を DrawDevice へ回している区間。
+// Window (WindowIntf.cpp) は onKeyDown 等の TJS 通知より前に入力を取り次ぎ、
+// 消費されなければ DrawDevice->OnKeyDown 等へ進む。 DrawDevice 側にも同じ
+// 取り次ぎ (DrawDevice.cpp の TVP_DIALOG_INTERCEPT) があるので、 この区間では
+// そちらを飛ばして 2 回目を配らない (間に TJS のハンドラが走ってダイアログの
+// 状態が変わると、 同じ入力が別の結果で 2 回処理されるため)。 DrawDevice を
+// 直接呼ぶ経路 (タッチ等、 Window が取り次がないもの) は従来どおり。
+//---------------------------------------------------------------------------
+class tTVPDialogInputForwardedScope
+{
+public:
+	tTVPDialogInputForwardedScope() { ++Depth(); }
+	~tTVPDialogInputForwardedScope() { --Depth(); }
+	tTVPDialogInputForwardedScope(const tTVPDialogInputForwardedScope&) = delete;
+	tTVPDialogInputForwardedScope& operator=(const tTVPDialogInputForwardedScope&) = delete;
+	static bool Active() { return Depth() > 0; }
+private:
+	static int& Depth() { static int depth = 0; return depth; }
+};
+
 #endif

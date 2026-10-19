@@ -19,6 +19,8 @@
 #include "TickCount.h"
 #include "SysInitIntf.h"
 
+bool TVPWinDpiScalingEnabled();   // -dpiscaling=yes (定義は下)
+
 #include <TCHAR.h>
 #include <tpcshrd.h> // for MICROSOFT_TABLETPENSERVICE_PROPERTY
 
@@ -295,7 +297,13 @@ LRESULT WINAPI tTVPWindow::Proc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
 			// src/core/doc/WindowGeometry.md §4 参照。
 			RECT* prc = reinterpret_cast<RECT*>(lParam);
 			RECT cr;
-			if( prc && ::GetClientRect( hWnd, &cr ) ) {
+			if( prc && TVPWinDpiScalingEnabled() ) {
+				// -dpiscaling=yes: スクリプトから見えるサイズ (仮想ピクセル) を保つので、
+				// OS 提案矩形 (サイズを DPI 比でスケール済み) をそのまま採る
+				::SetWindowPos( hWnd, NULL, prc->left, prc->top,
+					prc->right - prc->left, prc->bottom - prc->top,
+					SWP_NOZORDER | SWP_NOACTIVATE );
+			} else if( prc && ::GetClientRect( hWnd, &cr ) ) {
 				RECT wr = { 0, 0, cr.right - cr.left, cr.bottom - cr.top };
 				DWORD style = ::GetWindowLong( hWnd, GWL_STYLE );
 				DWORD exStyle = ::GetWindowLong( hWnd, GWL_EXSTYLE );
@@ -553,6 +561,37 @@ bool tTVPWindow::HasMenu( HWND hWnd ) {
 		}
 	}
 	return hMenu != NULL;
+}
+//---------------------------------------------------------------------------
+// -dpiscaling (OS の拡大率に合わせた仮想解像度)。 SDL 版 (sdl3/environ/form.cpp) と同じ指定。
+// 既定 (no) は「inner の物理ピクセルサイズを維持」。 yes ではスクリプトから見える
+// ウィンドウのサイズを DPI / 96 で割った仮想ピクセルにする。 クライアントは実ピクセルの
+// ままで、 ゲーム画面 (レイヤ × zoom) はビューポートのフィット (既定 contain) で
+// クライアントへ拡大される。 src/core/doc/WindowGeometry.md §4。
+//---------------------------------------------------------------------------
+bool TVPWinDpiScalingEnabled()
+{
+	static tjs_int gen = -1;
+	static bool enabled = false;
+	if( gen != TVPGetCommandLineArgumentGeneration() ) {
+		gen = TVPGetCommandLineArgumentGeneration();
+		tTJSVariant val;
+		enabled = TVPGetCommandLine( TJS_W("-dpiscaling"), &val ) && ttstr(val) == TJS_W("yes");
+	}
+	return enabled;
+}
+double tTVPWindow::GetScriptScale() const {
+	if( !TVPWinDpiScalingEnabled() || !GetHandle() ) return 1.0;
+	UINT dpi = ::GetDpiForWindow( GetHandle() );
+	return dpi > 0 ? dpi / 96.0 : 1.0;
+}
+int tTVPWindow::ToScriptPx( int client_px ) const {
+	double s = GetScriptScale();
+	return s == 1.0 ? client_px : (int)( client_px / s + 0.5 );
+}
+int tTVPWindow::ToClientPx( int script_px ) const {
+	double s = GetScriptScale();
+	return s == 1.0 ? script_px : (int)( script_px * s + 0.5 );
 }
 //! クライアント矩形から装飾込みの外形矩形を求める (per-monitor DPI 対応)。
 //! AdjustWindowRectEx は PerMonitorV2 でも「システム DPI」で枠を計算してしまうため、

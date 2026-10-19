@@ -25,6 +25,70 @@
 //  要るため自動対象外。cost 特性は counter の 500ms 版と同等)。
 // ======================================================================
 
+I18n.add(%[
+    "elements_bench.title"        => %[ ja : "Elements 負荷計測 (renderStats)", en : "Elements load bench (renderStats)" ],
+    "elements_bench.shell"        => %[ ja : "Elements 負荷計測",              en : "Elements load bench" ],
+    "elements_bench.scen.0"       => %[ ja : "なし (ベースライン)",            en : "none (baseline)" ],
+    "elements_bench.scen.1"       => %[ ja : "idle (静的パネル)",              en : "idle (static panel)" ],
+    "elements_bench.scen.2"       => %[ ja : "caret (キャレット点滅)",         en : "caret (blinking caret)" ],
+    "elements_bench.scen.3"       => %[ ja : "counter (毎フレーム setVar)",    en : "counter (setVar every frame)" ],
+    "elements_bench.scen.4"       => %[ ja : "anim 小 (無限 yoyo)",            en : "anim small (endless yoyo)" ],
+    "elements_bench.scen.5"       => %[ ja : "anim 広域 (大パネル全面)",       en : "anim wide (whole large panel)" ],
+    "elements_bench.scen.6"       => %[ ja : "複合 (counter+idle+caret)",      en : "combined (counter+idle+caret)" ],
+    "elements_bench.info.auto"    => %[ ja : "自動計測モード (-benchauto): 結果は @bench 行でログに出ます",
+                                        en : "Auto mode (-benchauto): results go to the log as @bench lines" ],
+    "elements_bench.info"         => %[ ja : "1-6/←→: シナリオ  0: 全消去  R/X: renderCache  C/Y: 計測リセット",
+                                        en : "1-6/←→: scenario  0: clear  R/X: renderCache  C/Y: reset" ],
+    "elements_bench.idle.title"   => %[ ja : "静的パネル (idle)",              en : "Static panel (idle)" ],
+    "elements_bench.idle.l1"      => %[ ja : "変化なし。renderCache 有効なら", en : "No changes. With renderCache on," ],
+    "elements_bench.idle.l2"      => %[ ja : "rasters/s が 0 のまま",          en : "rasters/s stays at 0" ],
+    "elements_bench.idle.b1"      => %[ ja : "ボタン (機能なし)",              en : "Button (no action)" ],
+    "elements_bench.idle.b2"      => %[ ja : "hover で 1 回だけ再描画",        en : "Redraws once on hover" ],
+    "elements_bench.idle.c1"      => %[ ja : "チェックボックス",               en : "Check box" ],
+    "elements_bench.caret.title"  => %[ ja : "テキスト入力 (キャレット点滅)",  en : "Text input (blinking caret)" ],
+    "elements_bench.caret.l1"     => %[ ja : "入力欄をクリックすると点滅開始。focus 中は",
+                                        en : "Click the field to start blinking. While focused," ],
+    "elements_bench.caret.l2"     => %[ ja : "約 500ms ごとに全面再ラスタが走る",
+                                        en : "the panel is re-rasterized about every 500ms" ],
+    "elements_bench.caret.ph"     => %[ ja : "ここをクリックして入力",         en : "Click here to type" ],
+    "elements_bench.counter.title"=> %[ ja : "HUD カウンタ (毎フレーム setVar)", en : "HUD counter (setVar every frame)" ],
+    "elements_bench.anims.title"  => %[ ja : "小アニメ (無限 yoyo)",           en : "Small anim (endless yoyo)" ],
+    "elements_bench.anims.l1"     => %[ ja : "再生中は毎フレーム dirty",       en : "Dirty every frame while playing" ],
+    "elements_bench.animw.title"  => %[ ja : "広域アニメ (パネル全面が毎フレーム再ラスタ)",
+                                        en : "Wide anim (whole panel re-rasterized every frame)" ],
+    "elements_bench.animw.spin"   => %[ ja : "回 転",                          en : "SPIN" ],
+    "elements_bench.measuring"    => %[ ja : "計測中...",                      en : "Measuring..." ],
+    "elements_bench.st.scen"      => %[ ja : "シナリオ %d: %s",                en : "Scenario %d: %s" ],
+    "elements_bench.st.frames"    => %[ ja : "フレーム    : %s (%s fps)",      en : "Frames      : %s (%s fps)" ],
+    "elements_bench.st.rasters"   => %[ ja : "ラスタ      : %s 回 (%s /s)",    en : "Rasters     : %s (%s /s)" ],
+    "elements_bench.st.cached"    => %[ ja : "cached 提示 : %s 回 (ラスタ省略)", en : "Cached      : %s (raster skipped)" ],
+    "elements_bench.st.avg"       => %[ ja : "― 1 フレーム平均 (us) ―",        en : "― per-frame average (us) ―" ],
+    "elements_bench.st.perras"    => %[ ja : "ラスタ 1 回あたり: %s us",       en : "Per raster: %s us" ],
+    "elements_bench.st.share"     => %[ ja : "Elements CPU 占有率: %s %%  (実時間比)",
+                                        en : "Elements CPU share: %s %%  (of wall time)" ],
+    "elements_bench.heading"      => %[ ja : "Elements overlay 負荷計測 (ElementsDialog.renderStats)",
+                                        en : "Elements overlay load (ElementsDialog.renderStats)" ],
+    "elements_bench.unavailable"  => %[ ja : "この環境では ElementsDialog.renderStats が使えません (Elements 無効ビルド)",
+                                        en : "ElementsDialog.renderStats is not available (Elements disabled build)" ],
+    "elements_bench.keys1"        => %[ ja : "1: idle (静的)          2: caret (キャレット点滅)   3: counter (毎フレーム setVar)",
+                                        en : "1: idle (static)        2: caret (blinking)         3: counter (setVar every frame)" ],
+    "elements_bench.keys2"        => %[ ja : "4: anim 小 (無限 yoyo)  5: anim 広域 (大パネル)     6: 複合   0: 全消去",
+                                        en : "4: anim small (yoyo)    5: anim wide (large panel)  6: combined   0: clear" ],
+    "elements_bench.keys3"        => %[ ja : "R: renderCache ON/OFF   C: 計測リセット   (パネル focus 中でも効きます)",
+                                        en : "R: renderCache ON/OFF   C: reset   (works while a panel has focus)" ],
+    "elements_bench.keys4"        => %[ ja : "パッド: ←→ = シナリオ巡回   X = renderCache   Y = リセット",
+                                        en : "Pad: ←→ = cycle scenarios   X = renderCache   Y = reset" ],
+    "elements_bench.howto"        => %[ ja : "見方",                           en : "How to read" ],
+    "elements_bench.howto1"       => %[ ja : "・idle で rasters/s = 0 → renderCache が効いている (アイドルゼロコスト)",
+                                        en : "- idle with rasters/s = 0 → renderCache works (zero cost when idle)" ],
+    "elements_bench.howto2"       => %[ ja : "・caret/counter/anim は「変化フレームは全面再ラスタ」= 現状の上限コスト",
+                                        en : "- caret/counter/anim re-rasterize fully on changed frames = upper bound" ],
+    "elements_bench.howto3"       => %[ ja : "・部分再描画 (ダーティ矩形) 導入後は raster/upload の減少をここで確認する",
+                                        en : "- with partial redraw (dirty rects), check the drop in raster/upload here" ],
+    "elements_bench.result"       => %[ ja : "計測結果 (500ms ごと更新 / C でリセット)",
+                                        en : "Results (updated every 500ms / C to reset)" ]
+]);
+
 class BenchDialog extends ElementsDialog
 {
     function BenchDialog() { super.ElementsDialog(); }
@@ -54,7 +118,7 @@ class ElementsBenchScene extends DemoScene
     // 統計パネルの描画領域 (stage 座標)
     var SX = 24, SY = 316, SW = 460, SH = 330;
 
-    function ElementsBenchScene() { super.DemoScene("Elements 負荷計測 (renderStats)"); }
+    function ElementsBenchScene() { super.DemoScene(I18n.entry("elements_bench.title")); }
 
     // @bench ログ用 ASCII スラッグ (RunOnTarget 等のログ収集経路は
     // 日本語が化けることがあるため、機械可読行は ASCII のみにする)
@@ -75,13 +139,8 @@ class ElementsBenchScene extends DemoScene
     function scenarioName(n)
     {
         switch (n) {
-        case 0: return "なし (ベースライン)";
-        case 1: return "idle (静的パネル)";
-        case 2: return "caret (キャレット点滅)";
-        case 3: return "counter (毎フレーム setVar)";
-        case 4: return "anim 小 (無限 yoyo)";
-        case 5: return "anim 広域 (大パネル全面)";
-        case 6: return "複合 (counter+idle+caret)";
+        case 0: case 1: case 2: case 3: case 4: case 5: case 6:
+            return I18n.t("elements_bench.scen." + n);
         }
         return "?";
     }
@@ -133,8 +192,8 @@ class ElementsBenchScene extends DemoScene
 
         switchScenario(1);
         setInfo(autoMode
-            ? "自動計測モード (-benchauto): 結果は @bench 行でログに出ます"
-            : "1-6/←→: シナリオ  0: 全消去  R/X: renderCache  C/Y: 計測リセット");
+            ? I18n.t("elements_bench.info.auto")
+            : I18n.t("elements_bench.info"));
     }
 
     function onExit()
@@ -195,14 +254,14 @@ class ElementsBenchScene extends DemoScene
             align: "right", margin: 48,
             content: %[ type: "margin", padding: 18, child: %[
                 type: "vtile", gap: 10, children: [
-                    %[ type: "label", text: "静的パネル (idle)", size_scale: 1.25 ],
-                    %[ type: "label", text: "変化なし。renderCache 有効なら",
+                    %[ type: "label", text: I18n.t("elements_bench.idle.title"), size_scale: 1.25 ],
+                    %[ type: "label", text: I18n.t("elements_bench.idle.l1"),
                        color: [196, 204, 218, 255] ],
-                    %[ type: "label", text: "rasters/s が 0 のまま",
+                    %[ type: "label", text: I18n.t("elements_bench.idle.l2"),
                        color: [196, 204, 218, 255] ],
-                    %[ type: "button", id: "b1", text: "ボタン (機能なし)" ],
-                    %[ type: "button", id: "b2", text: "hover で 1 回だけ再描画" ],
-                    %[ type: "check_box", id: "c1", text: "チェックボックス", value: 1 ],
+                    %[ type: "button", id: "b1", text: I18n.t("elements_bench.idle.b1") ],
+                    %[ type: "button", id: "b2", text: I18n.t("elements_bench.idle.b2") ],
+                    %[ type: "check_box", id: "c1", text: I18n.t("elements_bench.idle.c1"), value: 1 ],
                 ] ] ]
         ], false);   // 表示専用 HUD (キーを受けない)
         if (ok) dialogs.add(d);
@@ -218,17 +277,17 @@ class ElementsBenchScene extends DemoScene
             align: "bottom_right", margin: 48,
             content: %[ type: "margin", padding: 18, child: %[
                 type: "vtile", gap: 10, children: [
-                    %[ type: "label", text: "テキスト入力 (キャレット点滅)", size_scale: 1.2 ],
-                    %[ type: "label", text: "入力欄をクリックすると点滅開始。focus 中は",
+                    %[ type: "label", text: I18n.t("elements_bench.caret.title"), size_scale: 1.2 ],
+                    %[ type: "label", text: I18n.t("elements_bench.caret.l1"),
                        color: [196, 204, 218, 255] ],
-                    %[ type: "label", text: "約 500ms ごとに全面再ラスタが走る",
+                    %[ type: "label", text: I18n.t("elements_bench.caret.l2"),
                        color: [196, 204, 218, 255] ],
                     // ※ initial_focus は付けない: テキスト欄に focus が入ると
                     //    ソフトウェアキーボード (Switch / Android の OS ダイアログ)
                     //    が開いてしまい、 表示するだけで計測にならなくなる。
                     //    キャレット点滅は入力欄をクリックしてから始める。
                     %[ type: "input_box", id: "in1",
-                       placeholder: "ここをクリックして入力" ],
+                       placeholder: I18n.t("elements_bench.caret.ph") ],
                 ] ] ]
         ], true, false);
         if (ok) dialogs.add(d);
@@ -244,7 +303,7 @@ class ElementsBenchScene extends DemoScene
             vars: %[ n: "0" ],
             content: %[ type: "margin", padding: 16, child: %[
                 type: "vtile", gap: 8, children: [
-                    %[ type: "label", text: "HUD カウンタ (毎フレーム setVar)",
+                    %[ type: "label", text: I18n.t("elements_bench.counter.title"),
                        size_scale: 0.95 ],
                     %[ type: "label", text_var: "n", size: 32,
                        color: [140, 255, 190, 255] ],
@@ -262,8 +321,8 @@ class ElementsBenchScene extends DemoScene
             align: "right", margin: 48,
             content: %[ type: "margin", padding: 18, child: %[
                 type: "vtile", gap: 12, children: [
-                    %[ type: "label", text: "小アニメ (無限 yoyo)", size_scale: 1.15 ],
-                    %[ type: "label", text: "再生中は毎フレーム dirty",
+                    %[ type: "label", text: I18n.t("elements_bench.anims.title"), size_scale: 1.15 ],
+                    %[ type: "label", text: I18n.t("elements_bench.anims.l1"),
                        color: [214, 204, 196, 255] ],
                     %[ type: "align_center", child: %[
                         type: "label", id: "pulse", text: "● PULSE ●",
@@ -286,7 +345,7 @@ class ElementsBenchScene extends DemoScene
             content: %[ type: "margin", padding: 24, child: %[
                 type: "vtile", gap: 24, children: [
                     %[ type: "label",
-                       text: "広域アニメ (パネル全面が毎フレーム再ラスタ)",
+                       text: I18n.t("elements_bench.animw.title"),
                        size_scale: 1.2 ],
                     %[ type: "vspacer", height: 60 ],
                     %[ type: "align_center", child: %[
@@ -300,7 +359,7 @@ class ElementsBenchScene extends DemoScene
                         ] ] ],
                     %[ type: "vspacer", height: 60 ],
                     %[ type: "align_center", child: %[
-                        type: "label", id: "spin", text: "回 転",
+                        type: "label", id: "spin", text: I18n.t("elements_bench.animw.spin"),
                         size_scale: 2.0, color: [255, 140, 180, 255],
                         animate: %[ type: "rotate", from: 0, to: 360,
                                     frames: 120, easing: "linear", loops: -1 ] ] ],
@@ -317,7 +376,7 @@ class ElementsBenchScene extends DemoScene
         ElementsDialog.renderStatsReset();
         prevStats = void;
         prevTick = 0;
-        drawStatsHeader("計測中...");
+        drawStatsHeader(I18n.t("elements_bench.measuring"));
     }
 
     // 小数 1 桁の文字列化 (real の直接文字列化は "27.300000000000001" の
@@ -441,16 +500,16 @@ class ElementsBenchScene extends DemoScene
             var dPre = s.presentUs - prevStats.presentUs;
 
             var lines = [];
-            lines.add("シナリオ " + scenario + ": " + scenarioName(scenario));
+            lines.add(I18n.t("elements_bench.st.scen", scenario, scenarioName(scenario)));
             lines.add("renderCache=" + (ElementsDialog.renderCache ? "ON" : "OFF")
                     + "  renderScale=" + fmt1(ElementsDialog.renderScale)
                     + "  renderCount=" + ElementsDialog.renderCount);
             lines.add("");
-            lines.add("フレーム    : " + dF + " (" + fmt1(dF * 1000.0 / wallMs) + " fps)");
-            lines.add("ラスタ      : " + dR + " 回 (" + fmt1(dR * 1000.0 / wallMs) + " /s)");
-            lines.add("cached 提示 : " + dC + " 回 (ラスタ省略)");
+            lines.add(I18n.t("elements_bench.st.frames", "" + dF, fmt1(dF * 1000.0 / wallMs)));
+            lines.add(I18n.t("elements_bench.st.rasters", "" + dR, fmt1(dR * 1000.0 / wallMs)));
+            lines.add(I18n.t("elements_bench.st.cached", "" + dC));
             lines.add("");
-            lines.add("― 1 フレーム平均 (us) ―");
+            lines.add(I18n.t("elements_bench.st.avg"));
             if (dF > 0) {
                 lines.add("total   : " + fmt1(dTot / dF)
                         + "   update: " + fmt1(dUpd / dF)
@@ -460,10 +519,9 @@ class ElementsBenchScene extends DemoScene
                         + "   upload: " + fmt1(dUpl / dF));
             }
             if (dR > 0)
-                lines.add("ラスタ 1 回あたり: " + fmt1(dRas / dR) + " us");
+                lines.add(I18n.t("elements_bench.st.perras", fmt1(dRas / dR)));
             lines.add("");
-            lines.add("Elements CPU 占有率: "
-                    + fmt1(dTot * 100.0 / (wallMs * 1000.0)) + " %  (実時間比)");
+            lines.add(I18n.t("elements_bench.st.share", fmt1(dTot * 100.0 / (wallMs * 1000.0))));
             drawStatsLines(lines);
         }
         prevStats = s;
@@ -485,27 +543,27 @@ class ElementsBenchScene extends DemoScene
         var s = stage;
         s.fillRect(0, 0, 1280, 720, 0xff181c24);
         s.font.face = ""; s.font.height = 34;
-        s.drawText(40, 22, "Elements overlay 負荷計測 (ElementsDialog.renderStats)", 0xffffff, 255, true);
+        s.drawText(40, 22, I18n.t("elements_bench.heading"), 0xffffff, 255, true);
         if (!available) {
             s.font.height = 24;
-            s.drawText(40, 90, "この環境では ElementsDialog.renderStats が使えません (Elements 無効ビルド)", 0xf0a0a0, 255);
+            s.drawText(40, 90, I18n.t("elements_bench.unavailable"), 0xf0a0a0, 255);
             s.update();
             return;
         }
         s.font.height = 18;
         var y = 76;
-        s.drawText(48, y,      "1: idle (静的)          2: caret (キャレット点滅)   3: counter (毎フレーム setVar)", 0xc4ccda, 255);
-        s.drawText(48, y + 26, "4: anim 小 (無限 yoyo)  5: anim 広域 (大パネル)     6: 複合   0: 全消去", 0xc4ccda, 255);
-        s.drawText(48, y + 52, "R: renderCache ON/OFF   C: 計測リセット   (パネル focus 中でも効きます)", 0xc4ccda, 255);
-        s.drawText(48, y + 78, "パッド: ←→ = シナリオ巡回   X = renderCache   Y = リセット", 0xc4ccda, 255);
+        s.drawText(48, y,      I18n.t("elements_bench.keys1"), 0xc4ccda, 255);
+        s.drawText(48, y + 26, I18n.t("elements_bench.keys2"), 0xc4ccda, 255);
+        s.drawText(48, y + 52, I18n.t("elements_bench.keys3"), 0xc4ccda, 255);
+        s.drawText(48, y + 78, I18n.t("elements_bench.keys4"), 0xc4ccda, 255);
         y = 186;
-        head(40, y, "見方");
+        head(40, y, I18n.t("elements_bench.howto"));
         s.font.face = ""; s.font.height = 16;
-        s.drawText(48, y + 26, "・idle で rasters/s = 0 → renderCache が効いている (アイドルゼロコスト)", 0x9aa4b8, 255);
-        s.drawText(48, y + 48, "・caret/counter/anim は「変化フレームは全面再ラスタ」= 現状の上限コスト", 0x9aa4b8, 255);
-        s.drawText(48, y + 70, "・部分再描画 (ダーティ矩形) 導入後は raster/upload の減少をここで確認する", 0x9aa4b8, 255);
-        head(SX + 16, SY - 30, "計測結果 (500ms ごと更新 / C でリセット)");
-        drawStatsHeader("計測中...");
+        s.drawText(48, y + 26, I18n.t("elements_bench.howto1"), 0x9aa4b8, 255);
+        s.drawText(48, y + 48, I18n.t("elements_bench.howto2"), 0x9aa4b8, 255);
+        s.drawText(48, y + 70, I18n.t("elements_bench.howto3"), 0x9aa4b8, 255);
+        head(SX + 16, SY - 30, I18n.t("elements_bench.result"));
+        drawStatsHeader(I18n.t("elements_bench.measuring"));
         s.update();
     }
 

@@ -15,4 +15,4 @@ if (demolibPath === void) { System.inform("demolib が見つかりません"); S
 Scripts.execStorage(demolibPath + "demo_common.tjs");
 Scripts.execStorage("scene.tjs");
 
-runDemoShell([ new ImageOpsScene() ], "image_ops — 画像処理");
+runDemoShell([ new ImageOpsScene() ], I18n.entry("image_ops.shell"));

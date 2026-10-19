@@ -47,6 +47,26 @@ var GLP_PARTICLE_FS =
   + "  gl_FragColor = vec4(col * soft, soft * fade);\n"
   + "}\n";
 
+I18n.add(%[
+    "gl_particles.title"       => %[ ja : "GPU パーティクル",                 en : "GPU particles" ],
+    "gl_particles.shell"       => %[ ja : "gl_particles — GPU パーティクル",  en : "gl_particles — GPU particles" ],
+    "gl_particles.emit.fountain" => %[ ja : "噴水 (fountain)",                en : "fountain" ],
+    "gl_particles.emit.radial" => %[ ja : "放射 (radial)",                    en : "radial" ],
+    "gl_particles.emit.rising" => %[ ja : "上昇 (rising)",                    en : "rising" ],
+    "gl_particles.blend.add"   => %[ ja : "加算 (bmAdd)",                     en : "additive (bmAdd)" ],
+    "gl_particles.blend.alpha" => %[ ja : "通常 (bmAlpha)",                   en : "normal (bmAlpha)" ],
+    "gl_particles.noogl"       => %[ ja : "この環境では OGLDrawDevice が使えません", en : "OGLDrawDevice is not available here" ],
+    "gl_particles.noogl.info"  => %[ ja : "OGLDrawDevice 非対応",             en : "OGLDrawDevice not supported" ],
+    "gl_particles.info"        => %[ ja : "パネルで 粒子数/エミッタ/ブレンド 変更   B: ブレンド   G: エミッタ   SPACE: 停止",
+                                     en : "Panel: count / emitter / blend   B: blend   G: emitter   SPACE: pause" ],
+    "gl_particles.hud"         => %[ ja : "粒子数 ${count}   ${emitter}   ${blend}", en : "Particles ${count}   ${emitter}   ${blend}" ],
+    "gl_particles.panel.title" => %[ ja : "パーティクル設定",                 en : "Particle settings" ],
+    "gl_particles.panel.count" => %[ ja : "粒子数",                           en : "Count" ],
+    "gl_particles.panel.emit"  => %[ ja : "エミッタ",                         en : "Emitter" ],
+    "gl_particles.panel.blend" => %[ ja : "ブレンド",                         en : "Blend" ],
+    "gl_particles.panel.pause" => %[ ja : "一時停止",                         en : "Pause" ]
+]);
+
 //----------------------------------------------------------------------
 // OGL 描画デバイス (owner = シーン)
 //----------------------------------------------------------------------
@@ -149,29 +169,31 @@ class GLParticlesScene extends DemoScene
 {
     var W = 1280, H = 720, life = 3.0;
     var countOptions = [ 2000, 8000, 20000, 50000 ];
-    var emitters = [ "噴水 (fountain)", "放射 (radial)", "上昇 (rising)" ];
-    var blends = [ %[ name:"加算 (bmAdd)", mode:"add" ], %[ name:"通常 (bmAlpha)", mode:"alpha" ] ];
+    var emitters = [];          // 表示名は create で現在言語から作る
+    var blends = [];
     var countIndex = 2, emitter = 0, blendIndex = 0, paused = false;
     var animTime = 0.0, lastTick = 0;
     var fps = 0.0, fpsFrames = 0, fpsTick = 0;
     var dev;
 
-    function GLParticlesScene() { super.DemoScene("GPU パーティクル"); }
+    function GLParticlesScene() { super.DemoScene(I18n.entry("gl_particles.title")); }
 
     function create()
     {
+        emitters = [ I18n.t("gl_particles.emit.fountain"), I18n.t("gl_particles.emit.radial"), I18n.t("gl_particles.emit.rising") ];
+        blends = [ %[ name:I18n.t("gl_particles.blend.add"), mode:"add" ], %[ name:I18n.t("gl_particles.blend.alpha"), mode:"alpha" ] ];
         if (typeof global.Window.OGLDrawDevice == "undefined") {
             stage.font.height = 26;
-            stage.drawText(40, 40, "この環境では OGLDrawDevice が使えません", 0xd0a0a0, 255);
+            stage.drawText(40, 40, I18n.t("gl_particles.noogl"), 0xd0a0a0, 255);
             stage.update();
-            setInfo("OGLDrawDevice 非対応");
+            setInfo(I18n.t("gl_particles.noogl.info"));
             return;
         }
         lastTick = System.getTickCount(); fpsTick = lastTick;
         dev = new ParticleDevice(this);
         enableGL(dev);
         drawHud();
-        setInfo("パネルで 粒子数/エミッタ/ブレンド 変更   B: ブレンド   G: エミッタ   SPACE: 停止");
+        setInfo(I18n.t("gl_particles.info"));
         showPanelDict(panelDict());
     }
 
@@ -197,9 +219,9 @@ class GLParticlesScene extends DemoScene
         s.fillRect(0, 0, W, H, 0x00000000);
         s.fillRect(0, 0, 520, 92, 0x90000000);
         s.font.height = 30;
-        s.drawText(24, 12, "GPU パーティクル", 0xffffff, 255, true, 0, 0x000000, 0, 2, 2);
+        s.drawText(24, 12, I18n.t("gl_particles.title"), 0xffffff, 255, true, 0, 0x000000, 0, 2, 2);
         s.font.height = 19;
-        s.drawText(26, 52, @"粒子数 ${countOptions[countIndex]}   ${emitters[emitter]}   ${blends[blendIndex].name}", 0xaac0e8, 255);
+        s.drawText(26, 52, I18n.t("gl_particles.hud", %[ count : countOptions[countIndex], emitter : emitters[emitter], blend : blends[blendIndex].name ]), 0xaac0e8, 255);
         s.fillRect(W - 190, 0, 190, 66, 0x90000000);
         s.font.height = 22;
         s.drawText(W - 176, 8, "FPS", 0x90a0c0, 255);
@@ -213,22 +235,22 @@ class GLParticlesScene extends DemoScene
         var countOpts = [];
         for (var i = 0; i < countOptions.count; i++) countOpts.add("" + countOptions[i]);
         return %[
-            size : [300, 250], background : [26, 30, 40, 236], locale : "ja-JP",
+            size : [300, 250], background : [26, 30, 40, 236],
             align : "top_right", margin : 12,
             content : %[ type : "margin", padding : 14, child : %[ type : "vtile", children : [
                 %[ type : "vsize", height : 0, child : %[ type : "hspacer", width : 268 ] ],
-                %[ type : "align_center", child : %[ type : "label", text : "パーティクル設定", size_scale : 1.2 ] ],
+                %[ type : "align_center", child : %[ type : "label", text : I18n.t("gl_particles.panel.title"), size_scale : 1.2 ] ],
                 %[ type : "vspacer", height : 10 ],
-                %[ type : "labeled_row", label : "粒子数", label_width : 70,
+                %[ type : "labeled_row", label : I18n.t("gl_particles.panel.count"), label_width : 70,
                    child : %[ type : "cycle_picker", id : "count", options : countOpts, initial : countIndex ] ],
                 %[ type : "vspacer", height : 8 ],
-                %[ type : "labeled_row", label : "エミッタ", label_width : 70,
+                %[ type : "labeled_row", label : I18n.t("gl_particles.panel.emit"), label_width : 70,
                    child : %[ type : "cycle_picker", id : "emit", options : emitters, initial : emitter ] ],
                 %[ type : "vspacer", height : 8 ],
-                %[ type : "labeled_row", label : "ブレンド", label_width : 70,
+                %[ type : "labeled_row", label : I18n.t("gl_particles.panel.blend"), label_width : 70,
                    child : %[ type : "cycle_picker", id : "blend", options : [ blends[0].name, blends[1].name ], initial : blendIndex ] ],
                 %[ type : "vspacer", height : 10 ],
-                %[ type : "toggle_button", id : "pause", text : "一時停止", value : false ]
+                %[ type : "toggle_button", id : "pause", text : I18n.t("gl_particles.panel.pause"), value : false ]
             ] ] ]
         ];
     }

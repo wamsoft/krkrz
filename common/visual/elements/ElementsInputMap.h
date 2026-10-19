@@ -149,6 +149,9 @@ inline vk_routing RouteVk(tjs_uint vk)
 			// cycfi key_code が大文字 ASCII 準拠なのでそのまま通す。
 			if (vk >= '0' && vk <= '9') return as_key(static_cast<kc>(vk));
 			if (vk >= 'A' && vk <= 'Z') return as_key(static_cast<kc>(vk));
+			// ファンクションキー (画面の bindings で "f1".."f12" と書けるように)
+			if (vk >= VK_F1 && vk <= VK_F12)
+				return as_key(static_cast<kc>(static_cast<int>(kc::f1) + (vk - VK_F1)));
 			return vk_routing{};
 	}
 }

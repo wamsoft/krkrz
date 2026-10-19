@@ -78,13 +78,20 @@ python licenses/gen_licenses_c.py --mode module \
 
 ```
 python src/core/licenses/gen_licenses_c.py --mode table \
-    --plugins src/plugins --out doc/guide/BundledLicenses.md
+    --plugins src/plugins --out doc/guide/BundledLicenses.md --i18n doc/i18n
 ```
 
 - 本体 (`group != "font"`) / プラグイン / その他 (フォント) の 3 節 + 構成依存の一覧。
 - `--plugins` は `<dir>/<名前>/licenses/manifest.json` を走査する。省略すると本体分だけ。
 - `license` が無いエントリがあるとエラーで止まる (書き忘れ検出)。
 - 出力はバイト一致なら書き換えない。manifest を触ったら再生成してコミットに含める。
+- **公開サイトの訳ページも同時に出す** (`--i18n`)。`<i18n>/<lang>/bundled_licenses.json` が
+  ある言語ぶん `BundledLicenses.<lang>.md` を書き出す。見出しや説明文などの固定文言は
+  生成器の `TABLE_TEXT` に言語ごとに持ち、manifest 由来の日本語 (`license` / `note`) は
+  カタログ (`{"原文": "訳"}`) で訳す。日本語を含まない文言 (`MIT` 等) はそのまま。
+  訳の無い文言は原文のまま出して警告するので、カタログに足して再生成する。
+  訳ページの `source_hash` は日本語版から計算して付けるので、手で `--stamp` する必要は無い。
+  言語を足すときは `TABLE_TEXT` に 1 組とカタログを足す。
 
 ## 構成依存の同梱物 (`when`)
 

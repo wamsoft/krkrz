@@ -32,4 +32,4 @@ if (System.getArgument("-genassets") !== void) {
 Scripts.execStorage("pages.tjs");   // GALLERY_PAGES (単体では project 直下)
 Scripts.execStorage("scene.tjs");
 
-runDemoShell([new ElementsGalleryScene()], "elements_gallery — Elements ウィジェットギャラリー");
+runDemoShell([new ElementsGalleryScene()], I18n.entry("elements_gallery.shell"));

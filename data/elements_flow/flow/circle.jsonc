@@ -1,5 +1,10 @@
 // サークル (universal) 遷移先の画面。中心から開き、中心へ閉じて戻る。
 {
+    "strings": {
+        "flow.circle.lead1": { "ja": "放射グラデーション rule で中心から開く (vague 128)", "en": "Opens from the center with a radial gradient rule (vague 128)" },
+        "flow.circle.lead2": { "ja": "戻りは反転 rule で外周から中心へ閉じる", "en": "Back closes from the edge to the center with the inverted rule" },
+        "flow.circle.back": { "ja": "戻る (閉じるサークル)", "en": "Back (closing circle)" }
+    },
     "size": [960, 600],
     "background": [64, 40, 88, 255],
     "input": { "arrow_focus_nav": true },
@@ -17,13 +22,13 @@
               "animate": { "type": "scale", "from": [0.2, 0.2], "to": [1.0, 1.0],
                            "frames": 18, "easing": "out_back" } },
             { "type": "vspacer", "height": 12 },
-            { "type": "label", "text": "放射グラデーション rule で中心から開く (vague 128)",
+            { "type": "label", "text_id": "flow.circle.lead1", "text": "放射グラデーション rule で中心から開く (vague 128)",
               "size": 22, "color": [190, 175, 220, 255] },
-            { "type": "label", "text": "戻りは反転 rule で外周から中心へ閉じる",
+            { "type": "label", "text_id": "flow.circle.lead2", "text": "戻りは反転 rule で外周から中心へ閉じる",
               "size": 22, "color": [190, 175, 220, 255] },
             { "type": "vspacer", "height": 36 },
             { "type": "hsize", "width": 280, "child":
-                { "type": "button", "id": "back", "text": "戻る (閉じるサークル)",
+                { "type": "button", "id": "back", "text_id": "flow.circle.back", "text": "戻る (閉じるサークル)",
                   "close_on_click": true, "initial_focus": true } }
         ]}
     }

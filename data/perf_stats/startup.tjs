@@ -15,4 +15,4 @@ if (demolibPath === void) { System.inform("demolib が見つかりません"); S
 Scripts.execStorage(demolibPath + "demo_common.tjs");
 Scripts.execStorage("scene.tjs");
 
-runDemoShell([ new PerfStatsScene() ], "perf_stats — 転送コストとメモリ計測");
+runDemoShell([ new PerfStatsScene() ], I18n.entry("perf_stats.shell"));

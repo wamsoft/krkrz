@@ -15,4 +15,4 @@ if (demolibPath === void) { System.inform("demolib が見つかりません"); S
 Scripts.execStorage(demolibPath + "demo_common.tjs");
 Scripts.execStorage("scene.tjs");
 
-runDemoShell([ new LayerTreeScene() ], "layer_tree — レイヤツリー / ヒットテスト / フォーカス");
+runDemoShell([ new LayerTreeScene() ], I18n.entry("layer_tree.shell"));

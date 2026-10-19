@@ -15,4 +15,4 @@ if (demolibPath === void) { System.inform("demolib が見つかりません"); S
 Scripts.execStorage(demolibPath + "demo_common.tjs");
 Scripts.execStorage("scene.tjs");
 
-runDemoShell([ new SoftkeyImeScene() ], "softkey_ime — 文字入力 / 仮想キーボード / IME");
+runDemoShell([ new SoftkeyImeScene() ], I18n.entry("softkey_ime.shell"));

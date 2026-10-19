@@ -2,42 +2,80 @@
 // ======================================================================
 //  sysinfo シーン (SysInfoScene) — System / Storages 情報表示
 //  単体起動は startup.tjs、束ね起動は gallery から本ファイルを exec して使う。
+//  文字列は I18n (demolib/demo_i18n.tjs) の表から引く。パネルは同じ表を
+//  "strings" として渡し、text_id で引かせる (I18n.panelStrings)。
 // ======================================================================
+
+I18n.add(%[
+    "sysinfo.title"        => %[ ja : "システム情報",                    en : "System information" ],
+    "sysinfo.heading"      => %[ ja : "システム情報 (System / Storages)", en : "System information (System / Storages)" ],
+    "sysinfo.info"         => %[ ja : "P: パネル再表示   F: FPS 表示   F2: 言語   (demolib 動作確認デモ)",
+                                 en : "P: show panel   F: FPS   F2: language   (demolib check demo)" ],
+    "sysinfo.undefined"    => %[ ja : "(未定義)",                        en : "(undefined)" ],
+    "sysinfo.unavailable"  => %[ ja : "(取得不可)",                      en : "(unavailable)" ],
+    "sysinfo.default"      => %[ ja : "(指定なし = 既定)",               en : "(not specified = default)" ],
+    "sysinfo.elements.yes" => %[ ja : "利用可能",                        en : "available" ],
+    "sysinfo.elements.no"  => %[ ja : "利用不可 (KRKRZ_USE_ELEMENTS=OFF)", en : "not available (KRKRZ_USE_ELEMENTS=OFF)" ],
+    "sysinfo.panel.title"  => %[ ja : "sysinfo パネル",                  en : "sysinfo panel" ],
+    "sysinfo.panel.redraw" => %[ ja : "情報を再取得",                    en : "Refresh" ],
+    "sysinfo.panel.lang"   => %[ ja : "言語を切り替え (F2)",           en : "Switch language (F2)" ],
+    "sysinfo.panel.close"  => %[ ja : "パネルを閉じる",                  en : "Close panel" ]
+]);
 
 class SysInfoScene extends DemoScene
 {
     var props;
     var shownCount = 0;
 
-    function SysInfoScene() { super.DemoScene("システム情報"); }
+    function SysInfoScene() { super.DemoScene(I18n.entry("sysinfo.title")); }
 
     function create()
     {
         props = [
             "versionString", "buildVariantName", "platformName", "osName",
+            "systemLanguage", "uiLanguage", "uiLanguageCandidates",
             "isGeneric", "exeBits", "osBits", "processorNum", "touchDevice",
             "openGLESVersion", "drawThreadNum", "graphicCacheLimit",
             "exeName", "exePath", "dataPath", "appDataPath", "personalPath",
             "savedGamesPath", "screenWidth", "screenHeight",
-            "desktopLeft", "desktopTop", "desktopWidth", "desktopHeight"
+            "desktopLeft", "desktopTop", "desktopWidth", "desktopHeight",
+            // 解像度まわり: ウィンドウの大きさ (inner = 描画領域、 外形 = 枠込み) と
+            // 実 DPI、 起動オプション -dpiscaling (OS の拡大率に合わせるか) / -drawdevice。
+            // -dpiscaling=yes では inner が OS の拡大率で割った仮想ピクセルになる
+            "Window.innerWidth", "Window.innerHeight", "Window.width", "Window.height",
+            "Window.displayDensity", "-dpiscaling", "-drawdevice"
         ];
         enableFps();
         drawInfo();
-        setInfo("P: パネル再表示   F: FPS 表示   (demolib 動作確認デモ)");
+        setInfo(I18n.t("sysinfo.info"));
         showPanel();
     }
 
     function propLine(name)
     {
         var v;
+        if (name.charAt(0) == "-") {
+            // 起動オプション (config.cf でも可)
+            v = System.getArgument(name);
+            shownCount++;
+            return name + " = " + (v === void ? I18n.t("sysinfo.default") : v);
+        }
+        if (name.indexOf("Window.") == 0) {
+            var pn = name.substring(7);
+            try { v = window[pn]; } catch (e) { return name + " = " + I18n.t("sysinfo.unavailable"); }
+            if (v === void) return name + " = (void)";
+            shownCount++;
+            return name + " = " + v;
+        }
         try {
-            if (typeof System[name] == "undefined") return name + " = (未定義)";
+            if (typeof System[name] == "undefined") return name + " = " + I18n.t("sysinfo.undefined");
             v = System[name];
         } catch (e) {
-            return name + " = (取得不可)";
+            return name + " = " + I18n.t("sysinfo.unavailable");
         }
         if (v === void) return name + " = (void)";
         shownCount++;
+        if (typeof v == "Object" && v instanceof "Array") return name + " = [" + v.join(", ") + "]";
         return name + " = " + v;
     }
 
@@ -50,7 +88,7 @@ class SysInfoScene extends DemoScene
         lay.fillRect(0, 0, w, 74, 0xff1f2530);
         lay.fillRect(0, 74, w, 2, 0xff3a4456);
         lay.font.height = 36;
-        lay.drawText(32, 18, "システム情報 (System / Storages)", 0xffffff, 255, true, 0, 0x000000, 0, 2, 2);
+        lay.drawText(32, 18, I18n.t("sysinfo.heading"), 0xffffff, 255, true, 0, 0x000000, 0, 2, 2);
 
         lay.font.height = 19;
         var top = 96, lineH = 24;
@@ -66,7 +104,7 @@ class SysInfoScene extends DemoScene
             lay.font.height = 19;
             var lines = [];
             try { lines.add("Storages.getFullPath(\"startup.tjs\") = " + Storages.getFullPath("startup.tjs")); } catch (e) {}
-            try { lines.add("ElementsDialog = " + (hasElements() ? "利用可能" : "利用不可 (KRKRZ_USE_ELEMENTS=OFF)")); } catch (e) {}
+            try { lines.add("ElementsDialog = " + I18n.t(hasElements() ? "sysinfo.elements.yes" : "sysinfo.elements.no")); } catch (e) {}
             for (var i = 0; i < lines.count; i++)
                 lay.drawText(32, sy + i * lineH, lines[i], 0x9ab890, 255);
         }
@@ -76,15 +114,18 @@ class SysInfoScene extends DemoScene
     function panelDict()
     {
         return %[
-            size : [300, 180], background : [30, 32, 42, 236], locale : "ja-JP",
+            size : [300, 220], background : [30, 32, 42, 236],
+            strings : I18n.panelStrings("sysinfo.panel."),
             align : "top_right", margin : 56,
             content : %[ type : "margin", padding : 14, child : %[ type : "vtile", children : [
                 %[ type : "vsize", height : 0, child : %[ type : "hspacer", width : 268 ] ],
-                %[ type : "align_center", child : %[ type : "label", text : "sysinfo パネル", size_scale : 1.3 ] ],
+                %[ type : "align_center", child : %[ type : "label", text_id : "sysinfo.panel.title", size_scale : 1.3 ] ],
                 %[ type : "vspacer", height : 10 ],
-                %[ type : "button", id : "redraw", text : "情報を再取得" ],
+                %[ type : "button", id : "redraw", text_id : "sysinfo.panel.redraw" ],
                 %[ type : "vspacer", height : 6 ],
-                %[ type : "button", id : "close", text : "パネルを閉じる" ]
+                %[ type : "button", id : "lang", text_id : "sysinfo.panel.lang" ],
+                %[ type : "vspacer", height : 6 ],
+                %[ type : "button", id : "close", text_id : "sysinfo.panel.close" ]
             ] ] ]
         ];
     }
@@ -94,6 +135,7 @@ class SysInfoScene extends DemoScene
     {
         switch (id) {
         case "redraw": drawInfo();   break;
+        case "lang":   I18n.cycleLanguage(); break;
         case "close":  closePanel(); break;
         }
     }

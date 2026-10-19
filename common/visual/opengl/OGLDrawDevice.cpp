@@ -11,6 +11,7 @@
 #include "ThreadIntf.h"
 #include "ComplexRect.h"
 #include "OGLSurfaceRect.h"
+#include "GLFrameBufferObject.h"
 #include "EventIntf.h"
 #include "DebugIntf.h"   // TVPAddImportantLog
 #include "ScriptMgnIntf.h"   // TVPScriptExceptionShownCount
@@ -221,7 +222,28 @@ void TJS_INTF_METHOD tTVPOGLDrawDevice::Show()
 		}
 
 	} else if (CanvasInstance) {
-		CanvasInstance->SetSurfaceSize(SurfaceWidth, SurfaceHeight);
+		// Canvas の座標系は論理サーフェス (inner)。 実フレームバッファと大きさが違えば
+		// inner の大きさの FBO に描かせ、 最後に実フレームバッファへ拡大して貼る。
+		int logW = NIWindow ? (int)NIWindow->GetInnerWidth() : SurfaceWidth;
+		int logH = NIWindow ? (int)NIWindow->GetInnerHeight() : SurfaceHeight;
+		const bool scaled = logW > 0 && logH > 0 && (logW != SurfaceWidth || logH != SurfaceHeight);
+		GLint screenFbo = 0;
+		if (scaled) {
+			glGetIntegerv(GL_FRAMEBUFFER_BINDING, &screenFbo);
+			if (!CanvasScaleFBO || (int)CanvasScaleFBO->width() != logW || (int)CanvasScaleFBO->height() != logH) {
+				CanvasScaleFBO.reset(new GLFrameBufferObject());
+				if (!CanvasScaleFBO->create(logW, logH, false)) CanvasScaleFBO.reset();
+			}
+		} else if (CanvasScaleFBO) {
+			CanvasScaleFBO.reset();
+		}
+		const bool useFbo = scaled && CanvasScaleFBO;
+		if (useFbo) {
+			CanvasScaleFBO->bindFramebuffer();   // Canvas はこれを «画面» として扱う
+			CanvasInstance->SetSurfaceSize(logW, logH);
+		} else {
+			CanvasInstance->SetSurfaceSize(SurfaceWidth, SurfaceHeight);
+		}
 		CanvasInstance->BeginDrawing();
 		try {
 			// onDraw ハンドラが毎フレーム例外を投げ続けるのを防ぐガード。
@@ -246,10 +268,12 @@ void TJS_INTF_METHOD tTVPOGLDrawDevice::Show()
 			}
 		} catch( ... ) {
 			CanvasInstance->EndDrawing();
+			if (useFbo) PresentCanvasScaled(screenFbo, logW, logH);
 			GLContext->Swap();
 			throw;
 		}
 		CanvasInstance->EndDrawing();
+		if (useFbo) PresentCanvasScaled(screenFbo, logW, logH);
 	}
 
 #ifndef __WINVER__
@@ -353,11 +377,38 @@ tTVPOGLDrawDevice::UpdateTexture(int x, int y, int w, int h, std::function<void(
 // DestRect はウィンドウの inner サイズ (論理サーフェス) 座標で来るが、 GL 側は
 // 実フレームバッファ基準で描く。 食い違う環境 (PS5 等) では実サイズへ換算する。
 //---------------------------------------------------------------------------
+// Canvas を描いた FBO (論理サーフェスの大きさ) を、 実フレームバッファへ縦横同率・
+// 中央寄せで拡大して貼る (余白はビューポート背景色)。
+void tTVPOGLDrawDevice::PresentCanvasScaled(GLint screenFbo, int logW, int logH)
+{
+	glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)screenFbo);
+	glViewport(0, 0, SurfaceWidth, SurfaceHeight);
+	tjs_uint32 bg = GetViewportBgColor();
+	glClearColor(((bg >> 16) & 0xff) / 255.0f, ((bg >> 8) & 0xff) / 255.0f,
+	             (bg & 0xff) / 255.0f, ((bg >> 24) & 0xff) / 255.0f);
+	glClear(GL_COLOR_BUFFER_BIT);
+	tTVPRect dr = TVPScaleRectToSurface(tTVPRect(0, 0, logW, logH), logW, logH,
+	                                    SurfaceWidth, SurfaceHeight);
+	const float w2 = SurfaceWidth / 2.0f, h2 = SurfaceHeight / 2.0f;
+	const float left = (dr.left - w2) / w2, right = (dr.right - w2) / w2;
+	const float top = (dr.top - h2) / h2, bottom = (dr.bottom - h2) / h2;
+	float pos[8] = { left, -bottom, left, -top, right, -bottom, right, -top };
+	TextureDrawer.DrawTextureId(CanvasScaleFBO->textureId(), SurfaceWidth, SurfaceHeight, pos, true);
+}
+
+//---------------------------------------------------------------------------
 tTVPRect tTVPOGLDrawDevice::ToPhysicalRect(const tTVPRect &r, int physW, int physH) const
 {
 	if (!NIWindow) return r;
+#ifdef __WINVER__
+	// WINVER の DestRect はクライアントの実ピクセル座標 (-dpiscaling=yes でスクリプト向けの
+	// inner が仮想ピクセルになっても変わらない)
+	return TVPScaleRectToSurface(r, NIWindow->GetClientPixelWidth(),
+	                             NIWindow->GetClientPixelHeight(), physW, physH);
+#else
 	return TVPScaleRectToSurface(r, NIWindow->GetInnerWidth(),
 	                             NIWindow->GetInnerHeight(), physW, physH);
+#endif
 }
 
 //---------------------------------------------------------------------------
@@ -463,6 +514,7 @@ void tTVPOGLDrawDevice::DoneContext()
 
 	DestroyTexture();
 	DestroyCanvas();
+	CanvasScaleFBO.reset();
 	TextureDrawer.Done();
 
 #ifdef __GENERIC__

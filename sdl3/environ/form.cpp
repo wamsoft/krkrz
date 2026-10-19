@@ -170,10 +170,12 @@ SDL3WindowForm::SDL3WindowForm(class tTJSNI_Window* win)
 	mFixedSurfaceHeight = height;
 #else
 	flags |= SDL_WINDOW_RESIZABLE;
-#if defined(SDL_PLATFORM_MACOS)
-	// Retina の実ピクセルで描く (iOS と同じ。 指定しないと描画バッファが論理ポイントで
-	// 作られ、 OS が 2 倍に引き伸ばす)。 ウィンドウ / inner サイズの意味 (論理ポイント) は
-	// 変わらない。 描画バッファの実サイズは GetSurfaceSize (SDL_GetWindowSizeInPixels) で取る。
+#if defined(SDL_PLATFORM_MACOS) || (defined(SDL_PLATFORM_LINUX) && !defined(SDL_PLATFORM_ANDROID))
+	// 高解像度ディスプレイの実ピクセルで描く (iOS と同じ)。 指定しないと描画バッファが
+	// 論理ポイントで作られ、 OS が拡大率ぶん引き伸ばす (macOS の Retina、 Linux の Wayland
+	// の拡大率 1.25 等。 X11 はウィンドウ座標が元から実ピクセルなので変わらない)。
+	// 吉里吉里から見えるサイズは PointScale() で実ピクセル (または -dpiscaling の仮想
+	// ピクセル) へ換算する。 描画バッファの実サイズは GetSurfaceSize (SDL_GetWindowSizeInPixels)。
 	flags |= SDL_WINDOW_HIGH_PIXEL_DENSITY;
 #endif
 	int width = 32;
@@ -274,6 +276,16 @@ static std::unordered_map<SDL_Window*, SDL_GLContext> sMainGLContexts;
 // 実際に得られたバージョンは後段の InitGLES が "Loaded GLES x.y" でログに出す。
 SDL_GLContext TVPCreateGLContextWithFallback(SDL_Window *window)
 {
+	// SDL_Renderer (SDLDrawDevice) を作ると、環境によっては SDL がウィンドウを
+	// 作り直して SDL_WINDOW_OPENGL を外す (macOS の metal / software で確認。
+	// Windows の direct3d11 は作り直さないので残る)。 その後は GL コンテキストを
+	// 作れず SDL が "isn't an OpenGL window" で拒否するので、 原因の分かる例外にする
+	// (-drawdevice=sdl で起動してから OpenGL 系の DrawDevice へは切り替えられない)。
+	if (window && !(SDL_GetWindowFlags(window) & SDL_WINDOW_OPENGL)) {
+		TVPLOG_ERROR("SDL_GL_CreateContext: the window is not an OpenGL window "
+		             "(recreated for SDL_Renderer). Start with -drawdevice=sdlogl or ogl to use GL.");
+		TVPThrowExceptionMessage(TVPWindowNotOpenGL);
+	}
 	SDL_GLContext ctx = SDL_GL_CreateContext(window);
 	if (ctx) return ctx;
 	static const int candidates[][2] = { {3,1}, {3,0}, {2,0} };
@@ -375,10 +387,71 @@ SDL3WindowForm::GetSurfaceSize(int &w, int &h) const
 		h = mFixedSurfaceHeight;
 	} else if (mWindow) {
 		SDL_GetWindowSize(mWindow, &w, &h);
+		w = ToPixel(w);
+		h = ToPixel(h);
 	} else {
 		w = 0;
 		h = 0;
 	}
+}
+
+//---------------------------------------------------------------------------
+// SDL のウィンドウ座標 ⇔ 吉里吉里のピクセル
+//
+// 既定の DPI ポリシーは「inner の物理ピクセルサイズを維持」(doc/WindowGeometry.md)。
+// Windows / Linux の SDL はウィンドウ座標がそのまま物理ピクセルなので換算不要。
+// macOS は SDL_WINDOW_HIGH_PIXEL_DENSITY を付けてもウィンドウ座標が論理ポイントの
+// ままなので、 吉里吉里へ見せるサイズ・座標は実ピクセルへ直し、 SDL へ渡すときに
+// ポイントへ戻す (Retina では setInnerSize(1280,720) が実 1280x720 = 見かけ半分)。
+//
+// -dpiscaling=yes では、 吉里吉里のピクセルを OS の拡大率で割った仮想ピクセルにする
+// (拡大率 200% なら 1280x720 のウィンドウが実 2560x1440 になり、 見かけは 100% の
+// 画面と同じ)。 描画は各 DrawDevice が inner (仮想) → 実フレームバッファへ拡大する
+// (SDL_SetRenderLogicalPresentation / TVPScaleRectToSurface)。
+//---------------------------------------------------------------------------
+static bool TVPSDLDpiScalingEnabled()
+{
+	static tjs_int gen = -1;
+	static bool enabled = false;
+	if (gen != TVPGetCommandLineArgumentGeneration()) {
+		gen = TVPGetCommandLineArgumentGeneration();
+		tTJSVariant val;
+		enabled = TVPGetCommandLine(TJS_W("-dpiscaling"), &val) && ttstr(val) == TJS_W("yes");
+	}
+	return enabled;
+}
+
+float
+SDL3WindowForm::PointScale() const
+{
+	if (!mWindow) return 1.0f;
+	float density = 1.0f;
+#if defined(SDL_PLATFORM_MACOS) || (defined(SDL_PLATFORM_LINUX) && !defined(SDL_PLATFORM_ANDROID))
+	// SDL のウィンドウ座標 1 ポイントあたりの実ピクセル数 (Retina なら 2、 Wayland の
+	// 拡大率 1.25 なら 1.25、 X11 は 1)。 Windows は SDL のウィンドウ座標が実ピクセル
+	{
+		float d = SDL_GetWindowPixelDensity(mWindow);
+		if (d > 0.0f) density = d;
+	}
+#endif
+	if (TVPSDLDpiScalingEnabled()) {
+		// OS の拡大率 (Windows の「拡大/縮小」、 macOS の Retina) で割る
+		float ds = SDL_GetWindowDisplayScale(mWindow);
+		if (ds > 0.0f) return density / ds;
+	}
+	return density;
+}
+
+int SDL3WindowForm::ToPoint(int px) const
+{
+	float s = PointScale();
+	return s == 1.0f ? px : (int)(px / s + 0.5f);
+}
+
+int SDL3WindowForm::ToPixel(int pt) const
+{
+	float s = PointScale();
+	return s == 1.0f ? pt : (int)(pt * s + 0.5f);
 }
 
 //---------------------------------------------------------------------------
@@ -436,7 +509,8 @@ void SDL3WindowForm::TouchMouseFinger(const SDL_Event& event)
 	if (!sOwnTouchMouse || !mWindow) return;
 	int ww = 0, wh = 0;
 	SDL_GetWindowSize(mWindow, &ww, &wh);
-	float wx = event.tfinger.x * ww, wy = event.tfinger.y * wh;   // ウィンドウ座標
+	ww = ToPixel(ww); wh = ToPixel(wh);
+	float wx = event.tfinger.x * ww, wy = event.tfinger.y * wh;   // ウィンドウ座標 (ピクセル)
 	// サーフェス座標。 SDL_RenderCoordinatesFromWindow はレンダラの «現在の»
 	// ビューポート / スケール (描画途中の状態) に依存してずれるので使わず、
 	// 論理サーフェスのレターボックス (縦横同倍率・中央寄せ) を直接逆算する。
@@ -553,7 +627,17 @@ SDL3WindowForm::WindowToSurface(float &x, float &y, bool fromEvent) const
 	// マウスイベントが SDL 側で論理座標へ換算済み。 GL 経路 (ogl / sdlogl) は
 	// ウィンドウ座標のまま来るので、 描画 (TVPScaleRectToSurface) と同じ
 	// レターボックス (縦横同倍率・中央寄せ) で逆変換する。
-	if (mFixedSurfaceWidth <= 0 || mFixedSurfaceHeight <= 0 || !mWindow) return;
+	if (!mWindow) return;
+	if (mFixedSurfaceWidth <= 0 || mFixedSurfaceHeight <= 0) {
+		// 論理サーフェスを固定しない (デスクトップ) 環境: サーフェス = inner のピクセル。
+		// ウィンドウ座標 (ポイント) をピクセルへ直す (macOS の Retina 以外は倍率 1 で
+		// 素通し)。 SDL_Renderer 経路でもイベント座標はポイントのまま届く (macOS で確認)。
+		// 論理サイズは inner (ピクセル) と同じでレターボックスも無いので、 換算は
+		// 倍率を掛けるだけで足りる。
+		float s = PointScale();
+		x *= s; y *= s;
+		return;
+	}
 	if (SDL_Renderer *renderer = SDL_GetRenderer(mWindow)) {
 		if (!fromEvent) SDL_RenderCoordinatesFromWindow(renderer, x, y, &x, &y);
 		return;
@@ -572,7 +656,7 @@ void
 SDL3WindowForm::ResizeWindow(int w, int h)
 {
 	if (mWindow) {
-		SDL_SetWindowSize(mWindow, w, h);
+		SDL_SetWindowSize(mWindow, ToPoint(w), ToPoint(h));
 		// min/max でクランプされることがあるので、要求値ではなく実サイズを
 		// 基底の surface サイズ (ビューポート計算の外側サイズ) へ反映する。
 		// 論理サーフェスを固定する環境 (常にフルスクリーン) ではその値を使う
@@ -764,13 +848,30 @@ SDL3WindowForm::ShowWindowAsModal()
 //   height は装飾込みの外側サイズなので、SDL_GetWindowBordersSize で得た枠幅を
 //   足し引きして変換する (取得できない環境では枠 0 として扱う)。
 //---------------------------------------------------------------------------
+#if defined(SDL_PLATFORM_MACOS)
+// sdl3/environ/macwindow.mm
+extern bool TVPCocoaGetWindowBordersSize(SDL_Window *window, int *top, int *left, int *bottom, int *right);
+#endif
+// 装飾の厚み (SDL のウィンドウ座標)。 SDL3 の Cocoa バックエンドは
+// SDL_GetWindowBordersSize を実装していないので、 macOS は NSWindow から求める
+bool TVPGetWindowBordersSize(SDL_Window *w, int *top, int *left, int *bottom, int *right)
+{
+	*top = *left = *bottom = *right = 0;
+	if (!w) return false;
+#if defined(SDL_PLATFORM_MACOS)
+	return TVPCocoaGetWindowBordersSize(w, top, left, bottom, right);
+#else
+	return SDL_GetWindowBordersSize(w, top, left, bottom, right);
+#endif
+}
+
 namespace {
 struct SDLBorders { int top = 0, left = 0, bottom = 0, right = 0; };
 
 SDLBorders GetBorders(SDL_Window *w)
 {
 	SDLBorders b;
-	if (w) SDL_GetWindowBordersSize(w, &b.top, &b.left, &b.bottom, &b.right);
+	TVPGetWindowBordersSize(w, &b.top, &b.left, &b.bottom, &b.right);
 	return b;
 }
 } // anonymous
@@ -790,13 +891,15 @@ SDL3WindowForm::MoveWindowTo(int l, int t)
 	TTVPWindowForm::ResizeWindow(w, h);
 }
 
+// 位置も吉里吉里のピクセル (SDL のウィンドウ座標 × PointScale) で扱う。 サイズ・
+// System.screen* / desktop* と同じ単位にして、 画面基準の配置計算を合わせるため。
 void
 SDL3WindowForm::SetLeft(int l)
 {
 	if (!mWindow) return;
 	int x = 0, y = 0;
 	SDL_GetWindowPosition(mWindow, &x, &y);
-	MoveWindowTo(l, y);
+	MoveWindowTo(ToPoint(l), y);
 }
 
 int
@@ -805,7 +908,7 @@ SDL3WindowForm::GetLeft() const
 	if (!mWindow) return 0;
 	int x = 0, y = 0;
 	SDL_GetWindowPosition(mWindow, &x, &y);
-	return x;
+	return ToPixel(x);
 }
 
 void
@@ -814,7 +917,7 @@ SDL3WindowForm::SetTop(int t)
 	if (!mWindow) return;
 	int x = 0, y = 0;
 	SDL_GetWindowPosition(mWindow, &x, &y);
-	MoveWindowTo(x, t);
+	MoveWindowTo(x, ToPoint(t));
 }
 
 int
@@ -823,13 +926,13 @@ SDL3WindowForm::GetTop() const
 	if (!mWindow) return 0;
 	int x = 0, y = 0;
 	SDL_GetWindowPosition(mWindow, &x, &y);
-	return y;
+	return ToPixel(y);
 }
 
 void
 SDL3WindowForm::SetPosition(int l, int t)
 {
-	MoveWindowTo(l, t);
+	MoveWindowTo(ToPoint(l), ToPoint(t));
 }
 
 int
@@ -839,7 +942,7 @@ SDL3WindowForm::GetWidth() const
 	int w = 0, h = 0;
 	SDL_GetWindowSize(mWindow, &w, &h);
 	SDLBorders b = GetBorders(mWindow);
-	return w + b.left + b.right;
+	return ToPixel(w + b.left + b.right);
 }
 
 int
@@ -849,7 +952,7 @@ SDL3WindowForm::GetHeight() const
 	int w = 0, h = 0;
 	SDL_GetWindowSize(mWindow, &w, &h);
 	SDLBorders b = GetBorders(mWindow);
-	return h + b.top + b.bottom;
+	return ToPixel(h + b.top + b.bottom);
 }
 
 void
@@ -869,8 +972,8 @@ SDL3WindowForm::SetSize(int w, int h)
 {
 	if (!mWindow) return;
 	SDLBorders b = GetBorders(mWindow);
-	int cw = w - (b.left + b.right);
-	int ch = h - (b.top + b.bottom);
+	int cw = w - ToPixel(b.left + b.right);
+	int ch = h - ToPixel(b.top + b.bottom);
 	if (cw < 1) cw = 1;
 	if (ch < 1) ch = 1;
 	ResizeWindow(cw, ch);   // 内部の surface サイズ追跡も更新される
@@ -899,20 +1002,21 @@ void SDL3WindowForm::ApplyAspectLock()
 }
 
 // min/max は「内側 (クライアント) サイズ」基準。SDL の
-// SDL_SetWindowMinimum/MaximumSize がそのままクライアント基準なので素通し。
+// SDL_SetWindowMinimum/MaximumSize がそのままクライアント基準なので素通し
+// (macOS の Retina ではポイントへ直す)。
 void SDL3WindowForm::SetMinWidth(int v)  { SetMinSize(v, mMinHeight); }
 void SDL3WindowForm::SetMinHeight(int v) { SetMinSize(mMinWidth, v); }
 void SDL3WindowForm::SetMinSize(int w, int h)
 {
 	mMinWidth = w; mMinHeight = h;
-	if (mWindow) SDL_SetWindowMinimumSize(mWindow, w > 0 ? w : 0, h > 0 ? h : 0);
+	if (mWindow) SDL_SetWindowMinimumSize(mWindow, w > 0 ? ToPoint(w) : 0, h > 0 ? ToPoint(h) : 0);
 }
 void SDL3WindowForm::SetMaxWidth(int v)  { SetMaxSize(v, mMaxHeight); }
 void SDL3WindowForm::SetMaxHeight(int v) { SetMaxSize(mMaxWidth, v); }
 void SDL3WindowForm::SetMaxSize(int w, int h)
 {
 	mMaxWidth = w; mMaxHeight = h;
-	if (mWindow) SDL_SetWindowMaximumSize(mWindow, w > 0 ? w : 0, h > 0 ? h : 0);
+	if (mWindow) SDL_SetWindowMaximumSize(mWindow, w > 0 ? ToPoint(w) : 0, h > 0 ? ToPoint(h) : 0);
 }
 int SDL3WindowForm::GetMinWidth() const  { return mMinWidth; }
 int SDL3WindowForm::GetMinHeight()       { return mMinHeight; }
@@ -931,7 +1035,7 @@ SDL3WindowForm::GetInnerWidth() const
 	if (!mWindow) return TTVPWindowForm::GetInnerWidth();
 	int w = 0, h = 0;
 	SDL_GetWindowSize(mWindow, &w, &h);
-	return w;
+	return ToPixel(w);
 }
 
 int
@@ -941,7 +1045,7 @@ SDL3WindowForm::GetInnerHeight() const
 	if (!mWindow) return TTVPWindowForm::GetInnerHeight();
 	int w = 0, h = 0;
 	SDL_GetWindowSize(mWindow, &w, &h);
-	return h;
+	return ToPixel(h);
 }
 
 // SDL には「枠スタイル」という 1 つの属性は無く、枠の有無 (bordered) と
@@ -1055,10 +1159,8 @@ bool SDL3WindowForm::GetWindowRectScreen(int &l, int &t, int &w, int &h) const
 	int cl = 0, ct = 0, cw = 0, ch = 0;
 	if (!GetClientRectScreen(cl, ct, cw, ch)) return false;
 	int top = 0, left = 0, bottom = 0, right = 0;
-	if (!SDL_GetWindowBordersSize(mWindow, &top, &left, &bottom, &right)) {
-		// 取れない環境 (枠なし / 一部プラットフォーム) は外形 = クライアント
-		top = left = bottom = right = 0;
-	}
+	// 取れない環境 (枠なし / Wayland 等) は外形 = クライアント (枠 0)
+	TVPGetWindowBordersSize(mWindow, &top, &left, &bottom, &right);
 	l = cl - left; t = ct - top; w = cw + left + right; h = ch + top + bottom;
 	return true;
 }
@@ -1196,7 +1298,13 @@ SDL3WindowForm::SetCursorPos(tjs_int x, tjs_int y)
 		// フルスクリーンのレターボックス等で destRect が (0,0) 以外のとき、
 		// これが無いと warp 先がオフセット分ズレる。
 		TranslateDrawAreaToWindow(x, y);
-		SDL_WarpMouseInWindow(mWindow, (float)x, (float)y);
+		float wx = (float)x, wy = (float)y;
+		if (mFixedSurfaceWidth <= 0 || mFixedSurfaceHeight <= 0) {
+			// サーフェス (ピクセル) → ウィンドウ座標 (ポイント)。 macOS の Retina 以外は等倍
+			float s = PointScale();
+			wx /= s; wy /= s;
+		}
+		SDL_WarpMouseInWindow(mWindow, wx, wy);
 	}
 }
 
@@ -1390,6 +1498,13 @@ SDL3WindowForm::AppEvent(const SDL_Event& event)
 			Close();
 			break;
 		}
+#if defined(SDL_PLATFORM_MACOS)
+		case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+			// 倍率の違うディスプレイへ移ると、 ポイントのサイズが同じでも吉里吉里から
+			// 見える inner (ピクセル) が変わるので、 リサイズとして通知する
+			SendMessage(AM_DISPLAY_RESIZE, event.window.data1, event.window.data2);
+			break;
+#endif
 		case SDL_EVENT_WINDOW_RESIZED: {
 			int w = event.window.data1;
 			int h = event.window.data2;
@@ -1401,7 +1516,7 @@ SDL3WindowForm::AppEvent(const SDL_Event& event)
 		//-- 拡張イベント (doc/WindowState.md)。registerExEvent() したときだけ飛ぶ
 		case SDL_EVENT_WINDOW_MOVED: {
 			UpdateNormalRect();
-			FireExEvent(TJS_W("onMove"), 2, event.window.data1, event.window.data2);
+			FireExEvent(TJS_W("onMove"), 2, ToPixel(event.window.data1), ToPixel(event.window.data2));
 			break;
 		}
 		case SDL_EVENT_WINDOW_RESTORED:
@@ -1414,6 +1529,9 @@ SDL3WindowForm::AppEvent(const SDL_Event& event)
 			FireExEvent(TJS_W("onMaximize"));
 			break;
 		case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED: {
+			// -dpiscaling=yes では拡大率が変わると吉里吉里から見える inner (仮想ピクセル) が
+			// 変わるので、 リサイズとして通知する
+			if (TVPSDLDpiScalingEnabled()) SendMessage(AM_DISPLAY_RESIZE, 0, 0);
 			// SDL は倍率で持っているので 96dpi 基準へ直して渡す (Win32 版と揃える)
 			float sc = mWindow ? SDL_GetWindowDisplayScale(mWindow) : 1.0f;
 			int dpi = (int)(96.0f * (sc > 0.0f ? sc : 1.0f));

@@ -5,6 +5,44 @@
 //    ズーム / フルスクリーン / 画面情報 (DPI・解像度) / 実画面キャプチャ。
 // ======================================================================
 
+I18n.add(%[
+    "window_multi.title"        => %[ ja : "複数ウィンドウ / モーダル / 画面情報", en : "Multiple windows / modal / screen info" ],
+    "window_multi.shell"        => %[ ja : "window_multi — 複数ウィンドウ / モーダル / 画面情報", en : "window_multi — Multiple windows / modal / screen info" ],
+    "window_multi.sub.modal"    => %[ ja : "モーダルウィンドウ",                 en : "Modal window" ],
+    "window_multi.sub.normal"   => %[ ja : "サブウィンドウ",                     en : "Sub window" ],
+    "window_multi.sub.caption"  => %[ ja : "サブウィンドウ (非モーダル)",        en : "Sub window (modeless)" ],
+    "window_multi.sub.l1"       => %[ ja : "・このウィンドウは独立した Window オブジェクト", en : "- This window is a separate Window object" ],
+    "window_multi.sub.l2"       => %[ ja : "・自分の primaryLayer とレイヤツリーを持つ", en : "- It has its own primaryLayer and layer tree" ],
+    "window_multi.sub.m1"       => %[ ja : "・モーダル中は親ウィンドウを操作できない", en : "- The parent window is blocked while modal" ],
+    "window_multi.sub.m2"       => %[ ja : "・showModal() はここが閉じるまで戻らない", en : "- showModal() returns when this closes" ],
+    "window_multi.sub.n1"       => %[ ja : "・親と同時に操作できる (非モーダル)", en : "- Usable together with the parent (modeless)" ],
+    "window_multi.sub.close"    => %[ ja : "クリック / ESC / × で閉じる",       en : "Click / ESC / × to close" ],
+    "window_multi.notrun"       => %[ ja : "(未実行)",                           en : "(not run)" ],
+    "window_multi.info"         => %[ ja : "パネルからサブウィンドウを開閉。モーダルは閉じるまでこの画面が止まる",
+                                      en : "Open/close the sub window from the panel. A modal window blocks this screen until closed" ],
+    "window_multi.heading"      => %[ ja : "複数ウィンドウとモーダル表示",       en : "Multiple windows and modal display" ],
+    "window_multi.body"         => %[ ja : "Window は複数生成でき、それぞれが\n自分の primaryLayer を持つ。\n\nshowModal() は「そのウィンドウが閉じる\nまで戻らない」ブロッキング呼出。内部では\nネストしたイベントループが回るので、\nモーダル中も描画・タイマー・REPL は動く\n(親ウィンドウへの入力だけが止まる)。\n\n呼び出す時点でウィンドウは非表示で\nなければならず、ウィンドウが 1 つしか\n無い状態では例外になる。複数ウィンドウを\n作れない環境 (モバイル/コンソール) では\n2 枚目の生成自体が失敗するので、そもそも\n使わない作りにする。\n\n枠スタイル (borderStyle) / 最前面\n(stayOnTop) / 表示倍率 (setZoom) /\nフルスクリーンは、開いているサブ\nウィンドウへパネルから適用する。",
+                                      en : "Multiple Window objects can be created;\neach has its own primaryLayer.\n\nshowModal() blocks until that window\ncloses. A nested event loop runs inside,\nso drawing, timers and the REPL keep\nworking during a modal call (only input\nto the parent window stops).\n\nThe window must be hidden when it is\ncalled, and it throws if only one window\nexists. Where multiple windows cannot\nbe created (mobile / consoles), creating\nthe second one fails, so design the\ngame without it.\n\nBorder style (borderStyle), stay on top\n(stayOnTop), zoom (setZoom) and full\nscreen are applied from the panel to\nthe open sub window." ],
+    "window_multi.info.heading" => %[ ja : "画面 / ウィンドウ情報",              en : "Screen / window info" ],
+    "window_multi.sec.screen"   => %[ ja : "-- 画面 --",                         en : "-- Screen --" ],
+    "window_multi.desktop.na"   => %[ ja : "desktop: (このビルドでは未提供 = WINVER 限定)", en : "desktop: (not in this build; WINVER only)" ],
+    "window_multi.sec.this"     => %[ ja : "-- このウィンドウ --",               en : "-- This window --" ],
+    "window_multi.sec.sub"      => %[ ja : "-- サブウィンドウ --",               en : "-- Sub window --" ],
+    "window_multi.sub.notopen"  => %[ ja : "(開いていません)",                   en : "(not open)" ],
+    "window_multi.sec.result"   => %[ ja : "-- 実行結果 --",                     en : "-- Results --" ],
+    "window_multi.modal.blocked"=> %[ ja : "閉じるまで %d ms ブロックした",      en : "blocked %d ms until closed" ],
+    "window_multi.exception"    => %[ ja : "例外: ",                             en : "exception: " ],
+    "window_multi.failed"       => %[ ja : "失敗: ",                             en : "failed: " ],
+    "window_multi.panel.title"  => %[ ja : "ウィンドウ操作",                     en : "Window controls" ],
+    "window_multi.panel.open"   => %[ ja : "サブを開く",                         en : "Open sub" ],
+    "window_multi.panel.close"  => %[ ja : "閉じる",                             en : "Close" ],
+    "window_multi.panel.modal"  => %[ ja : "モーダルで開く (showModal)",         en : "Open modal (showModal)" ],
+    "window_multi.panel.top"    => %[ ja : "stayOnTop (最前面)",                 en : "stayOnTop (always on top)" ],
+    "window_multi.panel.zoom"   => %[ ja : "サブの表示倍率 (%)",                 en : "Sub window zoom (%)" ],
+    "window_multi.panel.fs"     => %[ ja : "全画面切替",                         en : "Full screen" ],
+    "window_multi.panel.cap"    => %[ ja : "画面を PNG 保存",                    en : "Save PNG" ]
+]);
+
 // ----------------------------------------------------------------------
 // サブウィンドウ。 描画は primaryLayer 直下の不透明 stage に対して行う
 // (primary への直接描画は現行エンジンの既知の描画問題を踏むため)。
@@ -40,18 +78,18 @@ class SubWindow extends Window
         stage.fillRect(0, 0, CW, CH, 0xff1d2740);
         stage.fillRect(0, 0, CW, 40, 0xff2c3d63);
         stage.font.height = 20;
-        stage.drawText(14, 10, modalMode ? "モーダルウィンドウ" : "サブウィンドウ", 0xffe27a, 255);
+        stage.drawText(14, 10, modalMode ? I18n.t("window_multi.sub.modal") : I18n.t("window_multi.sub.normal"), 0xffe27a, 255);
         stage.font.height = 16;
         var y = 62;
-        stage.drawText(14, y, "・このウィンドウは独立した Window オブジェクト", 0xdfe6f2, 255); y += 26;
-        stage.drawText(14, y, "・自分の primaryLayer とレイヤツリーを持つ", 0xdfe6f2, 255); y += 26;
+        stage.drawText(14, y, I18n.t("window_multi.sub.l1"), 0xdfe6f2, 255); y += 26;
+        stage.drawText(14, y, I18n.t("window_multi.sub.l2"), 0xdfe6f2, 255); y += 26;
         if (modalMode) {
-            stage.drawText(14, y, "・モーダル中は親ウィンドウを操作できない", 0xffd76a, 255); y += 26;
-            stage.drawText(14, y, "・showModal() はここが閉じるまで戻らない", 0xffd76a, 255); y += 32;
+            stage.drawText(14, y, I18n.t("window_multi.sub.m1"), 0xffd76a, 255); y += 26;
+            stage.drawText(14, y, I18n.t("window_multi.sub.m2"), 0xffd76a, 255); y += 32;
         } else {
-            stage.drawText(14, y, "・親と同時に操作できる (非モーダル)", 0x9fd6a0, 255); y += 58;
+            stage.drawText(14, y, I18n.t("window_multi.sub.n1"), 0x9fd6a0, 255); y += 58;
         }
-        stage.drawText(14, y, "クリック / ESC / × で閉じる", 0x9fb0c8, 255);
+        stage.drawText(14, y, I18n.t("window_multi.sub.close"), 0x9fb0c8, 255);
         stage.update();
     }
 
@@ -72,20 +110,22 @@ class WindowMultiScene extends DemoScene
     var borderNames = ["bsNone", "bsSingle", "bsSizeable", "bsDialog", "bsToolWindow", "bsSizeToolWin"];
     var stayTop = false;
     var zoomPercent = 100;
-    var lastModalNote = "(未実行)";
-    var lastCapture = "(未実行)";
+    var lastModalNote = "";
+    var lastCapture = "";
     var pendingInfo = true;
 
     var INFO_X = 470, INFO_W = 440;
 
-    function WindowMultiScene() { super.DemoScene("複数ウィンドウ / モーダル / 画面情報"); }
+    function WindowMultiScene() { super.DemoScene(I18n.entry("window_multi.title")); }
 
     function create()
     {
+        lastModalNote = I18n.t("window_multi.notrun");
+        lastCapture = I18n.t("window_multi.notrun");
         stage.fillRect(0, 0, 1280, 720, 0xff141821);
         drawStatic();
         redrawInfo();
-        setInfo("パネルからサブウィンドウを開閉。モーダルは閉じるまでこの画面が止まる");
+        setInfo(I18n.t("window_multi.info"));
         showPanelDict(panelDict());
     }
 
@@ -94,31 +134,10 @@ class WindowMultiScene extends DemoScene
     function drawStatic()
     {
         stage.font.height = 19;
-        stage.drawText(24, 44, "複数ウィンドウとモーダル表示", 0xffd76a, 255);
+        stage.drawText(24, 44, I18n.t("window_multi.heading"), 0xffd76a, 255);
         stage.font.height = 16;
         var y = 82;
-        var lines = [
-            "Window は複数生成でき、それぞれが",
-            "自分の primaryLayer を持つ。",
-            "",
-            "showModal() は「そのウィンドウが閉じる",
-            "まで戻らない」ブロッキング呼出。内部では",
-            "ネストしたイベントループが回るので、",
-            "モーダル中も描画・タイマー・REPL は動く",
-            "(親ウィンドウへの入力だけが止まる)。",
-            "",
-            "呼び出す時点でウィンドウは非表示で",
-            "なければならず、ウィンドウが 1 つしか",
-            "無い状態では例外になる。複数ウィンドウを",
-            "作れない環境 (モバイル/コンソール) では",
-            "2 枚目の生成自体が失敗するので、そもそも",
-            "使わない作りにする。",
-            "",
-            "枠スタイル (borderStyle) / 最前面",
-            "(stayOnTop) / 表示倍率 (setZoom) /",
-            "フルスクリーンは、開いているサブ",
-            "ウィンドウへパネルから適用する。"
-        ];
+        var lines = I18n.t("window_multi.body").split("\n");
         for (var i = 0; i < lines.count; i++) { stage.drawText(24, y, lines[i], 0xc8d2e4, 255); y += 24; }
         stage.update();
     }
@@ -127,10 +146,10 @@ class WindowMultiScene extends DemoScene
     {
         stage.fillRect(INFO_X, 40, INFO_W, 620, 0xff1b2130);
         stage.font.height = 18;
-        stage.drawText(INFO_X + 14, 52, "画面 / ウィンドウ情報", 0xffd76a, 255);
+        stage.drawText(INFO_X + 14, 52, I18n.t("window_multi.info.heading"), 0xffd76a, 255);
         stage.font.height = 16;
         var y = 86;
-        y = line(y, "-- 画面 --", 0xffd76a);
+        y = line(y, I18n.t("window_multi.sec.screen"), 0xffd76a);
         y = line(y, "screen: " + System.screenWidth + " x " + System.screenHeight);
         // System.desktop* は WINVER (Windows ネイティブ) ビルド限定。
         // SDL / generic ビルドには無いので存在を見てから読む。
@@ -138,15 +157,15 @@ class WindowMultiScene extends DemoScene
             y = line(y, "desktop: " + System.desktopWidth + " x " + System.desktopHeight
                         + "  (" + System.desktopLeft + "," + System.desktopTop + ")");
         } else {
-            y = line(y, "desktop: (このビルドでは未提供 = WINVER 限定)", 0x9fb0c8);
+            y = line(y, I18n.t("window_multi.desktop.na"), 0x9fb0c8);
         }
         y = line(y, "displayDensity: " + nf(window.displayDensity));
         y += 12;
-        y = line(y, "-- このウィンドウ --", 0xffd76a);
+        y = line(y, I18n.t("window_multi.sec.this"), 0xffd76a);
         y = line(y, "inner: " + window.innerWidth + " x " + window.innerHeight);
         y = line(y, "zoom: " + window.zoomNumer + " / " + window.zoomDenom);
         y += 12;
-        y = line(y, "-- サブウィンドウ --", 0xffd76a);
+        y = line(y, I18n.t("window_multi.sec.sub"), 0xffd76a);
         if (subOpen && isvalid sub) {
             y = line(y, "pos: (" + sub.left + ", " + sub.top + ")");
             y = line(y, "size: " + sub.width + " x " + sub.height
@@ -157,10 +176,10 @@ class WindowMultiScene extends DemoScene
                         + "  (" + zoomPercent + "%)");
             y = line(y, "fullScreen: " + (sub.fullScreen ? "true" : "false"));
         } else {
-            y = line(y, "(開いていません)", 0x9fb0c8);
+            y = line(y, I18n.t("window_multi.sub.notopen"), 0x9fb0c8);
         }
         y += 12;
-        y = line(y, "-- 実行結果 --", 0xffd76a);
+        y = line(y, I18n.t("window_multi.sec.result"), 0xffd76a);
         y = line(y, "showModal: " + lastModalNote);
         y = line(y, "captureScreen: " + lastCapture);
         stage.update();
@@ -177,7 +196,7 @@ class WindowMultiScene extends DemoScene
     function openSub()
     {
         if (subOpen) return;
-        sub = new SubWindow(this, "サブウィンドウ (非モーダル)");
+        sub = new SubWindow(this, I18n.t("window_multi.sub.caption"));
         sub.setPos(window.left + 120, window.top + 160);
         applySubStyle();
         sub.visible = true;
@@ -198,16 +217,16 @@ class WindowMultiScene extends DemoScene
     function openModal()
     {
         closeSub();
-        var m = new SubWindow(this, "モーダルウィンドウ");
+        var m = new SubWindow(this, I18n.t("window_multi.sub.modal"));
         m.setModalMode(true);
         m.setPos(window.left + 200, window.top + 200);
         modalWin = m;
         var t0 = System.getTickCount();
         try {
             m.showModal();      // ここでブロックする
-            lastModalNote = "閉じるまで " + (System.getTickCount() - t0) + " ms ブロックした";
+            lastModalNote = I18n.t("window_multi.modal.blocked", System.getTickCount() - t0);
         } catch (e) {
-            lastModalNote = "例外: " + e.message;
+            lastModalNote = I18n.t("window_multi.exception") + e.message;
         }
         modalWin = void;
         if (isvalid m) invalidate m;
@@ -241,7 +260,7 @@ class WindowMultiScene extends DemoScene
             System.captureScreen(path);
             lastCapture = Storages.getLocalName(path);
         } catch (e) {
-            lastCapture = "失敗: " + e.message;
+            lastCapture = I18n.t("window_multi.failed") + e.message;
         }
         pendingInfo = true;
     }
@@ -271,32 +290,32 @@ class WindowMultiScene extends DemoScene
     function panelDict()
     {
         return %[
-            size : [320, 460], background : [26, 30, 40, 236], locale : "ja-JP",
+            size : [320, 460], background : [26, 30, 40, 236],
             align : "bottom_right", margin : 16,
             content : %[ type : "margin", padding : 14, child : %[ type : "vtile", children : [
                 %[ type : "vsize", height : 0, child : %[ type : "hspacer", width : 288 ] ],
-                %[ type : "align_center", child : %[ type : "label", text : "ウィンドウ操作", size_scale : 1.2 ] ],
+                %[ type : "align_center", child : %[ type : "label", text : I18n.t("window_multi.panel.title"), size_scale : 1.2 ] ],
                 %[ type : "vspacer", height : 10 ],
                 %[ type : "htile", children : [
-                    %[ type : "button", id : "open",  text : "サブを開く" ],
+                    %[ type : "button", id : "open",  text : I18n.t("window_multi.panel.open") ],
                     %[ type : "hspacer", width : 8 ],
-                    %[ type : "button", id : "close", text : "閉じる" ]
+                    %[ type : "button", id : "close", text : I18n.t("window_multi.panel.close") ]
                 ] ],
                 %[ type : "vspacer", height : 6 ],
-                %[ type : "button", id : "modal", text : "モーダルで開く (showModal)" ],
+                %[ type : "button", id : "modal", text : I18n.t("window_multi.panel.modal") ],
                 %[ type : "vspacer", height : 12 ],
                 %[ type : "label", text : "borderStyle (0:None 1:Single 2:Sizeable 3:Dialog)" ],
                 %[ type : "slider_with_range", id : "border", min : 0, max : 5, initial : borderIndex ],
                 %[ type : "vspacer", height : 6 ],
-                %[ type : "check_box", id : "top", text : "stayOnTop (最前面)", value : false ],
+                %[ type : "check_box", id : "top", text : I18n.t("window_multi.panel.top"), value : false ],
                 %[ type : "vspacer", height : 8 ],
-                %[ type : "label", text : "サブの表示倍率 (%)" ],
+                %[ type : "label", text : I18n.t("window_multi.panel.zoom") ],
                 %[ type : "slider_with_range", id : "zoom", min : 50, max : 200, initial : zoomPercent ],
                 %[ type : "vspacer", height : 8 ],
                 %[ type : "htile", children : [
-                    %[ type : "button", id : "fs",  text : "全画面切替" ],
+                    %[ type : "button", id : "fs",  text : I18n.t("window_multi.panel.fs") ],
                     %[ type : "hspacer", width : 8 ],
-                    %[ type : "button", id : "cap", text : "画面を PNG 保存" ]
+                    %[ type : "button", id : "cap", text : I18n.t("window_multi.panel.cap") ]
                 ] ]
             ] ] ]
         ];

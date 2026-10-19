@@ -1317,14 +1317,14 @@ void tTJSNI_Window::ClearViewportWallpaper()
 tjs_int tTJSNI_Window::GetFrameWidth() const
 {
 	if(!Form) return 0;
-	tjs_int f = Form->GetWidth() - Form->GetInnerWidth();
+	tjs_int f = Form->ToScriptPx( Form->GetWidth() - Form->GetInnerWidth() );
 	return f > 0 ? f : 0;
 }
 //---------------------------------------------------------------------------
 tjs_int tTJSNI_Window::GetFrameHeight() const
 {
 	if(!Form) return 0;
-	tjs_int f = Form->GetHeight() - Form->GetInnerHeight();
+	tjs_int f = Form->ToScriptPx( Form->GetHeight() - Form->GetInnerHeight() );
 	return f > 0 ? f : 0;
 }
 //---------------------------------------------------------------------------
@@ -1434,117 +1434,117 @@ void tTJSNI_Window::SetCaption(const ttstr & v)
 void tTJSNI_Window::SetWidth(tjs_int w)
 {
 	FullScreenGuard();
-	if( Form ) Form->SetWidth( w );
+	if( Form ) Form->SetWidth( Form->ToClientPx( w ) );
 }
 //---------------------------------------------------------------------------
 tjs_int tTJSNI_Window::GetWidth() const
 {
 	if(!Form) return 0;
-	return Form->GetWidth();
+	return Form->ToScriptPx( Form->GetWidth() );
 }
 //---------------------------------------------------------------------------
 void tTJSNI_Window::SetHeight(tjs_int h)
 {
 	FullScreenGuard();
-	if( Form ) Form->SetHeight( h );
+	if( Form ) Form->SetHeight( Form->ToClientPx( h ) );
 }
 //---------------------------------------------------------------------------
 tjs_int tTJSNI_Window::GetHeight() const
 {
 	if(!Form) return 0;
-	return Form->GetHeight();
+	return Form->ToScriptPx( Form->GetHeight() );
 }
 //---------------------------------------------------------------------------
 void tTJSNI_Window::SetLeft(tjs_int l)
 {
 	FullScreenGuard();
-	if(Form) Form->SetLeft( l );
+	if(Form) Form->SetLeft( Form->ToClientPx( l ) );
 }
 //---------------------------------------------------------------------------
 tjs_int tTJSNI_Window::GetLeft() const
 {
 	if(!Form) return 0;
-	return Form->GetLeft();
+	return Form->ToScriptPx( Form->GetLeft() );
 }
 //---------------------------------------------------------------------------
 void tTJSNI_Window::SetTop(tjs_int t)
 {
 	FullScreenGuard();
-	if(Form) Form->SetTop( t );
+	if(Form) Form->SetTop( Form->ToClientPx( t ) );
 }
 //---------------------------------------------------------------------------
 tjs_int tTJSNI_Window::GetTop() const
 {
 	if(!Form) return 0;
-	return Form->GetTop();
+	return Form->ToScriptPx( Form->GetTop() );
 }
 //---------------------------------------------------------------------------
 void tTJSNI_Window::SetSize(tjs_int w, tjs_int h)
 {
 	FullScreenGuard();
-	if(Form) Form->SetSize( w, h );
+	if(Form) Form->SetSize( Form->ToClientPx( w ), Form->ToClientPx( h ) );
 }
 //---------------------------------------------------------------------------
 void tTJSNI_Window::SetMinWidth(int v)
 {
 	FullScreenGuard();
-	if(Form) Form->SetMinWidth( v );
+	if(Form) Form->SetMinWidth( Form->ToClientPx( v ) );
 }
 //---------------------------------------------------------------------------
 int  tTJSNI_Window::GetMinWidth() const
 {
-	if(Form) return Form->GetMinWidth(); else return 0;
+	if(Form) return Form->ToScriptPx( Form->GetMinWidth() ); else return 0;
 }
 //---------------------------------------------------------------------------
 void tTJSNI_Window::SetMinHeight(int v)
 {
 	FullScreenGuard();
-	if(Form) Form->SetMinHeight( v );
+	if(Form) Form->SetMinHeight( Form->ToClientPx( v ) );
 }
 //---------------------------------------------------------------------------
 int  tTJSNI_Window::GetMinHeight() const
 {
-	if(Form) return Form->GetMinHeight(); else return 0;
+	if(Form) return Form->ToScriptPx( Form->GetMinHeight() ); else return 0;
 }
 //---------------------------------------------------------------------------
 void tTJSNI_Window::SetMinSize(int w, int h)
 {
 	FullScreenGuard();
-	if(Form) Form->SetMinSize( w, h );
+	if(Form) Form->SetMinSize( Form->ToClientPx( w ), Form->ToClientPx( h ) );
 }
 //---------------------------------------------------------------------------
 void tTJSNI_Window::SetMaxWidth(int v)
 {
 	FullScreenGuard();
-	if(Form) Form->SetMaxWidth( v );
+	if(Form) Form->SetMaxWidth( Form->ToClientPx( v ) );
 }
 //---------------------------------------------------------------------------
 int  tTJSNI_Window::GetMaxWidth() const
 {
-	if(Form) return Form->GetMaxWidth(); else return 0;
+	if(Form) return Form->ToScriptPx( Form->GetMaxWidth() ); else return 0;
 }
 //---------------------------------------------------------------------------
 void tTJSNI_Window::SetMaxHeight(int v)
 {
 	FullScreenGuard();
-	if(Form) Form->SetMaxHeight( v );
+	if(Form) Form->SetMaxHeight( Form->ToClientPx( v ) );
 }
 //---------------------------------------------------------------------------
 int  tTJSNI_Window::GetMaxHeight() const
 {
-	if(Form) return Form->GetMaxHeight(); else return 0;
+	if(Form) return Form->ToScriptPx( Form->GetMaxHeight() ); else return 0;
 }
 //---------------------------------------------------------------------------
 void tTJSNI_Window::SetMaxSize(int w, int h)
 {
 	FullScreenGuard();
-	if(Form) Form->SetMaxSize( w, h );
+	if(Form) Form->SetMaxSize( Form->ToClientPx( w ), Form->ToClientPx( h ) );
 }
 //---------------------------------------------------------------------------
 void tTJSNI_Window::SetPosition(tjs_int l, tjs_int t)
 {
 	FullScreenGuard();
-	if(Form) Form->SetPosition( l, t );
+	if(Form) Form->SetPosition( Form->ToClientPx( l ), Form->ToClientPx( t ) );
 }
 //---------------------------------------------------------------------------
 #ifdef USE_OBSOLETE_FUNCTIONS
@@ -1591,31 +1591,43 @@ bool tTJSNI_Window::GetInnerSunken() const
 void tTJSNI_Window::SetInnerWidth(tjs_int w)
 {
 	FullScreenGuard();
-	if(Form) Form->SetInnerWidth(w);
+	if(Form) Form->SetInnerWidth( Form->ToClientPx( w ) );
 }
 //---------------------------------------------------------------------------
 tjs_int tTJSNI_Window::GetInnerWidth() const
 {
 	if(!Form) return 0;
+	return Form->ToScriptPx( Form->GetInnerWidth() );
+}
+//---------------------------------------------------------------------------
+tjs_int tTJSNI_Window::GetClientPixelWidth() const
+{
+	if(!Form) return 0;
 	return Form->GetInnerWidth();
 }
 //---------------------------------------------------------------------------
-void tTJSNI_Window::SetInnerHeight(tjs_int h)
-{
-	FullScreenGuard();
-	if(Form) Form->SetInnerHeight(h);
-}
-//---------------------------------------------------------------------------
-tjs_int tTJSNI_Window::GetInnerHeight() const
+tjs_int tTJSNI_Window::GetClientPixelHeight() const
 {
 	if(!Form) return 0;
 	return Form->GetInnerHeight();
 }
 //---------------------------------------------------------------------------
+void tTJSNI_Window::SetInnerHeight(tjs_int h)
+{
+	FullScreenGuard();
+	if(Form) Form->SetInnerHeight( Form->ToClientPx( h ) );
+}
+//---------------------------------------------------------------------------
+tjs_int tTJSNI_Window::GetInnerHeight() const
+{
+	if(!Form) return 0;
+	return Form->ToScriptPx( Form->GetInnerHeight() );
+}
+//---------------------------------------------------------------------------
 void tTJSNI_Window::SetInnerSize(tjs_int w, tjs_int h)
 {
 	FullScreenGuard();
-	if(Form) Form->SetInnerSize(w, h);
+	if(Form) Form->SetInnerSize( Form->ToClientPx( w ), Form->ToClientPx( h ) );
 }
 //---------------------------------------------------------------------------
 void tTJSNI_Window::SetBorderStyle(tTVPBorderStyle st)

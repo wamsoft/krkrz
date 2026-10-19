@@ -108,7 +108,15 @@ void FreeTypeFontRasterizer::ApplyFont( const tTVPFont& font ) {
 			}
 		}
 		if( faces.empty() ) {
-			faces.push_back( tjs_string(TVPFontSystem->GetDefaultFontName()) );
+			// 既定書体 (OS のフォント / fonts.json の宣言) は名前だけ登録されていて
+			// ファイルは初回使用まで開かない。 明示指定の名前と同じく、 ここで
+			// 読み込んでおかないと FreeType が名前を引けず、 最後の手段の既定フェイス
+			// (GetDefaultFace) に落ちる
+			tjs_string def( TVPFontSystem->GetDefaultFontName() );
+			if( TVPFontSystem->FontExists( def ) == false ) {
+				TVPFontSystem->EnsureLazyFontLoaded( def );
+			}
+			faces.push_back( def );
 		}
 	}
 

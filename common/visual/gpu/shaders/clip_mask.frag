@@ -6,6 +6,7 @@ uniform vec2 a_res;
 uniform vec4 a_maskRect;
 uniform vec2 a_maskUV;
 uniform float a_useMask;
+uniform float a_opacity;
 void main()
 {
   vec4 color = texture2D( s_tex0, v_texCoord );
@@ -17,5 +18,6 @@ void main()
     }
     color.a *= a;
   }
+  color.a *= a_opacity;
   gl_FragColor = color;
 }

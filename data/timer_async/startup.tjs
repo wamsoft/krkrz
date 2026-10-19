@@ -16,4 +16,4 @@ if (demolibPath === void) { System.inform("demolib が見つかりません"); S
 Scripts.execStorage(demolibPath + "demo_common.tjs");
 Scripts.execStorage("scene.tjs");
 
-runDemoShell([ new TimerAsyncScene() ], "timer_async — タイマー / 非同期");
+runDemoShell([ new TimerAsyncScene() ], I18n.entry("timer_async.shell"));

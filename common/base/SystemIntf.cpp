@@ -34,6 +34,7 @@
 #endif
 #include "HotKeyIntf.h"        // TVPRegisterHotKey / TVPUnregisterHotKey
 #include "CharacterSet.h"      // TVPUtf16ToUtf8 / TVPUtf8ToUtf16
+#include "MsgLanguage.h"       // TVPGetEffectiveMessageLanguageTag (System.uiLanguage)
 #include <cstdlib>             // getenv / setenv (System.readEnvValue)
 #include <string>
 
@@ -762,6 +763,50 @@ TJS_BEGIN_NATIVE_PROP_DECL(systemLanguage)
 	TJS_DENY_NATIVE_PROP_SETTER
 }
 TJS_END_NATIVE_STATIC_PROP_DECL(systemLanguage)
+//----------------------------------------------------------------------
+// 実効表示言語。 systemLanguage は OS の設定そのものだが、 こちらは
+// エンジン自身のメッセージ資材の選択と同じ規則 (-language= → OS 言語) で
+// 決まった値を返す。 ゲーム / デモ側の多言語化で判定を二重に持たないための口。
+TJS_BEGIN_NATIVE_PROP_DECL(uiLanguage)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		if (result) *result = ttstr(TVPGetEffectiveMessageLanguageTag().c_str());
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_DENY_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_STATIC_PROP_DECL(uiLanguage)
+//----------------------------------------------------------------------
+// uiLanguage を丸めた言語コードの候補 (優先順の配列)。 メッセージ資材の
+// suffix ("-en" / "-chs" / "-cht" / "" = 日本語) から先頭の '-' を除き、
+// 基底 ("") を "ja" として返す。 末尾は常に "ja"。 例: ["cht","chs","en","ja"]
+TJS_BEGIN_NATIVE_PROP_DECL(uiLanguageCandidates)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		if (result) {
+			iTJSDispatch2 *dsp = TJSCreateArrayObject();
+			tTJSVariant tmp(dsp, dsp);
+			*result = tmp;
+			dsp->Release();
+			tjs_int n = 0;
+			for (const std::string &sfx : TVPGetMessageResourceSuffixes()) {
+				std::string code = sfx.empty() ? std::string("ja")
+				                 : (sfx[0] == '-' ? sfx.substr(1) : sfx);
+				tTJSVariant v = ttstr(code.c_str());
+				dsp->PropSetByNum(TJS_MEMBERENSURE, n++, &v, dsp);
+			}
+		}
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_DENY_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_STATIC_PROP_DECL(uiLanguageCandidates)
 //----------------------------------------------------------------------
 TJS_BEGIN_NATIVE_PROP_DECL(osName)
 {

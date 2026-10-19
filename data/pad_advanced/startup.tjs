@@ -15,4 +15,4 @@ if (demolibPath === void) { System.inform("demolib が見つかりません"); S
 Scripts.execStorage(demolibPath + "demo_common.tjs");
 Scripts.execStorage("scene.tjs");
 
-runDemoShell([ new PadAdvancedScene() ], "pad_advanced — ゲームパッド (多パッド / 軸 / 振動)");
+runDemoShell([ new PadAdvancedScene() ], I18n.entry("pad_advanced.shell"));

@@ -446,16 +446,6 @@ void TVPAfterSystemInit()
 		            feats, (unsigned)TVPCPUType);
 	}
 
-	// timer precision
-	tjs_uint prectick = 1;
-	if(TVPGetCommandLine(TJS_W("-timerprec"), &opt))
-	{
-		ttstr str(opt);
-		if(str == TJS_W("high")) prectick = 1;
-		if(str == TJS_W("higher")) prectick = 5;
-		if(str == TJS_W("normal")) prectick = 10;
-	}
-
         // draw thread num
         tjs_int drawThreadNum = Application->DrawThreadNum();
         if (TVPGetCommandLine(TJS_W("-drawthread"), &opt)) {

@@ -15,4 +15,4 @@ if (demolibPath === void) { System.inform("demolib が見つかりません"); S
 Scripts.execStorage(demolibPath + "demo_common.tjs");
 Scripts.execStorage("scene.tjs");
 
-runDemoShell([ new WebUIScene() ], "webui — ブラウザ UI (WebServer)");
+runDemoShell([ new WebUIScene() ], I18n.entry("webui.shell"));

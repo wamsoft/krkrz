@@ -952,12 +952,13 @@ void tTJSNI_GpuCanvas::EffectPass( Texture* dst, tTJSNI_GpuShaderProgram* shader
 	DrawFullQuad( shader, tex, 2, 0, 0, CanvasWidth, CanvasHeight, 1.0f, 1.0f, QuadMode::Copy );
 }
 
-void tTJSNI_GpuCanvas::CompositeCapture( Texture* capture, const iTVPGpuDrawable* mask, float x, float y )
+void tTJSNI_GpuCanvas::CompositeCapture( Texture* capture, const iTVPGpuDrawable* mask, float x, float y, float opacity )
 {
 	tTJSNI_GpuShaderProgram* shader = EnsureClipShader( true );
 	if( !shader ) return;
 	const float res[2] = { (float)CanvasWidth, (float)CanvasHeight };
 	shader->SetUniformFloats( "a_res", res, 2 );
+	shader->SetUniformFloats( "a_opacity", &opacity, 1 );
 	const float useMask = mask && mask->GetGpuTexture() ? 1.0f : 0.0f;
 	shader->SetUniformFloats( "a_useMask", &useMask, 1 );
 	Texture* tex[2] = { capture, nullptr };
@@ -986,8 +987,9 @@ void tTJSNI_GpuCanvas::BeginEffect()
 }
 
 // 捕捉内容に commands (gles プラグイン互換の加工コマンド配列) を適用し、
-// 直前の描画先へ現在の blendMode で合成する。commands が無ければ素通し
-void tTJSNI_GpuCanvas::EndEffect( const tTJSVariant& commands )
+// 直前の描画先へ現在の blendMode で合成する。commands が無ければ素通し。
+// opacity (0〜255) は合成時に捕捉内容の α へ掛ける (gles プラグイン互換)
+void tTJSNI_GpuCanvas::EndEffect( const tTJSVariant& commands, tjs_int opacity )
 {
 	if( CaptureStack.empty() ) {
 		TVPAddLog( TJS_W("Canvas.endEffect: unbalanced (no beginEffect).") );
@@ -1077,7 +1079,9 @@ void tTJSNI_GpuCanvas::EndEffect( const tTJSVariant& commands )
 
 	// 直前の描画先へ合成 (矩形クリップ・ステンシルクリップはここで効く)
 	BindPass( prevTarget );
-	CompositeCapture( input, nullptr, 0, 0 );
+	if( opacity < 0 ) opacity = 0;
+	if( opacity > 255 ) opacity = 255;
+	CompositeCapture( input, nullptr, 0, 0, opacity / 255.0f );
 	ReleaseIntermediate( std::move( result ) );
 	ReleaseIntermediate( std::move( cap ) );
 }
@@ -1390,13 +1394,15 @@ tTJSNC_GpuCanvas::tTJSNC_GpuCanvas() : tTJSNativeClass( TJS_W("Canvas") )
 		return TJS_S_OK;
 	}
 	TJS_END_NATIVE_METHOD_DECL( beginEffect )
-	// endEffect(commands=void)  捕捉内容に加工コマンド配列を適用して現在の blendMode で合成する
+	// endEffect(commands=void, opacity=255)  捕捉内容に加工コマンド配列を適用して現在の blendMode で合成する。
+	// opacity (0〜255) は合成時の不透明度 (gles プラグイン互換)
 	TJS_BEGIN_NATIVE_METHOD_DECL( endEffect )
 	{
 		TJS_GET_NATIVE_INSTANCE( _this, tTJSNI_GpuCanvas );
 		tTJSVariant commands;
 		if( numparams >= 1 ) commands = *param[0];
-		_this->EndEffect( commands );
+		tjs_int opacity = ( numparams >= 2 && param[1]->Type() != tvtVoid ) ? (tjs_int)*param[1] : 255;
+		_this->EndEffect( commands, opacity );
 		return TJS_S_OK;
 	}
 	TJS_END_NATIVE_METHOD_DECL( endEffect )

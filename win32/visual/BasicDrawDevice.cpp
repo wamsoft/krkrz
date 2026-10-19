@@ -14,10 +14,10 @@
 #include "EventIntf.h"
 #include "WindowImpl.h"
 #include "BitmapInfomation.h"
+#include "BitmapIntf.h"        // CaptureWithOverlay は REPL 無し (MASTER) でも使う
+#include "LayerBitmapIntf.h"
 #ifdef KRKRZ_USE_REPL
 #include "ScreenCapture.h"
-#include "BitmapIntf.h"
-#include "LayerBitmapIntf.h"
 #endif
 #ifdef KRKRZ_HAS_ELEMENTS
 #include "elements/ElementsDialogManager.h"   // dialog renderer 登録

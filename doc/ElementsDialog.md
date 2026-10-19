@@ -434,6 +434,20 @@ var r = dlg.showModalFile("ui/launcher.jsonc",
   (stb が "bad offset" で拒否)。 セーブサムネイルは BMP 保存 (saveThumbnail)
   なので、 **krkrz Layer に loadImages → saveLayerImage で PNG 化 → その PNG を
   registerImage** する。 PNG/JPEG/WEBP は ThorVG が直接デコードする。
+- `ElementsDialog.registerLayerImage(name, layer [, left, top, width, height])` —
+  **Layer の画素をそのまま** `name` で登録する (エンコードもファイルも介さない)。
+  TJS で描いた絵 (TextRender でメッセージ窓と同じ書体で描いた文字など) を毎回
+  渡す用途向け。 参照のしかた (`mem://<name>`)・再登録での即時反映・
+  `unregisterImage` は registerImage と同じ。 範囲を省略したら画像全体 (画像の
+  内側に丸める)。 戻り値 = 成否 (画像が無い / 範囲が空なら false。 Layer 以外は例外)。
+  - 画素は行を上から順に詰め直し (吉里吉里の画像は下から上の並び)、 乗算していない
+    アルファ (`ltAlpha` 等) はその場で乗算済みにしてストアへ入れる。 `ltAddAlpha` は
+    乗算済みのまま、 `ltOpaque` はアルファを無視して不透明にする。 色の並び
+    (0xAARRGGBB) は ThorVG の ARGB8888 と同じなので並べ替えない。
+  - Elements 側はストアの項目が生の画素なら `resource_loader::read_raw()` で受け取り、
+    デコードせずに ThorVG の画像を作る (`pixmap` がバッファを参照するだけでコピーも
+    しない)。 1 つの名前に入るのはファイルのバイト列か生の画素のどちらか一方で、
+    登録し直すと種類ごと置き換わる。
 
 ### セッション共有変数 (static、 `ElementsDialog.getSharedVars` ほか)
 
@@ -1200,6 +1214,15 @@ Steam Deck と iOS は `SDL_HasKeyboard()` が実態を返さない (Deck は Xw
 これをしないと、 入力欄の無い画面でもベースラインの `SDL_StartTextInput` で OS の
 キーボードが出てしまう。
 
+**十字で入ったときは決定まで待つ**: 画面のキーボード (内蔵の仮想キーボード / 浮動の
+OS キーボード) を使う環境では、 入力欄に入った手段が十字 / 方向キー
+(`overlay_session::last_input_is_key_nav()`) なら、 キーボードを出さずに決定
+(A / Enter) を待つ (`ConfirmScreenKeyboard`。 決定のキーは入力欄へは渡さない)。
+十字でフォーカスを動かすたびに入力欄の上でキーボードが開き、 ナビが止まるのを
+防ぐため。 マウス / タッチで押した、 またはホストの指定で入ったときは即座に出す。
+キーボードを閉じた直後の入力欄でも、 決定でもう一度出せる。 物理キーボードがある
+環境は従来どおり (text 入力を有効にするだけ)。
+
 **内蔵仮想キーボード**は英数 4 段 + SPACE / BS / DONE の Elements ダイアログで、
 `BuildVirtualKeyboardJson()` がレイアウトを組む。 押鍵は貯めずに**その場で入力先の
 `overlay_session::on_text_input()` へ流し込む** (BS だけ `on_key_down(backspace)`)
@@ -1407,6 +1430,33 @@ JSON / JSONC (コメント + 末尾カンマ) 対応。 要素タイプ・属性
 押した方向の端へ入る (右キーなら一番右の要素)。 `initial_focus` を置かずに開く
 確認ダイアログで、 いきなり「はい」ではなく押した方向の選択肢へ入れたいとき用。
 
+### パッドだけで操作する画面 (マウスの無い機種)
+
+コンソール等マウスの無い機種でも操作させる画面は、 次の 3 点を押さえる。
+
+- **`"input": { "arrow_focus_nav": true }` を入れる**。 方向キー / 十字でのフォーカス
+  移動は elements の既定では**無効**で、 十字も内部で方向キーに変換されて同じ判定を
+  通るので、 これが無いと十字では何も動かない (TAB だけは巡回する)。 プロジェクトの
+  全画面へまとめて入れるなら `input_defaults.jsonc` (下記) に書く。 フォーカスが
+  無い状態からの入り方は上の `arrow_focus_enter`。
+- **十字はできることがあるときだけ消費される**。 フォーカスを動かせる
+  (`arrow_focus_nav`) か、 フォーカス中の要素に届くとき以外は未処理で返るので、
+  非モーダルのパネル (`showJson(json, true, false)`) の下のゲームへ素通しされる。
+  パネルを出したまま方向キー / 十字をゲーム側で使う画面は、 そのパネルの
+  `arrow_focus_nav` を外す (入れると、 移動先がある限りパネルが使う)。 十字以外の
+  パッドボタンも、 割り当て (ショートカット / キー合成) が処理したときだけ消費する。
+  離しは押下を消費したかどうかに揃う。
+- **入力欄は十字で通過しても画面のキーボードを開かない**。 物理キーボードの無い機種
+  (内蔵の仮想キーボード / Steam Deck・iOS の OS キーボード) では、 十字 / 方向キーで
+  入力欄に入っただけならキーボードを出さず、 **決定 (A / Enter) で出す**。 マウス /
+  タッチで入力欄を押したとき、 `initial_focus` 等ホストの指定で入ったときは従来どおり
+  即座に出す (下の「テキスト入力とソフトキーボード」)。
+
+`ElementsPanel` (レイヤに載るパネル) も `keyDown` / `keyUp` が `VK_PAD*` をパッドとして
+渡すので、 スクリプトがキーを流し、 画面 JSON に `arrow_focus_nav` を入れれば同じく
+パッドで操作できる。 デモの `DemoPanel` は demolib が `arrow_focus_nav` を足している
+(`withPadNav`)。
+
 ### 矩形テキスト (`text_area`) — 本体と同じ折返し
 
 Elements 側のテキスト折返しは元々 cycfi の素朴な幅貪欲 wrap で、**禁則も文字送りも
@@ -1499,12 +1549,31 @@ hover 演出 / vars_on_focus) がキー操作のフォーカスに自然追従**
 
 ### SE フックと擬似 id (`onAction`)
 
-`"se"` マップ (キー = カテゴリ `nav`/`accept`/`cancel`/`page`/`scroll`、 または
-個別 action 名・button id) を宣言すると、 アクション発火時に
+`"se"` マップ (キー = カテゴリ `nav`/`accept`/`change`/`cancel`/`page`/`scroll`、
+または個別 action 名・widget id) を宣言すると、 アクション発火時に
 **`onAction("<se>", SE名)`** が TJS へ届く (Elements は音を鳴らさない。 再生は
 TJS 側の責務 — kag.se 等)。 `nav` はフォーカス変化検出 (キー/dpad/stick/hover
-どの経路でも)、 `accept` は button click で一元発火、 `cancel`/`page` 等は
-アクションディスパッチ時。 SE 未宣言なら一切通知されない。
+どの経路でも)、 `accept` は button click で一元発火、 `change` はチェック・
+トグル・選択・cycle 系・atlas_slider の値をユーザーが変えたとき、
+`cancel`/`page` 等はアクションディスパッチ時。 SE 未宣言なら一切通知されない。
+値を `""` にした項目は無音 (TJS へは空の名前で届く)。
+全画面共通の既定は resource_base 直下の `input_defaults.jsonc` に書く
+(最上位が画面の `"input"` の中身と同じ形。 `"input"` で包まない)。
+
+- `"<se>"` は同じ操作の本来の `onAction` (button / widget の id) より**先に**
+  届く。 TJS 側で「直後に来る id と組にして部品ごとに音を変える」ことができる。
+- `nav` はフォーカスが変わらなくても、 マウスポインタがフォーカス中の部品の
+  矩形へ外から入り直したとき (一度外して同じ部品へ戻る) にも鳴る。
+- `nav` は `"nav.<id>"` で移動先 (入った先) の widget ごとに SE 名を変えられる
+  (例: `"nav": ""` で画面全体を無音にし、 `"nav.close": "cursor.ogg"` で close だけ鳴らす)。
+- `nav` が鳴らないもの: 画面を開いた直後の初期フォーカス、 `focus()` (ホスト
+  からのフォーカス指定) による変更、 動けない端での移動。
+- `change` が鳴らないもの: atlas_slider のドラッグ中 (キー操作と、 動かさずに
+  離した溝クリックでは鳴る)、 一覧の先頭行・スクロールバーの位置・テキスト入力・
+  初期値の通知・`setVar` による反映。
+- `end_wheel_action` (一覧の端でさらにホイール) は button の決定と同じ形で通知
+  されるので、 その action 名を `"se"` に書かないと `accept` で鳴る。
+- 画面を開く / 閉じるときは通知しない (必要ならホストが鳴らす)。
 組込以外の action は **`onAction("<action>", action名)`** で届く。 通常の
 widget id と混同しないよう、 TJS 側 router は `"<se>"` / `"<action>"` を
 先に分岐すること。
@@ -1661,7 +1730,8 @@ elements の canvas は ThorVG の Sw raster が `ColorSpace::ARGB8888`
 `on_mouse_*` へ流せばよい。
 
 キー / パッド / テキストは **スクリプトが明示的に流したときだけ**届く
-(`keyDown` / `keyUp` / `text`)。 パネルは既定でキーボードフォーカスを
+(`keyDown` / `keyUp` / `text`)。 パッドで操作させるなら画面 JSON に
+`"input": { "arrow_focus_nav": true }` を入れる (「パッドだけで操作する画面」)。 パネルは既定でキーボードフォーカスを
 取らない — 「複数のパネルのうちどれがキーを取るか」の調停の枠が吉里吉里側に
 無いため、 先に入れると必ず副作用になる。
 

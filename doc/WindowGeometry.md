@@ -27,6 +27,9 @@ status: **完了 (方針確定 2026-08-16 / P1〜P5 実装 2026-08-17)**
 - **outer は Windows でしか定義できない量**である。
   - Wayland はクライアントサイド装飾なので `SDL_GetWindowBordersSize` が失敗し、
     枠 0 = `outer == inner` に縮退する。
+  - macOS も SDL 3.4 の Cocoa バックエンドが `SDL_GetWindowBordersSize` を実装して
+    いないので、`sdl3/environ/macwindow.mm` で NSWindow の frame と内容領域の差
+    (タイトルバー 28 pt、フルスクリーン中は 0) から求めている (2026-10-19〜)。
   - モバイル / コンソールには装飾自体が無い。
   - Windows ですら `GetWindowRect` は DWM の**不可視リサイズ枠**を含むので、
     「見た目の窓」と一致しない (実測で片側 8px 程度大きい)。
@@ -132,6 +135,57 @@ setInnerSize(w * zoomNumer / zoomDenom, h * zoomNumer / zoomDenom);
   (これは移動先の実 DPI を返す)。
 - トレードオフ: 100% モニタで 320x240 に見えていた窓を 200% モニタへ移すと、
   物理 320x240 のまま = 見かけ半分の大きさになる。これは**意図した挙動**。
+- **macOS** (2026-10-19〜): SDL のウィンドウ座標は Retina でも論理ポイントのままなので、
+  `SDL3WindowForm::PointScale()` (= `SDL_GetWindowPixelDensity`、他の環境は常に 1) で
+  吉里吉里へ見せるサイズ・座標を実ピクセルへ直し、SDL へ渡すときにポイントへ戻す。
+  対象は `innerWidth/Height`・`setInnerSize`・`width/height` (outer)・min/max・
+  描画面のサイズ・マウス座標・カーソル移動。Retina では `setInnerSize(1280,720)` が
+  実 1280x720 ピクセル (見かけ半分) になり、SDL / sdlogl / ogl どの描画デバイスでも同じ
+  大きさで描かれる。倍率の違うディスプレイへ移ると (ポイントのサイズは保たれるので)
+  inner のピクセル数が変わり `onResize` が飛ぶ (macOS だけの既知の差)。
+  位置 (`left` / `top`) と画面の矩形はポイントのまま。
+- **`-dpiscaling=yes`** (2026-10-19〜、SDL3 ビルド): 上の「物理ピクセル維持」を外し、
+  吉里吉里のピクセルを **OS の拡大率で割った仮想ピクセル**にする。`PointScale()` が
+  「1 ポイントの実ピクセル数 ÷ `SDL_GetWindowDisplayScale`」になる (macOS 1 = 従来の Mac、
+  Windows 200% なら 0.5)。拡大率 200% で `setInnerSize(1280,720)` が実 2560x1440 になり、
+  描画は各 DrawDevice が inner (仮想) → 実フレームバッファへ拡大する
+  (`SDL_SetRenderLogicalPresentation` / `TVPScaleRectToSurface`)。マウス・カーソル移動も同じ倍率で
+  換算。拡大率が変わると (`SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED`) inner が変わるので `onResize`
+  を出す。
+  OGLDrawDevice の Canvas (スクリプトの GL 描画) は座標系が inner なので、inner と実フレームバッファの
+  大きさが違うときは inner の大きさの FBO (`CanvasScaleFBO`) に描かせてから実フレームバッファへ
+  縦横同率・中央寄せで拡大して貼る (同じ大きさなら従来どおり直接描く)。これが無いと GL の絵だけが
+  実ピクセルの大きさで左下に小さく出る (改修前の Mac で GL 系の表示が小さかったのもこれ)。Windows で確認 (200%): sdl / sdlogl / ogl ともキャプチャ 2560x1440・inner 1280x720・
+  カーソル移動が一致。
+  **WINVER** (同日対応): マニフェスト (PerMonitorV2) はそのまま、内部 (クライアント・DestRect・
+  描画・マウス) は実ピクセルのまま扱い、**スクリプトから見えるサイズだけ**を換算する
+  (`tTVPWindow::GetScriptScale()` = DPI / 96、`tTJSNI_Window` の inner / outer / min / max / frame と
+  setInnerSize 等。DrawDevice 向けには `GetClientPixelWidth/Height` で実ピクセルを渡す)。ゲーム画面
+  (レイヤ × zoom) はビューポートのフィット (既定 contain) でクライアントへ拡大され、マウスも DestRect と
+  レイヤの比でレイヤ座標へ換算されるので、BasicDrawDevice とマウスの経路は無改修。zoom の不変条件
+  「クライアント = レイヤ × zoom」は × DPI / 96、WM_DPICHANGED では OS 提案矩形をそのまま採る
+  (仮想サイズを保つ)。200% で basic / ogl ともキャプチャ 2560x1440・inner 1280x720・カーソル一致・
+  gl_canvas 全面を確認。
+  Elements の overlay の `margin` (論理面の単位) も描画面の倍率で換算する (GL 経路・WINVER で
+  余白だけ半分になっていた)。
+- **画面の大きさ・位置の単位** (2026-10-19〜): ウィンドウの位置 (`left` / `top`、`onMove`)、
+  `System.screenWidth/Height`・`desktopLeft/Top/Width/Height`・`getMonitorInfo` も、ウィンドウの
+  サイズと同じ «吉里吉里のピクセル» で返す (SDL = SDL の座標 × メインウィンドウの `PointScale`、
+  WINVER = `-dpiscaling=yes` のときだけ DPI / 96 で割る)。既定は実ピクセル、yes は仮想ピクセルで、
+  画面基準の中央寄せ (`desktopLeft + (desktopWidth - width) \ 2`) がそのまま合う。メインウィンドウが
+  無い間 (SDL) は SDL の座標のまま。WINVER の `getMonitorInfo` は未換算 (実ピクセル)。
+  位置は OS がポイント単位で持つ環境 (macOS の既定 = 実ピクセル表記) では、奇数の座標が丸められて
+  読み戻しが 1 ずれることがある (745 px = 372.5 pt → 373 pt = 746 px)。Wayland ではウィンドウ位置を
+  アプリから設定できない (left / top は 0、setPos は効かない)。
+  確認 (2026-10-19): Windows 200% (SDL / WINVER)、macOS Retina、Linux GNOME Wayland @1.25 と X11 で、
+  サイズ・画面・位置の単位、キャプチャ解像度、マウス往復、ギャラリー 22 シーン。
+- **Linux** (2026-10-19〜): Linux (Android 以外) のウィンドウにも `SDL_WINDOW_HIGH_PIXEL_DENSITY` を
+  付け、`PointScale` の «1 ポイントの実ピクセル数» に `SDL_GetWindowPixelDensity` を使う。ネイティブ
+  Wayland (拡大率 1.25 等) では SDL のウィンドウ座標がポイントで、付けないと合成器が引き伸ばし、
+  既定の物理ピクセル維持も -dpiscaling も効かなかった。X11 はウィンドウ座標が実ピクセル
+  (density 1) なので不変。
+  Windows の SDL 版はマニフェストを持たず、SDL3 が自前で DPI 対応にしてウィンドウ座標を実ピクセルに
+  しているので、OS 任せの引き伸ばし (DPI 非対応) ではなく、この換算で仮想解像度にする。
 
 #### 実装メモ
 
@@ -345,8 +399,10 @@ P3 で「未指定なら OS 既定の最小 (`SM_CXMINTRACK`) を残さない」
 
 - ~~**macOS の point / pixel**~~ ✅ (2026-10) GL コンテキストの `GetSurfaceSize` は
   `SDL_GetWindowSizeInPixels` (実ピクセル) を返し、iOS / macOS のウィンドウには
-  `SDL_WINDOW_HIGH_PIXEL_DENSITY` を付けて Retina の実ピクセルで描く。ウィンドウ /
-  inner サイズの意味 (論理ポイント) は変わらない (`displayDensity` が 192 になる)。
+  `SDL_WINDOW_HIGH_PIXEL_DENSITY` を付けて Retina の実ピクセルで描く (`displayDensity` が 192)。
+  当初は inner サイズを論理ポイントのままにしていたが、DPI ポリシー (物理ピクセル維持) と
+  食い違い、GL 系の描画デバイスとも見え方が揃わなかったので、2026-10-19 に macOS の
+  inner サイズ等を実ピクセルへ揃えた (§4「DPI ポリシーの意味」)。
   macOS は 4K (2 倍) ディスプレイで、描画・マウス・Elements・`setInnerSize`・
   フルスクリーンを確認済み。1x ディスプレイの Mac では実ピクセル = 論理サイズなので変化しない。
 - **macOS の縦横比固定 (`aspectLock`)**: SDL の Cocoa バックエンドは比率に (0,0) を渡すと

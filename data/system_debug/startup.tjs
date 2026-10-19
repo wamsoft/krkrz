@@ -15,4 +15,4 @@ if (demolibPath === void) { System.inform("demolib が見つかりません"); S
 Scripts.execStorage(demolibPath + "demo_common.tjs");
 Scripts.execStorage("scene.tjs");
 
-runDemoShell([ new SystemDebugScene() ], "system_debug — デバッグ支援 (eval / 例外 / ログ)");
+runDemoShell([ new SystemDebugScene() ], I18n.entry("system_debug.shell"));

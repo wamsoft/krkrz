@@ -27,4 +27,4 @@ if (demolibPath === void) { System.inform("demolib が見つかりません"); S
 Scripts.execStorage(demolibPath + "demo_common.tjs");
 Scripts.execStorage("scene.tjs");
 
-runDemoShell([new ElementsFlowScene()], "Elements 画面遷移デモ");
+runDemoShell([new ElementsFlowScene()], I18n.entry("elements_flow.shell"));

@@ -39,4 +39,4 @@ Scripts.execStorage(demolibPath + "demo_common.tjs");
 Scripts.execStorage(Storages.isExistentStorage("scene.tjs")
                     ? "scene.tjs" : "elements_audit/scene.tjs");
 
-runDemoShell([new ElementsAuditScene()], "Elements 仕様精査の確認");
+runDemoShell([new ElementsAuditScene()], I18n.entry("elements_audit.title"));

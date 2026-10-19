@@ -10,6 +10,10 @@
 #include <fstream>
 #include <iterator>
 #include <SDL3/SDL_dialog.h>
+#if defined(SDL_PLATFORM_MACOS)
+#include <mach-o/dyld.h>
+#include <climits>
+#endif
 
 class MySDL3Application : public SDL3Application  {
 
@@ -126,6 +130,20 @@ tjs_string MySDL3Application::ResolveExePath(const tjs_string& appPath) const
 	wchar_t buf[1024];
 	const DWORD len = ::GetModuleFileNameW(NULL, buf, static_cast<DWORD>(std::size(buf)));
 	if(len > 0 && len < std::size(buf)) return tjs_string(reinterpret_cast<const tjs_char*>(buf));
+#elif defined(SDL_PLATFORM_MACOS)
+	// .app では SDL_GetBasePath が Contents/Resources/ を返し、 exe (Contents/MacOS/) と
+	// 場所が違うので argv[0] からは組み立てられない ( 相対起動だと Resources/ の下になる )
+	{
+		char buf[PATH_MAX];
+		uint32_t size = sizeof(buf);
+		if(_NSGetExecutablePath(buf, &size) == 0) {
+			char real[PATH_MAX];
+			const char *p = ::realpath(buf, real) ? real : buf;
+			tjs_string exe;
+			TVPUtf8ToUtf16(exe, std::string(p));
+			return exe;
+		}
+	}
 #endif
 	// argv[0] ( InitArgs は InitPath より前に呼ばれている )
 	if(!_args.empty() && !_args[0].empty()) {
@@ -255,7 +273,13 @@ bool MySDL3Application::InitPath()
 	// iOS はバンドル外の dylib をロードできないので全プラグイン static
 	_PluginPath = TJS_W("");
 #elif defined(SDL_PLATFORM_APPLE)
-	_PluginPath = _AppPath;
+	// プラグインは exe と同じ場所 ( .app なら Contents/MacOS/、 CMake の
+	// KRKRZ_PLUGIN_INSTALL_DIR ) に置かれる。 .app の _AppPath (SDL_GetBasePath) は
+	// Contents/Resources/ なので、 exe のフォルダを使う ( .app でなければ同じ場所 )
+	{
+		const tjs_string::size_type sep = _ExePath.find_last_of(TJS_W('/'));
+		_PluginPath = sep == tjs_string::npos ? _AppPath : _ExePath.substr(0, sep + 1);
+	}
 #elif defined(SDL_PLATFORM_WINDOWS) && defined(TJS_64BIT_OS)
 	// CMake のインストール先 (PLUGIN_DIR) と同じ規則: plugin64 は Windows 64bit だけ。
 	// Linux 等は 64bit でも plugin/ ( TJS_64BIT_OS だけで判定すると食い違う )

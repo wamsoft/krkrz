@@ -3,6 +3,27 @@
 //  timer_async シーン (TimerAsyncScene)
 // ======================================================================
 
+I18n.add(%[
+    "timer_async.title"      => %[ ja : "タイマーと非同期",                 en : "Timers and async" ],
+    "timer_async.shell"      => %[ ja : "timer_async — タイマー / 非同期",  en : "timer_async — Timers / async" ],
+    "timer_async.info"       => %[ ja : "パネルで AsyncTrigger を発火 (5回同時は合流で onFire 1回)",
+                                   en : "Fire AsyncTrigger from the panel (5 at once merge into 1 onFire)" ],
+    "timer_async.sec.timer"  => %[ ja : "■ Timer — 異なる周期の複数タイマー", en : "■ Timer — several timers with different intervals" ],
+    "timer_async.count"      => %[ ja : "回数 %d",                          en : "n=%d" ],
+    "timer_async.sec.cont"   => %[ ja : "■ 連続ハンドラ (onContinuous / getTickCount) — 毎フレーム",
+                                   en : "■ Continuous handler (onContinuous / getTickCount) — every frame" ],
+    "timer_async.tick"       => %[ ja : "getTickCount=%d ms  (2 秒で往復するマーカー)", en : "getTickCount=%d ms  (marker goes back and forth in 2 s)" ],
+    "timer_async.sec.async"  => %[ ja : "■ AsyncTrigger (cached=true) — 同一フレームの複数 trigger は合流",
+                                   en : "■ AsyncTrigger (cached=true) — triggers in the same frame merge" ],
+    "timer_async.triggers"   => %[ ja : "trigger() 呼び出し回数: %d",       en : "trigger() calls: %d" ],
+    "timer_async.fires"      => %[ ja : "onFire 発火回数: %d",              en : "onFire count: %d" ],
+    "timer_async.hint"       => %[ ja : "「5回同時」を押すと trigger は +5 でも onFire は +1 (合流) になる",
+                                   en : "\"5 at once\" adds +5 triggers but only +1 onFire (merged)" ],
+    "timer_async.panel.one"  => %[ ja : "trigger() 1回",                    en : "trigger() once" ],
+    "timer_async.panel.five" => %[ ja : "trigger() 5回 (同時)",             en : "trigger() 5 at once" ],
+    "timer_async.panel.reset"=> %[ ja : "カウンタリセット",                 en : "Reset counters" ]
+]);
+
 class TimerAsyncScene extends DemoScene
 {
     var view;
@@ -14,7 +35,7 @@ class TimerAsyncScene extends DemoScene
     var triggerCount = 0;
     var fireCount = 0;
 
-    function TimerAsyncScene() { super.DemoScene("タイマーと非同期"); }
+    function TimerAsyncScene() { super.DemoScene(I18n.entry("timer_async.title")); }
 
     function create()
     {
@@ -34,7 +55,7 @@ class TimerAsyncScene extends DemoScene
         at = new AsyncTrigger(this, "onAsyncFire");
         try { at.cached = true; } catch (e) {}
 
-        setInfo("パネルで AsyncTrigger を発火 (5回同時は合流で onFire 1回)");
+        setInfo(I18n.t("timer_async.info"));
         showPanelDict(panelDict());
     }
 
@@ -67,7 +88,7 @@ class TimerAsyncScene extends DemoScene
         s.fillRect(0, 0, s.width, s.height, 0xff161a22);
 
         s.font.height = 20;
-        s.drawText(24, 16, "■ Timer — 異なる周期の複数タイマー", 0x8fb8e8, 255);
+        s.drawText(24, 16, I18n.t("timer_async.sec.timer"), 0x8fb8e8, 255);
         var now = System.getTickCount();
         for (var i = 0; i < intervals.count; i++) {
             var y = 50 + i * 64;
@@ -82,25 +103,25 @@ class TimerAsyncScene extends DemoScene
             s.fillRect(190, y + 12, 700, 16, 0xff2a303c);
             s.fillRect(190, y + 12, (700 * frac) \ 1, 16, 0xff4a80d0);
             s.font.height = 20;
-            s.drawText(910, y + 8, "回数 " + counts[i], 0xffe090, 255);
+            s.drawText(910, y + 8, I18n.t("timer_async.count", counts[i]), 0xffe090, 255);
         }
 
         s.font.height = 20;
-        s.drawText(24, 330, "■ 連続ハンドラ (onContinuous / getTickCount) — 毎フレーム", 0x8fb8e8, 255);
+        s.drawText(24, 330, I18n.t("timer_async.sec.cont"), 0x8fb8e8, 255);
         var t = (now % 2000) / 2000.0;
         var tri = t < 0.5 ? t * 2 : (1 - t) * 2;
         s.fillRect(30, 366, 860, 20, 0xff2a303c);
         s.fillRect(30 + (836 * tri) \ 1, 362, 24, 28, 0xff70ff90);
         s.font.height = 16;
-        s.drawText(30, 396, "getTickCount=" + now + " ms  (2 秒で往復するマーカー)", 0x9fb0c8, 255);
+        s.drawText(30, 396, I18n.t("timer_async.tick", now), 0x9fb0c8, 255);
 
         s.font.height = 20;
-        s.drawText(24, 440, "■ AsyncTrigger (cached=true) — 同一フレームの複数 trigger は合流", 0x8fb8e8, 255);
+        s.drawText(24, 440, I18n.t("timer_async.sec.async"), 0x8fb8e8, 255);
         s.font.height = 22;
-        s.drawText(40, 474, "trigger() 呼び出し回数: " + triggerCount, 0xd8e0ee, 255);
-        s.drawText(40, 506, "onFire 発火回数: " + fireCount, 0xffe090, 255);
+        s.drawText(40, 474, I18n.t("timer_async.triggers", triggerCount), 0xd8e0ee, 255);
+        s.drawText(40, 506, I18n.t("timer_async.fires", fireCount), 0xffe090, 255);
         s.font.height = 16;
-        s.drawText(40, 540, "「5回同時」を押すと trigger は +5 でも onFire は +1 (合流) になる", 0x9fb0c8, 255);
+        s.drawText(40, 540, I18n.t("timer_async.hint"), 0x9fb0c8, 255);
 
         s.update();
     }
@@ -108,17 +129,17 @@ class TimerAsyncScene extends DemoScene
     function panelDict()
     {
         return %[
-            size : [300, 210], background : [26, 30, 40, 236], locale : "ja-JP",
+            size : [300, 210], background : [26, 30, 40, 236],
             align : "top_right", margin : 16,
             content : %[ type : "margin", padding : 14, child : %[ type : "vtile", children : [
                 %[ type : "vsize", height : 0, child : %[ type : "hspacer", width : 268 ] ],
                 %[ type : "align_center", child : %[ type : "label", text : "AsyncTrigger", size_scale : 1.2 ] ],
                 %[ type : "vspacer", height : 10 ],
-                %[ type : "button", id : "one",   text : "trigger() 1回" ],
+                %[ type : "button", id : "one",   text : I18n.t("timer_async.panel.one") ],
                 %[ type : "vspacer", height : 6 ],
-                %[ type : "button", id : "five",  text : "trigger() 5回 (同時)" ],
+                %[ type : "button", id : "five",  text : I18n.t("timer_async.panel.five") ],
                 %[ type : "vspacer", height : 6 ],
-                %[ type : "button", id : "reset", text : "カウンタリセット" ]
+                %[ type : "button", id : "reset", text : I18n.t("timer_async.panel.reset") ]
             ] ] ]
         ];
     }

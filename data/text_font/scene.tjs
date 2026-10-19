@@ -3,18 +3,133 @@
 //  text_font シーン (TextFontScene) — フォントと文字描画
 // ======================================================================
 
+// 文字列表。フォントの見本文 (各国語のサンプル・縦書き本文・絵文字列・
+// 「太字 Bold」等の装飾見本) は表示そのものがデモの目的なので訳さない。
+I18n.add(%[
+    "text_font.shell"           => %[ ja : "text_font — フォントと文字描画", en : "text_font — Fonts and text drawing" ],
+    "text_font.title"           => %[ ja : "フォントと文字描画", en : "Fonts and text drawing" ],
+    "text_font.info"            => %[ ja : "フォント / 文字描画の一覧", en : "Overview of fonts / text drawing" ],
+    "text_font.h.size"          => %[ ja : "サイズ (font.height)", en : "Size (font.height)" ],
+    "text_font.h.deco"          => %[ ja : "装飾 (bold / italic / underline / strikeout)",
+                                         en : "Decoration (bold / italic / underline / strikeout)" ],
+    "text_font.h.aa"            => %[ ja : "アンチエイリアス (drawText の aa 引数)", en : "Anti-aliasing (drawText aa argument)" ],
+    "text_font.aa.on"           => %[ ja : "aa=true 滑らか", en : "aa=true smooth" ],
+    "text_font.aa.off"          => %[ ja : "aa=false ギザギザ", en : "aa=false jagged" ],
+    "text_font.h.shadow"        => %[ ja : "影 (shadow)", en : "Shadow" ],
+    "text_font.h.measure"       => %[ ja : "文字幅計測 (getTextWidth) — 枠が実際の幅", en : "Text width (getTextWidth) — box = actual width" ],
+    "text_font.h.color"         => %[ ja : "drawText の色は 0xRRGGBB (24bit)", en : "drawText color is 0xRRGGBB (24-bit)" ],
+    "text_font.color.ok"        => %[ ja : "0xffffff (正) → 白", en : "0xffffff (right) → white" ],
+    "text_font.color.ng"        => %[ ja : "0xffffffff (誤) → システムカラー扱い", en : "0xffffffff (wrong) → system color" ],
+    "text_font.color.ngdemo"    => %[ ja : "  ← これは 0xffffffff 指定 (黒化)", en : "  ← this is 0xffffffff (turns black)" ],
+    "text_font.h.list"          => %[ ja : "フォント一覧 (Font.getList) — %d 件", en : "Font list (Font.getList) — %d" ],
+    "text_font.list.none"       => %[ ja : "(この環境ではフォント列挙が使えません)", en : "(font enumeration not available here)" ],
+    "text_emoji.title"          => %[ ja : "絵文字 (FreeType)", en : "Emoji (FreeType)" ],
+    "text_emoji.info"           => %[ ja : "font.emojiMode で 元フォント / 絵文字フォント を切替 (FreeType 専用)",
+                                         en : "font.emojiMode switches base font / emoji font (FreeType only)" ],
+    "text_emoji.heading"        => %[ ja : "絵文字表示 (FreeType ラスタライザ)", en : "Emoji display (FreeType rasterizer)" ],
+    "text_emoji.h.mode"         => %[ ja : "font.emojiMode : 0=元フォントのみ / 1=モノクロ絵文字 / 2=カラー絵文字",
+                                         en : "font.emojiMode : 0=base font only / 1=monochrome emoji / 2=color emoji" ],
+    "text_emoji.n1"             => %[ ja : "・該当コードポイントを絵文字フォント (Noto Emoji) にフォールバックして描画",
+                                         en : "- Falls back to the emoji font (Noto Emoji) for those code points" ],
+    "text_emoji.n2"             => %[ ja : "・絵文字フォントは実行ファイルに埋め込み済み。Font.emojiFaceName / Font.addFont で差替も可",
+                                         en : "- The emoji font is embedded in the engine. Replace via Font.emojiFaceName / Font.addFont" ],
+    "text_emoji.n3"             => %[ ja : "・GDI ラスタライザ (WINVER 既定) には無い機能。この画面のみ FreeType(=0) を使用",
+                                         en : "- Not in the GDI rasterizer (WINVER default). This page uses FreeType (=0)" ],
+    "text_emoji.noft"           => %[ ja : "(この環境では FreeType ラスタライザが使えません)", en : "(FreeType rasterizer not available here)" ],
+    "text_emoji.h.cmp"          => %[ ja : "モード比較 (同じ文字列)", en : "Mode comparison (same string)" ],
+    "text_emoji.m0"             => %[ ja : "mode0 : 絵文字は元フォントに無いため tofu (□) 表示",
+                                         en : "mode0 : emoji are not in the base font, so tofu (□)" ],
+    "text_emoji.m1"             => %[ ja : "mode1 : モノクロ絵文字グリフ (Noto Emoji)",
+                                         en : "mode1 : monochrome emoji glyphs (Noto Emoji)" ],
+    "text_emoji.m2"             => %[ ja : "mode2 : カラー絵文字グリフ (Noto Color Emoji)。★❤ 等は元フォントにもあるため mono になる場合あり",
+                                         en : "mode2 : color emoji glyphs (Noto Color Emoji). ★❤ etc. may be mono since the base font has them" ],
+    "text_emoji.vs"             => %[ ja : "  → 文字直後に VS16 (U+FE0F) を付けると その1文字だけ絵文字優先 / VS15 (U+FE0E) で原フォント強制",
+                                         en : "  → VS16 (U+FE0F) after a char prefers emoji for that char / VS15 (U+FE0E) forces the base font" ],
+    "text_emoji.h.default"      => %[ ja : "グローバル既定: Font.defaultEmojiMode (個別 emojiMode = -1 でこれに追従)",
+                                         en : "Global default: Font.defaultEmojiMode (per-font emojiMode = -1 follows it)" ],
+    "text_glyphware.title"      => %[ ja : "多言語シェイピング (glyphware)", en : "Multilingual shaping (glyphware)" ],
+    "text_glyphware.info"       => %[ ja : "Layer.drawShapedText — HarfBuzz シェイピング + BiDi + フォールバック連鎖 / drawShapedTextArea で矩形内折り返し",
+                                         en : "drawShapedText: shaping + BiDi + fallback / drawShapedTextArea: wrap" ],
+    "text_glyphware.na"         => %[ ja : "この環境では drawShapedText が使えません (glyphware 無効ビルド)",
+                                         en : "drawShapedText is not available here (glyphware disabled build)" ],
+    "text_glyphware.heading"    => %[ ja : "多言語シェイピング描画 (Layer.drawShapedText)",
+                                         en : "Multilingual shaped text (Layer.drawShapedText)" ],
+    "text_glyphware.n1"         => %[ ja : "・drawText と独立した描画経路。HarfBuzz の連結/合字/カーニングと BiDi (右横書き) に対応",
+                                         en : "- Separate path from drawText. HarfBuzz joining / ligatures / kerning and BiDi (right-to-left)" ],
+    "text_glyphware.n2"         => %[ ja : "・font は Font オブジェクト指定。face のカンマ区切りでフォールバック連鎖 (JP+RTL+絵文字)",
+                                         en : "- font is a Font object. Comma-separated face = fallback chain (JP + RTL + emoji)" ],
+    "text_glyphware.h.latin"    => %[ ja : "ラテン + 日本語 (カーニング / 混植)", en : "Latin + Japanese (kerning / mixed scripts)" ],
+    "text_glyphware.h.arabic"   => %[ ja : "アラビア語 (右→左 + 文字連結)", en : "Arabic (right-to-left + joining)" ],
+    "text_glyphware.h.hebrew"   => %[ ja : "ヘブライ語 (右→左)", en : "Hebrew (right-to-left)" ],
+    "text_glyphware.h.bidi"     => %[ ja : "双方向混在 (BiDi 自動判定, base=0)", en : "Mixed direction (BiDi auto, base=0)" ],
+    "text_glyphware.h.emoji"    => %[ ja : "絵文字混在 + 装飾 (bold / underline)", en : "Mixed emoji + decoration (bold / underline)" ],
+    "text_glyphware.h.measure"  => %[ ja : "計測 (measureShapedText) — 青枠=インク境界 / 赤線=ベースライン",
+                                         en : "Measure (measureShapedText) — blue = ink bounds / red = baseline" ],
+    "text_glyphware.h.area"     => %[ ja : "矩形内折り返し (drawShapedTextArea)", en : "Wrap in a rectangle (drawShapedTextArea)" ],
+    "text_glyphware.result"     => %[ ja : "結果: lines=%d height=%d count=%d",
+                                         en : "Result: lines=%d height=%d count=%d" ],
+    "text_glyphware.h.tw"       => %[ ja : "count 制限 = タイプライタ (RTL 混在, 自動再生)",
+                                         en : "count limit = typewriter (mixed RTL, autoplay)" ],
+    "text_glyphware.nortl"      => %[ ja : "(RTL 収録フォント未検出のためアラビア語/ヘブライ語は代替字形)",
+                                         en : "(no RTL font found; Arabic / Hebrew use substitute glyphs)" ],
+    "text_rasterizer.title"     => %[ ja : "ラスタライザ比較", en : "Rasterizer comparison" ],
+    "text_rasterizer.info"      => %[ ja : "←/→ or Space: ラスタライザ切替   同じ内容を各ラスタライザで描画して比較",
+                                         en : "←/→ or Space: switch rasterizer   Compare the same content per rasterizer" ],
+    "text_rasterizer.cur"       => %[ ja : "ラスタライザ比較 — 現在: ", en : "Rasterizer comparison — current: " ],
+    "text_rasterizer.h.size"    => %[ ja : "サイズ (CJK + Latin 混在)", en : "Size (mixed CJK + Latin)" ],
+    "text_rasterizer.h.deco"    => %[ ja : "装飾 (bold / italic / underline / strikeout)",
+                                         en : "Decoration (bold / italic / underline / strikeout)" ],
+    "text_rasterizer.h.shadow"  => %[ ja : "影 / ぼかし影 (shadow)", en : "Shadow / blurred shadow" ],
+    "text_rasterizer.h.rot"     => %[ ja : "回転 (font.angle=300)", en : "Rotation (font.angle=300)" ],
+    "text_rasterizer.rot1"      => %[ ja : "GDI はグリフ回転 /", en : "GDI rotates glyphs /" ],
+    "text_rasterizer.rot2"      => %[ ja : "FreeType・glyphware は送りのみ回転", en : "FreeType / glyphware rotate advance only" ],
+    "text_rasterizer.h.emoji"   => %[ ja : "絵文字 (font.emojiMode=2 カラー)", en : "Emoji (font.emojiMode=2 color)" ],
+    "text_rasterizer.emoji1"    => %[ ja : "FreeType / glyphware = カラー絵文字", en : "FreeType / glyphware = color emoji" ],
+    "text_rasterizer.emoji2"    => %[ ja : "GDI = 絵文字フォールバック非対応 (□/白抜き)", en : "GDI = no emoji fallback (□ / outline)" ],
+    "text_rasterizer.h.measure" => %[ ja : "文字幅計測 (getTextWidth) — 枠が実幅", en : "Text width (getTextWidth) — box = actual width" ],
+    "text_rasterizer.h.notes"   => %[ ja : "備考", en : "Notes" ],
+    "text_rasterizer.n1"        => %[ ja : "・同じ TJS コード (drawText) で描画。ラスタライザだけ切替",
+                                         en : "- Same TJS code (drawText); only the rasterizer changes" ],
+    "text_rasterizer.n2"        => %[ ja : "・glyphware = FreeType + HarfBuzz の統一フォントエンジン",
+                                         en : "- glyphware = unified font engine (FreeType + HarfBuzz)" ],
+    "text_rasterizer.n3"        => %[ ja : "・GDI = WINVER 既定。glyphware は Font.rasterizer で opt-in",
+                                         en : "- GDI = WINVER default. glyphware is opt-in via Font.rasterizer" ],
+    "text_rasterizer.n4"        => %[ ja : "・既定挙動は不変 (既存ゲーム互換)。切替時のみ経路が変わる", en : "- Default unchanged (compatible). Path changes only when switched" ],
+    "text_rasterizer.single"    => %[ ja : "(この環境では切替可能なラスタライザが 1 種のみ)", en : "(only one rasterizer available here)" ],
+    "text_vertical.title"       => %[ ja : "縦組み (drawVerticalTextArea)", en : "Vertical text (drawVerticalTextArea)" ],
+    "text_vertical.info"        => %[ ja : "1:ぶら下げ 2:行末揃え 3:約物の詰め 4:列送り 5:正立/横倒し ←/→:字間",
+                                         en : "1:hang 2:justify 3:squeeze 4:col dir 5:orient ←/→:spacing" ],
+    "text_vertical.ori1"        => %[ ja : "1=全て正立", en : "1=all upright" ],
+    "text_vertical.ori2"        => %[ ja : "2=全て横倒し", en : "2=all sideways" ],
+    "text_vertical.ori0"        => %[ ja : "0=和文正立/欧文横倒し", en : "0=CJK up/Latin side" ],
+    "text_vertical.lr"          => %[ ja : "true (左→右)", en : "true (left→right)" ],
+    "text_vertical.rl"          => %[ ja : "false (右→左)", en : "false (right→left)" ],
+    "text_vertical.na"          => %[ ja : "この環境では drawVerticalTextArea が使えません (glyphware 無効ビルド)",
+                                         en : "drawVerticalTextArea is not available here (glyphware disabled build)" ],
+    "text_vertical.heading"     => %[ ja : "縦組み描画 (Layer.drawVerticalTextArea)",
+                                         en : "Vertical text (Layer.drawVerticalTextArea)" ],
+    "text_vertical.n1"          => %[ ja : "・和文は正立 / 欧文・数字は横倒し。約物の詰め・行頭行末禁則・追い込み/追い出しを JLReq のアキ量で処理",
+                                         en : "- CJK upright / Latin and digits sideways. Punctuation squeeze, line-break rules, push-in/out per JLReq spacing" ],
+    "text_vertical.n2"          => %[ ja : "・未対応: ルビ / 縦中横 / 圏点 / 割注 / 字取り / 段組 / 下線・打ち消し線 / Font.angle",
+                                         en : "- Not supported: ruby / tate-chu-yoko / emphasis dots / warichu / jidori / columns / underline, strikeout / Font.angle" ],
+    "text_vertical.h.body"      => %[ ja : "縦組み — 列は右から左へ", en : "Vertical — columns right to left" ],
+    "text_vertical.h.horiz"     => %[ ja : "同じ本文の横組み", en : "Same text, horizontal" ],
+    "text_vertical.h.ori"       => %[ ja : "orientation — 和欧の組み分け", en : "orientation — CJK / Latin handling" ],
+    "text_vertical.h.tw"        => %[ ja : "count 制限 = タイプライタ (自動再生)", en : "count limit = typewriter (autoplay)" ]
+]);
+
 class TextFontScene extends DemoScene
 {
     var faceList = [];
     var sample = "あいうAgqQ 漢字 0123 ()!?";
 
-    function TextFontScene() { super.DemoScene("フォントと文字描画"); }
+    function TextFontScene() { super.DemoScene(I18n.entry("text_font.title")); }
 
     function create()
     {
         try { faceList = stage.font.getList(0); } catch (e) { faceList = []; }
         draw();
-        setInfo("フォント / 文字描画の一覧");
+        setInfo(I18n.t("text_font.info"));
     }
 
     function head(x, y, text)
@@ -29,7 +144,7 @@ class TextFontScene extends DemoScene
         var s = stage;
         s.fillRect(0, 0, 1280, 720, 0xff181c24);
 
-        head(24, 16, "サイズ (font.height)");
+        head(24, 16, I18n.t("text_font.h.size"));
         var sizes = [ 14, 20, 28, 40 ];
         var yy = 40;
         for (var i = 0; i < sizes.count; i++) {
@@ -38,7 +153,7 @@ class TextFontScene extends DemoScene
             yy += sizes[i] + 8;
         }
 
-        head(24, 210, "装飾 (bold / italic / underline / strikeout)");
+        head(24, 210, I18n.t("text_font.h.deco"));
         resetFont(); s.font.height = 26;
         s.drawText(30, 234, "通常 Normal", 0xe8ecf4, 255);
         resetFont(); s.font.height = 26; s.font.bold = true;
@@ -52,17 +167,17 @@ class TextFontScene extends DemoScene
         resetFont(); s.font.height = 26; s.font.bold = true; s.font.italic = true; s.font.underline = true;
         s.drawText(30, 272, "組み合わせ Bold+Italic+Under", 0xffe0a0, 255);
 
-        head(24, 320, "アンチエイリアス (drawText の aa 引数)");
+        head(24, 320, I18n.t("text_font.h.aa"));
         resetFont(); s.font.height = 40;
-        s.drawText(30, 344, "aa=true 滑らか", 0xe8ecf4, 255, true);
-        s.drawText(400, 344, "aa=false ギザギザ", 0xe8ecf4, 255, false);
+        s.drawText(30, 344, I18n.t("text_font.aa.on"), 0xe8ecf4, 255, true);
+        s.drawText(400, 344, I18n.t("text_font.aa.off"), 0xe8ecf4, 255, false);
 
-        head(24, 410, "影 (shadow)");
+        head(24, 410, I18n.t("text_font.h.shadow"));
         resetFont(); s.font.height = 40;
         s.drawText(30, 434, "影つき文字 Shadow", 0xffffff, 255, true, 255, 0x000000, 3, 3, 3);
         s.drawText(430, 434, "ぼかし影 Blur", 0xffe060, 255, true, 200, 0x402000, 6, 2, 2);
 
-        head(24, 500, "文字幅計測 (getTextWidth) — 枠が実際の幅");
+        head(24, 500, I18n.t("text_font.h.measure"));
         resetFont(); s.font.height = 32;
         var t = "measure この文字列の幅";
         var w = s.font.getTextWidth(t);
@@ -72,14 +187,14 @@ class TextFontScene extends DemoScene
         resetFont(); s.font.height = 15;
         s.drawText(30, 524 + h + 4, @"getTextWidth=${w}  getTextHeight=${h}", 0x9fb0c8, 255);
 
-        head(660, 500, "drawText の色は 0xRRGGBB (24bit)");
+        head(660, 500, I18n.t("text_font.h.color"));
         resetFont(); s.font.height = 22;
-        s.drawText(666, 524, "0xffffff (正) → 白", 0xffffff, 255);
-        s.drawText(666, 552, "0xffffffff (誤) → システムカラー扱い", 0xffffff, 255);
+        s.drawText(666, 524, I18n.t("text_font.color.ok"), 0xffffff, 255);
+        s.drawText(666, 552, I18n.t("text_font.color.ng"), 0xffffff, 255);
         s.fillRect(666, 580, 420, 26, 0xff30506f);
-        s.drawText(672, 581, "  ← これは 0xffffffff 指定 (黒化)", 0xffffffff, 255);
+        s.drawText(672, 581, I18n.t("text_font.color.ngdemo"), 0xffffffff, 255);
 
-        head(660, 16, @"フォント一覧 (Font.getList) — ${faceList.count} 件");
+        head(660, 16, I18n.t("text_font.h.list", faceList.count));
         var shown = faceList.count < 14 ? faceList.count : 14;
         for (var i = 0; i < shown; i++) {
             // フォント名は既定フェイスで描く (アイコンフォントや絵文字フォント
@@ -95,7 +210,7 @@ class TextFontScene extends DemoScene
         }
         if (faceList.count == 0) {
             resetFont(); s.font.height = 20;
-            s.drawText(666, 44, "(この環境ではフォント列挙が使えません)", 0xc0a0a0, 255);
+            s.drawText(666, 44, I18n.t("text_font.list.none"), 0xc0a0a0, 255);
         }
         s.update();
     }
@@ -123,7 +238,7 @@ class TextEmojiScene extends DemoScene
     var emojiFT = true;   // FreeType へ切替えられたか
     var sample = "顔 😀  星 ⭐  火 🔥  音 🎵  猫 🐱";
 
-    function TextEmojiScene() { super.DemoScene("絵文字 (FreeType)"); }
+    function TextEmojiScene() { super.DemoScene(I18n.entry("text_emoji.title")); }
 
     function create()
     {
@@ -131,7 +246,7 @@ class TextEmojiScene extends DemoScene
         try { savedRas = Font.rasterizer; Font.rasterizer = 0; emojiFT = true; }
         catch (e) { emojiFT = false; }
         draw();
-        setInfo("font.emojiMode で 元フォント / 絵文字フォント を切替 (FreeType 専用)");
+        setInfo(I18n.t("text_emoji.info"));
     }
 
     // ページを離れるときはラスタライザを元へ戻す (text_font の GDI 表示を保つ)。
@@ -164,33 +279,33 @@ class TextEmojiScene extends DemoScene
         s.fillRect(0, 0, 1280, 720, 0xff181c24);
 
         resetFont(); s.font.height = 34;
-        s.drawText(40, 22, "絵文字表示 (FreeType ラスタライザ)", 0xffffff, 255, true);
+        s.drawText(40, 22, I18n.t("text_emoji.heading"), 0xffffff, 255, true);
 
-        head(40, 80, "font.emojiMode : 0=元フォントのみ / 1=モノクロ絵文字 / 2=カラー絵文字");
+        head(40, 80, I18n.t("text_emoji.h.mode"));
         resetFont(); s.font.height = 18;
-        s.drawText(48, 104, "・該当コードポイントを絵文字フォント (Noto Emoji) にフォールバックして描画", 0xc4ccda, 255);
-        s.drawText(48, 128, "・絵文字フォントは実行ファイルに埋め込み済み。Font.emojiFaceName / Font.addFont で差替も可", 0xc4ccda, 255);
-        s.drawText(48, 152, "・GDI ラスタライザ (WINVER 既定) には無い機能。この画面のみ FreeType(=0) を使用", 0xc4ccda, 255);
+        s.drawText(48, 104, I18n.t("text_emoji.n1"), 0xc4ccda, 255);
+        s.drawText(48, 128, I18n.t("text_emoji.n2"), 0xc4ccda, 255);
+        s.drawText(48, 152, I18n.t("text_emoji.n3"), 0xc4ccda, 255);
 
         if (!emojiFT) {
             resetFont(); s.font.height = 24;
-            s.drawText(40, 220, "(この環境では FreeType ラスタライザが使えません)", 0xf0a0a0, 255);
+            s.drawText(40, 220, I18n.t("text_emoji.noft"), 0xf0a0a0, 255);
             s.update();
             return;
         }
 
-        head(40, 190, "モード比較 (同じ文字列)");
+        head(40, 190, I18n.t("text_emoji.h.cmp"));
         row(214, 0, "mode0");
         row(268, 1, "mode1");
         row(322, 2, "mode2");
 
         resetFont(); s.font.height = 16;
-        s.drawText(48, 380, "mode0 : 絵文字は元フォントに無いため tofu (□) 表示", 0x9fb0c8, 255);
-        s.drawText(48, 402, "mode1 : モノクロ絵文字グリフ (Noto Emoji)", 0x9fb0c8, 255);
-        s.drawText(48, 424, "mode2 : カラー絵文字グリフ (Noto Color Emoji)。★❤ 等は元フォントにもあるため mono になる場合あり", 0x9fb0c8, 255);
-        s.drawText(48, 446, "  → 文字直後に VS16 (U+FE0F) を付けると その1文字だけ絵文字優先 / VS15 (U+FE0E) で原フォント強制", 0x9fb0c8, 255);
+        s.drawText(48, 380, I18n.t("text_emoji.m0"), 0x9fb0c8, 255);
+        s.drawText(48, 402, I18n.t("text_emoji.m1"), 0x9fb0c8, 255);
+        s.drawText(48, 424, I18n.t("text_emoji.m2"), 0x9fb0c8, 255);
+        s.drawText(48, 446, I18n.t("text_emoji.vs"), 0x9fb0c8, 255);
 
-        head(40, 460, "グローバル既定: Font.defaultEmojiMode (個別 emojiMode = -1 でこれに追従)");
+        head(40, 460, I18n.t("text_emoji.h.default"));
         resetFont(); s.font.height = 40; s.font.emojiMode = 2;
         s.drawText(48, 484, "🎨 😀 ⭐ 🔥 🎵 🐱 🎉 👍 🍎 🚀", 0xffe0a0, 255, true);
 
@@ -220,7 +335,7 @@ class TextGlyphwareScene extends DemoScene
     var twTotal = 0, twCount = 0, twNextTick = 0;
     var twX = 0, twY = 0, twW = 0, twH = 0;
 
-    function TextGlyphwareScene() { super.DemoScene("多言語シェイピング (glyphware)"); }
+    function TextGlyphwareScene() { super.DemoScene(I18n.entry("text_glyphware.title")); }
 
     function create()
     {
@@ -243,7 +358,7 @@ class TextGlyphwareScene extends DemoScene
         // (リソースの置き場は System.resourcePath で吸収。直書きすると wasm で外れる)
         chain += ",Noto Color Emoji," + System.resourcePath + "notoemoji-regular.ttf";
         draw();
-        setInfo("Layer.drawShapedText — HarfBuzz シェイピング + BiDi + フォールバック連鎖 / drawShapedTextArea で矩形内折り返し");
+        setInfo(I18n.t("text_glyphware.info"));
     }
 
     function head(x, y, text)
@@ -261,46 +376,46 @@ class TextGlyphwareScene extends DemoScene
 
         if (typeof global.Layer.drawShapedText == "undefined") {
             s.font.face = ""; s.font.height = 24;
-            s.drawText(40, 40, "この環境では drawShapedText が使えません (glyphware 無効ビルド)", 0xf0a0a0, 255);
+            s.drawText(40, 40, I18n.t("text_glyphware.na"), 0xf0a0a0, 255);
             s.update();
             return;
         }
 
         s.font.face = ""; s.font.height = 34;
-        s.drawText(40, 22, "多言語シェイピング描画 (Layer.drawShapedText)", 0xffffff, 255, true);
+        s.drawText(40, 22, I18n.t("text_glyphware.heading"), 0xffffff, 255, true);
         s.font.height = 18;
-        s.drawText(48, 66, "・drawText と独立した描画経路。HarfBuzz の連結/合字/カーニングと BiDi (右横書き) に対応", 0xc4ccda, 255);
-        s.drawText(48, 90, "・font は Font オブジェクト指定。face のカンマ区切りでフォールバック連鎖 (JP+RTL+絵文字)", 0xc4ccda, 255);
+        s.drawText(48, 66, I18n.t("text_glyphware.n1"), 0xc4ccda, 255);
+        s.drawText(48, 90, I18n.t("text_glyphware.n2"), 0xc4ccda, 255);
 
         // 描画属性は Font オブジェクト 1 個にまとめて渡す (レイヤ font とは独立)
         var f = new Font();
         f.face = chain; f.height = 40;
 
         var y = 176;
-        head(40, y - 26, "ラテン + 日本語 (カーニング / 混植)");
+        head(40, y - 26, I18n.t("text_glyphware.h.latin"));
         s.drawShapedText(48, y + 34, "AVATAR Type 東京 To Word", 0xe8ecf4, f);
 
         y = 266;
-        head(40, y - 26, "アラビア語 (右→左 + 文字連結)");
+        head(40, y - 26, I18n.t("text_glyphware.h.arabic"));
         s.drawShapedText(48, y + 34, "مرحبا بالعالم — السلام عليكم", 0xe8ecf4, f);
 
         y = 356;
-        head(40, y - 26, "ヘブライ語 (右→左)");
+        head(40, y - 26, I18n.t("text_glyphware.h.hebrew"));
         s.drawShapedText(48, y + 34, "שלום עולם", 0xe8ecf4, f);
 
         y = 446;
-        head(40, y - 26, "双方向混在 (BiDi 自動判定, base=0)");
+        head(40, y - 26, I18n.t("text_glyphware.h.bidi"));
         s.drawShapedText(48, y + 34, "Total מספר 123 עמודים OK", 0xe8ecf4, f);
 
         y = 536;
-        head(40, y - 26, "絵文字混在 + 装飾 (bold / underline)");
+        head(40, y - 26, I18n.t("text_glyphware.h.emoji"));
         f.bold = true; f.underline = true;
         s.drawShapedText(48, y + 34, "日本語 English 😀🔥⭐ まとめて1行", 0xffe0a0, f);
         f.bold = false; f.underline = false;
 
         // 計測: インク境界の枠とベースラインを描いてから同じ条件で描画する
         y = 622;
-        head(40, y - 26, "計測 (measureShapedText) — 青枠=インク境界 / 赤線=ベースライン");
+        head(40, y - 26, I18n.t("text_glyphware.h.measure"));
         var text = "Meas 計測 مرحبا";
         var bx = 48, by = y + 34;
         f.height = 36;
@@ -317,13 +432,13 @@ class TextGlyphwareScene extends DemoScene
                  + "行頭禁則(、。等)にも対応します。\n"
                  + "明示改行もOK。絵文字😀も1文字扱いです。";
         var ax = 780, ay = 176, aw = 440, ah = 216;
-        head(ax - 8, ay - 34, "矩形内折り返し (drawShapedTextArea)");
+        head(ax - 8, ay - 34, I18n.t("text_glyphware.h.area"));
         s.fillRect(ax - 8, ay - 8, aw + 16, ah + 16, 0xff20283a);
         f.height = 24;
         var r = s.drawShapedTextArea(ax, ay, aw, ah, para, 0xe8ecf4, f);
         s.font.face = ""; s.font.height = 16;
         if (r !== void)
-            s.drawText(ax - 8, ay + ah + 14, "結果: lines=" + r.lines + " height=" + r.height + " count=" + r.count, 0x8fb8e8, 255);
+            s.drawText(ax - 8, ay + ah + 14, I18n.t("text_glyphware.result", r.lines, r.height, r.count), 0x8fb8e8, 255);
 
         // タイプライタ (count 制限): RTL 混在文を 1 クラスタずつ全文表示→繰り返し。
         // 進行は onDemoFrame。RTL 区間は論理順 (読み順) で現れるため、
@@ -335,14 +450,14 @@ class TextGlyphwareScene extends DemoScene
         twFont = new Font();
         twFont.face = chain; twFont.height = 22;
         twX = ax; twY = ay + ah + 84; twW = aw; twH = 150;
-        head(ax - 8, twY - 34, "count 制限 = タイプライタ (RTL 混在, 自動再生)");
+        head(ax - 8, twY - 34, I18n.t("text_glyphware.h.tw"));
         twTotal = s.shapedTextCount(twText, twFont);
         twCount = 0; twNextTick = 0;
         drawTypewriter();
 
         if (rtlFont == "") {
             s.font.face = ""; s.font.height = 16;
-            s.drawText(560, 66, "(RTL 収録フォント未検出のためアラビア語/ヘブライ語は代替字形)", 0xf0a0a0, 255);
+            s.drawText(560, 66, I18n.t("text_glyphware.nortl"), 0xf0a0a0, 255);
         }
         s.update();
     }
@@ -393,7 +508,7 @@ class TextRasterizerScene extends DemoScene
     var cur = 0;         // rasters[] のインデックス
     var sample = "あいうAgqQ 漢字 0123 ()!? — Text テキスト";
 
-    function TextRasterizerScene() { super.DemoScene("ラスタライザ比較"); }
+    function TextRasterizerScene() { super.DemoScene(I18n.entry("text_rasterizer.title")); }
 
     function create()
     {
@@ -403,7 +518,7 @@ class TextRasterizerScene extends DemoScene
         for (var i = 0; i < rasters.count; i++)
             if (rasters[i].index == savedRas) { cur = i; break; }
         applyAndDraw();
-        setInfo("←/→ or Space: ラスタライザ切替   同じ内容を各ラスタライザで描画して比較");
+        setInfo(I18n.t("text_rasterizer.info"));
     }
 
     // 離脱時は元のラスタライザへ戻す (他シーンの表示を保つ)
@@ -486,7 +601,7 @@ class TextRasterizerScene extends DemoScene
 
         // 見出し + 現在のラスタライザ
         resetFont(); s.font.height = 30;
-        var pre = "ラスタライザ比較 — 現在: ";
+        var pre = I18n.t("text_rasterizer.cur");
         s.drawText(24, 16, pre, 0xffffff, 255, true);
         var hx = 24 + s.font.getTextWidth(pre);
         resetFont(); s.font.height = 30; s.font.bold = true;
@@ -511,7 +626,7 @@ class TextRasterizerScene extends DemoScene
         // --- 左列: サイズ / 装飾 / 影 / 回転 ---
         // 右列 (x=680〜) と重ならないよう、左列の描画は x<660 に収める。
         // 大サイズ行はサンプル文字列を短縮する (42px でフル文だと右列に食い込む)。
-        head(24, 100, "サイズ (CJK + Latin 混在)");
+        head(24, 100, I18n.t("text_rasterizer.h.size"));
         var sizes = [ 16, 22, 30, 42 ];
         var sizeSamples = [ sample, sample,
                             "あいうAgqQ 漢字 0123 Text", "あいうAgqQ 漢字 Text" ];
@@ -523,37 +638,37 @@ class TextRasterizerScene extends DemoScene
         }
 
         // 装飾は 2 行に分けて左列内 (x<660) に収める
-        head(24, 300, "装飾 (bold / italic / underline / strikeout)");
+        head(24, 300, I18n.t("text_rasterizer.h.deco"));
         resetFont(); s.font.height = 26; s.drawText(30, 324, "通常 Normal", 0xe8ecf4, 255, true);
         resetFont(); s.font.height = 26; s.font.bold = true; s.drawText(230, 324, "太字 Bold", 0xffd870, 255, true);
         resetFont(); s.font.height = 26; s.font.italic = true; s.drawText(430, 324, "斜体 Italic", 0x90e0ff, 255, true);
         resetFont(); s.font.height = 26; s.font.underline = true; s.drawText(30, 356, "下線 Under", 0xa0f0a0, 255, true);
         resetFont(); s.font.height = 26; s.font.strikeout = true; s.drawText(230, 356, "取消 Strike", 0xf0a0c0, 255, true);
 
-        head(24, 398, "影 / ぼかし影 (shadow)");
+        head(24, 398, I18n.t("text_rasterizer.h.shadow"));
         resetFont(); s.font.height = 36;
         s.drawText(30, 422, "影つき Shadow", 0xffffff, 255, true, 255, 0x000000, 3, 3, 3);
         s.drawText(320, 422, "ぼかし Blur", 0xffe060, 255, true, 200, 0x402000, 6, 2, 2);
 
         // 見出しは短く (長文だと回転テキストの軌跡と交差する)。回転テキストは
         // (240,640) から右上へ = 影セクションや注記と交差しない軌跡にする。
-        head(24, 474, "回転 (font.angle=300)");
+        head(24, 474, I18n.t("text_rasterizer.h.rot"));
         resetFont(); s.font.height = 30; s.font.angle = 300;
         s.drawText(240, 640, "angle 回転 ABC 日本語", 0x90e0ff, 255, true);
         resetFont(); s.font.height = 15;
-        s.drawText(30, 500, "GDI はグリフ回転 /", 0x9fb0c8, 255);
-        s.drawText(30, 520, "FreeType・glyphware は送りのみ回転", 0x9fb0c8, 255);
+        s.drawText(30, 500, I18n.t("text_rasterizer.rot1"), 0x9fb0c8, 255);
+        s.drawText(30, 520, I18n.t("text_rasterizer.rot2"), 0x9fb0c8, 255);
         resetFont();
 
         // --- 右列: 絵文字 / 計測 ---
-        head(680, 100, "絵文字 (font.emojiMode=2 カラー)");
+        head(680, 100, I18n.t("text_rasterizer.h.emoji"));
         resetFont(); s.font.height = 36; s.font.emojiMode = 2;
         s.drawText(686, 124, "😀 ⭐ 🔥 🍣 🎌 🚀", 0xffffff, 255, true);
         resetFont(); s.font.height = 15;
-        s.drawText(686, 172, "FreeType / glyphware = カラー絵文字", 0x9fb0c8, 255);
-        s.drawText(686, 192, "GDI = 絵文字フォールバック非対応 (□/白抜き)", 0x9fb0c8, 255);
+        s.drawText(686, 172, I18n.t("text_rasterizer.emoji1"), 0x9fb0c8, 255);
+        s.drawText(686, 192, I18n.t("text_rasterizer.emoji2"), 0x9fb0c8, 255);
 
-        head(680, 226, "文字幅計測 (getTextWidth) — 枠が実幅");
+        head(680, 226, I18n.t("text_rasterizer.h.measure"));
         resetFont(); s.font.height = 30;
         var t = "measure この文字列の幅";
         var w = s.font.getTextWidth(t);
@@ -563,15 +678,15 @@ class TextRasterizerScene extends DemoScene
         resetFont(); s.font.height = 15;
         s.drawText(686, 250 + h + 4, @"getTextWidth=${w}  getTextHeight=${h}", 0x9fb0c8, 255);
 
-        head(680, 330, "備考");
+        head(680, 330, I18n.t("text_rasterizer.h.notes"));
         resetFont(); s.font.height = 16;
-        s.drawText(686, 354, "・同じ TJS コード (drawText) で描画。ラスタライザだけ切替", 0xc4ccda, 255);
-        s.drawText(686, 376, "・glyphware = FreeType + HarfBuzz の統一フォントエンジン", 0xc4ccda, 255);
-        s.drawText(686, 398, "・GDI = WINVER 既定。glyphware は Font.rasterizer で opt-in", 0xc4ccda, 255);
-        s.drawText(686, 420, "・既定挙動は不変 (既存ゲーム互換)。切替時のみ経路が変わる", 0xc4ccda, 255);
+        s.drawText(686, 354, I18n.t("text_rasterizer.n1"), 0xc4ccda, 255);
+        s.drawText(686, 376, I18n.t("text_rasterizer.n2"), 0xc4ccda, 255);
+        s.drawText(686, 398, I18n.t("text_rasterizer.n3"), 0xc4ccda, 255);
+        s.drawText(686, 420, I18n.t("text_rasterizer.n4"), 0xc4ccda, 255);
         if (rasters.count <= 1) {
             resetFont(); s.font.height = 18;
-            s.drawText(686, 452, "(この環境では切替可能なラスタライザが 1 種のみ)", 0xf0c090, 255);
+            s.drawText(686, 452, I18n.t("text_rasterizer.single"), 0xf0c090, 255);
         }
 
         s.update();
@@ -612,7 +727,7 @@ class TextVerticalScene extends DemoScene
     var twTotal = 0, twCount = 0, twNextTick = 0;
     var twX = 0, twY = 0, twW = 0, twH = 0;
 
-    function TextVerticalScene() { super.DemoScene("縦組み (drawVerticalTextArea)"); }
+    function TextVerticalScene() { super.DemoScene(I18n.entry("text_vertical.title")); }
 
     function create()
     {
@@ -631,7 +746,7 @@ class TextVerticalScene extends DemoScene
         twFont = new Font();
         twFont.face = chain; twFont.height = 20;
         draw();
-        setInfo("1:ぶら下げ 2:行末揃え 3:約物の詰め 4:列送り 5:正立/横倒し ←/→:字間");
+        setInfo(I18n.t("text_vertical.info"));
     }
 
     // 現在の設定を options 辞書 (drawVerticalTextArea の第 10 引数) にする
@@ -647,15 +762,15 @@ class TextVerticalScene extends DemoScene
 
     function oriName(v)
     {
-        if (v == 1) return "1=全て正立";
-        if (v == 2) return "2=全て横倒し";
-        return "0=和文正立/欧文横倒し";
+        if (v == 1) return I18n.t("text_vertical.ori1");
+        if (v == 2) return I18n.t("text_vertical.ori2");
+        return I18n.t("text_vertical.ori0");
     }
 
     function optionsLabel()
     {
         return "orientation " + oriName(ori)
-             + " / verticalLr " + (vlr ? "true (左→右)" : "false (右→左)")
+             + " / verticalLr " + (vlr ? I18n.t("text_vertical.lr") : I18n.t("text_vertical.rl"))
              + " / punctuation " + (punctuation ? "true" : "false")
              + " / hanging " + (hanging ? "true" : "false")
              + " / justify " + (justify ? "true" : "false")
@@ -682,17 +797,17 @@ class TextVerticalScene extends DemoScene
 
         if (typeof global.Layer.drawVerticalTextArea == "undefined") {
             resetFont(); s.font.height = 24;
-            s.drawText(40, 40, "この環境では drawVerticalTextArea が使えません (glyphware 無効ビルド)", 0xf0a0a0, 255);
+            s.drawText(40, 40, I18n.t("text_vertical.na"), 0xf0a0a0, 255);
             s.update();
             return;
         }
 
         resetFont();
         s.font.height = 34;
-        s.drawText(40, 22, "縦組み描画 (Layer.drawVerticalTextArea)", 0xffffff, 255, true);
+        s.drawText(40, 22, I18n.t("text_vertical.heading"), 0xffffff, 255, true);
         s.font.height = 18;
-        s.drawText(48, 64, "・和文は正立 / 欧文・数字は横倒し。約物の詰め・行頭行末禁則・追い込み/追い出しを JLReq のアキ量で処理", 0xc4ccda, 255);
-        s.drawText(48, 88, "・未対応: ルビ / 縦中横 / 圏点 / 割注 / 字取り / 段組 / 下線・打ち消し線 / Font.angle", 0xc4ccda, 255);
+        s.drawText(48, 64, I18n.t("text_vertical.n1"), 0xc4ccda, 255);
+        s.drawText(48, 88, I18n.t("text_vertical.n2"), 0xc4ccda, 255);
         s.font.height = 16;
         s.drawText(48, 114, "options = " + optionsLabel(), 0x8fb8e8, 255);
 
@@ -702,7 +817,7 @@ class TextVerticalScene extends DemoScene
 
         // ---- 本文の流し込み (縦組み) ---------------------------------
         var bx = 48, by = 178, bw = 264, bh = 460;
-        head(bx - 8, by - 34, "縦組み — 列は右から左へ");
+        head(bx - 8, by - 34, I18n.t("text_vertical.h.body"));
         s.fillRect(bx - 8, by - 8, bw + 16, bh + 16, 0xff20283a);
         var r = s.drawVerticalTextArea(bx, by, bw, bh, body, 0xe8ecf4, f, -1, 6, o);
         resetFont(); s.font.height = 16;
@@ -716,7 +831,7 @@ class TextVerticalScene extends DemoScene
         // 行の切れ方・約物の詰まり方が違う。count の数え方も別 (縦組みは
         // 描画される文字だけを数え、欧文の単語間空白は数えない)
         var hx = 356, hy = 178, hw = 292, hh = 460;
-        head(hx - 8, hy - 34, "同じ本文の横組み");
+        head(hx - 8, hy - 34, I18n.t("text_vertical.h.horiz"));
         s.fillRect(hx - 8, hy - 8, hw + 16, hh + 16, 0xff20283a);
         var hr = s.drawShapedTextArea(hx, hy, hw, hh, body, 0xc8d4e8, f, 0, -1, 6);
         resetFont(); s.font.height = 16;
@@ -727,7 +842,7 @@ class TextVerticalScene extends DemoScene
 
         // ---- 正立 / 横倒しの組み分け ---------------------------------
         var mx = 700, my = 178, mw = 152, mh = 196;
-        head(mx - 8, my - 34, "orientation — 和欧の組み分け");
+        head(mx - 8, my - 34, I18n.t("text_vertical.h.ori"));
         var msample = "縦組み ABC 123 の例";
         var mf = new Font();
         mf.face = chain; mf.height = 18;
@@ -743,7 +858,7 @@ class TextVerticalScene extends DemoScene
 
         // ---- タイプライタ (count 制限) -------------------------------
         twX = 700; twY = 448; twW = 520; twH = 190;
-        head(twX - 8, twY - 30, "count 制限 = タイプライタ (自動再生)");
+        head(twX - 8, twY - 30, I18n.t("text_vertical.h.tw"));
         var m = s.measureVerticalTextArea(twW, twH, twText, twFont, -1, 6, o);
         twTotal = (m !== void) ? m.totalCount : 0;
         twCount = 0; twNextTick = 0;

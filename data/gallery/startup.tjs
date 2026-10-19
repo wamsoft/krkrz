@@ -70,7 +70,7 @@ tryScene("pad_advanced/scene.tjs", function() { return new PadAdvancedScene(); }
 tryScene("a11y/scene.tjs",         function() { return new A11yScene(); });
 
 dm(@"gallery: ${scenes.count} scene(s)");
-if (scenes.count == 0) { System.inform("シーンが読み込めませんでした"); System.exit(1); }
+if (scenes.count == 0) { System.inform(I18n.pick(%[ ja : "シーンが読み込めませんでした", en : "No scenes could be loaded" ])); System.exit(1); }
 
 // hub 型: メニュー ⇄ 各デモを ESC / クリックで行き来する
-runDemoHub(scenes, "krkrz コアデモ ギャラリー");
+runDemoHub(scenes, %[ ja : "krkrz コアデモ ギャラリー", en : "krkrz core demo gallery" ]);

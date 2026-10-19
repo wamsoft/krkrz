@@ -16,4 +16,4 @@ if (demolibPath === void) { System.inform("demolib が見つかりません"); S
 Scripts.execStorage(demolibPath + "demo_common.tjs");
 Scripts.execStorage("scene.tjs");
 
-runDemoShell([ new GLParticlesScene() ], "gl_particles — GPU パーティクル");
+runDemoShell([ new GLParticlesScene() ], I18n.entry("gl_particles.shell"));

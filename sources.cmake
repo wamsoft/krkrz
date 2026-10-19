@@ -833,6 +833,10 @@ elseif(APPLE)
 		sdl3/base/resource.cpp
 		sdl3/utils/ThreadImpl.cpp
 	)
+	if(NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+		# Cocoa 補助 (SDL3 の Cocoa バックエンドに無いウィンドウ装飾の厚み取得)
+		list(APPEND KRKRZ_SRC_SDL3 sdl3/environ/macwindow.mm)
+	endif()
 elseif(ANDROID)
 	list(APPEND KRKRZ_SRC_SDL3
 		sdl3/environ/stdapp.cpp

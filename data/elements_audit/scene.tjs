@@ -14,6 +14,66 @@
 //  各シナリオは機械可読の "@audit ..." 行もログへ出す (before/after の比較用)。
 // ======================================================================
 
+I18n.add(%[
+    "elements_audit.title"        => %[ ja : "Elements 仕様精査の確認",        en : "Elements audit checks" ],
+    "elements_audit.info.auto"    => %[ ja : "自動巡回 (-audittest): 結果は @audit 行でログに出ます",
+                                        en : "Auto run (-audittest): results go to the log as @audit lines" ],
+    "elements_audit.info"         => %[ ja : "1-6: シナリオ  0: 全消去  C: リセット  Z/X: 倍率  +/-: 行数  O: 開閉",
+                                        en : "1-6: scenario  0: clear  C: reset  Z/X: zoom  +/-: rows  O: open/close" ],
+    "elements_audit.sub.title"    => %[ ja : "前面パネル (O で開閉)",          en : "Front panel (O to toggle)" ],
+    "elements_audit.list.row"     => %[ ja : "行 %d のテキスト",               en : "Text of row %d" ],
+    "elements_audit.metrics.title"=> %[ ja : "text_metrics キャッシュの上限跨ぎ", en : "Crossing the text_metrics cache limit" ],
+    "elements_audit.metrics.stable"=> %[ ja : "安定した行 %d / 固定テキスト",  en : "Stable row %d / fixed text" ],
+    "elements_audit.metrics.churn"=> %[ ja : "metrics %d-%d / %d / 異なる文字列 %d",
+                                        en : "metrics %d-%d / %d / distinct string %d" ],
+    "elements_audit.scen.0"       => %[ ja : "なし",                           en : "none" ],
+    "elements_audit.scen.1"       => %[ ja : "warp echo (§1)",                 en : "warp echo (§1)" ],
+    "elements_audit.scen.2"       => %[ ja : "list 描画 (§2)",                 en : "list drawing (§2)" ],
+    "elements_audit.scen.3"       => %[ ja : "atlas 常駐 (§3)",                en : "atlas residency (§3)" ],
+    "elements_audit.scen.4"       => %[ ja : "metrics スパイク (§4)",          en : "metrics spike (§4)" ],
+    "elements_audit.scen.5"       => %[ ja : "押しっぱなしガード (§5)",        en : "held-input guard (§5)" ],
+    "elements_audit.scen.6"       => %[ ja : "リピート周期 (§6)",              en : "repeat interval (§6)" ],
+    "elements_audit.hint.1"       => %[ ja : "Z/X で倍率を変え、十字/矢印を長押し。振動が増えなければ OK",
+                                        en : "Change zoom with Z/X and hold a D-pad/arrow. OK if oscillation does not grow" ],
+    "elements_audit.hint.2"       => %[ ja : "+/- で行数を変え、ラスタ時間が横ばいなら OK",
+                                        en : "Change rows with +/-. OK if raster time stays flat" ],
+    "elements_audit.hint.3"       => %[ ja : "O で開閉。閉じた後に常駐量が減れば OK",
+                                        en : "Toggle with O. OK if residency drops after closing" ],
+    "elements_audit.hint.4"       => %[ ja : "update スパイクが出なければ OK", en : "OK if no update spikes appear" ],
+    "elements_audit.hint.5"       => %[ ja : "十字を押したまま O で前面を開く。背面移動 0 なら OK",
+                                        en : "Hold the D-pad and press O to open the front panel. OK if back moves = 0" ],
+    "elements_audit.hint.6"       => %[ ja : "-paddelay/-padinterval を変えて送り間隔が追従すれば OK",
+                                        en : "Change -paddelay/-padinterval. OK if the step interval follows" ],
+    "elements_audit.heading"      => %[ ja : "Elements 仕様精査の確認 (doc/ElementsAudit.md)",
+                                        en : "Elements audit checks (doc/ElementsAudit.md)" ],
+    "elements_audit.unavailable"  => %[ ja : "この環境では ElementsDialog が使えません (Elements 無効ビルド)",
+                                        en : "ElementsDialog is not available (Elements disabled build)" ],
+    "elements_audit.keys1"        => %[ ja : "1: warp echo   2: list 描画   3: atlas 常駐   4: metrics   5: 押しっぱなし   6: リピート周期   0: 全消去",
+                                        en : "1: warp echo   2: list drawing   3: atlas residency   4: metrics   5: held input   6: repeat interval   0: clear" ],
+    "elements_audit.keys2"        => %[ ja : "C: 計測リセット   Z/X: ウィンドウ倍率   +/-: 行数 (2)   O: 開閉 (3/5)",
+                                        en : "C: reset   Z/X: window zoom   +/-: rows (2)   O: open/close (3/5)" ],
+    "elements_audit.current"      => %[ ja : "現在: %s",                       en : "Current: %s" ],
+    "elements_audit.zoom"         => %[ ja : "ウィンドウ倍率 %d/%d  (倍率 != 1/1 が §1 の再現条件)",
+                                        en : "Window zoom %d/%d  (zoom != 1/1 is required to reproduce §1)" ],
+    "elements_audit.rows"         => %[ ja : "行数 %d",                        en : "Rows %d" ],
+    "elements_audit.noassets"     => %[ ja : "資材がありません: -genassets で生成してください",
+                                        en : "No assets: generate them with -genassets" ],
+    "elements_audit.atlas"        => %[ ja : "開閉回数 %d   アトラス常駐 %s", en : "Opened %d times   atlas resident %s" ],
+    "elements_audit.noapi"        => %[ ja : "(API なし)",                     en : "(no API)" ],
+    "elements_audit.measure"      => %[ ja : "計測 (500ms ごと更新)",          en : "Measurement (updated every 500ms)" ],
+    "elements_audit.st.raster"    => %[ ja : "ラスタ  %s us/frame  (%s us/raster)", en : "Raster  %s us/frame  (%s us/raster)" ],
+    "elements_audit.st.rasters"   => %[ ja : "ラスタ回数 %d  うち部分再描画 %d", en : "Rasters %d  partial redraws %d" ],
+    "elements_audit.st.update"    => %[ ja : "update  %s us/frame  (最大 %s)", en : "update  %s us/frame  (max %s)" ],
+    "elements_audit.st.focus"     => %[ ja : "フォーカス移動 %d   振動 (A->B->A) %d", en : "Focus moves %d   oscillation (A->B->A) %d" ],
+    "elements_audit.st.bgfocus"   => %[ ja : "背面フォーカス移動 %d",          en : "Back panel focus moves %d" ],
+    "elements_audit.st.interval"  => %[ ja : "送り間隔 平均 %s ms  (初回 %d ms)", en : "Step interval avg %s ms  (first %d ms)" ],
+    "elements_audit.st.curfocus"  => %[ ja : "現在のフォーカス %s",            en : "Current focus %s" ],
+    "elements_audit.st.mouse"     => %[ ja : "実マウス移動 %d",                en : "Real mouse moves %d" ],
+    "elements_audit.st.mouse.bad" => %[ ja : "  ← マウスに触れていると測定になりません",
+                                        en : "  ← touching the mouse invalidates the run" ],
+    "elements_audit.st.mouse.ok"  => %[ ja : "  (この回の数値は有効)",         en : "  (values of this run are valid)" ]
+]);
+
 // パネル: onAction をシーンへ中継するだけ
 class AuditDialog extends ElementsDialog
 {
@@ -107,7 +167,7 @@ class ElementsAuditScene extends DemoScene
     var restoredAt = 0;        // 前面パネルを閉じた tick (0 = まだ)
     var movesAfterRestore = 0; // 戻った後に背面のフォーカスが動いた回数
 
-    function ElementsAuditScene() { super.DemoScene("Elements 仕様精査の確認"); }
+    function ElementsAuditScene() { super.DemoScene(I18n.entry("elements_audit.title")); }
 
     // ------------------------------------------------------------------
     //  ライフサイクル
@@ -175,8 +235,8 @@ class ElementsAuditScene extends DemoScene
 
         switchScenario(autoMode ? autoList[0][0] : 1);
         setInfo(autoMode
-            ? "自動巡回 (-audittest): 結果は @audit 行でログに出ます"
-            : "1-6: シナリオ  0: 全消去  C: リセット  Z/X: 倍率  +/-: 行数  O: 開閉");
+            ? I18n.t("elements_audit.info.auto")
+            : I18n.t("elements_audit.info"));
     }
 
     function onExit()
@@ -324,7 +384,7 @@ class ElementsAuditScene extends DemoScene
             input: %[ arrow_focus_nav: true ],
             content: %[ type: "margin", padding: 20, child: %[
                 type: "vtile", gap: 10, children: [
-                    %[ type: "label", text: "前面パネル (O で開閉)", size_scale: 1.2 ],
+                    %[ type: "label", text: I18n.t("elements_audit.sub.title"), size_scale: 1.2 ],
                     %[ type: "button", id: "s0", text: "s0",
                        initial_focus: 1, vars_on_focus: %[ subfocus: "s0" ] ],
                     %[ type: "button", id: "s1", text: "s1",
@@ -347,7 +407,7 @@ class ElementsAuditScene extends DemoScene
         if (!listUseCanvas) return makeListPanelTile(rowH, listH);
         var d = new AuditDialog(this, "list");
         var vars = %[];
-        for (var i = 0; i < listRows; i++) vars["name" + i] = "行 " + i + " のテキスト";
+        for (var i = 0; i < listRows; i++) vars["name" + i] = I18n.t("elements_audit.list.row", i);
         vars["n"] = "" + listRows;
         vars["top"] = "0";
         vars["tick"] = "tick 0";
@@ -378,7 +438,7 @@ class ElementsAuditScene extends DemoScene
     {
         var d = new AuditDialog(this, "list");
         var vars = %[];
-        for (var i = 0; i < listRows; i++) vars["name" + i] = "行 " + i + " のテキスト";
+        for (var i = 0; i < listRows; i++) vars["name" + i] = I18n.t("elements_audit.list.row", i);
         vars["n"] = "" + listRows;
         vars["top"] = "0";
         vars["tick"] = "tick 0";
@@ -461,12 +521,12 @@ class ElementsAuditScene extends DemoScene
         var d = new AuditDialog(this, "metrics");
         var vars = %[];
         var children = [%[ type: "label",
-                           text: "text_metrics キャッシュの上限跨ぎ",
+                           text: I18n.t("elements_audit.metrics.title"),
                            size_scale: 1.15 ]];
         // 安定ラベル: 内容は固定 (キャッシュヒットする側)
         for (var i = 0; i < METRICS_STATIC; i++) {
             children.add(%[ type: "label",
-                            text: "安定した行 " + i + " / 固定テキスト" ]);
+                            text: I18n.t("elements_audit.metrics.stable", i) ]);
         }
         // 変動ラベル: 毎フレーム新しい文字列 (キャッシュを埋める側)
         for (var j = 0; j < METRICS_CHURN; j++) {
@@ -768,8 +828,8 @@ class ElementsAuditScene extends DemoScene
     function feedMetrics(tick)
     {
         for (var i = 0; i < METRICS_CHURN; i++) {
-            mainDlg.setVar("t" + i, "metrics " + metricsSeq + "-" + i
-                           + " / " + tick + " / 異なる文字列 " + (metricsSeq * 4 + i));
+            mainDlg.setVar("t" + i, I18n.t("elements_audit.metrics.churn",
+                                           metricsSeq, i, tick, metricsSeq * 4 + i));
         }
         metricsSeq++;
     }
@@ -855,13 +915,8 @@ class ElementsAuditScene extends DemoScene
     function scenarioName(n)
     {
         switch (n) {
-        case 0: return "なし";
-        case 1: return "warp echo (§1)";
-        case 2: return "list 描画 (§2)";
-        case 3: return "atlas 常駐 (§3)";
-        case 4: return "metrics スパイク (§4)";
-        case 5: return "押しっぱなしガード (§5)";
-        case 6: return "リピート周期 (§6)";
+        case 0: case 1: case 2: case 3: case 4: case 5: case 6:
+            return I18n.t("elements_audit.scen." + n);
         }
         return "?";
     }
@@ -869,12 +924,8 @@ class ElementsAuditScene extends DemoScene
     function scenarioHint(n)
     {
         switch (n) {
-        case 1: return "Z/X で倍率を変え、十字/矢印を長押し。振動が増えなければ OK";
-        case 2: return "+/- で行数を変え、ラスタ時間が横ばいなら OK";
-        case 3: return "O で開閉。閉じた後に常駐量が減れば OK";
-        case 4: return "update スパイクが出なければ OK";
-        case 5: return "十字を押したまま O で前面を開く。背面移動 0 なら OK";
-        case 6: return "-paddelay/-padinterval を変えて送り間隔が追従すれば OK";
+        case 1: case 2: case 3: case 4: case 5: case 6:
+            return I18n.t("elements_audit.hint." + n);
         }
         return "";
     }
@@ -884,44 +935,42 @@ class ElementsAuditScene extends DemoScene
         var s = stage;
         s.fillRect(0, 0, 1280, 720, 0xff181c24);
         s.font.face = ""; s.font.height = 32;
-        s.drawText(40, 20, "Elements 仕様精査の確認 (doc/ElementsAudit.md)",
+        s.drawText(40, 20, I18n.t("elements_audit.heading"),
                    0xffffff, 255, true);
         if (!available) {
             s.font.height = 24;
-            s.drawText(40, 88, "この環境では ElementsDialog が使えません (Elements 無効ビルド)",
+            s.drawText(40, 88, I18n.t("elements_audit.unavailable"),
                        0xf0a0a0, 255);
             s.update();
             return;
         }
         s.font.height = 18;
         var y = 72;
-        s.drawText(48, y,      "1: warp echo   2: list 描画   3: atlas 常駐   4: metrics   5: 押しっぱなし   6: リピート周期   0: 全消去",
+        s.drawText(48, y,      I18n.t("elements_audit.keys1"),
                    0xc4ccda, 255);
-        s.drawText(48, y + 26, "C: 計測リセット   Z/X: ウィンドウ倍率   +/-: 行数 (2)   O: 開閉 (3/5)",
+        s.drawText(48, y + 26, I18n.t("elements_audit.keys2"),
                    0xc4ccda, 255);
 
         y = 140;
-        head(40, y, "現在: " + scenarioName(scenario));
+        head(40, y, I18n.t("elements_audit.current", scenarioName(scenario)));
         s.font.face = ""; s.font.height = 16;
         s.drawText(56, y + 26, scenarioHint(scenario), 0x9aa4b8, 255);
-        s.drawText(56, y + 48, "ウィンドウ倍率 " + zoomNum + "/" + zoomDen
-                   + "  (倍率 != 1/1 が §1 の再現条件)", 0x9aa4b8, 255);
+        s.drawText(56, y + 48, I18n.t("elements_audit.zoom", zoomNum, zoomDen), 0x9aa4b8, 255);
         if (scenario == 2)
-            s.drawText(56, y + 70, "行数 " + listRows, 0x9aa4b8, 255);
+            s.drawText(56, y + 70, I18n.t("elements_audit.rows", listRows), 0x9aa4b8, 255);
         if (scenario == 3) {
             if (!atlasReady) {
-                s.drawText(56, y + 70, "資材がありません: -genassets で生成してください",
+                s.drawText(56, y + 70, I18n.t("elements_audit.noassets"),
                            0x9aa4b8, 255);
             } else {
-                s.drawText(56, y + 70, "開閉回数 " + atlasOpens
-                           + "   アトラス常駐 "
-                           + ((typeof global.ElementsDialog.atlasCacheStats != "undefined")
+                s.drawText(56, y + 70, I18n.t("elements_audit.atlas", atlasOpens,
+                           ((typeof global.ElementsDialog.atlasCacheStats != "undefined")
                               ? ("%.1f".sprintf(ElementsDialog.atlasCacheStats.bytes / 1048576.0) + " MB")
-                              : "(API なし)"), 0x9aa4b8, 255);
+                              : I18n.t("elements_audit.noapi"))), 0x9aa4b8, 255);
             }
         }
 
-        head(40, 300, "計測 (500ms ごと更新)");
+        head(40, 300, I18n.t("elements_audit.measure"));
         drawStats();
     }
 
@@ -932,27 +981,26 @@ class ElementsAuditScene extends DemoScene
         s.font.face = ""; s.font.height = 18;
         var y = 336;
         s.drawText(56, y, "fps " + "%.1f".sprintf(fps), 0xd8dee8, 255); y += 26;
-        s.drawText(56, y, "ラスタ  " + "%.0f".sprintf(rasterUsPerFrame) + " us/frame  ("
-                   + "%.0f".sprintf(rasterUsPerRaster) + " us/raster)", 0xd8dee8, 255); y += 26;
-        s.drawText(56, y, "ラスタ回数 " + rasterCount + "  うち部分再描画 " + partialCount,
+        s.drawText(56, y, I18n.t("elements_audit.st.raster", "%.0f".sprintf(rasterUsPerFrame),
+                   "%.0f".sprintf(rasterUsPerRaster)), 0xd8dee8, 255); y += 26;
+        s.drawText(56, y, I18n.t("elements_audit.st.rasters", rasterCount, partialCount),
                    0xd8dee8, 255); y += 26;
-        s.drawText(56, y, "update  " + "%.0f".sprintf(updateUsPerFrame)
-                   + " us/frame  (最大 " + "%.0f".sprintf(updateSpikeMax) + ")",
+        s.drawText(56, y, I18n.t("elements_audit.st.update", "%.0f".sprintf(updateUsPerFrame),
+                   "%.0f".sprintf(updateSpikeMax)),
                    0xd8dee8, 255); y += 32;
 
-        s.drawText(56, y, "フォーカス移動 " + moveCount
-                   + "   振動 (A->B->A) " + oscCount,
+        s.drawText(56, y, I18n.t("elements_audit.st.focus", moveCount, oscCount),
                    oscCount > 0 ? 0xffa0a0 : 0xa0e0a0, 255); y += 26;
-        s.drawText(56, y, "背面フォーカス移動 " + bgMoveCount,
+        s.drawText(56, y, I18n.t("elements_audit.st.bgfocus", bgMoveCount),
                    bgMoveCount > 0 ? 0xffa0a0 : 0xa0e0a0, 255); y += 26;
         var avg = (intervalNum > 1) ? (intervalSum / (intervalNum - 1)) : 0;
-        s.drawText(56, y, "送り間隔 平均 " + "%.0f".sprintf(avg)
-                   + " ms  (初回 " + firstInterval + " ms)", 0xd8dee8, 255); y += 26;
-        s.drawText(56, y, "現在のフォーカス " + lastFocus, 0x9aa4b8, 255); y += 26;
+        s.drawText(56, y, I18n.t("elements_audit.st.interval", "%.0f".sprintf(avg),
+                   firstInterval), 0xd8dee8, 255); y += 26;
+        s.drawText(56, y, I18n.t("elements_audit.st.curfocus", lastFocus), 0x9aa4b8, 255); y += 26;
         if (scenario == 1)
-            s.drawText(56, y, "実マウス移動 " + mouseMoves
-                       + (mouseMoves > 0 ? "  ← マウスに触れていると測定になりません"
-                                         : "  (この回の数値は有効)"),
+            s.drawText(56, y, I18n.t("elements_audit.st.mouse", mouseMoves)
+                       + I18n.t(mouseMoves > 0 ? "elements_audit.st.mouse.bad"
+                                               : "elements_audit.st.mouse.ok"),
                        mouseMoves > 0 ? 0xffa0a0 : 0xa0e0a0, 255);
         s.update();
     }

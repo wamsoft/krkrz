@@ -10,6 +10,90 @@
 //    試せる。
 // ======================================================================
 
+I18n.add(%[
+    "perf_stats.title"          => %[ ja : "転送コストとメモリ計測",       en : "Upload cost and memory" ],
+    "perf_stats.shell"          => %[ ja : "perf_stats — 転送コストとメモリ計測", en : "perf_stats — upload cost and memory" ],
+    "perf_stats.load.0"         => %[ ja : "なし (静止)",                   en : "none (static)" ],
+    "perf_stats.load.1"         => %[ ja : "小矩形 x N",                    en : "small rects x N" ],
+    "perf_stats.load.2"         => %[ ja : "全面塗り",                      en : "full fill" ],
+    "perf_stats.load.3"         => %[ ja : "中矩形アニメ",                  en : "moving rect" ],
+    "perf_stats.pbo.0"          => %[ ja : "既定 (サイズで自動)",           en : "default (auto by size)" ],
+    "perf_stats.pbo.1"          => %[ ja : "常に PBO",                      en : "always PBO" ],
+    "perf_stats.pbo.2"          => %[ ja : "常に直接転送",                  en : "always direct" ],
+    "perf_stats.info"           => %[ ja : "負荷パターンを切り替えて、fps ではなく転送コストの違いを見る",
+                                      en : "Switch load patterns and compare upload cost, not fps" ],
+    "perf_stats.heading"        => %[ ja : "画面転送コストとメモリの計測",  en : "Screen upload cost and memory" ],
+    "perf_stats.desc1"          => %[ ja : "合成済み画面を GPU テクスチャへ送るコストは、更新の「面積」ではなく「回数と分布」で大きく変わる。",
+                                      en : "The cost of sending the composited screen to a GPU texture depends on the count and spread of updates, not their area." ],
+    "perf_stats.desc2"          => %[ ja : "同じ fps でも転送で詰まっていることがあるので、System.renderStats の差分で常時観測する。",
+                                      en : "Uploads can stall even at the same fps, so watch the deltas of System.renderStats." ],
+    "perf_stats.load_area"      => %[ ja : "負荷エリア",                    en : "Load area" ],
+    "perf_stats.card.upload"    => %[ ja : "画面転送 (System.renderStats)", en : "Screen upload (System.renderStats)" ],
+    "perf_stats.measuring"      => %[ ja : "計測中...",                     en : "Measuring..." ],
+    "perf_stats.note.ratio"     => %[ ja : "転送率 = 転送に使った時間 / 経過実時間",
+                                      en : "Upload ratio = upload time / elapsed wall time" ],
+    "perf_stats.note.refresh"   => %[ ja : "累積値を %d ms ごとに差分化して表示",
+                                      en : "Shows deltas of cumulative values every %d ms" ],
+    "perf_stats.unsupported"    => %[ ja : "(このビルドでは未提供)",        en : "(not in this build)" ],
+    "perf_stats.st.frames"      => %[ ja : "提示フレーム",                  en : "Presented frames" ],
+    "perf_stats.st.uploads"     => %[ ja : "転送回数",                      en : "Uploads" ],
+    "perf_stats.st.bytes"       => %[ ja : "転送量",                        en : "Upload volume" ],
+    "perf_stats.st.perup"       => %[ ja : "転送 1 回あたり",               en : "Per upload" ],
+    "perf_stats.st.perframe"    => %[ ja : "フレーム当たり",                en : "Per frame" ],
+    "perf_stats.st.time"        => %[ ja : "転送時間",                      en : "Upload time" ],
+    "perf_stats.st.ratio"       => %[ ja : "転送率",                        en : "Upload ratio" ],
+    "perf_stats.u.persec"       => %[ ja : "%s / 秒",                       en : "%s /s" ],
+    "perf_stats.u.mbsec"        => %[ ja : "%s MB/秒",                      en : "%s MB/s" ],
+    "perf_stats.u.mssec"        => %[ ja : "%s ms/秒",                      en : "%s ms/s" ],
+    "perf_stats.hint.stalled"   => %[ ja : "fps が落ちている = 転送が本当に足を引っ張っている",
+                                      en : "fps dropped = uploads really are the bottleneck" ],
+    "perf_stats.hint.vsync"     => %[ ja : "fps が出ているので、待ちの多くは vsync 同期ぶん",
+                                      en : "fps is fine, so most of the wait is vsync" ],
+    "perf_stats.card.memory"    => %[ ja : "メモリ (getSystemAllocatorInfo)", en : "Memory (getSystemAllocatorInfo)" ],
+    "perf_stats.note.nokey"     => %[ ja : "取得できない項目はキー自体が無い (環境依存)",
+                                      en : "Unavailable items have no key (platform dependent)" ],
+    "perf_stats.note.compact"   => %[ ja : "doCompact / clearGraphicCache で解放の効果を見る",
+                                      en : "Use doCompact / clearGraphicCache to see the effect" ],
+    "perf_stats.mem.used"       => %[ ja : "使用量",                        en : "Used" ],
+    "perf_stats.mem.peak"       => %[ ja : "ピーク",                        en : "Peak" ],
+    "perf_stats.mem.free"       => %[ ja : "空き",                          en : "Free" ],
+    "perf_stats.mem.alloc"      => %[ ja : "最大連続確保可",                en : "Largest allocatable" ],
+    "perf_stats.mem.total"      => %[ ja : "ヒープ総量",                    en : "Heap total" ],
+    "perf_stats.mem.rss"        => %[ ja : "プロセス RSS",                  en : "Process RSS" ],
+    "perf_stats.mem.rsspeak"    => %[ ja : "RSS ピーク",                    en : "RSS peak" ],
+    "perf_stats.mem.sysfree"    => %[ ja : "システム空き",                  en : "System free" ],
+    "perf_stats.fullfill"       => %[ ja : "全面塗り: 大きい転送 1 回 / フレーム",
+                                      en : "Full fill: one large upload per frame" ],
+    "perf_stats.msg.load"       => %[ ja : "負荷: %s",                      en : "Load: %s" ],
+    "perf_stats.msg.pbo"        => %[ ja : "転送経路: %s",                  en : "Upload path: %s" ],
+    "perf_stats.msg.nopbo"      => %[ ja : "texUploadUsePBO はこのビルドには無い (OpenGL 無効)",
+                                      en : "texUploadUsePBO is not in this build (OpenGL disabled)" ],
+    "perf_stats.msg.reset"      => %[ ja : "計測をリセットした",            en : "Measurement reset" ],
+    "perf_stats.msg.compact"    => %[ ja : "doCompact(clAll): キャッシュを解放して GC を実行した",
+                                      en : "doCompact(clAll): freed caches and ran GC" ],
+    "perf_stats.msg.gcache"     => %[ ja : "clearGraphicCache(): 画像キャッシュを破棄した",
+                                      en : "clearGraphicCache(): image cache cleared" ],
+    "perf_stats.msg.peak"       => %[ ja : "メモリピークを現在値までリセットした",
+                                      en : "Memory peak reset to the current value" ],
+    "perf_stats.msg.nopeak"     => %[ ja : "resetMemoryPeak はこのビルドには無い",
+                                      en : "resetMemoryPeak is not in this build" ],
+    "perf_stats.msg.overlay"    => %[ ja : "メモリオーバレイ: %s (SDL3 ビルド限定)",
+                                      en : "Memory overlay: %s (SDL3 build only)" ],
+    "perf_stats.msg.shown"      => %[ ja : "表示",                          en : "on" ],
+    "perf_stats.msg.hidden"     => %[ ja : "非表示",                        en : "off" ],
+    "perf_stats.msg.nooverlay"  => %[ ja : "setMemoryOverlay はこのビルドには無い",
+                                      en : "setMemoryOverlay is not in this build" ],
+    "perf_stats.panel.title"    => %[ ja : "計測と負荷",                    en : "Measurement and load" ],
+    "perf_stats.panel.load"     => %[ ja : "負荷 (0:なし 1:小矩形 2:全面 3:アニメ)",
+                                      en : "Load (0:none 1:small 2:full 3:anim)" ],
+    "perf_stats.panel.count"    => %[ ja : "小矩形の個数",                  en : "Small rect count" ],
+    "perf_stats.panel.pbo"      => %[ ja : "転送経路 (0:既定 1:PBO 2:直接)", en : "Path (0:default 1:PBO 2:direct)" ],
+    "perf_stats.panel.reset"    => %[ ja : "計測リセット",                  en : "Reset measurement" ],
+    "perf_stats.panel.gcache"   => %[ ja : "画像キャッシュ破棄",            en : "Clear image cache" ],
+    "perf_stats.panel.peak"     => %[ ja : "メモリピークをリセット",        en : "Reset memory peak" ],
+    "perf_stats.panel.overlay"  => %[ ja : "メモリオーバレイ (SDL3)",       en : "Memory overlay (SDL3)" ]
+]);
+
 class PerfStatsScene extends DemoScene
 {
     // --- レイアウト ---
@@ -19,7 +103,7 @@ class PerfStatsScene extends DemoScene
 
     // --- 負荷 ---
     var loadMode = 1;        // 0=なし 1=小矩形多数 2=全面塗り 3=中矩形アニメ
-    var loadNames = ["なし (静止)", "小矩形 x N", "全面塗り", "中矩形アニメ"];
+    var loadNames = ["perf_stats.load.0", "perf_stats.load.1", "perf_stats.load.2", "perf_stats.load.3"];   // I18n id
     var rectCount = 60;      // 小矩形の個数
     var phase = 0;           // アニメ位相
     var seed = 12345;        // 乱数 (再現性のため自前 LCG)
@@ -35,11 +119,11 @@ class PerfStatsScene extends DemoScene
     var REFRESH = 500;       // 統計の更新間隔 (ms)
 
     var pboMode = 0;         // 0=既定 1=常に PBO 2=常に直接
-    var pboNames = ["既定 (サイズで自動)", "常に PBO", "常に直接転送"];
+    var pboNames = ["perf_stats.pbo.0", "perf_stats.pbo.1", "perf_stats.pbo.2"];   // I18n id
     var pboAvailable = false;
     var memOverlay = false;
 
-    function PerfStatsScene() { super.DemoScene("転送コストとメモリ計測"); }
+    function PerfStatsScene() { super.DemoScene(I18n.entry("perf_stats.title")); }
 
     function create()
     {
@@ -56,7 +140,7 @@ class PerfStatsScene extends DemoScene
         refreshTick = prevTick;
         redrawStats();
         redrawMemory();
-        setInfo("負荷パターンを切り替えて、fps ではなく転送コストの違いを見る");
+        setInfo(I18n.t("perf_stats.info"));
         enableFps();
         showPanelDict(panelDict());
     }
@@ -79,10 +163,10 @@ class PerfStatsScene extends DemoScene
     function drawStatic()
     {
         stage.font.height = 19;
-        stage.drawText(24, 44, "画面転送コストとメモリの計測", 0xffd76a, 255);
+        stage.drawText(24, 44, I18n.t("perf_stats.heading"), 0xffd76a, 255);
         stage.font.height = 15;
-        stage.drawText(24, 76, "合成済み画面を GPU テクスチャへ送るコストは、更新の「面積」ではなく「回数と分布」で大きく変わる。", 0xc8d2e4, 255);
-        stage.drawText(24, 98, "同じ fps でも転送で詰まっていることがあるので、System.renderStats の差分で常時観測する。", 0xc8d2e4, 255);
+        stage.drawText(24, 76, I18n.t("perf_stats.desc1"), 0xc8d2e4, 255);
+        stage.drawText(24, 98, I18n.t("perf_stats.desc2"), 0xc8d2e4, 255);
         stage.update();
     }
 
@@ -90,7 +174,7 @@ class PerfStatsScene extends DemoScene
     {
         stage.fillRect(LDX, LDY, LDW, LDH, 0xff1b2130);
         stage.font.height = 16;
-        stage.drawText(LDX + 12, LDY + 10, "負荷エリア", 0xffd76a, 255);
+        stage.drawText(LDX + 12, LDY + 10, I18n.t("perf_stats.load_area"), 0xffd76a, 255);
         stage.update(LDX, LDY, LDW, LDH);
     }
 
@@ -118,10 +202,10 @@ class PerfStatsScene extends DemoScene
     // ------------------------------------------------------------------
     function redrawStats()
     {
-        card(STX, STY, STW, STH, "画面転送 (System.renderStats)");
+        card(STX, STY, STW, STH, I18n.t("perf_stats.card.upload"));
         var y = STY + 40;
         if (lastLine.count == 0) {
-            y = row(STX, y, "計測中...", "");
+            y = row(STX, y, I18n.t("perf_stats.measuring"), "");
         } else {
             for (var i = 0; i < lastLine.count; i++) {
                 var e = lastLine[i];
@@ -130,9 +214,9 @@ class PerfStatsScene extends DemoScene
         }
         y += 6;
         stage.font.height = 13;
-        stage.drawText(STX + 12, y, "転送率 = 転送に使った時間 / 経過実時間", 0x8899b0, 255);
+        stage.drawText(STX + 12, y, I18n.t("perf_stats.note.ratio"), 0x8899b0, 255);
         y += 17;
-        stage.drawText(STX + 12, y, "累積値を " + REFRESH + " ms ごとに差分化して表示", 0x8899b0, 255);
+        stage.drawText(STX + 12, y, I18n.t("perf_stats.note.refresh", REFRESH), 0x8899b0, 255);
         y += 17;
         if (hint != "") stage.drawText(STX + 12, y, hint, 0x8899b0, 255);
         stage.font.height = 15;
@@ -142,7 +226,7 @@ class PerfStatsScene extends DemoScene
     function sampleStats(tick)
     {
         var s = System.renderStats;
-        if (s === void) { lastLine = [ [ "renderStats", "(このビルドでは未提供)", 0xff9a9a ] ]; return; }
+        if (s === void) { lastLine = [ [ "renderStats", I18n.t("perf_stats.unsupported"), 0xff9a9a ] ]; return; }
         if (prev === void) { prev = s; prevTick = tick; return; }
 
         var dt = tick - prevTick;
@@ -173,16 +257,16 @@ class PerfStatsScene extends DemoScene
         var msPerFrame = frames > 0 ? us / 1000.0 / frames : 0;
 
         lastLine = [
-            [ "提示フレーム",   "%.1f".sprintf(fps) + " / 秒" ],
-            [ "転送回数",       "%.1f".sprintf(upPerSec) + " / 秒" ],
-            [ "転送量",         "%.2f".sprintf(mbPerSec) + " MB/秒" ],
-            [ "転送 1 回あたり", "%.1f".sprintf(perUp / 1024.0) + " KB / " + "%.0f".sprintf(usPerUp) + " us" ],
-            [ "フレーム当たり", "%.1f".sprintf(msPerFrame) + " ms" ],
-            [ "転送時間",       "%.1f".sprintf(msPerSec) + " ms/秒" ],
-            [ "転送率",         "%.1f".sprintf(ratio) + " %", col ]
+            [ I18n.t("perf_stats.st.frames"),   I18n.t("perf_stats.u.persec", "%.1f".sprintf(fps)) ],
+            [ I18n.t("perf_stats.st.uploads"),  I18n.t("perf_stats.u.persec", "%.1f".sprintf(upPerSec)) ],
+            [ I18n.t("perf_stats.st.bytes"),    I18n.t("perf_stats.u.mbsec", "%.2f".sprintf(mbPerSec)) ],
+            [ I18n.t("perf_stats.st.perup"),    "%.1f".sprintf(perUp / 1024.0) + " KB / " + "%.0f".sprintf(usPerUp) + " us" ],
+            [ I18n.t("perf_stats.st.perframe"), "%.1f".sprintf(msPerFrame) + " ms" ],
+            [ I18n.t("perf_stats.st.time"),     I18n.t("perf_stats.u.mssec", "%.1f".sprintf(msPerSec)) ],
+            [ I18n.t("perf_stats.st.ratio"),    "%.1f".sprintf(ratio) + " %", col ]
         ];
-        hint = stalled ? "fps が落ちている = 転送が本当に足を引っ張っている"
-                       : "fps が出ているので、待ちの多くは vsync 同期ぶん";
+        hint = stalled ? I18n.t("perf_stats.hint.stalled")
+                       : I18n.t("perf_stats.hint.vsync");
     }
 
     // ------------------------------------------------------------------
@@ -190,10 +274,10 @@ class PerfStatsScene extends DemoScene
     // ------------------------------------------------------------------
     function redrawMemory()
     {
-        card(MEX, MEY, MEW, MEH, "メモリ (getSystemAllocatorInfo)");
+        card(MEX, MEY, MEW, MEH, I18n.t("perf_stats.card.memory"));
         var y = MEY + 40;
         if (memLine.count == 0) {
-            y = row(MEX, y, "(このビルドでは未提供)", "", 0x9fb0c8);
+            y = row(MEX, y, I18n.t("perf_stats.unsupported"), "", 0x9fb0c8);
         } else {
             for (var i = 0; i < memLine.count; i++) {
                 var e = memLine[i];
@@ -202,9 +286,9 @@ class PerfStatsScene extends DemoScene
         }
         y += 6;
         stage.font.height = 13;
-        stage.drawText(MEX + 12, y, "取得できない項目はキー自体が無い (環境依存)", 0x8899b0, 255);
+        stage.drawText(MEX + 12, y, I18n.t("perf_stats.note.nokey"), 0x8899b0, 255);
         y += 18;
-        stage.drawText(MEX + 12, y, "doCompact / clearGraphicCache で解放の効果を見る", 0x8899b0, 255);
+        stage.drawText(MEX + 12, y, I18n.t("perf_stats.note.compact"), 0x8899b0, 255);
         stage.font.height = 15;
         stage.update(MEX, MEY, MEW, MEH);
     }
@@ -216,14 +300,14 @@ class PerfStatsScene extends DemoScene
         if (m === void) { memLine = []; return; }
         var out = [];
         // 値が取れなかった項目はキー自体が無いので存在を見てから読む
-        if ("usedSize"            in m) out.add([ "使用量",           mb(m.usedSize) ]);
-        if ("peakUsedSize"        in m) out.add([ "ピーク",           mb(m.peakUsedSize) ]);
-        if ("totalFreeSize"       in m) out.add([ "空き",             mb(m.totalFreeSize) ]);
-        if ("allocatableSize"     in m) out.add([ "最大連続確保可",   mb(m.allocatableSize) ]);
-        if ("totalSize"           in m) out.add([ "ヒープ総量",       mb(m.totalSize) ]);
-        if ("processRss"          in m) out.add([ "プロセス RSS",     mb(m.processRss) ]);
-        if ("processPeakRss"      in m) out.add([ "RSS ピーク",       mb(m.processPeakRss) ]);
-        if ("systemAvailPhysical" in m) out.add([ "システム空き",     mb(m.systemAvailPhysical) ]);
+        if ("usedSize"            in m) out.add([ I18n.t("perf_stats.mem.used"),    mb(m.usedSize) ]);
+        if ("peakUsedSize"        in m) out.add([ I18n.t("perf_stats.mem.peak"),    mb(m.peakUsedSize) ]);
+        if ("totalFreeSize"       in m) out.add([ I18n.t("perf_stats.mem.free"),    mb(m.totalFreeSize) ]);
+        if ("allocatableSize"     in m) out.add([ I18n.t("perf_stats.mem.alloc"),   mb(m.allocatableSize) ]);
+        if ("totalSize"           in m) out.add([ I18n.t("perf_stats.mem.total"),   mb(m.totalSize) ]);
+        if ("processRss"          in m) out.add([ I18n.t("perf_stats.mem.rss"),     mb(m.processRss) ]);
+        if ("processPeakRss"      in m) out.add([ I18n.t("perf_stats.mem.rsspeak"), mb(m.processPeakRss) ]);
+        if ("systemAvailPhysical" in m) out.add([ I18n.t("perf_stats.mem.sysfree"), mb(m.systemAvailPhysical) ]);
         memLine = out;
     }
 
@@ -259,7 +343,7 @@ class PerfStatsScene extends DemoScene
             var c = 0xff102030 + (phase % 128) * 0x00010101;
             stage.fillRect(LDX, LDY + 30, LDW, LDH - 30, c);
             stage.font.height = 16;
-            stage.drawText(LDX + 12, LDY + 40, "全面塗り: 大きい転送 1 回 / フレーム", 0xdfe6f2, 255);
+            stage.drawText(LDX + 12, LDY + 40, I18n.t("perf_stats.fullfill"), 0xdfe6f2, 255);
             stage.update(LDX, LDY + 30, LDW, LDH - 30);
             break;
 
@@ -322,7 +406,7 @@ class PerfStatsScene extends DemoScene
             prevBx = void; prevBy = void;
             drawLoadFrame();
             resetStats();
-            setInfo("負荷: " + loadNames[loadMode]);
+            setInfo(I18n.t("perf_stats.msg.load", I18n.t(loadNames[loadMode])));
             break;
 
         case "count":
@@ -333,27 +417,27 @@ class PerfStatsScene extends DemoScene
         case "pbo":
             pboMode = Math.floor(payload + 0.5);
             applyPbo();
-            setInfo(pboAvailable ? ("転送経路: " + pboNames[pboMode])
-                                 : "texUploadUsePBO はこのビルドには無い (OpenGL 無効)");
+            setInfo(pboAvailable ? I18n.t("perf_stats.msg.pbo", I18n.t(pboNames[pboMode]))
+                                 : I18n.t("perf_stats.msg.nopbo"));
             break;
 
         case "reset":
             resetStats();
-            setInfo("計測をリセットした");
+            setInfo(I18n.t("perf_stats.msg.reset"));
             break;
 
         case "compact":
             System.doCompact(clAll);
             sampleMemory();
             redrawMemory();
-            setInfo("doCompact(clAll): キャッシュを解放して GC を実行した");
+            setInfo(I18n.t("perf_stats.msg.compact"));
             break;
 
         case "gcache":
             System.clearGraphicCache();
             sampleMemory();
             redrawMemory();
-            setInfo("clearGraphicCache(): 画像キャッシュを破棄した");
+            setInfo(I18n.t("perf_stats.msg.gcache"));
             break;
 
         case "peak":
@@ -361,9 +445,9 @@ class PerfStatsScene extends DemoScene
                 System.resetMemoryPeak();
                 sampleMemory();
                 redrawMemory();
-                setInfo("メモリピークを現在値までリセットした");
+                setInfo(I18n.t("perf_stats.msg.peak"));
             } else {
-                setInfo("resetMemoryPeak はこのビルドには無い");
+                setInfo(I18n.t("perf_stats.msg.nopeak"));
             }
             break;
 
@@ -372,10 +456,10 @@ class PerfStatsScene extends DemoScene
             memOverlay = (payload == true);
             if (typeof System.setMemoryOverlay != "undefined") {
                 System.setMemoryOverlay(memOverlay);
-                setInfo("メモリオーバレイ: " + (memOverlay ? "表示" : "非表示")
-                        + " (SDL3 ビルド限定)");
+                setInfo(I18n.t("perf_stats.msg.overlay",
+                               I18n.t(memOverlay ? "perf_stats.msg.shown" : "perf_stats.msg.hidden")));
             } else {
-                setInfo("setMemoryOverlay はこのビルドには無い");
+                setInfo(I18n.t("perf_stats.msg.nooverlay"));
             }
             break;
         }
@@ -393,32 +477,32 @@ class PerfStatsScene extends DemoScene
     function panelDict()
     {
         return %[
-            size : [320, 470], background : [26, 30, 40, 236], locale : "ja-JP",
+            size : [320, 470], background : [26, 30, 40, 236],
             align : "bottom_right", margin : 16,
             content : %[ type : "margin", padding : 14, child : %[ type : "vtile", children : [
                 %[ type : "vsize", height : 0, child : %[ type : "hspacer", width : 288 ] ],
-                %[ type : "align_center", child : %[ type : "label", text : "計測と負荷", size_scale : 1.2 ] ],
+                %[ type : "align_center", child : %[ type : "label", text : I18n.t("perf_stats.panel.title"), size_scale : 1.2 ] ],
                 %[ type : "vspacer", height : 8 ],
-                %[ type : "label", text : "負荷 (0:なし 1:小矩形 2:全面 3:アニメ)" ],
+                %[ type : "label", text : I18n.t("perf_stats.panel.load") ],
                 %[ type : "slider_with_range", id : "load", min : 0, max : 3, initial : loadMode ],
                 %[ type : "vspacer", height : 6 ],
-                %[ type : "label", text : "小矩形の個数" ],
+                %[ type : "label", text : I18n.t("perf_stats.panel.count") ],
                 %[ type : "slider_with_range", id : "count", min : 1, max : 200, initial : rectCount ],
                 %[ type : "vspacer", height : 6 ],
-                %[ type : "label", text : "転送経路 (0:既定 1:PBO 2:直接)" ],
+                %[ type : "label", text : I18n.t("perf_stats.panel.pbo") ],
                 %[ type : "slider_with_range", id : "pbo", min : 0, max : 2, initial : pboMode ],
                 %[ type : "vspacer", height : 10 ],
-                %[ type : "button", id : "reset", text : "計測リセット" ],
+                %[ type : "button", id : "reset", text : I18n.t("perf_stats.panel.reset") ],
                 %[ type : "vspacer", height : 6 ],
                 %[ type : "htile", children : [
                     %[ type : "button", id : "compact", text : "doCompact" ],
                     %[ type : "hspacer", width : 8 ],
-                    %[ type : "button", id : "gcache", text : "画像キャッシュ破棄" ]
+                    %[ type : "button", id : "gcache", text : I18n.t("perf_stats.panel.gcache") ]
                 ] ],
                 %[ type : "vspacer", height : 6 ],
-                %[ type : "button", id : "peak", text : "メモリピークをリセット" ],
+                %[ type : "button", id : "peak", text : I18n.t("perf_stats.panel.peak") ],
                 %[ type : "vspacer", height : 8 ],
-                %[ type : "check_box", id : "overlay", text : "メモリオーバレイ (SDL3)", value : false ]
+                %[ type : "check_box", id : "overlay", text : I18n.t("perf_stats.panel.overlay"), value : false ]
             ] ] ]
         ];
     }

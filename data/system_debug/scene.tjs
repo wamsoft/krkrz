@@ -8,6 +8,47 @@
 //      - Debug.addLoggingHandler          … エンジンのログを画面へ引き込む
 // ======================================================================
 
+I18n.add(%[
+    "system_debug.title"        => %[ ja : "デバッグ支援 (eval / 例外 / ログ)", en : "Debug support (eval / exceptions / logs)" ],
+    "system_debug.shell"        => %[ ja : "system_debug — デバッグ支援 (eval / 例外 / ログ)", en : "system_debug — Debug support (eval / exceptions / logs)" ],
+    "system_debug.heading"      => %[ ja : "デバッグ支援: 式の評価 / 例外 / ログ", en : "Debug support: evaluation / exceptions / logs" ],
+    "system_debug.desc1"        => %[ ja : "実行中の状態をその場で覗く手段 (Scripts.eval / Debug.prettyPrint) と、落ちたときに情報を残す手段",
+                                      en : "Ways to inspect live state (Scripts.eval / Debug.prettyPrint) and to keep information on failure" ],
+    "system_debug.desc2"        => %[ ja : "(例外オブジェクト / System.exceptionHandler / Debug のログハンドラ) をまとめて試す。",
+                                      en : "(exception objects / System.exceptionHandler / Debug logging handlers), all in one screen." ],
+    "system_debug.info"         => %[ ja : "パネルの入力欄に式を書いて「評価」。例外は種類別に発生させて中身を見る",
+                                      en : "Type an expression in the panel and press Evaluate. Raise exceptions by kind and inspect them" ],
+    "system_debug.exc.none"     => %[ ja : "(未発生)",                    en : "(none yet)" ],
+    "system_debug.exc.notthrown"=> %[ ja : "(例外が出なかった)",          en : "(no exception thrown)" ],
+    "system_debug.exc.notexc"   => %[ ja : "(Exception ではないオブジェクト)", en : "(not an Exception object)" ],
+    "system_debug.exc.custom"   => %[ ja : "デモ用に投げた例外",          en : "Exception thrown by the demo" ],
+    "system_debug.exc.uncaught" => %[ ja : "捕捉されないまま本体まで届いた例外", en : "Exception that reached the engine uncaught" ],
+    "system_debug.eval.card"    => %[ ja : "式の評価 (Scripts.eval → Debug.prettyPrint)", en : "Evaluation (Scripts.eval → Debug.prettyPrint)" ],
+    "system_debug.eval.expr"    => %[ ja : "式: ",                        en : "Expr: " ],
+    "system_debug.eval.error"   => %[ ja : "例外: ",                      en : "Exception: " ],
+    "system_debug.exc.card"     => %[ ja : "例外",                        en : "Exceptions" ],
+    "system_debug.exc.own"      => %[ ja : "自前ハンドラ",                en : "custom handler" ],
+    "system_debug.exc.default"  => %[ ja : "既定 (null)",                 en : "default (null)" ],
+    "system_debug.exc.kind"     => %[ ja : "種類: ",                      en : "Kind: " ],
+    "system_debug.exc.route"    => %[ ja : "経路: ",                      en : "Route: " ],
+    "system_debug.exc.viahandler" => %[ ja : "未捕捉 → exceptionHandler", en : "uncaught → exceptionHandler" ],
+    "system_debug.exc.notrace"  => %[ ja : "(空: -debug 起動時のみ取れる)", en : "(empty: only with -debug)" ],
+    "system_debug.uncaught.needhandler" => %[ ja : "先に「exceptionHandler を使う」を ON にしてください (既定動作だとエラーダイアログが出る)",
+                                      en : "Turn on \"Use exceptionHandler\" first (the default shows an error dialog)" ],
+    "system_debug.log.card"     => %[ ja : "エンジンのログ (Debug.addLoggingHandler)", en : "Engine log (Debug.addLoggingHandler)" ],
+    "system_debug.log.empty"    => %[ ja : "(まだログはありません)",      en : "(no log yet)" ],
+    "system_debug.panel.title"  => %[ ja : "デバッグ操作",                en : "Debug controls" ],
+    "system_debug.panel.expr"   => %[ ja : "評価する式",                  en : "Expression" ],
+    "system_debug.panel.eval"   => %[ ja : "評価する",                    en : "Evaluate" ],
+    "system_debug.panel.throw"  => %[ ja : "例外を発生させる (try/catch で捕捉)", en : "Raise an exception (try/catch)" ],
+    "system_debug.panel.zero"   => %[ ja : "ゼロ除算",                    en : "Div by 0" ],
+    "system_debug.panel.member" => %[ ja : "未定義",                      en : "Undefined" ],
+    "system_debug.panel.handler"=> %[ ja : "exceptionHandler を使う",     en : "Use exceptionHandler" ],
+    "system_debug.panel.uncaught" => %[ ja : "未捕捉例外を投げる",        en : "Throw uncaught" ],
+    "system_debug.panel.log"    => %[ ja : "ログを出す",                  en : "Write log" ],
+    "system_debug.panel.clearlog" => %[ ja : "ログ消去",                  en : "Clear log" ]
+]);
+
 class SystemDebugScene extends DemoScene
 {
     // --- レイアウト ---
@@ -21,7 +62,7 @@ class SystemDebugScene extends DemoScene
     var evalError = "";
 
     // --- 例外 ---
-    var excType = "(未発生)";
+    var excType = "";
     var excMessage = "";
     var excTrace = "";
     var excViaHandler = false;  // 直近の例外が exceptionHandler 経由か
@@ -35,14 +76,14 @@ class SystemDebugScene extends DemoScene
     var logHandler;             // Debug.addLoggingHandler に登録した関数
     var logDirty = false;       // ログハンドラ内で描画しないための遅延フラグ
 
-    function SystemDebugScene() { super.DemoScene("デバッグ支援 (eval / 例外 / ログ)"); }
+    function SystemDebugScene() { super.DemoScene(I18n.entry("system_debug.title")); }
 
     function create()
     {
         evalResult = [];
         evalError = "";
         logs = [];
-        excType = "(未発生)"; excMessage = ""; excTrace = ""; excViaHandler = false;
+        excType = I18n.t("system_debug.exc.none"); excMessage = ""; excTrace = ""; excViaHandler = false;
 
         stage.fillRect(0, 0, 1280, 720, 0xff141821);
         drawStatic();
@@ -50,7 +91,7 @@ class SystemDebugScene extends DemoScene
         redrawEval();
         redrawExc();
         redrawLog();
-        setInfo("パネルの入力欄に式を書いて「評価」。例外は種類別に発生させて中身を見る");
+        setInfo(I18n.t("system_debug.info"));
         showPanelDict(panelDict());
     }
 
@@ -65,10 +106,10 @@ class SystemDebugScene extends DemoScene
     function drawStatic()
     {
         stage.font.height = 19;
-        stage.drawText(24, 44, "デバッグ支援: 式の評価 / 例外 / ログ", 0xffd76a, 255);
+        stage.drawText(24, 44, I18n.t("system_debug.heading"), 0xffd76a, 255);
         stage.font.height = 15;
-        stage.drawText(24, 76, "実行中の状態をその場で覗く手段 (Scripts.eval / Debug.prettyPrint) と、落ちたときに情報を残す手段", 0xc8d2e4, 255);
-        stage.drawText(24, 98, "(例外オブジェクト / System.exceptionHandler / Debug のログハンドラ) をまとめて試す。", 0xc8d2e4, 255);
+        stage.drawText(24, 76, I18n.t("system_debug.desc1"), 0xc8d2e4, 255);
+        stage.drawText(24, 98, I18n.t("system_debug.desc2"), 0xc8d2e4, 255);
         stage.update();
     }
 
@@ -92,13 +133,13 @@ class SystemDebugScene extends DemoScene
     // ------------------------------------------------------------------
     function redrawEval()
     {
-        card(EVX, EVY, EVW, EVH, "式の評価 (Scripts.eval → Debug.prettyPrint)");
+        card(EVX, EVY, EVW, EVH, I18n.t("system_debug.eval.card"));
         var y = EVY + 40;
         stage.font.height = 14;
-        stage.drawText(EVX + 12, y, "式: " + clip(expr, 64), 0x9fd6a0, 255);
+        stage.drawText(EVX + 12, y, I18n.t("system_debug.eval.expr") + clip(expr, 64), 0x9fd6a0, 255);
         y += 24;
         if (evalError != "") {
-            stage.drawText(EVX + 12, y, "例外: " + clip(evalError, 64), 0xff9a9a, 255);
+            stage.drawText(EVX + 12, y, I18n.t("system_debug.eval.error") + clip(evalError, 64), 0xff9a9a, 255);
         } else {
             for (var i = 0; i < evalResult.count && i < 8; i++) {
                 stage.drawText(EVX + 12, y, clip(evalResult[i], 68), 0xdfe6f2, 255);
@@ -129,13 +170,13 @@ class SystemDebugScene extends DemoScene
     // ------------------------------------------------------------------
     function redrawExc()
     {
-        card(EXX, EXY, EXW, EXH, "例外");
+        card(EXX, EXY, EXW, EXH, I18n.t("system_debug.exc.card"));
         var y = EXY + 40;
         stage.font.height = 14;
-        stage.drawText(EXX + 12, y, "exceptionHandler: " + (handlerOn ? "自前ハンドラ" : "既定 (null)"),
+        stage.drawText(EXX + 12, y, "exceptionHandler: " + (handlerOn ? I18n.t("system_debug.exc.own") : I18n.t("system_debug.exc.default")),
                        handlerOn ? 0x9fd6a0 : 0x9fb0c8, 255); y += 26;
-        stage.drawText(EXX + 12, y, "種類: " + clip(excType, 38), 0xffd76a, 255); y += 22;
-        stage.drawText(EXX + 12, y, "経路: " + (excViaHandler ? "未捕捉 → exceptionHandler" : "try / catch"),
+        stage.drawText(EXX + 12, y, I18n.t("system_debug.exc.kind") + clip(excType, 38), 0xffd76a, 255); y += 22;
+        stage.drawText(EXX + 12, y, I18n.t("system_debug.exc.route") + (excViaHandler ? I18n.t("system_debug.exc.viahandler") : "try / catch"),
                        0xdfe6f2, 255); y += 26;
         stage.drawText(EXX + 12, y, "message:", 0x9fb0c8, 255); y += 20;
         // message は長いので 34 文字ずつ折り返す
@@ -147,7 +188,7 @@ class SystemDebugScene extends DemoScene
         }
         y += 8;
         stage.drawText(EXX + 12, y, "trace:", 0x9fb0c8, 255); y += 20;
-        var tr = excTrace != "" ? excTrace : "(空: -debug 起動時のみ取れる)";
+        var tr = excTrace != "" ? excTrace : I18n.t("system_debug.exc.notrace");
         for (var i = 0; i < 8 && tr != ""; i++) {
             stage.drawText(EXX + 12, y, tr.substring(0, 34), 0x9fb0c8, 255);
             tr = tr.substring(34);
@@ -163,7 +204,7 @@ class SystemDebugScene extends DemoScene
         // 中身が入る (デバッグモードが無効だと空文字列)。
         // TJS2 の組込例外クラスは Exception のみ (MathException 等は無い)。
         // 種類の判別は message か、自前クラスを Exception から派生させて行う。
-        excType = (e instanceof "Exception") ? "Exception" : "(Exception ではないオブジェクト)";
+        excType = (e instanceof "Exception") ? "Exception" : I18n.t("system_debug.exc.notexc");
         excMessage = (typeof e.message != "undefined") ? e.message : "" + e;
         excTrace   = (typeof e.trace   != "undefined") ? e.trace : "";
         excViaHandler = viaHandler;
@@ -176,9 +217,9 @@ class SystemDebugScene extends DemoScene
             switch (kind) {
             case "zero":   var a = 1, b = 0; var c = a \ b;       break;  // ゼロ除算
             case "member": var o = %[]; o.notExistMethod();       break;  // 未定義メンバ
-            case "custom": throw new Exception("デモ用に投げた例外"); break;
+            case "custom": throw new Exception(I18n.t("system_debug.exc.custom")); break;
             }
-            excType = "(例外が出なかった)"; excMessage = ""; excTrace = "";
+            excType = I18n.t("system_debug.exc.notthrown"); excMessage = ""; excTrace = "";
             redrawExc();
         } catch (e) {
             setExc(e, false);
@@ -213,7 +254,7 @@ class SystemDebugScene extends DemoScene
     function fireUncaught()
     {
         if (!handlerOn) {
-            setInfo("先に「exceptionHandler を使う」を ON にしてください (既定動作だとエラーダイアログが出る)");
+            setInfo(I18n.t("system_debug.uncaught.needhandler"));
             return;
         }
         if (throwTimer === void) throwTimer = new Timer(uncaughtTick, "");
@@ -224,7 +265,7 @@ class SystemDebugScene extends DemoScene
     function uncaughtTick()
     {
         throwTimer.enabled = false;
-        throw new Exception("捕捉されないまま本体まで届いた例外");
+        throw new Exception(I18n.t("system_debug.exc.uncaught"));
     }
 
     // ------------------------------------------------------------------
@@ -261,11 +302,11 @@ class SystemDebugScene extends DemoScene
 
     function redrawLog()
     {
-        card(LGX, LGY, LGW, LGH, "エンジンのログ (Debug.addLoggingHandler)");
+        card(LGX, LGY, LGW, LGH, I18n.t("system_debug.log.card"));
         var y = LGY + 40;
         stage.font.height = 14;
         if (logs.count == 0) {
-            stage.drawText(LGX + 12, y, "(まだログはありません)", 0x9fb0c8, 255);
+            stage.drawText(LGX + 12, y, I18n.t("system_debug.log.empty"), 0x9fb0c8, 255);
         } else {
             for (var i = 0; i < logs.count; i++) {
                 stage.drawText(LGX + 12, y, clip(logs[i], 70), 0xdfe6f2, 255);
@@ -329,34 +370,34 @@ class SystemDebugScene extends DemoScene
     function panelDict()
     {
         return %[
-            size : [320, 486], background : [26, 30, 40, 236], locale : "ja-JP",
+            size : [320, 486], background : [26, 30, 40, 236],
             align : "bottom_right", margin : 16,
             content : %[ type : "margin", padding : 14, child : %[ type : "vtile", children : [
                 %[ type : "vsize", height : 0, child : %[ type : "hspacer", width : 288 ] ],
-                %[ type : "align_center", child : %[ type : "label", text : "デバッグ操作", size_scale : 1.2 ] ],
+                %[ type : "align_center", child : %[ type : "label", text : I18n.t("system_debug.panel.title"), size_scale : 1.2 ] ],
                 %[ type : "vspacer", height : 8 ],
-                %[ type : "label", text : "評価する式" ],
+                %[ type : "label", text : I18n.t("system_debug.panel.expr") ],
                 %[ type : "input_box", id : "expr", placeholder : "1+2*3" ],
                 %[ type : "vspacer", height : 6 ],
-                %[ type : "button", id : "eval", text : "評価する" ],
+                %[ type : "button", id : "eval", text : I18n.t("system_debug.panel.eval") ],
                 %[ type : "vspacer", height : 12 ],
-                %[ type : "label", text : "例外を発生させる (try/catch で捕捉)" ],
+                %[ type : "label", text : I18n.t("system_debug.panel.throw") ],
                 %[ type : "htile", children : [
-                    %[ type : "button", id : "zero",   text : "ゼロ除算" ],
+                    %[ type : "button", id : "zero",   text : I18n.t("system_debug.panel.zero") ],
                     %[ type : "hspacer", width : 6 ],
-                    %[ type : "button", id : "member", text : "未定義" ],
+                    %[ type : "button", id : "member", text : I18n.t("system_debug.panel.member") ],
                     %[ type : "hspacer", width : 6 ],
                     %[ type : "button", id : "custom", text : "throw" ]
                 ] ],
                 %[ type : "vspacer", height : 8 ],
-                %[ type : "check_box", id : "handler", text : "exceptionHandler を使う", value : false ],
+                %[ type : "check_box", id : "handler", text : I18n.t("system_debug.panel.handler"), value : false ],
                 %[ type : "vspacer", height : 4 ],
-                %[ type : "button", id : "uncaught", text : "未捕捉例外を投げる" ],
+                %[ type : "button", id : "uncaught", text : I18n.t("system_debug.panel.uncaught") ],
                 %[ type : "vspacer", height : 12 ],
                 %[ type : "htile", children : [
-                    %[ type : "button", id : "log",      text : "ログを出す" ],
+                    %[ type : "button", id : "log",      text : I18n.t("system_debug.panel.log") ],
                     %[ type : "hspacer", width : 8 ],
-                    %[ type : "button", id : "clearlog", text : "ログ消去" ]
+                    %[ type : "button", id : "clearlog", text : I18n.t("system_debug.panel.clearlog") ]
                 ] ]
             ] ] ]
         ];

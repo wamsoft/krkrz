@@ -80,6 +80,7 @@ static std::string buildPointwiseFs()
 	s += "uniform vec4 u_params[" + n + "];\n";
 	s += "uniform float u_seed;\n";
 	s += "uniform vec2 u_res;\n";
+	s += "uniform float u_opacity;\n";
 	s += "in vec2 v_uv;\n";
 	s += "out vec4 fragColor;\n";
 
@@ -197,6 +198,7 @@ static std::string buildPointwiseFs()
 	s += "      c.rgb = vec3(nn);\n";
 	s += "    }\n";
 	s += "  }\n";
+	s += "  c.a *= u_opacity;\n";
 	s += "  fragColor = c;\n";
 	s += "}\n";
 	return s;
@@ -254,7 +256,7 @@ static std::string buildBlurFs()
 GLEffectContext::GLEffectContext()
 	: mInited(false), mSeed(0.0f)
 	, mPwProgram(0), mPwAttrPos(-1), mPwAttrUV(-1)
-	, mPwUnifTex(-1), mPwUnifCount(-1), mPwUnifOps(-1), mPwUnifParams(-1), mPwUnifSeed(-1), mPwUnifRes(-1)
+	, mPwUnifTex(-1), mPwUnifCount(-1), mPwUnifOps(-1), mPwUnifParams(-1), mPwUnifSeed(-1), mPwUnifRes(-1), mPwUnifOpacity(-1)
 	, mLutProgram(0), mLutAttrPos(-1), mLutAttrUV(-1), mLutUnifTex(-1), mLutUnifLut(-1)
 	, mBlurProgram(0), mBlurAttrPos(-1), mBlurAttrUV(-1)
 	, mBlurUnifTex(-1), mBlurUnifDir(-1), mBlurUnifRadius(-1), mBlurUnifWeights(-1)
@@ -280,6 +282,7 @@ void GLEffectContext::init()
 		mPwUnifParams = glGetUniformLocation(mPwProgram, "u_params");
 		mPwUnifSeed   = glGetUniformLocation(mPwProgram, "u_seed");
 		mPwUnifRes    = glGetUniformLocation(mPwProgram, "u_res");
+		mPwUnifOpacity = glGetUniformLocation(mPwProgram, "u_opacity");
 	}
 
 	mLutProgram = CompileProgram(kVsSource, buildLutFs());
@@ -342,7 +345,7 @@ void GLEffectContext::drawQuad(GLint attrPos, GLint attrUV, const GLint *scissor
 }
 
 void GLEffectContext::drawPointwise(GLuint srcTex, const int *ops, const float *params, int count, int w, int h,
-                                    const GLint *scissorBox)
+                                    const GLint *scissorBox, float opacity)
 {
 	if (!mPwProgram) return;
 	if (count > GLEFFECT_MAX_OPS) count = GLEFFECT_MAX_OPS;
@@ -352,6 +355,7 @@ void GLEffectContext::drawPointwise(GLuint srcTex, const int *ops, const float *
 	glUniform1i(mPwUnifCount, count);
 	glUniform1f(mPwUnifSeed, mSeed);
 	glUniform2f(mPwUnifRes, (float)w, (float)h);
+	glUniform1f(mPwUnifOpacity, opacity);
 	if (count > 0) {
 		glUniform1iv(mPwUnifOps, count, ops);
 		glUniform4fv(mPwUnifParams, count, params);

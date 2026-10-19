@@ -103,6 +103,16 @@ void TVPInstallElementsBlockTextBackend();
 //!        TJS `ElementsDialog.registerImage(name, path)` のバックエンド。
 bool TVPRegisterElementsImageFile(const ttstr& name, const ttstr& path);
 
+//! @brief 実行時画像ストアへ画素を name で登録する (エンコード・ファイルを介さない)。
+//!        jsonc からは "mem://<name>" で参照。 Elements は デコードせずに
+//!        そのまま ThorVG の画像にする。 top_row は先頭 (上端) 行、 pitch_bytes は
+//!        次の行までのバイト数 (負でもよい)。 画素は 32bit 0xAARRGGBB。
+//!        premultiplied = 色が乗算済み、 opaque = アルファを無視して不透明扱い。
+//!        TJS `ElementsDialog.registerLayerImage(name, layer, ...)` のバックエンド。
+bool TVPRegisterElementsImagePixels(const ttstr& name, const void* top_row,
+                                    tjs_int pitch_bytes, tjs_int width, tjs_int height,
+                                    bool premultiplied, bool opaque);
+
 //! @brief 実行時画像ストアから name の登録を削除する。
 void TVPUnregisterElementsImage(const ttstr& name);
 

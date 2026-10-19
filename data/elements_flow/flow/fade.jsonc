@@ -1,5 +1,9 @@
 // クロスフェード遷移先の画面。戻りも fade。
 {
+    "strings": {
+        "flow.fade.lead": { "ja": "旧画面の最終フレームと新画面を時間で混色", "en": "Blends the old screen's last frame into the new one over time" },
+        "flow.fade.back": { "ja": "戻る (fade)", "en": "Back (fade)" }
+    },
     "size": [960, 600],
     "background": [20, 72, 72, 255],
     "input": { "arrow_focus_nav": true },
@@ -14,11 +18,11 @@
               "animate": { "type": "scale", "from": [0.6, 0.6], "to": [1.0, 1.0],
                            "frames": 16, "easing": "out_back" } },
             { "type": "vspacer", "height": 12 },
-            { "type": "label", "text": "旧画面の最終フレームと新画面を時間で混色",
+            { "type": "label", "text_id": "flow.fade.lead", "text": "旧画面の最終フレームと新画面を時間で混色",
               "size": 22, "color": [170, 210, 200, 255] },
             { "type": "vspacer", "height": 36 },
             { "type": "hsize", "width": 240, "child":
-                { "type": "button", "id": "back", "text": "戻る (fade)",
+                { "type": "button", "id": "back", "text_id": "flow.fade.back", "text": "戻る (fade)",
                   "close_on_click": true, "initial_focus": true } }
         ]}
     }

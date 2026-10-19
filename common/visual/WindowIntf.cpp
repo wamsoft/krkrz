@@ -84,8 +84,11 @@ static tjs_int TVPGetRectMember(iTJSDispatch2 *dsp, const tjs_char *name, tjs_in
 				return; \
 		} \
 	} while(0)
+// 上で取り次いだ入力を DrawDevice へ回す区間 (DrawDevice 側で 2 回目を配らない)
+#define TVP_DIALOG_FORWARDED_SCOPE tTVPDialogInputForwardedScope dialogForwardedScope_
 #else
 #define TVP_DIALOG_INTERCEPT(forward_call) ((void)0)
+#define TVP_DIALOG_FORWARDED_SCOPE ((void)0)
 #endif
 
 extern tjs_int TVPGetCursor( const ttstr & name );
@@ -465,7 +468,7 @@ void tTJSNI_BaseWindow::OnClick(tjs_int x, tjs_int y)
 		TVPPostEvent(Owner, Owner, eventname, 0, TVP_EPT_IMMEDIATE, 2, arg);
 	}
 	if(LayerEventTarget) LayerEventTarget->FireClick(x, y);
-	else if(DrawDevice) DrawDevice->OnClick(x, y);
+	else if(DrawDevice) { TVP_DIALOG_FORWARDED_SCOPE; DrawDevice->OnClick(x, y); }
 }
 //---------------------------------------------------------------------------
 void tTJSNI_BaseWindow::OnDoubleClick(tjs_int x, tjs_int y)
@@ -479,7 +482,7 @@ void tTJSNI_BaseWindow::OnDoubleClick(tjs_int x, tjs_int y)
 		TVPPostEvent(Owner, Owner, eventname, 0, TVP_EPT_IMMEDIATE, 2, arg);
 	}
 	if(LayerEventTarget) LayerEventTarget->FireDoubleClick(x, y);
-	else if(DrawDevice) DrawDevice->OnDoubleClick(x, y);
+	else if(DrawDevice) { TVP_DIALOG_FORWARDED_SCOPE; DrawDevice->OnDoubleClick(x, y); }
 }
 //---------------------------------------------------------------------------
 void tTJSNI_BaseWindow::OnMouseDown(tjs_int x, tjs_int y, tTVPMouseButton mb,
@@ -494,7 +497,7 @@ void tTJSNI_BaseWindow::OnMouseDown(tjs_int x, tjs_int y, tTVPMouseButton mb,
 		TVPPostEvent(Owner, Owner, eventname, 0, TVP_EPT_IMMEDIATE, 4, arg);
 	}
 	if(LayerEventTarget) LayerEventTarget->FireMouseDown(x, y, mb, flags);
-	else if(DrawDevice) DrawDevice->OnMouseDown(x, y, mb, flags);
+	else if(DrawDevice) { TVP_DIALOG_FORWARDED_SCOPE; DrawDevice->OnMouseDown(x, y, mb, flags); }
 }
 //---------------------------------------------------------------------------
 void tTJSNI_BaseWindow::OnMouseUp(tjs_int x, tjs_int y, tTVPMouseButton mb,
@@ -509,7 +512,7 @@ void tTJSNI_BaseWindow::OnMouseUp(tjs_int x, tjs_int y, tTVPMouseButton mb,
 		TVPPostEvent(Owner, Owner, eventname, 0, TVP_EPT_IMMEDIATE, 4, arg);
 	}
 	if(LayerEventTarget) LayerEventTarget->FireMouseUp(x, y, mb, flags);
-	else if(DrawDevice) DrawDevice->OnMouseUp(x, y, mb, flags);
+	else if(DrawDevice) { TVP_DIALOG_FORWARDED_SCOPE; DrawDevice->OnMouseUp(x, y, mb, flags); }
 }
 //---------------------------------------------------------------------------
 void tTJSNI_BaseWindow::OnMouseMove(tjs_int x, tjs_int y, tjs_uint32 flags)
@@ -525,7 +528,7 @@ void tTJSNI_BaseWindow::OnMouseMove(tjs_int x, tjs_int y, tjs_uint32 flags)
 			3, arg);
 	}
 	if(LayerEventTarget) LayerEventTarget->FireMouseMove(x, y, flags);
-	else if(DrawDevice) DrawDevice->OnMouseMove(x, y, flags);
+	else if(DrawDevice) { TVP_DIALOG_FORWARDED_SCOPE; DrawDevice->OnMouseMove(x, y, flags); }
 }
 //---------------------------------------------------------------------------
 void tTJSNI_BaseWindow::OnTouchDown( tjs_real x, tjs_real y, tjs_real cx, tjs_real cy, tjs_uint32 id ) {
@@ -674,7 +677,7 @@ void tTJSNI_BaseWindow::OnKeyDown(tjs_uint key, tjs_uint32 shift)
 		TVPPostEvent(Owner, Owner, eventname, 0, TVP_EPT_IMMEDIATE, 2, arg);
 	}
 	if(LayerEventTarget) LayerEventTarget->FireKeyDown(key, shift);
-	else if(DrawDevice) DrawDevice->OnKeyDown(key, shift);
+	else if(DrawDevice) { TVP_DIALOG_FORWARDED_SCOPE; DrawDevice->OnKeyDown(key, shift); }
 }
 //---------------------------------------------------------------------------
 void tTJSNI_BaseWindow::OnKeyUp(tjs_uint key, tjs_uint32 shift)
@@ -688,7 +691,7 @@ void tTJSNI_BaseWindow::OnKeyUp(tjs_uint key, tjs_uint32 shift)
 		TVPPostEvent(Owner, Owner, eventname, 0, TVP_EPT_IMMEDIATE, 2, arg);
 	}
 	if(LayerEventTarget) LayerEventTarget->FireKeyUp(key, shift);
-	else if(DrawDevice) DrawDevice->OnKeyUp(key, shift);
+	else if(DrawDevice) { TVP_DIALOG_FORWARDED_SCOPE; DrawDevice->OnKeyUp(key, shift); }
 }
 //---------------------------------------------------------------------------
 void tTJSNI_BaseWindow::OnKeyPress(tjs_char key)
@@ -733,7 +736,7 @@ void tTJSNI_BaseWindow::OnKeyPress(tjs_char key)
 		}
 	}
 	if(LayerEventTarget) LayerEventTarget->FireKeyPress(key);
-	else if(DrawDevice) DrawDevice->OnKeyPress(key);
+	else if(DrawDevice) { TVP_DIALOG_FORWARDED_SCOPE; DrawDevice->OnKeyPress(key); }
 }
 //---------------------------------------------------------------------------
 // Window.onTextInput イベントの発火のみ (intercept / Layer 配送は行わない)。
@@ -795,7 +798,7 @@ void tTJSNI_BaseWindow::OnMouseWheel(tjs_uint32 shift, tjs_int delta,
 		TVPPostEvent(Owner, Owner, eventname, 0, TVP_EPT_IMMEDIATE, 4, arg);
 	}
 	if(LayerEventTarget) LayerEventTarget->FireMouseWheel(shift, delta, x, y);
-	else if(DrawDevice) DrawDevice->OnMouseWheel(shift, delta, x, y);
+	else if(DrawDevice) { TVP_DIALOG_FORWARDED_SCOPE; DrawDevice->OnMouseWheel(shift, delta, x, y); }
 }
 //---------------------------------------------------------------------------
 void tTJSNI_BaseWindow::OnPopupHide()

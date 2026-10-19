@@ -6,6 +6,57 @@
 //    (focusable / focus / focusNext / joinFocusChain) を 1 画面で試す。
 // ======================================================================
 
+I18n.add(%[
+    "layer_tree.title"      => %[ ja : "レイヤツリー / ヒットテスト / フォーカス", en : "Layer tree / hit test / focus" ],
+    "layer_tree.shell"      => %[ ja : "layer_tree — レイヤツリー / ヒットテスト / フォーカス", en : "layer_tree — Layer tree / hit test / focus" ],
+    "layer_tree.info"       => %[ ja : "カードをクリック / Tab でフォーカス移動。パネルでヒット判定と重ね順を操作",
+                                  en : "Click cards / Tab moves focus. Use the panel for hit test and stacking order" ],
+    "layer_tree.notyet"     => %[ ja : "(まだ)",            en : "(none yet)" ],
+    "layer_tree.none"       => %[ ja : "(なし)",            en : "(none)" ],
+    "layer_tree.card.back"  => %[ ja : "BACK (背面)",       en : "BACK (behind)" ],
+    "layer_tree.back.desc"  => %[ ja : "BACK — 手前が透過するとここに当たる", en : "BACK — hit here when the front layers pass through" ],
+    "layer_tree.card.a"     => %[ ja : "A (htMask 3 帯)",   en : "A (htMask, 3 bands)" ],
+    "layer_tree.card.p"     => %[ ja : "P (htProvince 円)", en : "P (htProvince circle)" ],
+    "layer_tree.p.desc"     => %[ ja : "P: 円内のみ",       en : "P: circle only" ],
+    "layer_tree.card.par"   => %[ ja : "親",                en : "Parent" ],
+    "layer_tree.par.desc"   => %[ ja : "親レイヤ (visible / enabled をパネルで切替)", en : "Parent layer (toggle visible / enabled in the panel)" ],
+    "layer_tree.card.c1"    => %[ ja : "子1",               en : "Child 1" ],
+    "layer_tree.card.c2"    => %[ ja : "子2",               en : "Child 2" ],
+    "layer_tree.sec1"       => %[ ja : "1. ヒットテスト (htMask / htProvince / hitThreshold / onHitTest)",
+                                  en : "1. Hit test (htMask / htProvince / hitThreshold / onHitTest)" ],
+    "layer_tree.sec2"       => %[ ja : "2. 親の状態が子に伝わる (nodeVisible / nodeEnabled)",
+                                  en : "2. Parent state propagates to children (nodeVisible / nodeEnabled)" ],
+    "layer_tree.sec3"       => %[ ja : "3. 重ね順 (order) とフォーカス連鎖 (focusNext)",
+                                  en : "3. Stacking order (order) and focus chain (focusNext)" ],
+    "layer_tree.help1"      => %[ ja : "A=マスク濃度で判定 / P=領域画像で判定。外れたクリックは背面 BACK が受ける",
+                                  en : "A = tested by mask alpha / P = by province image. Misses go to BACK behind" ],
+    "layer_tree.st.head"    => %[ ja : "状態",              en : "Status" ],
+    "layer_tree.st.hover"   => %[ ja : "マウス下: ",        en : "Under mouse: " ],
+    "layer_tree.st.click"   => %[ ja : "最後のクリック: ",  en : "Last click: " ],
+    "layer_tree.st.pos"     => %[ ja : "  (レイヤ内 %d, %d)", en : "  (in layer %d, %d)" ],
+    "layer_tree.st.focus"   => %[ ja : "フォーカス: ",      en : "Focus: " ],
+    "layer_tree.st.hit"     => %[ ja : "-- ヒット設定 --",  en : "-- Hit settings --" ],
+    "layer_tree.st.th"      => %[ ja : "A の hitThreshold: ", en : "A hitThreshold: " ],
+    "layer_tree.st.thnote"  => %[ ja : "  (0=全面ヒット / 256=全透過)", en : "  (0 = hit all / 256 = pass all)" ],
+    "layer_tree.st.half"    => %[ ja : "A の onHitTest 右半分無効: ", en : "A onHitTest, right half off: " ],
+    "layer_tree.st.parent"  => %[ ja : "-- 親ノード --",    en : "-- Parent node --" ],
+    "layer_tree.st.pvis"    => %[ ja : "親 visible: ",      en : "Parent visible: " ],
+    "layer_tree.st.pena"    => %[ ja : "親 enabled: ",      en : "Parent enabled: " ],
+    "layer_tree.st.c1vis"   => %[ ja : "子1 nodeVisible: ", en : "Child 1 nodeVisible: " ],
+    "layer_tree.st.c1ena"   => %[ ja : "子1 nodeEnabled: ", en : "Child 1 nodeEnabled: " ],
+    "layer_tree.st.order"   => %[ ja : "-- 重ね順 (手前が上) --", en : "-- Stacking order (front is top) --" ],
+    "layer_tree.panel.title"=> %[ ja : "レイヤツリー操作",  en : "Layer tree controls" ],
+    "layer_tree.panel.th"   => %[ ja : "A の hitThreshold (0〜256)", en : "A hitThreshold (0-256)" ],
+    "layer_tree.panel.half" => %[ ja : "A の onHitTest で右半分を無効化", en : "A onHitTest: disable right half" ],
+    "layer_tree.panel.pvis" => %[ ja : "親 visible",        en : "Parent visible" ],
+    "layer_tree.panel.pena" => %[ ja : "親 enabled",        en : "Parent enabled" ],
+    "layer_tree.panel.card" => %[ ja : "フォーカス中のカード", en : "Focused card" ],
+    "layer_tree.panel.front"=> %[ ja : "前面へ",            en : "To front" ],
+    "layer_tree.panel.back" => %[ ja : "背面へ",            en : "To back" ],
+    "layer_tree.panel.fprev"=> %[ ja : "← フォーカス",      en : "<- Focus" ],
+    "layer_tree.panel.fnext"=> %[ ja : "フォーカス →",      en : "Focus ->" ]
+]);
+
 // ----------------------------------------------------------------------
 // カード = デモ用の対話レイヤ。イベントを scene へ中継する。
 // ----------------------------------------------------------------------
@@ -45,7 +96,7 @@ class TreeCard extends Layer
         if (focusable) focus();
     }
     function onMouseEnter() { super.onMouseEnter(...); scene.noteHover(cardName); }
-    function onMouseLeave() { super.onMouseLeave(...); scene.noteHover("(なし)"); }
+    function onMouseLeave() { super.onMouseLeave(...); scene.noteHover(void); }
     function onFocus(prev)  { super.onFocus(...); scene.noteFocus(cardName); }
     function onBlur(next)   { super.onBlur(...); }
 }
@@ -64,12 +115,12 @@ class LayerTreeScene extends DemoScene
     var halfHit = false;
     var parentVisible = true, parentEnabled = true;
 
-    var lastHit = "(まだ)", lastHitPos = "", hoverName = "(なし)", focusName = "(なし)";
+    var lastHit = void, lastHitPos = "", hoverName = void, focusName = void;   // void = まだ / なし
     var pendingInfo = true;
 
     var SEC_X = 24, INFO_X = 600, INFO_W = 330;
 
-    function LayerTreeScene() { super.DemoScene("レイヤツリー / ヒットテスト / フォーカス"); }
+    function LayerTreeScene() { super.DemoScene(I18n.entry("layer_tree.title")); }
 
     function create()
     {
@@ -80,7 +131,7 @@ class LayerTreeScene extends DemoScene
         buildFocusFrame();
         drawStatic();
         redrawInfo();
-        setInfo("カードをクリック / Tab でフォーカス移動。パネルでヒット判定と重ね順を操作");
+        setInfo(I18n.t("layer_tree.info"));
         showPanelDict(panelDict());
     }
 
@@ -100,23 +151,23 @@ class LayerTreeScene extends DemoScene
     // ------------------------------------------------------------------
     function buildHitSection()
     {
-        backdrop = new TreeCard(window, stage, this, "BACK (背面)", 0xff2a3550);
+        backdrop = new TreeCard(window, stage, this, I18n.t("layer_tree.card.back"), 0xff2a3550);
         backdrop.setPos(SEC_X, 76);
         backdrop.setSize(556, 150);
         backdrop.type = ltAlpha;
         backdrop.fillRect(0, 0, 556, 150, 0xff2a3550);
         backdrop.font.height = 16;
-        backdrop.drawText(10, 120, "BACK — 手前が透過するとここに当たる", 0x8fa6d8, 255);
+        backdrop.drawText(10, 120, I18n.t("layer_tree.back.desc"), 0x8fa6d8, 255);
         window.add(backdrop);
 
-        cardA = new TreeCard(window, stage, this, "A (htMask 3 帯)", 0xff3d7ac8);
+        cardA = new TreeCard(window, stage, this, I18n.t("layer_tree.card.a"), 0xff3d7ac8);
         cardA.setPos(SEC_X + 16, 90);
         cardA.setSize(300, 100);
         cardA.type = ltAlpha;
         drawBands(cardA);
         window.add(cardA);
 
-        cardP = new TreeCard(window, stage, this, "P (htProvince 円)", 0xffc86a3d);
+        cardP = new TreeCard(window, stage, this, I18n.t("layer_tree.card.p"), 0xffc86a3d);
         cardP.setPos(SEC_X + 344, 90);
         cardP.setSize(160, 100);
         cardP.type = ltAlpha;
@@ -146,7 +197,7 @@ class LayerTreeScene extends DemoScene
         }
         lay.hitType = htProvince;
         lay.font.height = 15;
-        lay.drawText(8, 8, "P: 円内のみ", 0x2a1206, 255);
+        lay.drawText(8, 8, I18n.t("layer_tree.p.desc"), 0x2a1206, 255);
     }
 
     // 左から アルファ 0 / 128 / 255 の 3 帯。hitThreshold との比較で
@@ -169,31 +220,31 @@ class LayerTreeScene extends DemoScene
     // ------------------------------------------------------------------
     function buildNodeSection()
     {
-        parentCard = new TreeCard(window, stage, this, "親", 0xff2f6b4f);
+        parentCard = new TreeCard(window, stage, this, I18n.t("layer_tree.card.par"), 0xff2f6b4f);
         parentCard.setPos(SEC_X, 286);
         parentCard.setSize(400, 150);
         parentCard.type = ltAlpha;
         parentCard.fillRect(0, 0, 400, 150, 0xff2f6b4f);
         parentCard.font.height = 16;
-        parentCard.drawText(10, 8, "親レイヤ (visible / enabled をパネルで切替)", 0xffffff, 255);
+        parentCard.drawText(10, 8, I18n.t("layer_tree.par.desc"), 0xffffff, 255);
         window.add(parentCard);
 
-        childA = new TreeCard(window, parentCard, this, "子1", 0xff58b08a);
+        childA = new TreeCard(window, parentCard, this, I18n.t("layer_tree.card.c1"), 0xff58b08a);
         childA.setPos(16, 40);
         childA.setSize(170, 90);
         childA.type = ltAlpha;
         childA.fillRect(0, 0, 170, 90, 0xff58b08a);
         childA.font.height = 15;
-        childA.drawText(10, 34, "子1", 0x0a2015, 255);
+        childA.drawText(10, 34, I18n.t("layer_tree.card.c1"), 0x0a2015, 255);
         window.add(childA);
 
-        childB = new TreeCard(window, parentCard, this, "子2", 0xff7fd0aa);
+        childB = new TreeCard(window, parentCard, this, I18n.t("layer_tree.card.c2"), 0xff7fd0aa);
         childB.setPos(206, 40);
         childB.setSize(170, 90);
         childB.type = ltAlpha;
         childB.fillRect(0, 0, 170, 90, 0xff7fd0aa);
         childB.font.height = 15;
-        childB.drawText(10, 34, "子2", 0x0a2015, 255);
+        childB.drawText(10, 34, I18n.t("layer_tree.card.c2"), 0x0a2015, 255);
         window.add(childB);
     }
 
@@ -251,11 +302,11 @@ class LayerTreeScene extends DemoScene
     function drawStatic()
     {
         stage.font.height = 19;
-        stage.drawText(SEC_X, 44,  "1. ヒットテスト (htMask / htProvince / hitThreshold / onHitTest)", 0xffd76a, 255);
-        stage.drawText(SEC_X, 262, "2. 親の状態が子に伝わる (nodeVisible / nodeEnabled)", 0xffd76a, 255);
-        stage.drawText(SEC_X, 462, "3. 重ね順 (order) とフォーカス連鎖 (focusNext)", 0xffd76a, 255);
+        stage.drawText(SEC_X, 44,  I18n.t("layer_tree.sec1"), 0xffd76a, 255);
+        stage.drawText(SEC_X, 262, I18n.t("layer_tree.sec2"), 0xffd76a, 255);
+        stage.drawText(SEC_X, 462, I18n.t("layer_tree.sec3"), 0xffd76a, 255);
         stage.font.height = 15;
-        stage.drawText(SEC_X, 234, "A=マスク濃度で判定 / P=領域画像で判定。外れたクリックは背面 BACK が受ける",
+        stage.drawText(SEC_X, 234, I18n.t("layer_tree.help1"),
                        0x9fb0c8, 255);
         stage.update();
     }
@@ -268,33 +319,36 @@ class LayerTreeScene extends DemoScene
         stage.fillRect(INFO_X, 40, INFO_W, 620, 0xff1b2130);
         stage.fillRect(INFO_X, 40, INFO_W, 2, 0xff3a4560);
         stage.font.height = 18;
-        stage.drawText(INFO_X + 14, 52, "状態", 0xffd76a, 255);
+        stage.drawText(INFO_X + 14, 52, I18n.t("layer_tree.st.head"), 0xffd76a, 255);
         stage.font.height = 16;
         var y = 86;
-        y = line(y, "マウス下: " + hoverName);
-        y = line(y, "最後のクリック: " + lastHit);
+        y = line(y, I18n.t("layer_tree.st.hover") + orText(hoverName, "layer_tree.none"));
+        y = line(y, I18n.t("layer_tree.st.click") + orText(lastHit, "layer_tree.notyet"));
         y = line(y, lastHitPos);
         y += 10;
-        y = line(y, "フォーカス: " + focusName);
+        y = line(y, I18n.t("layer_tree.st.focus") + orText(focusName, "layer_tree.none"));
         y += 16;
-        y = line(y, "-- ヒット設定 --", 0xffd76a);
+        y = line(y, I18n.t("layer_tree.st.hit"), 0xffd76a);
         y = line(y, "A: htMask / P: htProvince");
-        y = line(y, "A の hitThreshold: " + threshold);
-        y = line(y, "  (0=全面ヒット / 256=全透過)");
-        y = line(y, "A の onHitTest 右半分無効: " + (halfHit ? "ON" : "OFF"));
+        y = line(y, I18n.t("layer_tree.st.th") + threshold);
+        y = line(y, I18n.t("layer_tree.st.thnote"));
+        y = line(y, I18n.t("layer_tree.st.half") + (halfHit ? "ON" : "OFF"));
         y += 16;
-        y = line(y, "-- 親ノード --", 0xffd76a);
-        y = line(y, "親 visible: " + (parentVisible ? "true" : "false"));
-        y = line(y, "親 enabled: " + (parentEnabled ? "true" : "false"));
+        y = line(y, I18n.t("layer_tree.st.parent"), 0xffd76a);
+        y = line(y, I18n.t("layer_tree.st.pvis") + (parentVisible ? "true" : "false"));
+        y = line(y, I18n.t("layer_tree.st.pena") + (parentEnabled ? "true" : "false"));
         if (isvalid childA) {
-            y = line(y, "子1 nodeVisible: " + (childA.nodeVisible ? "true" : "false"));
-            y = line(y, "子1 nodeEnabled: " + (childA.nodeEnabled ? "true" : "false"));
+            y = line(y, I18n.t("layer_tree.st.c1vis") + (childA.nodeVisible ? "true" : "false"));
+            y = line(y, I18n.t("layer_tree.st.c1ena") + (childA.nodeEnabled ? "true" : "false"));
         }
         y += 16;
-        y = line(y, "-- 重ね順 (手前が上) --", 0xffd76a);
+        y = line(y, I18n.t("layer_tree.st.order"), 0xffd76a);
         y = line(y, stackOrderText());
         stage.update();
     }
+
+    // v が void なら表の id の文字列 ("(まだ)" / "(なし)")
+    function orText(v, id) { return v === void ? I18n.t(id) : v; }
 
     function line(y, text, col)
     {
@@ -313,7 +367,7 @@ class LayerTreeScene extends DemoScene
                 if (cs[i] === stack[j]) { names.add(stack[j].cardName); break; }
             }
         }
-        if (names.count == 0) return "(なし)";
+        if (names.count == 0) return I18n.t("layer_tree.none");
         return names.join(" < ");
     }
 
@@ -323,7 +377,7 @@ class LayerTreeScene extends DemoScene
     function noteHit(name, x, y)
     {
         lastHit = name;
-        lastHitPos = "  (レイヤ内 " + x + ", " + y + ")";
+        lastHitPos = I18n.t("layer_tree.st.pos", x, y);
         pendingInfo = true;
     }
     function noteHover(name) { hoverName = name; pendingInfo = true; }
@@ -414,31 +468,31 @@ class LayerTreeScene extends DemoScene
     function panelDict()
     {
         return %[
-            size : [300, 430], background : [26, 30, 40, 236], locale : "ja-JP",
+            size : [300, 430], background : [26, 30, 40, 236],
             align : "bottom_right", margin : 16,
             content : %[ type : "margin", padding : 14, child : %[ type : "vtile", children : [
                 %[ type : "vsize", height : 0, child : %[ type : "hspacer", width : 268 ] ],
-                %[ type : "align_center", child : %[ type : "label", text : "レイヤツリー操作", size_scale : 1.2 ] ],
+                %[ type : "align_center", child : %[ type : "label", text : I18n.t("layer_tree.panel.title"), size_scale : 1.2 ] ],
                 %[ type : "vspacer", height : 10 ],
-                %[ type : "label", text : "A の hitThreshold (0〜256)" ],
+                %[ type : "label", text : I18n.t("layer_tree.panel.th") ],
                 %[ type : "slider_with_range", id : "th", min : 0, max : 256, initial : threshold ],
                 %[ type : "vspacer", height : 6 ],
-                %[ type : "check_box", id : "half", text : "A の onHitTest で右半分を無効化", value : false ],
+                %[ type : "check_box", id : "half", text : I18n.t("layer_tree.panel.half"), value : false ],
                 %[ type : "vspacer", height : 10 ],
-                %[ type : "check_box", id : "pvis", text : "親 visible", value : true ],
-                %[ type : "check_box", id : "pena", text : "親 enabled", value : true ],
+                %[ type : "check_box", id : "pvis", text : I18n.t("layer_tree.panel.pvis"), value : true ],
+                %[ type : "check_box", id : "pena", text : I18n.t("layer_tree.panel.pena"), value : true ],
                 %[ type : "vspacer", height : 10 ],
-                %[ type : "label", text : "フォーカス中のカード" ],
+                %[ type : "label", text : I18n.t("layer_tree.panel.card") ],
                 %[ type : "htile", children : [
-                    %[ type : "button", id : "front", text : "前面へ" ],
+                    %[ type : "button", id : "front", text : I18n.t("layer_tree.panel.front") ],
                     %[ type : "hspacer", width : 8 ],
-                    %[ type : "button", id : "back",  text : "背面へ" ]
+                    %[ type : "button", id : "back",  text : I18n.t("layer_tree.panel.back") ]
                 ] ],
                 %[ type : "vspacer", height : 6 ],
                 %[ type : "htile", children : [
-                    %[ type : "button", id : "fprev", text : "← フォーカス" ],
+                    %[ type : "button", id : "fprev", text : I18n.t("layer_tree.panel.fprev") ],
                     %[ type : "hspacer", width : 8 ],
-                    %[ type : "button", id : "fnext", text : "フォーカス →" ]
+                    %[ type : "button", id : "fnext", text : I18n.t("layer_tree.panel.fnext") ]
                 ] ]
             ] ] ]
         ];

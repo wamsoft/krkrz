@@ -15,4 +15,4 @@ if (demolibPath === void) { System.inform("demolib が見つかりません"); S
 Scripts.execStorage(demolibPath + "demo_common.tjs");
 Scripts.execStorage("scene.tjs");
 
-runDemoShell([ new InputScene() ], "input — 入力イベントの可視化");
+runDemoShell([ new InputScene() ], I18n.entry("input.shell"));

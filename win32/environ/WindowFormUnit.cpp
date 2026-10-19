@@ -435,7 +435,7 @@ LRESULT WINAPI TTVPWindowForm::Proc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM 
 		case WM_EXITSIZEMOVE:  FireExEvent( TJS_W("onMoveSizeEnd")   ); break;
 		case WM_DISPLAYCHANGE: FireExEvent( TJS_W("onDisplayChanged")); break;
 		case WM_MOVE:
-			FireExEvent( TJS_W("onMove"), 2, (tjs_int)(short)LOWORD(lParam), (tjs_int)(short)HIWORD(lParam) );
+			FireExEvent( TJS_W("onMove"), 2, ToScriptPx( (tjs_int)(short)LOWORD(lParam) ), ToScriptPx( (tjs_int)(short)HIWORD(lParam) ) );
 			break;
 		case WM_MOVING:
 			if( FireExEventRect( TJS_W("onMoving"), reinterpret_cast<RECT*>(lParam), false, 0 ) )
@@ -844,8 +844,9 @@ void TTVPWindowForm::SetZoom( tjs_int numer, tjs_int denom, bool set_logical ) {
 		// set_logical == false はフルスクリーン遷移中にシステムが決めた倍率を
 		// 流し込む経路なので、ウィンドウサイズには触らない。
 		if( set_logical && LayerWidth > 0 && LayerHeight > 0 ) {
-			tjs_int w = MulDiv( LayerWidth, numer, denom );
-			tjs_int h = MulDiv( LayerHeight, numer, denom );
+			// -dpiscaling=yes ではクライアントは «レイヤ × zoom» の DPI / 96 倍
+			tjs_int w = ToClientPx( MulDiv( LayerWidth, numer, denom ) );
+			tjs_int h = ToClientPx( MulDiv( LayerHeight, numer, denom ) );
 			if( w < 1 ) w = 1;
 			if( h < 1 ) h = 1;
 			if( w != GetInnerWidth() || h != GetInnerHeight() ) {

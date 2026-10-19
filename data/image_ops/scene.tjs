@@ -3,6 +3,20 @@
 //  image_ops シーン (ImageOpsScene) — 画像処理 (Bitmap 演算)
 // ======================================================================
 
+I18n.add(%[
+    "image_ops.title"     => %[ ja : "画像処理",                 en : "Image processing" ],
+    "image_ops.shell"     => %[ ja : "image_ops — 画像処理",     en : "image_ops — Image processing" ],
+    "image_ops.op.src"    => %[ ja : "元画像 (copyRect)",        en : "source (copyRect)" ],
+    "image_ops.op.bright" => %[ ja : "adjustGamma 2.0 (明)",     en : "adjustGamma 2.0 (bright)" ],
+    "image_ops.op.dark"   => %[ ja : "adjustGamma 0.45 (暗)",    en : "adjustGamma 0.45 (dark)" ],
+    "image_ops.op.fliplr" => %[ ja : "flipLR (左右反転)",        en : "flipLR (horizontal flip)" ],
+    "image_ops.op.flipud" => %[ ja : "flipUD (上下反転)",        en : "flipUD (vertical flip)" ],
+    "image_ops.op.affine" => %[ ja : "affineCopy (回転)",        en : "affineCopy (rotation)" ],
+    "image_ops.op.color"  => %[ ja : "colorRect (色掛け)",       en : "colorRect (color tint)" ],
+    "image_ops.info"      => %[ ja : "R: ソース再生成   (左上が元画像、他は各処理の結果)",
+                                en : "R: regenerate source   (top left is the source, others are results)" ]
+]);
+
 class ImageOpsScene extends DemoScene
 {
     var CW = 300, CH = 170, MG = 18, TOP = 24, LABEL = 22;
@@ -10,7 +24,7 @@ class ImageOpsScene extends DemoScene
     var src;
     var cells = [];
 
-    function ImageOpsScene() { super.DemoScene("画像処理"); }
+    function ImageOpsScene() { super.DemoScene(I18n.entry("image_ops.title")); }
 
     function create()
     {
@@ -19,15 +33,15 @@ class ImageOpsScene extends DemoScene
         // applyAll が古いレイヤへ描いてしまうので必ずリセットする。
         cells = [];
         ops = [
-            %[ name:"元画像 (copyRect)",     op:function(l) { } ],
+            %[ name:I18n.t("image_ops.op.src"), op:function(l) { } ],
             %[ name:"doGrayScale",           op:function(l) { l.doGrayScale(); } ],
-            %[ name:"adjustGamma 2.0 (明)",  op:function(l) { l.adjustGamma(2.0,0,255, 2.0,0,255, 2.0,0,255); } ],
-            %[ name:"adjustGamma 0.45 (暗)", op:function(l) { l.adjustGamma(0.45,0,255, 0.45,0,255, 0.45,0,255); } ],
-            %[ name:"flipLR (左右反転)",     op:function(l) { l.flipLR(); } ],
-            %[ name:"flipUD (上下反転)",     op:function(l) { l.flipUD(); } ],
+            %[ name:I18n.t("image_ops.op.bright"), op:function(l) { l.adjustGamma(2.0,0,255, 2.0,0,255, 2.0,0,255); } ],
+            %[ name:I18n.t("image_ops.op.dark"), op:function(l) { l.adjustGamma(0.45,0,255, 0.45,0,255, 0.45,0,255); } ],
+            %[ name:I18n.t("image_ops.op.fliplr"), op:function(l) { l.flipLR(); } ],
+            %[ name:I18n.t("image_ops.op.flipud"), op:function(l) { l.flipUD(); } ],
             %[ name:"doBoxBlur(5,5)",        op:function(l) { l.doBoxBlur(5,5); } ],
-            %[ name:"affineCopy (回転)",     op:"affine" ],
-            %[ name:"colorRect (色掛け)",    op:function(l) { l.colorRect(0,0,l.width,l.height, 0xff30a0, 110); } ]
+            %[ name:I18n.t("image_ops.op.affine"), op:"affine" ],
+            %[ name:I18n.t("image_ops.op.color"), op:function(l) { l.colorRect(0,0,l.width,l.height, 0xff30a0, 110); } ]
         ];
 
         src = new Layer(window, stage);
@@ -49,7 +63,7 @@ class ImageOpsScene extends DemoScene
         buildSource();
         applyAll();
         drawLabels();
-        setInfo("R: ソース再生成   (左上が元画像、他は各処理の結果)");
+        setInfo(I18n.t("image_ops.info"));
     }
 
     function buildSource()

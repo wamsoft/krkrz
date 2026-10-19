@@ -39,6 +39,30 @@ SSOT はここ (src/core/data/demolib)。umbrella (krkrz_dev) の data/ 直下�
                 onPanelAction / onDemoFrame / onDemoTest)
     DemoPanel  (Elements Dialog が使える環境でのみ定義)
 
+■ 多言語 (I18n)
+
+  demo_common.tjs が同じフォルダの demo_i18n.tjs を自動で読み、global.I18n を
+  用意する (読み込みブロックが置く demolibPath を使う)。詳細は demo_i18n.tjs 冒頭。
+
+  - 文字列表は Elements 画面 JSON の "strings" と同じ形:
+      I18n.add(%[ "<デモ名>.<キー>" => %[ ja : "…", en : "…" ], ... ]);
+    scene.tjs の先頭に書く。demolib 自身の文字列は "common.*"。
+  - 描画では I18n.t(id) (書式付きは I18n.t(id, args…) / I18n.t(id, %[name:v]))。
+  - シーン見出しは super.DemoScene(I18n.entry("<デモ名>.title")) と表の項目を渡す
+    (メニュー等は titleText() で引くので、言語を切り替えると追従する)。
+  - パネル辞書は "locale" を書かなければ現在言語の locale が入る。表を
+    strings : I18n.panelStrings("<デモ名>.panel.") で渡せば、ウィジェットは
+    text_id で同じ表を引ける ("lang" も自動で入る)。
+  - 言語の初期値はエンジンの System.uiLanguageCandidates (-language= → OS 言語)。
+    DemoShell では F2 で切り替わり、現在シーンは入り直す (onExit → create)。
+    自前で描き直すシーンは onLanguageChanged(lang) で true を返す。
+  - 言語を増やすときは demo_i18n.tjs の LANG_FALLBACK / LANG_LOCALE に足す。
+  - -demotest -language=en で巡回すると、訳の無い id が
+    "@demotest:i18n-missing en <id>" で出る。
+  - 移行済み: coretest_legacy.tjs (レガシー一括テスト) 以外の全デモ。新しいシーンも表を使って書く。
+  - フォント見本・各国語の例文・縦組みの本文など、表示そのものが目的の文字列は訳さない。
+  - elements_gallery の定義ソース (pages.tjs) は表示と eval を兼ねるため未訳 (保留)。
+
 ■ ゲームパッド
 
   エンジンはパッド入力を VK_PAD* キーイベントとしてのみ通知する
@@ -46,6 +70,11 @@ SSOT はここ (src/core/data/demolib)。umbrella (krkrz_dev) の data/ 直下�
   で 十字/左スティック→矢印、A/START→Enter、B→ESC、LB/RB→PgUp/PgDn に
   正規化してからシーンへ渡すので、メニューも各シーンもパッドで操作できる。
   生の VK_PAD* を観測したいシーンは rawPadKeys = true にする (入力可視化が実例)。
+
+  パネル (showPanelJson / showPanelDict) は withPadNav() が画面 JSON に
+  "input": {"arrow_focus_nav": true} を足すので、十字でフォーカスを動かし A で押せる
+  (マウスの無い機種向け)。パネルを出したまま方向キー / 十字をシーンで使うときは、
+  そのパネルの辞書に input : %[ arrow_focus_nav : false ] を書いて外す (a11y が実例)。
 
   重要: デモの描画は必ず DemoWindow.stage (とその子レイヤ) に対して行う。
   primary レイヤへの直接 drawText と primary 直下の ltAlpha レイヤは、

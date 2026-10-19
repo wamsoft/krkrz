@@ -13,6 +13,62 @@
 //    入力欄の focus に応じて出る。 デスクトップでも "always" で強制表示できる。
 // ======================================================================
 
+I18n.add(%[
+    "softkey_ime.title"        => %[ ja : "文字入力 / 仮想キーボード / IME", en : "Text input / virtual keyboard / IME" ],
+    "softkey_ime.shell"        => %[ ja : "softkey_ime — 文字入力 / 仮想キーボード / IME", en : "softkey_ime — Text input / virtual keyboard / IME" ],
+    "softkey_ime.info"         => %[ ja : "キーを打つと onTextInput で文字が届く。パネルで IME / 仮想キーボードを切り替え",
+                                     en : "Typed text arrives via onTextInput. Switch IME / virtual keyboard in the panel" ],
+    "softkey_ime.clip.none"    => %[ ja : "(未操作)",           en : "(not used yet)" ],
+    "softkey_ime.input.none"   => %[ ja : "(未実行)",           en : "(not run yet)" ],
+    "softkey_ime.help1"        => %[ ja : "文字入力は onKeyDown (仮想キーコード) ではなく onTextInput (文字列そのもの) で受ける。IME の確定文字列もここへ届く。",
+                                     en : "Receive text with onTextInput (the string itself), not onKeyDown (virtual key codes). IME commits arrive here too." ],
+    "softkey_ime.help2"        => %[ ja : "キーボードが無い環境では、入力欄の focus に応じて内蔵仮想キーボードが出る (パネルで強制表示できる)。",
+                                     en : "Without a keyboard, the built-in virtual keyboard appears when an input field gets focus (can be forced in the panel)." ],
+    "softkey_ime.card.field"   => %[ ja : "入力欄 (自前描画 + onTextInput)", en : "Input field (self-drawn + onTextInput)" ],
+    "softkey_ime.field.help"   => %[ ja : "BackSpace = 1 文字消す / Enter = 確定してログへ", en : "BackSpace = delete one char / Enter = commit to the log" ],
+    "softkey_ime.card.keys"    => %[ ja : "受信した文字 (onTextInput)", en : "Received text (onTextInput)" ],
+    "softkey_ime.keys.empty"   => %[ ja : "(まだ入力がありません。ウィンドウをクリックしてから打鍵)", en : "(No input yet. Click the window, then type)" ],
+    "softkey_ime.card.status"  => %[ ja : "状態",               en : "Status" ],
+    "softkey_ime.row.ime"      => %[ ja : "IME モード",         en : "IME mode" ],
+    "softkey_ime.row.vk"       => %[ ja : "仮想キーボード",     en : "Virtual keyboard" ],
+    "softkey_ime.na"           => %[ ja : "(未提供)",           en : "(not available)" ],
+    "softkey_ime.row.phys"     => %[ ja : "物理キーボード",     en : "Physical keyboard" ],
+    "softkey_ime.present"      => %[ ja : "あり",               en : "yes" ],
+    "softkey_ime.absent"       => %[ ja : "なし",               en : "no" ],
+    "softkey_ime.unknown"      => %[ ja : "(不明)",             en : "(unknown)" ],
+    "softkey_ime.focus.field"  => %[ ja : "入力欄",             en : "input field" ],
+    "softkey_ime.focus.other"  => %[ ja : "(別のレイヤ)",       en : "(another layer)" ],
+    "softkey_ime.row.ebox"     => %[ ja : "Elements 欄",        en : "Elements box" ],
+    "softkey_ime.empty"        => %[ ja : "(空)",               en : "(empty)" ],
+    "softkey_ime.clip.head"    => %[ ja : "-- クリップボード --", en : "-- Clipboard --" ],
+    "softkey_ime.clip.has"     => %[ ja : "テキストあり: ",     en : "Has text: " ],
+    "softkey_ime.yes"          => %[ ja : "はい",               en : "yes" ],
+    "softkey_ime.no"           => %[ ja : "いいえ",             en : "no" ],
+    "softkey_ime.note1"        => %[ ja : "IME は WINVER の実装。SDL 版は", en : "IME is implemented in WINVER." ],
+    "softkey_ime.note2"        => %[ ja : "OS 側の入力に任せる (値は保持のみ)", en : "SDL leaves it to the OS (value kept only)" ],
+    "softkey_ime.surrogate"    => %[ ja : "(サロゲートペア)",   en : "(surrogate pair)" ],
+    "softkey_ime.set.ime"      => %[ ja : "IME モード: %s (効くのは WINVER)", en : "IME mode: %s (effective on WINVER)" ],
+    "softkey_ime.set.vk"       => %[ ja : "仮想キーボード: ",   en : "Virtual keyboard: " ],
+    "softkey_ime.set.vkalways" => %[ ja : " (入力欄に focus すると出ます)", en : " (appears when an input field has focus)" ],
+    "softkey_ime.set.novk"     => %[ ja : "ElementsDialog.virtualKeyboard がこのビルドには無い", en : "ElementsDialog.virtualKeyboard is not in this build" ],
+    "softkey_ime.clip.noclass" => %[ ja : "Clipboard 未提供",   en : "Clipboard not available" ],
+    "softkey_ime.clip.copy"    => %[ ja : "コピー: \"%s\"",   en : "Copied: \"%s\"" ],
+    "softkey_ime.clip.notext"  => %[ ja : "クリップボードにテキストなし", en : "No text on the clipboard" ],
+    "softkey_ime.clip.paste"   => %[ ja : "貼り付け: \"%s\"", en : "Pasted: \"%s\"" ],
+    "softkey_ime.is.caption"   => %[ ja : "入力",               en : "Input" ],
+    "softkey_ime.is.prompt"    => %[ ja : "文字を入力してください", en : "Please enter text" ],
+    "softkey_ime.is.cancel"    => %[ ja : "(キャンセル)",       en : "(cancelled)" ],
+    "softkey_ime.panel.title"  => %[ ja : "入力の設定",         en : "Input settings" ],
+    "softkey_ime.panel.ime"    => %[ ja : "IME モード (Layer.imeMode)", en : "IME mode (Layer.imeMode)" ],
+    "softkey_ime.panel.vk"     => %[ ja : "仮想キーボード (ElementsDialog.virtualKeyboard)", en : "Virtual keyboard (ElementsDialog.virtualKeyboard)" ],
+    "softkey_ime.panel.ebox"   => %[ ja : "Elements 入力欄 (クリックで focus)", en : "Elements input box (click to focus)" ],
+    "softkey_ime.panel.eboxph" => %[ ja : "ここに focus すると仮想キーボード", en : "Focus here for the virtual keyboard" ],
+    "softkey_ime.panel.copy"   => %[ ja : "コピー",             en : "Copy" ],
+    "softkey_ime.panel.paste"  => %[ ja : "貼り付け",           en : "Paste" ],
+    "softkey_ime.panel.input"  => %[ ja : "System.inputString で入力", en : "Input via System.inputString" ],
+    "softkey_ime.panel.clear"  => %[ ja : "入力欄とログを消去", en : "Clear field and log" ]
+]);
+
 class SoftkeyImeScene extends DemoScene
 {
     // --- レイアウト ---
@@ -36,20 +92,20 @@ class SoftkeyImeScene extends DemoScene
     var vkAvailable = false;
 
     var elementsText = "";      // Elements 入力欄 (仮想キーボードの受け皿)
-    var clipNote = "(未操作)";
-    var lastInput = "(未実行)";
+    var clipNote = "";         // create で入れる
+    var lastInput = "";
     var dirty = false;
 
     var field;                  // 入力欄レイヤ (focusable。IME モードの受け皿)
 
-    function SoftkeyImeScene() { super.DemoScene("文字入力 / 仮想キーボード / IME"); }
+    function SoftkeyImeScene() { super.DemoScene(I18n.entry("softkey_ime.title")); }
 
     function create()
     {
         text = "";
         keyLog = [];
-        clipNote = "(未操作)";
-        lastInput = "(未実行)";
+        clipNote = I18n.t("softkey_ime.clip.none");
+        lastInput = I18n.t("softkey_ime.input.none");
         elementsText = "";
         caretTick = System.getTickCount();
 
@@ -84,7 +140,7 @@ class SoftkeyImeScene extends DemoScene
         redrawField();
         redrawKeys();
         redrawInfo();
-        setInfo("キーを打つと onTextInput で文字が届く。パネルで IME / 仮想キーボードを切り替え");
+        setInfo(I18n.t("softkey_ime.info"));
         showPanelDict(panelDict());
     }
 
@@ -99,10 +155,10 @@ class SoftkeyImeScene extends DemoScene
     function drawStatic()
     {
         stage.font.height = 19;
-        stage.drawText(24, 44, "文字入力 / 仮想キーボード / IME", 0xffd76a, 255);
+        stage.drawText(24, 44, I18n.t("softkey_ime.title"), 0xffd76a, 255);
         stage.font.height = 15;
-        stage.drawText(24, 76, "文字入力は onKeyDown (仮想キーコード) ではなく onTextInput (文字列そのもの) で受ける。IME の確定文字列もここへ届く。", 0xc8d2e4, 255);
-        stage.drawText(24, 98, "キーボードが無い環境では、入力欄の focus に応じて内蔵仮想キーボードが出る (パネルで強制表示できる)。", 0xc8d2e4, 255);
+        stage.drawText(24, 76, I18n.t("softkey_ime.help1"), 0xc8d2e4, 255);
+        stage.drawText(24, 98, I18n.t("softkey_ime.help2"), 0xc8d2e4, 255);
         stage.update();
     }
 
@@ -125,9 +181,9 @@ class SoftkeyImeScene extends DemoScene
     // --- 入力欄 --------------------------------------------------------
     function redrawField()
     {
-        card(FX, FY, FW, FH, "入力欄 (自前描画 + onTextInput)");
+        card(FX, FY, FW, FH, I18n.t("softkey_ime.card.field"));
         stage.font.height = 14;
-        stage.drawText(FX + 16, FY + 44, "BackSpace = 1 文字消す / Enter = 確定してログへ", 0x8899b0, 255);
+        stage.drawText(FX + 16, FY + 44, I18n.t("softkey_ime.field.help"), 0x8899b0, 255);
         stage.font.height = 15;
         stage.update(FX, FY, FW, FH);
         drawFieldText();
@@ -146,11 +202,11 @@ class SoftkeyImeScene extends DemoScene
     // --- キーログ ------------------------------------------------------
     function redrawKeys()
     {
-        card(KX, KY, KW, KH, "受信した文字 (onTextInput)");
+        card(KX, KY, KW, KH, I18n.t("softkey_ime.card.keys"));
         var y = KY + 40;
         stage.font.height = 14;
         if (keyLog.count == 0) {
-            stage.drawText(KX + 12, y, "(まだ入力がありません。ウィンドウをクリックしてから打鍵)", 0x9fb0c8, 255);
+            stage.drawText(KX + 12, y, I18n.t("softkey_ime.keys.empty"), 0x9fb0c8, 255);
         } else {
             for (var i = 0; i < keyLog.count; i++) {
                 stage.drawText(KX + 12, y, keyLog[i], 0xdfe6f2, 255);
@@ -171,23 +227,23 @@ class SoftkeyImeScene extends DemoScene
     // --- 状態 ----------------------------------------------------------
     function redrawInfo()
     {
-        card(IX, IY, IW, IH, "状態");
+        card(IX, IY, IW, IH, I18n.t("softkey_ime.card.status"));
         var y = IY + 40;
-        y = row(IX, y, "IME モード", imeNames[imeModeIndex]);
-        y = row(IX, y, "仮想キーボード", vkAvailable ? vkNames[vkIndex] : "(未提供)",
+        y = row(IX, y, I18n.t("softkey_ime.row.ime"), imeNames[imeModeIndex]);
+        y = row(IX, y, I18n.t("softkey_ime.row.vk"), vkAvailable ? vkNames[vkIndex] : I18n.t("softkey_ime.na"),
                 vkAvailable ? 0xdfe6f2 : 0x9fb0c8);
-        y = row(IX, y, "物理キーボード",
-                vkAvailable ? (ElementsDialog.hasPhysicalKeyboard ? "あり" : "なし") : "(不明)");
-        y = row(IX, y, "focus", (isvalid field && window.focusedLayer == field) ? "入力欄" : "(別のレイヤ)");
-        y = row(IX, y, "Elements 欄", elementsText != "" ? elementsText : "(空)");
+        y = row(IX, y, I18n.t("softkey_ime.row.phys"),
+                vkAvailable ? I18n.t(ElementsDialog.hasPhysicalKeyboard ? "softkey_ime.present" : "softkey_ime.absent") : I18n.t("softkey_ime.unknown"));
+        y = row(IX, y, "focus", (isvalid field && window.focusedLayer == field) ? I18n.t("softkey_ime.focus.field") : I18n.t("softkey_ime.focus.other"));
+        y = row(IX, y, I18n.t("softkey_ime.row.ebox"), elementsText != "" ? elementsText : I18n.t("softkey_ime.empty"));
         y += 10;
         stage.font.height = 14;
-        stage.drawText(IX + 12, y, "-- クリップボード --", 0xffd76a, 255); y += 22;
+        stage.drawText(IX + 12, y, I18n.t("softkey_ime.clip.head"), 0xffd76a, 255); y += 22;
         var has = false;
         if (typeof global.Clipboard != "undefined") {
             try { has = Clipboard.hasFormat(cbfText); } catch (e) { }
         }
-        stage.drawText(IX + 12, y, "テキストあり: " + (has ? "はい" : "いいえ"), 0xdfe6f2, 255); y += 22;
+        stage.drawText(IX + 12, y, I18n.t("softkey_ime.clip.has") + I18n.t(has ? "softkey_ime.yes" : "softkey_ime.no"), 0xdfe6f2, 255); y += 22;
         var cn = clipNote;
         for (var i = 0; i < 3 && cn != ""; i++) {
             stage.drawText(IX + 12, y, cn.substring(0, 22), 0x9fd6a0, 255);
@@ -203,8 +259,8 @@ class SoftkeyImeScene extends DemoScene
             y += 20;
         }
         y += 12;
-        stage.drawText(IX + 12, y, "IME は WINVER の実装。SDL 版は", 0x8899b0, 255); y += 18;
-        stage.drawText(IX + 12, y, "OS 側の入力に任せる (値は保持のみ)", 0x8899b0, 255); y += 18;
+        stage.drawText(IX + 12, y, I18n.t("softkey_ime.note1"), 0x8899b0, 255); y += 18;
+        stage.drawText(IX + 12, y, I18n.t("softkey_ime.note2"), 0x8899b0, 255); y += 18;
         stage.font.height = 15;
         stage.update(IX, IY, IW, IH);
     }
@@ -235,7 +291,7 @@ class SoftkeyImeScene extends DemoScene
             var ch;
             if (code >= 0xD800 && code <= 0xDBFF && i + 1 < elmtext.length) {
                 ch = elmtext.substring(i, 2); i++;
-                addKeyLog("'" + ch + "'  (サロゲートペア)");
+                addKeyLog("'" + ch + "'  " + I18n.t("softkey_ime.surrogate"));
             } else {
                 ch = elmtext.substring(i, 1);
                 addKeyLog("'" + ch + "'  U+" + "%04X".sprintf(code));
@@ -295,7 +351,7 @@ class SoftkeyImeScene extends DemoScene
         case "ime":
             imeModeIndex = Math.floor(payload + 0.5);
             applyIme();
-            setInfo("IME モード: " + imeNames[imeModeIndex] + " (効くのは WINVER)");
+            setInfo(I18n.t("softkey_ime.set.ime", imeNames[imeModeIndex]));
             dirty = true;
             break;
 
@@ -303,38 +359,38 @@ class SoftkeyImeScene extends DemoScene
             vkIndex = Math.floor(payload + 0.5);
             if (vkAvailable) {
                 ElementsDialog.virtualKeyboard = vkNames[vkIndex];
-                setInfo("仮想キーボード: " + vkNames[vkIndex]
-                        + (vkNames[vkIndex] == "always" ? " (入力欄に focus すると出ます)" : ""));
+                setInfo(I18n.t("softkey_ime.set.vk") + vkNames[vkIndex]
+                        + (vkNames[vkIndex] == "always" ? I18n.t("softkey_ime.set.vkalways") : ""));
             } else {
-                setInfo("ElementsDialog.virtualKeyboard がこのビルドには無い");
+                setInfo(I18n.t("softkey_ime.set.novk"));
             }
             dirty = true;
             break;
 
         case "copy":
-            if (typeof global.Clipboard == "undefined") { clipNote = "Clipboard 未提供"; }
+            if (typeof global.Clipboard == "undefined") { clipNote = I18n.t("softkey_ime.clip.noclass"); }
             else {
                 Clipboard.asText = text;
-                clipNote = "コピー: \"" + text + "\"";
+                clipNote = I18n.t("softkey_ime.clip.copy", text);
             }
             dirty = true;
             break;
 
         case "paste":
-            if (typeof global.Clipboard == "undefined") { clipNote = "Clipboard 未提供"; }
+            if (typeof global.Clipboard == "undefined") { clipNote = I18n.t("softkey_ime.clip.noclass"); }
             else {
                 var v = Clipboard.asText;
                 // テキストが無いと void が返る
-                if (v === void) { clipNote = "クリップボードにテキストなし"; }
-                else { text += v; clipNote = "貼り付け: \"" + v + "\""; }
+                if (v === void) { clipNote = I18n.t("softkey_ime.clip.notext"); }
+                else { text += v; clipNote = I18n.t("softkey_ime.clip.paste", v); }
             }
             dirty = true;
             break;
 
         case "input":
             // モーダルなテキスト入力 (Elements 実装)。閉じるまで戻らない
-            var r = System.inputString("入力", "文字を入力してください", text);
-            lastInput = (r === void) ? "(キャンセル)" : ("\"" + r + "\"");
+            var r = System.inputString(I18n.t("softkey_ime.is.caption"), I18n.t("softkey_ime.is.prompt"), text);
+            lastInput = (r === void) ? I18n.t("softkey_ime.is.cancel") : ("\"" + r + "\"");
             if (r !== void) text = r;
             dirty = true;
             break;
@@ -366,30 +422,30 @@ class SoftkeyImeScene extends DemoScene
     function panelDict()
     {
         return %[
-            size : [320, 486], background : [26, 30, 40, 236], locale : "ja-JP",
+            size : [320, 486], background : [26, 30, 40, 236],
             align : "bottom_right", margin : 16,
             content : %[ type : "margin", padding : 14, child : %[ type : "vtile", children : [
                 %[ type : "vsize", height : 0, child : %[ type : "hspacer", width : 288 ] ],
-                %[ type : "align_center", child : %[ type : "label", text : "入力の設定", size_scale : 1.2 ] ],
+                %[ type : "align_center", child : %[ type : "label", text : I18n.t("softkey_ime.panel.title"), size_scale : 1.2 ] ],
                 %[ type : "vspacer", height : 8 ],
-                %[ type : "label", text : "IME モード (Layer.imeMode)" ],
+                %[ type : "label", text : I18n.t("softkey_ime.panel.ime") ],
                 %[ type : "framed_cycle_picker", id : "ime", options : imeNames, initial : imeModeIndex ],
                 %[ type : "vspacer", height : 6 ],
-                %[ type : "label", text : "仮想キーボード (ElementsDialog.virtualKeyboard)" ],
+                %[ type : "label", text : I18n.t("softkey_ime.panel.vk") ],
                 %[ type : "segmented_picker", id : "vk", options : vkNames, initial : vkIndex ],
                 %[ type : "vspacer", height : 8 ],
-                %[ type : "label", text : "Elements 入力欄 (クリックで focus)" ],
-                %[ type : "input_box", id : "ebox", placeholder : "ここに focus すると仮想キーボード" ],
+                %[ type : "label", text : I18n.t("softkey_ime.panel.ebox") ],
+                %[ type : "input_box", id : "ebox", placeholder : I18n.t("softkey_ime.panel.eboxph") ],
                 %[ type : "vspacer", height : 12 ],
                 %[ type : "htile", children : [
-                    %[ type : "button", id : "copy",  text : "コピー" ],
+                    %[ type : "button", id : "copy",  text : I18n.t("softkey_ime.panel.copy") ],
                     %[ type : "hspacer", width : 8 ],
-                    %[ type : "button", id : "paste", text : "貼り付け" ]
+                    %[ type : "button", id : "paste", text : I18n.t("softkey_ime.panel.paste") ]
                 ] ],
                 %[ type : "vspacer", height : 8 ],
-                %[ type : "button", id : "input", text : "System.inputString で入力" ],
+                %[ type : "button", id : "input", text : I18n.t("softkey_ime.panel.input") ],
                 %[ type : "vspacer", height : 8 ],
-                %[ type : "button", id : "clear", text : "入力欄とログを消去" ]
+                %[ type : "button", id : "clear", text : I18n.t("softkey_ime.panel.clear") ]
             ] ] ]
         ];
     }

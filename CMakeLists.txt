@@ -11,7 +11,7 @@ add_link_options("$<$<AND:$<C_COMPILER_ID:MSVC>,$<COMPILE_LANGUAGE:C,CXX>>:/DEBU
 
 
 set(PROJECT_NAME krkrz)
-set(PROJECT_VERSION 2.6.3)
+set(PROJECT_VERSION 2.6.4)
 
 # ----------------------------------------------------
 # vcpkg マニフェスト統合
@@ -1045,6 +1045,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 	enable_language(OBJCXX)
 	set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/common/sound/AudioStream.cpp
 		PROPERTIES LANGUAGE OBJCXX)
+else()
+	# macOS: sdl3/environ/macwindow.mm (Cocoa 補助)
+	enable_language(OBJCXX)
 endif()
 
 elseif(ANDROID)

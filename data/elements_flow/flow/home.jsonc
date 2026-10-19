@@ -3,6 +3,13 @@
 // タイトルには exit 演出 ("on":"exit") が付いており、Esc でフローを閉じる
 // ときも演出完了を待ってから閉じる (ElementsDialog.close() でも同様)。
 {
+    "strings": {
+        "flow.home.lead": { "ja": "transitions の effect で画面切替を宣言する", "en": "Screen changes are declared with the effect in transitions" },
+        "flow.home.fade": { "ja": "クロスフェード (fade)", "en": "Crossfade (fade)" },
+        "flow.home.wipe": { "ja": "ユニバーサル: 斜めワイプ", "en": "Universal: diagonal wipe" },
+        "flow.home.circle": { "ja": "ユニバーサル: サークル", "en": "Universal: circle" },
+        "flow.home.esc": { "ja": "Esc: タイトルの exit 演出を再生してからフロー終了", "en": "Esc: play the title's exit effect, then end the flow" }
+    },
     "size": [960, 600],
     "background": [24, 32, 56, 255],
     "input": { "arrow_focus_nav": true },
@@ -26,22 +33,22 @@
                     "frames": 14, "easing": "in_cubic" },
                   { "type": "fade", "on": "exit", "from": 100, "to": 0, "frames": 14 }
               ] },
-            { "type": "label", "text": "transitions の effect で画面切替を宣言する",
+            { "type": "label", "text_id": "flow.home.lead", "text": "transitions の effect で画面切替を宣言する",
               "size": 22, "color": [170, 190, 220, 255] },
             { "type": "vspacer", "height": 36 },
             { "type": "hsize", "width": 360, "child":
-                { "type": "button", "id": "go_fade", "text": "クロスフェード (fade)",
+                { "type": "button", "id": "go_fade", "text_id": "flow.home.fade", "text": "クロスフェード (fade)",
                   "close_on_click": true, "initial_focus": true } },
             { "type": "vspacer", "height": 14 },
             { "type": "hsize", "width": 360, "child":
-                { "type": "button", "id": "go_wipe", "text": "ユニバーサル: 斜めワイプ",
+                { "type": "button", "id": "go_wipe", "text_id": "flow.home.wipe", "text": "ユニバーサル: 斜めワイプ",
                   "close_on_click": true } },
             { "type": "vspacer", "height": 14 },
             { "type": "hsize", "width": 360, "child":
-                { "type": "button", "id": "go_circle", "text": "ユニバーサル: サークル",
+                { "type": "button", "id": "go_circle", "text_id": "flow.home.circle", "text": "ユニバーサル: サークル",
                   "close_on_click": true } },
             { "type": "vspacer", "height": 30 },
-            { "type": "label", "text": "Esc: タイトルの exit 演出を再生してからフロー終了",
+            { "type": "label", "text_id": "flow.home.esc", "text": "Esc: タイトルの exit 演出を再生してからフロー終了",
               "size": 18, "color": [140, 150, 170, 255] }
         ]}
     }

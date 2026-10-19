@@ -15,4 +15,4 @@ if (demolibPath === void) { System.inform("demolib が見つかりません"); S
 Scripts.execStorage(demolibPath + "demo_common.tjs");
 Scripts.execStorage("scene.tjs");
 
-runDemoShell([ new WindowMultiScene() ], "window_multi — 複数ウィンドウ / モーダル / 画面情報");
+runDemoShell([ new WindowMultiScene() ], I18n.entry("window_multi.shell"));

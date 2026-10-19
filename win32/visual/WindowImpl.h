@@ -411,6 +411,10 @@ public:
 	tjs_int GetInnerWidth() const;
 	void SetInnerHeight(tjs_int h);
 	tjs_int GetInnerHeight() const;
+	//! クライアントの実ピクセルサイズ (DestRect の座標系)。 -dpiscaling=yes では
+	//! スクリプト向けの GetInnerWidth/Height (仮想ピクセル) と異なる。
+	tjs_int GetClientPixelWidth() const;
+	tjs_int GetClientPixelHeight() const;
 	//! 装飾ぶんのサイズ (外形 - 内側)。枠を持たない環境では 0
 	tjs_int GetFrameWidth() const;
 	tjs_int GetFrameHeight() const;

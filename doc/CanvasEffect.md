@@ -29,6 +29,9 @@ canvas.endEffect([
 (透明クリア済み) に捕捉し、`commands` (加工コマンド配列) を順に適用して
 から、現在の `blendMode` で直前の描画先へ合成する。ネスト可。
 `commands` を省略すると素通し合成。加工は CPU 読み戻しなしに GPU 内で完結する。
+`endEffect(commands, opacity)` と第 2 引数に不透明度 (0〜255、既定 255) を渡すと、
+合成時に α へ掛ける (gles プラグイン互換。OpenGL 版は混合系シェーダの `u_opacity`、
+GPU 版は合成用の組み込みシェーダ `clip_mask` の `a_opacity`)。
 
 ### 処理の分類 (内部構造)
 

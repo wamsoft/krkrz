@@ -3,6 +3,24 @@
 //  input シーン (InputScene) — 入力イベントの可視化
 // ======================================================================
 
+I18n.add(%[
+    "input.title"     => %[ ja : "入力の可視化",       en : "Input visualizer" ],
+    "input.shell"     => %[ ja : "input — 入力イベントの可視化", en : "input — Input event visualizer" ],
+    "input.info"      => %[ ja : "キー / マウス / パッドを操作して可視化を確認 (パッドは VK_PAD* キーとして届く)",
+                            en : "Use keys / mouse / pad to see events (pad input arrives as VK_PAD* keys)" ],
+    "input.none"      => %[ ja : "(なし)",             en : "(none)" ],
+    "input.kb.head"   => %[ ja : "キーボード (onKeyDown / onKeyUp)", en : "Keyboard (onKeyDown / onKeyUp)" ],
+    "input.kb.cur"    => %[ ja : "現在のキー:",        en : "Current key:" ],
+    "input.kb.vk"     => %[ ja : "VK コード: 0x%02X (%d)   %s", en : "VK code: 0x%02X (%d)   %s" ],
+    "input.kb.mod"    => %[ ja : "修飾キー: ",         en : "Modifiers: " ],
+    "input.kb.hist"   => %[ ja : "履歴 (新しい順):",   en : "History (newest first):" ],
+    "input.ms.head"   => %[ ja : "マウス (onMouseDown/Up/Move/Wheel)", en : "Mouse (onMouseDown/Up/Move/Wheel)" ],
+    "input.ms.pos"    => %[ ja : "座標: (%d, %d)",     en : "Position: (%d, %d)" ],
+    "input.ms.wheel"  => %[ ja : "ホイール累積: %s",   en : "Wheel total: %s" ],
+    "input.pad.head"  => %[ ja : "ゲームパッド (VK_PAD* / System.getPadAxis)", en : "Gamepad (VK_PAD* / System.getPadAxis)" ],
+    "input.pad.none"  => %[ ja : "パッド未接続 (接続すると自動表示)", en : "No pad connected (shown automatically when connected)" ]
+]);
+
 class InputScene extends DemoScene
 {
     var rawPadKeys = true;   // shell の VK_PAD*→論理キー読み替えを受けず生のまま観測する
@@ -19,7 +37,7 @@ class InputScene extends DemoScene
     var KB_X = 24, KB_Y = 20, KB_W = 560, KB_H = 400;
     var MS_X = 616, MS_Y = 20, MS_W = 640, MS_H = 500;
 
-    function InputScene() { super.DemoScene("入力の可視化"); }
+    function InputScene() { super.DemoScene(I18n.entry("input.title")); }
 
     function create()
     {
@@ -29,7 +47,7 @@ class InputScene extends DemoScene
         pad = new Layer(window, stage); pad.setSize(KB_W, 240); pad.setPos(KB_X, KB_Y + KB_H + 16); pad.visible = true; window.add(pad);
         try { hasPad = System.hasJoypad(0); } catch (e) { hasPad = false; }
         drawKb(); drawMs(); drawPad();
-        setInfo("キー / マウス / パッドを操作して可視化を確認 (パッドは VK_PAD* キーとして届く)");
+        setInfo(I18n.t("input.info"));
     }
 
     function buildKeyNames()
@@ -74,7 +92,7 @@ class InputScene extends DemoScene
         if (s & ssCtrl)  f.add("Ctrl");
         if (s & ssAlt)   f.add("Alt");
         if (s & ssRepeat) f.add("Repeat");
-        return f.count ? f.join(" + ") : "(なし)";
+        return f.count ? f.join(" + ") : I18n.t("input.none");
     }
 
     function drawKb()
@@ -82,20 +100,20 @@ class InputScene extends DemoScene
         kb.fillRect(0, 0, KB_W, KB_H, 0xff1a1e28);
         kb.fillRect(0, 0, KB_W, 34, 0xff28324a);
         kb.font.height = 20;
-        kb.drawText(14, 7, "キーボード (onKeyDown / onKeyUp)", 0x9fc0e8, 255);
+        kb.drawText(14, 7, I18n.t("input.kb.head"), 0x9fc0e8, 255);
         kb.font.height = 22;
-        kb.drawText(20, 50, "現在のキー:", 0x90a0b8, 255);
+        kb.drawText(20, 50, I18n.t("input.kb.cur"), 0x90a0b8, 255);
         kb.font.height = 60;
         var col = keyIsDown ? 0xffe080 : 0x505868;
         var disp = lastKey < 0 ? "—" : keyName(lastKey);
         kb.drawText(24, 78, disp, col, 255, true, 0, 0x000000, 0, 2, 2);
         kb.font.height = 20;
         if (lastKey >= 0)
-            kb.drawText(26, 152, @"VK コード: 0x${"%02X".sprintf(lastKey)} (${lastKey})   ${keyIsDown ? "DOWN" : "UP"}", 0xc8d0e0, 255);
+            kb.drawText(26, 152, I18n.t("input.kb.vk", lastKey, lastKey, keyIsDown ? "DOWN" : "UP"), 0xc8d0e0, 255);
         kb.font.height = 20;
-        kb.drawText(20, 190, "修飾キー: " + shiftFlags(lastShift), 0xa0d0a0, 255);
+        kb.drawText(20, 190, I18n.t("input.kb.mod") + shiftFlags(lastShift), 0xa0d0a0, 255);
         kb.font.height = 18;
-        kb.drawText(20, 226, "履歴 (新しい順):", 0x90a0b8, 255);
+        kb.drawText(20, 226, I18n.t("input.kb.hist"), 0x90a0b8, 255);
         kb.font.height = 18;
         for (var i = 0; i < keyLog.count; i++) kb.drawText(30, 250 + i * 22, keyLog[i], 0xb0c0d8, 255);
         kb.update();
@@ -106,7 +124,7 @@ class InputScene extends DemoScene
         ms.fillRect(0, 0, MS_W, MS_H, 0xff141824);
         ms.fillRect(0, 0, MS_W, 34, 0xff28324a);
         ms.font.height = 20;
-        ms.drawText(14, 7, "マウス (onMouseDown/Up/Move/Wheel)", 0x9fc0e8, 255);
+        ms.drawText(14, 7, I18n.t("input.ms.head"), 0x9fc0e8, 255);
         for (var i = 0; i < trail.count; i++) {
             var p = trail[i];
             ms.fillRect(p[0] - 2, p[1] - 2, 4, 4, 0xff40a0ff);
@@ -119,12 +137,12 @@ class InputScene extends DemoScene
             ms.fillRect(lx - 6, ly - 6, 12, 12, cc);
         }
         ms.font.height = 20;
-        ms.drawText(16, MS_H - 96, @"座標: (${mx}, ${my})", 0xc8d0e0, 255);
+        ms.drawText(16, MS_H - 96, I18n.t("input.ms.pos", mx, my), 0xc8d0e0, 255);
         drawBtn(ms, 16,  MS_H - 60, "L", btnL);
         drawBtn(ms, 90,  MS_H - 60, "M", btnM);
         drawBtn(ms, 164, MS_H - 60, "R", btnR);
         ms.font.height = 20;
-        ms.drawText(240, MS_H - 54, @"ホイール累積: ${wheelAccum}", 0xe0c090, 255);
+        ms.drawText(240, MS_H - 54, I18n.t("input.ms.wheel", "" + wheelAccum), 0xe0c090, 255);
         ms.update();
     }
 
@@ -148,10 +166,10 @@ class InputScene extends DemoScene
         pad.fillRect(0, 0, pad.width, pad.height, 0xff181c26);
         pad.fillRect(0, 0, pad.width, 34, 0xff28324a);
         pad.font.height = 20;
-        pad.drawText(14, 7, "ゲームパッド (VK_PAD* / System.getPadAxis)", 0x9fc0e8, 255);
+        pad.drawText(14, 7, I18n.t("input.pad.head"), 0x9fc0e8, 255);
         if (!hasPad) {
             pad.font.height = 18;
-            pad.drawText(20, 60, "パッド未接続 (接続すると自動表示)", 0x90a0a0, 255);
+            pad.drawText(20, 60, I18n.t("input.pad.none"), 0x90a0a0, 255);
             pad.update();
             return;
         }

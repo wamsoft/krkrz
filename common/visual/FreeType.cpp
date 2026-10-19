@@ -471,8 +471,13 @@ tBaseFreeTypeFace* tTVPFreeTypeFaceList::GetFace( const tjs_string& facename, tj
 
 tBaseFreeTypeFace* tTVPFreeTypeFaceList::GetDefaultFace() const {
 	if( !systemfaces_.empty() ) {
-		// システムに最初に登録されたフェイスを返す
+		// システムに最初に登録されたフェイスを返す。 ただし Elements のアイコン
+		// 専用フォント (elements_basic。 矢印・チェック等の記号しか持たない) は
+		// 文字を描けないので選ばない (内蔵フォントはファイル名順に読むため先頭に来る)
 		FontInfo* font = systemfaces_[0];
+		for( FontInfo* f : systemfaces_ ) {
+			if( f->facename != TJS_W("elements_basic") ) { font = f; break; }
+		}
 		return new tGenericFreeTypeFace( font->path, font->facename, font->index );
 	}
 	return nullptr;

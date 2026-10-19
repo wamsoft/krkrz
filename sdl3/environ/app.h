@@ -96,6 +96,13 @@ public:
 	//! fromEvent=true はマウスイベント由来の座標 (SDL_Renderer 経路では SDL が換算済み)、
 	//! false は SDL_GetMouseState 由来の生ウィンドウ座標。
 	void WindowToSurface(float &x, float &y, bool fromEvent) const;
+	//! SDL のウィンドウ座標 1 あたりの吉里吉里のピクセル数。 既定 (-dpiscaling=no) は
+	//! 実ピクセル基準で、 macOS の Retina では 2、 それ以外は 1。 -dpiscaling=yes では
+	//! OS の拡大率で割った仮想ピクセル基準 (macOS 1 / Windows 200% なら 0.5)。
+	//! 詳細は doc/WindowGeometry.md。
+	float PointScale() const;
+	int ToPoint(int px) const;
+	int ToPixel(int pt) const;
 	virtual void ResizeWindow(int w, int h);
 
 	// メインウインドウのキャプション設定
@@ -280,6 +287,9 @@ public:
 
 	// デスクトップ (作業領域) の矩形 (System.desktop*)。 BaseDisplayID の
 	// SDL_GetDisplayUsableBounds (タスクバー等を除いた領域、 グローバル座標)。
+	//! 画面の座標 (System.screen* / desktop* / getMonitorInfo) を吉里吉里のピクセルへ直す倍率。
+	//! メインウィンドウの PointScale (ウィンドウのサイズ・位置と同じ単位)。 無ければ 1
+	float ScreenScriptScale() const;
 	// モニタ情報 (System.getMonitorInfo / getDisplayMonitors)
 	virtual tjs_int GetMonitorCount() const override;
 	virtual bool GetMonitorInfoAt(tjs_int index, tTVPMonitorInfo &info) const override;

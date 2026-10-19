@@ -799,7 +799,16 @@ struct tTVPElementsDialogManager::Impl
 			const bool use_vk = (vk_mode == VKMode::Always) ||
 			                    (vk_mode == VKMode::Auto && !HostHasPhysicalKeyboard() &&
 			                     !HostScreenKeyboardIsFloating());
-			if (!use_vk) {
+			// 十字 / 方向キーで入力欄に入っただけなら画面のキーボードは出さず、
+			// 決定 (A / Enter) を待つ (ForwardKeyDown の ConfirmScreenKeyboard)。
+			// 通過するたびにキーボードが開いてナビが止まるのを防ぐ。 マウス /
+			// タッチで押した、 またはホストの指定 (initial_focus 等) で入った
+			// ときは従来どおり即座に出す。
+			const bool screen_kb = use_vk || HostScreenKeyboardIsFloating();
+			if (screen_kb && owner != vk_confirmed_for &&
+			    owner->session->last_input_is_key_nav()) {
+				vk_wait_confirm = owner;
+			} else if (!use_vk) {
 				// 物理キーボードあり / 浮動 OS キーボードあり / "never":
 				// text 入力を有効化するだけ。 物理キーボード環境では SDL の
 				// auto 判定によりソフトキーボードは出ず、 Steam Deck では
@@ -818,7 +827,27 @@ struct tTVPElementsDialogManager::Impl
 				ime_focus_active = false;
 			}
 			vk_dismissed_for = nullptr;   // focus が外れたらラッチ解除
+			vk_wait_confirm = nullptr;
+			vk_confirmed_for = nullptr;
 		}
+	}
+
+	// 決定 (A / Enter) で画面のキーボードを出す。 十字で入って待っている
+	// 入力欄か、 キーボードを閉じた直後の入力欄に focus があるときだけ。
+	// 出したら true (キーは消費する = 入力欄へ Enter として渡さない)。
+	bool ConfirmScreenKeyboard(Instance* f, const tvp_elements_input::vk_routing& r)
+	{
+		const bool confirm =
+			(r.k == tvp_elements_input::vk_routing::kind::key && r.key == cycfi::elements::key_code::enter) ||
+			(r.k == tvp_elements_input::vk_routing::kind::pad_button && r.pad == cycfi::elements::pad_button::a);
+		if (!confirm || vk_shown || !f || !f->session) return false;
+		if (f != vk_wait_confirm && f != vk_dismissed_for) return false;
+		if (!f->session->focus_consumes_text()) return false;
+		vk_confirmed_for = f;
+		vk_wait_confirm = nullptr;
+		vk_dismissed_for = nullptr;
+		UpdateFocusDrivenTextInput();
+		return true;
 	}
 
 	// === デスクトップ (WINVER) 用: テキスト欄 focus 中だけ IME を開く ===
@@ -1021,6 +1050,8 @@ struct tTVPElementsDialogManager::Impl
 	VirtualKeyboardHandler vk_handler;
 	Instance* vk_target = nullptr;          //!< 入力先 (生存確認は FindInstance)
 	Instance* vk_dismissed_for = nullptr;   //!< 閉じた直後の再表示抑止ラッチ
+	Instance* vk_wait_confirm = nullptr;    //!< 十字 / キーで入り、 決定を待っている入力欄の持ち主
+	Instance* vk_confirmed_for = nullptr;   //!< 決定でキーボードを出した持ち主 (focus が外れるまで)
 	bool vk_shown = false;
 
 	//! 仮想キーボードの動作モード (TJS: ElementsDialog.virtualKeyboard)。
@@ -3018,6 +3049,22 @@ void tTVPElementsDialogManager::Impl::RenderInstance(
 	float ax = 0.5f, ay = 0.5f;
 	int amargin = 0;
 	inst.session->placement(ax, ay, amargin);
+	// margin は論理面 (ウィンドウの inner) の単位で書かれているので、 描画面 (実ピクセル) へ
+	// 移す。 論理面と描画面の大きさが違う環境 (-dpiscaling=yes、 常にフルスクリーンの機種) で
+	// 換算しないと、 GL 経路などで余白だけ縮んで見える (位置と大きさは換算済み)。
+	{
+		float mscale = inst.in_scale;
+#ifdef __WINVER__
+		// WINVER は描画面 = クライアントの実ピクセル。 スクリプトから見える inner
+		// (-dpiscaling=yes で仮想ピクセル) との比を使う
+		if (iTVPWindow* win = ImeTargetWindow()) {
+			const int iw = static_cast<tTJSNI_Window*>(win)->GetInnerWidth();
+			const int cw = static_cast<tTJSNI_Window*>(win)->GetClientPixelWidth();
+			if (iw > 0 && cw > 0 && cw != iw) mscale = (float)cw / iw;
+		}
+#endif
+		if (mscale != 1.0f) amargin = static_cast<int>(amargin * mscale + 0.5f);
+	}
 	const int free_x = area_w - content_w;
 	const int free_y = area_h - content_h;
 	int px = area_x + amargin + static_cast<int>((free_x - 2 * amargin) * ax);
@@ -4632,6 +4679,7 @@ bool tTVPElementsDialogManager::ForwardKeyDown(tjs_uint key, tjs_uint32 shift)
 		f->armed_vks.insert(key);
 	}
 	auto r = RouteVk(key);
+	if (!(shift & TVP_SS_REPEAT) && _impl->ConfirmScreenKeyboard(f, r)) return true;
 	if (NavLogEnabled() && r.k != vk_routing::kind::none) {
 		char kb[80];
 		snprintf(kb, sizeof(kb), "key down vk=0x%X %s%s", (unsigned)key,

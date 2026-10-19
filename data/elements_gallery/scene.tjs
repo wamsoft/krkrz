@@ -6,6 +6,32 @@
 //  data/ ランチャ。ページ定義は pages.tjs (global GALLERY_PAGES)。
 // ======================================================================
 
+// ページの中身 (pages.tjs の srcLines) は「そのまま写して使える定義ソース」を
+// 画面に出すものなので訳さない。訳すのはギャラリーの枠側の文字列だけ。
+I18n.add(%[
+    "elements_gallery.title"     => %[ ja : "Elements ギャラリー",            en : "Elements gallery" ],
+    "elements_gallery.shell"     => %[ ja : "elements_gallery — Elements ウィジェットギャラリー",
+                                       en : "elements_gallery — Elements widget gallery" ],
+    "elements_gallery.nopages"   => %[ ja : "pages.tjs が読み込めませんでした", en : "Could not load pages.tjs" ],
+    "elements_gallery.nopages.info" => %[ ja : "pages.tjs 読み込み失敗",       en : "Failed to load pages.tjs" ],
+    "elements_gallery.info"      => %[ ja : "ページ切替: 上部ピッカー   ホイール: ソーススクロール",
+                                       en : "Switch page: top picker   Wheel: scroll source" ],
+    "elements_gallery.noelem1"   => %[ ja : "この環境では ElementsDialog が利用できません", en : "ElementsDialog is not available here" ],
+    "elements_gallery.noelem2"   => %[ ja : "KRKRZ_USE_ELEMENTS=ON でビルドした本体で", en : "Try an engine built with" ],
+    "elements_gallery.noelem3"   => %[ ja : "お試しください",                  en : "KRKRZ_USE_ELEMENTS=ON" ],
+    "elements_gallery.src"       => %[ ja : "定義ソース [${label}] — そのまま写して使えます",
+                                       en : "Source [${label}] — copy and use as is" ],
+    "elements_gallery.lines"     => %[ ja : "${from}〜 / ${count} 行",         en : "${from}- / ${count} lines" ],
+    "elements_gallery.log"       => %[ ja : "イベントログ (onAction)",         en : "Event log (onAction)" ],
+    "elements_gallery.p.basic"   => %[ ja : "基本",       en : "Basic" ],
+    "elements_gallery.p.value"   => %[ ja : "値入力",     en : "Values" ],
+    "elements_gallery.p.choice"  => %[ ja : "選択",       en : "Choice" ],
+    "elements_gallery.p.layout"  => %[ ja : "レイアウト", en : "Layout" ],
+    "elements_gallery.p.atlas"   => %[ ja : "atlas",      en : "atlas" ],
+    "elements_gallery.p.anim"    => %[ ja : "アニメ",     en : "Anim" ],
+    "elements_gallery.p.vars"    => %[ ja : "vars",       en : "vars" ]
+]);
+
 class ElementsGalleryScene extends DemoScene
 {
     var currentPage = 0;
@@ -19,7 +45,7 @@ class ElementsGalleryScene extends DemoScene
 
     var SRC_X = 704, SRC_W = 568, SRC_H = 572, LOG_H = 88;
 
-    function ElementsGalleryScene() { super.DemoScene("Elements ギャラリー"); }
+    function ElementsGalleryScene() { super.DemoScene(I18n.entry("elements_gallery.title")); }
 
     function create()
     {
@@ -41,9 +67,9 @@ class ElementsGalleryScene extends DemoScene
 
         if (typeof global.GALLERY_PAGES == "undefined") {
             stage.font.height = 26;
-            stage.drawText(40, 40, "pages.tjs が読み込めませんでした", 0xd0a0a0, 255);
+            stage.drawText(40, 40, I18n.t("elements_gallery.nopages"), 0xd0a0a0, 255);
             stage.update();
-            setInfo("pages.tjs 読み込み失敗");
+            setInfo(I18n.t("elements_gallery.nopages.info"));
             return;
         }
         dm(@"elements_gallery: ${GALLERY_PAGES.count} page(s)");
@@ -58,38 +84,44 @@ class ElementsGalleryScene extends DemoScene
         logLayer.setPos(0, stage.height - 44 - LOG_H); logLayer.visible = true;
         window.add(logLayer);
 
-        setInfo("ページ切替: 上部ピッカー   ホイール: ソーススクロール");
+        setInfo(I18n.t("elements_gallery.info"));
         drawSource();
         drawLog();
 
         if (!hasElements()) {
             // 右のソースパネル (SRC_X から) に重ならないよう、左の欄の幅に収まる行に分ける
             stage.font.height = 24;
-            stage.drawText(40, 40, "この環境では ElementsDialog が利用できません", 0xd0a0a0, 255);
-            stage.drawText(40, 76, "KRKRZ_USE_ELEMENTS=ON でビルドした本体で", 0x9aa4b8, 255);
-            stage.drawText(40, 106, "お試しください", 0x9aa4b8, 255);
+            stage.drawText(40, 40, I18n.t("elements_gallery.noelem1"), 0xd0a0a0, 255);
+            stage.drawText(40, 76, I18n.t("elements_gallery.noelem2"), 0x9aa4b8, 255);
+            stage.drawText(40, 106, I18n.t("elements_gallery.noelem3"), 0x9aa4b8, 255);
             stage.update();
         }
         showGallery();
     }
 
     // --- ギャラリーダイアログ -------------------------------------------
+    // ページ名 (表に "elements_gallery.p.<id>" があれば訳、無ければ pages.tjs の label)
+    function pageLabel(i)
+    {
+        var id = "elements_gallery.p." + GALLERY_PAGES[i].id;
+        return (I18n.table[id] !== void) ? I18n.t(id) : GALLERY_PAGES[i].label;
+    }
     function pageLayout(i) { return Scripts.eval(GALLERY_PAGES[i].srcLines.join("\n")); }
 
     function buildGalleryDict()
     {
         var opts = [];
-        for (var i = 0; i < GALLERY_PAGES.count; i++) opts.add(GALLERY_PAGES[i].label);
+        for (var i = 0; i < GALLERY_PAGES.count; i++) opts.add(pageLabel(i));
         var page = pageLayout(currentPage);
         var dict = %[
-            size : [684, 580], background : [28, 30, 40, 240], locale : "ja-JP",
+            size : [684, 580], background : [28, 30, 40, 240],
             align : "top_left", margin : 10, input : %[ arrow_focus_nav : true ],
             content : %[
                 type : "margin", padding : 12,
                 child : %[ type : "vtile", children : [
                     %[ type : "vsize", height : 0, child : %[ type : "hspacer", width : 644 ] ],
                     %[ type : "align_center",
-                       child : %[ type : "label", text : "Elements ギャラリー", size_scale : 1.4 ] ],
+                       child : %[ type : "label", text : I18n.t("elements_gallery.title"), size_scale : 1.4 ] ],
                     %[ type : "vspacer", height : 8 ],
                     %[ type : "segmented_picker", id : "page", options : opts, initial : currentPage ],
                     %[ type : "vspacer", height : 10 ],
@@ -141,7 +173,7 @@ class ElementsGalleryScene extends DemoScene
         lay.fillRect(0, 0, SRC_W, 34, 0xff242938);
         var page = GALLERY_PAGES[currentPage];
         lay.font.height = 19;
-        lay.drawText(12, 7, @"定義ソース [${page.label}] — そのまま写して使えます", 0x9fc0e8, 255);
+        lay.drawText(12, 7, I18n.t("elements_gallery.src", %[ label : pageLabel(currentPage) ]), 0x9fc0e8, 255);
         lay.font.height = 16;
         var lineH = 19;
         var maxLines = ((SRC_H - 42) / lineH) \ 1;
@@ -155,7 +187,7 @@ class ElementsGalleryScene extends DemoScene
         }
         if (lines.count > maxLines) {
             lay.font.height = 14;
-            lay.drawText(SRC_W - 120, 10, @"${srcScroll + 1}〜 / ${lines.count} 行", 0x60708c, 255);
+            lay.drawText(SRC_W - 120, 10, I18n.t("elements_gallery.lines", %[ from : srcScroll + 1, count : lines.count ]), 0x60708c, 255);
         }
         lay.update();
     }
@@ -175,7 +207,7 @@ class ElementsGalleryScene extends DemoScene
         lay.fillRect(0, 0, lay.width, LOG_H, 0xff10141c);
         lay.fillRect(0, 0, lay.width, 2, 0xff2c3444);
         lay.font.height = 16;
-        lay.drawText(12, 6, "イベントログ (onAction)", 0x8fa8d0, 255);
+        lay.drawText(12, 6, I18n.t("elements_gallery.log"), 0x8fa8d0, 255);
         lay.font.height = 17;
         for (var i = 0; i < logLines.count; i++)
             lay.drawText(24, 26 + i * 20, logLines[i], 0xd8e0a0, 255);

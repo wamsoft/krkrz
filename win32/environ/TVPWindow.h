@@ -172,6 +172,13 @@ public:
 	static void SetClientSize( HWND hWnd, SIZE& size );
 	//! クライアント矩形 → 外形矩形 (per-monitor DPI 対応。AdjustWindowRectEx は使わない)
 	static BOOL AdjustWindowRectForWindow( HWND hWnd, RECT& rect );
+	//! -dpiscaling=yes のとき、 クライアントの実ピクセル 1 あたりの吉里吉里のピクセル数の逆数
+	//! (= 実ピクセル / スクリプトのピクセル = DPI / 96)。 既定 (no) は常に 1。
+	//! スクリプトから見えるウィンドウのサイズ (innerWidth 等) だけをこれで換算し、
+	//! 内部 (DestRect・描画・マウス) はクライアントの実ピクセルのまま扱う。
+	double GetScriptScale() const;
+	int ToScriptPx( int client_px ) const;
+	int ToClientPx( int script_px ) const;
 	//! 装飾ぶんのサイズ (外形 - クライアント)
 	static void GetFrameSize( HWND hWnd, int& fw, int& fh );
 

@@ -468,6 +468,7 @@ enum {
 	NUM_TVP_UNABLE_TO_INITIALIZE_OPEN_GL,
 	NUM_TVP_UNABLE_TO_INITIALIZE_GLAD_EGL,
 	NUM_TVP_UNABLE_TO_LOAD_GLAD_GLESN,
+	NUM_TVP_WINDOW_NOT_OPEN_GL,
 	NUM_TVP_UNKNOWN_DATA_TYPE,
 	NUM_TVP_VERTEX_BINDER_IS_EMPTY,
 	NUM_TVP_CANNOT_GET_LAYER_EVENT_TARGET_INTERFACE,
@@ -948,6 +949,7 @@ void TVPLoadMessage( picojson::array &array ) {
 	TVPUnableToInitializeOpenGL.AssignMessage( conv(array[NUM_TVP_UNABLE_TO_INITIALIZE_OPEN_GL].get<std::string>()).c_str() );
 	TVPUnableToInitializeGladEGL.AssignMessage( conv(array[NUM_TVP_UNABLE_TO_INITIALIZE_GLAD_EGL].get<std::string>()).c_str() );
 	TVPUnableToLoadGladGLESN.AssignMessage( conv(array[NUM_TVP_UNABLE_TO_LOAD_GLAD_GLESN].get<std::string>()).c_str() );
+	TVPWindowNotOpenGL.AssignMessage( conv(array[NUM_TVP_WINDOW_NOT_OPEN_GL].get<std::string>()).c_str() );
 	TVPUnknownDataType.AssignMessage( conv(array[NUM_TVP_UNKNOWN_DATA_TYPE].get<std::string>()).c_str() );
 	TVPVertexBinderIsEmpty.AssignMessage( conv(array[NUM_TVP_VERTEX_BINDER_IS_EMPTY].get<std::string>()).c_str() );
 	TVPCannotGetLayerEventTargetInterface.AssignMessage( conv(array[NUM_TVP_CANNOT_GET_LAYER_EVENT_TARGET_INTERFACE].get<std::string>()).c_str() );

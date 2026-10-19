@@ -3,6 +3,25 @@
 //  layer_basic シーン (LayerBasicScene) — 合成モードと不透明度
 // ======================================================================
 
+I18n.add(%[
+    "layer_basic.title"       => %[ ja : "合成モードと不透明度",       en : "Blend modes and opacity" ],
+    "layer_basic.shell"       => %[ ja : "layer_basic — 合成モードと不透明度", en : "layer_basic — Blend modes and opacity" ],
+    "layer_basic.info"        => %[ ja : "パネルで不透明度 (opacity) を変更すると全サンプルに反映",
+                                    en : "Change opacity in the panel to update all samples" ],
+    "layer_basic.m.opaque"    => %[ ja : "omOpaque (不透明)",         en : "omOpaque (opaque)" ],
+    "layer_basic.m.alpha"     => %[ ja : "omAlpha (アルファ)",        en : "omAlpha (alpha)" ],
+    "layer_basic.m.add"       => %[ ja : "omAdditive (加算)",         en : "omAdditive (add)" ],
+    "layer_basic.m.sub"       => %[ ja : "omSubtractive (減算)",      en : "omSubtractive (subtract)" ],
+    "layer_basic.m.mul"       => %[ ja : "omMultiplicative (乗算)",   en : "omMultiplicative (multiply)" ],
+    "layer_basic.m.screen"    => %[ ja : "omScreen (スクリーン)",     en : "omScreen (screen)" ],
+    "layer_basic.m.dodge"     => %[ ja : "omDodge (覆い焼き)",        en : "omDodge (dodge)" ],
+    "layer_basic.m.darken"    => %[ ja : "omDarken (比較暗)",         en : "omDarken (darken)" ],
+    "layer_basic.m.lighten"   => %[ ja : "omLighten (比較明)",        en : "omLighten (lighten)" ],
+    "layer_basic.panel.title" => %[ ja : "合成サンプル設定",          en : "Blend sample settings" ],
+    "layer_basic.panel.op"    => %[ ja : "不透明度 (opacity 0〜255)", en : "Opacity (0-255)" ],
+    "layer_basic.panel.note"  => %[ ja : "9 種の合成モード (operateRect) を比較", en : "Compare 9 blend modes (operateRect)" ]
+]);
+
 class LayerBasicScene extends DemoScene
 {
     var samples;
@@ -11,7 +30,7 @@ class LayerBasicScene extends DemoScene
     var COLS = 3, CELL_W = 280, CELL_H = 166, MARGIN = 20, TOP = 20, LABEL_H = 24;
     var pendingDraw = false;
 
-    function LayerBasicScene() { super.DemoScene("合成モードと不透明度"); }
+    function LayerBasicScene() { super.DemoScene(I18n.entry("layer_basic.title")); }
 
     function create()
     {
@@ -21,15 +40,15 @@ class LayerBasicScene extends DemoScene
         // 見える。holdAlpha でアルファを保護する。
         stage.holdAlpha = true;
         samples = [
-            %[ mode:omOpaque,         name:"omOpaque (不透明)" ],
-            %[ mode:omAlpha,          name:"omAlpha (アルファ)" ],
-            %[ mode:omAdditive,       name:"omAdditive (加算)" ],
-            %[ mode:omSubtractive,    name:"omSubtractive (減算)" ],
-            %[ mode:omMultiplicative, name:"omMultiplicative (乗算)" ],
-            %[ mode:omScreen,         name:"omScreen (スクリーン)" ],
-            %[ mode:omDodge,          name:"omDodge (覆い焼き)" ],
-            %[ mode:omDarken,         name:"omDarken (比較暗)" ],
-            %[ mode:omLighten,        name:"omLighten (比較明)" ]
+            %[ mode:omOpaque,         name:I18n.t("layer_basic.m.opaque") ],
+            %[ mode:omAlpha,          name:I18n.t("layer_basic.m.alpha") ],
+            %[ mode:omAdditive,       name:I18n.t("layer_basic.m.add") ],
+            %[ mode:omSubtractive,    name:I18n.t("layer_basic.m.sub") ],
+            %[ mode:omMultiplicative, name:I18n.t("layer_basic.m.mul") ],
+            %[ mode:omScreen,         name:I18n.t("layer_basic.m.screen") ],
+            %[ mode:omDodge,          name:I18n.t("layer_basic.m.dodge") ],
+            %[ mode:omDarken,         name:I18n.t("layer_basic.m.darken") ],
+            %[ mode:omLighten,        name:I18n.t("layer_basic.m.lighten") ]
         ];
         src = new Layer(window, stage);
         src.setSize(CELL_W, CELL_H);
@@ -38,7 +57,7 @@ class LayerBasicScene extends DemoScene
         drawSprite(src);
 
         redraw();
-        setInfo("パネルで不透明度 (opacity) を変更すると全サンプルに反映");
+        setInfo(I18n.t("layer_basic.info"));
         showPanelDict(panelDict());
     }
 
@@ -89,16 +108,16 @@ class LayerBasicScene extends DemoScene
     function panelDict()
     {
         return %[
-            size : [280, 180], background : [26, 30, 40, 236], locale : "ja-JP",
+            size : [280, 180], background : [26, 30, 40, 236],
             align : "top_right", margin : 16,
             content : %[ type : "margin", padding : 14, child : %[ type : "vtile", children : [
                 %[ type : "vsize", height : 0, child : %[ type : "hspacer", width : 248 ] ],
-                %[ type : "align_center", child : %[ type : "label", text : "合成サンプル設定", size_scale : 1.2 ] ],
+                %[ type : "align_center", child : %[ type : "label", text : I18n.t("layer_basic.panel.title"), size_scale : 1.2 ] ],
                 %[ type : "vspacer", height : 12 ],
-                %[ type : "label", text : "不透明度 (opacity 0〜255)" ],
+                %[ type : "label", text : I18n.t("layer_basic.panel.op") ],
                 %[ type : "slider_with_range", id : "op", min : 0, max : 255, initial : opacity ],
                 %[ type : "vspacer", height : 10 ],
-                %[ type : "label", text : "9 種の合成モード (operateRect) を比較", color : [150, 180, 220, 255] ]
+                %[ type : "label", text : I18n.t("layer_basic.panel.note"), color : [150, 180, 220, 255] ]
             ] ] ]
         ];
     }

@@ -450,6 +450,7 @@
         "無法初始化 OpenGL",
         "無法初始化 glad EGL",
         "無法載入 glad GLES（無法解析 GL 函式）。\nOpenGL ES 上下文可能建立失敗；請檢查日誌中之前的錯誤。\n在 Windows 上，當 OpenGL 驅動程式不支援 ES profile\n且找不到 ANGLE 的 libEGL.dll / libGLESv2.dll 時會發生\n",
+        "此視窗無法使用 OpenGL（在部分平台上，SDL 會將 SDLDrawDevice 使用過的視窗重建為非 OpenGL 視窗）。\n要使用以 OpenGL 為基礎的 DrawDevice（OGLDrawDevice / SDLOGLDrawDevice）或 Canvas，請以 -drawdevice=sdlogl（預設）或 -drawdevice=ogl 啟動",
         "未知的資料類型",
         "VertexBinder 為空",
         "無法取得 layerEventTargetInterface",

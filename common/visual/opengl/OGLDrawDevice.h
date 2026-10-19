@@ -62,8 +62,16 @@ class tTVPOGLDrawDevice : public tTVPDrawDevice
 	//! 論理サーフェス (inner) サイズの問い合わせ先。 SetWindowInterface で取得。
 	class tTJSNI_Window *NIWindow = nullptr;
 
+	//! Canvas 描画の拡大用。 論理サーフェス (inner) と実フレームバッファの大きさが
+	//! 違う環境 (-dpiscaling=yes、 常にフルスクリーンの CS 機等) では、 Canvas を
+	//! inner の大きさのこの FBO に描かせてから、 実フレームバッファへ拡大して貼る
+	//! (SDL_Renderer 経路の SDL_SetRenderLogicalPresentation と同じ見え方)。
+	std::unique_ptr<class GLFrameBufferObject> CanvasScaleFBO;
+
 	//! DestRect (論理サーフェス座標) を GL の実フレームバッファ座標へ移す。
 	tTVPRect ToPhysicalRect(const tTVPRect &r, int physW, int physH) const;
+	//! CanvasScaleFBO の絵を実フレームバッファへ拡大して貼る。
+	void PresentCanvasScaled(GLint screenFbo, int logW, int logH);
 
 	~tTVPOGLDrawDevice(); //!< デストラクタ
 

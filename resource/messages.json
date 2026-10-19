@@ -450,6 +450,7 @@
         "OpenGL を初期化できません",
         "glad EGL を初期化できません",
         "glad GLES を読み込めません (GL 関数を解決できませんでした)。\nOpenGL ES コンテキストの作成に失敗している可能性があります。\n直前のログのエラーを確認してください。\nWindows では OpenGL ドライバが ES プロファイル非対応で\nANGLE の libEGL.dll / libGLESv2.dll も見つからない場合に発生します\n",
+        "このウィンドウは OpenGL を使えない状態です (環境によっては、SDLDrawDevice で使ったウィンドウを SDL が OpenGL 用でないウィンドウに作り直します)。\nOpenGL 系の DrawDevice (OGLDrawDevice / SDLOGLDrawDevice) や Canvas を使う場合は、-drawdevice=sdlogl (既定) または -drawdevice=ogl で起動してください",
         "不明なデータ型です",
         "VertexBinder が空です",
         "layerEventTargetInterface を取得できません",

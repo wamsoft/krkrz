@@ -569,22 +569,36 @@ void
 GLTextureDrawer::DrawTexture(GLTexture *tex, int scr_w, int scr_h, float position[], int tex_w, int tex_h, bool blend, bool premultiplied)
 {
 	if (_shader_program && tex) {
-
-        glViewport(0, 0, scr_w, scr_h);
-
         GLfloat u = tex_w == 0 ? 1.0 : (float)tex_w / tex->width();
         GLfloat v = tex_h == 0 ? 1.0 : (float)tex_h / tex->height();
+		DrawImpl(tex->id(), scr_w, scr_h, position, u, v, false, blend, premultiplied);
+	}
+}
 
-		// UV補正
+void
+GLTextureDrawer::DrawTextureId(GLuint tex_id, int scr_w, int scr_h, float position[], bool bottom_up)
+{
+	if (_shader_program && tex_id) {
+		DrawImpl(tex_id, scr_w, scr_h, position, 1.0f, 1.0f, bottom_up, false, false);
+	}
+}
+
+void
+GLTextureDrawer::DrawImpl(GLuint tex_id, int scr_w, int scr_h, float position[], GLfloat u, GLfloat v, bool flip, bool blend, bool premultiplied)
+{
+	{
+        glViewport(0, 0, scr_w, scr_h);
+
+		// UV補正 (flip = 行が下から上に並んだテクスチャ。 上下を入れ替える)
     	GLfloat _uv[8];
 		_uv[0] = 0;
-		_uv[1] = v;
+		_uv[1] = flip ? 0 : v;
 		_uv[2] = 0;
-		_uv[3] = 0;
+		_uv[3] = flip ? v : 0;
 		_uv[4] = u;
-		_uv[5] = v;
+		_uv[5] = flip ? 0 : v;
 		_uv[6] = u;
-		_uv[7] = 0;
+		_uv[7] = flip ? v : 0;
 
         // 描画調整
 		glDisable( GL_DEPTH_TEST );
@@ -614,7 +628,7 @@ GLTextureDrawer::DrawTexture(GLTexture *tex, int scr_w, int scr_h, float positio
 		glUniform1i(_unif_texture, 0);
 
 		// テクスチャをバインド
-		glBindTexture(GL_TEXTURE_2D, tex->id());
+		glBindTexture(GL_TEXTURE_2D, tex_id);
 		// パラメータ設定
         glVertexAttribPointer(_attr_position, 2, GL_FLOAT, GL_FALSE, 0, (GLvoid*) position);
         glVertexAttribPointer(_attr_texCoord, 2, GL_FLOAT, GL_FALSE, 0, (GLvoid*) _uv);

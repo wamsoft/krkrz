@@ -25,6 +25,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <map>
 #include <memory>
@@ -50,19 +52,26 @@ ttstr Utf8ToTtstr(std::string_view u8)
 // 実行時画像ストア (ホスト注入画像)
 //
 // TJS 側が `ElementsDialog.registerImage(name, ...)` で名前→エンコード済み
-// 画像バイト (PNG/BMP 等) を登録する。 resource_loader.read() は "mem://<name>"
-// を受けたらファイル VFS でなくこのストアから返す。 セーブサムネイル等、
-// 実行時に変わる画像を Elements ウィジェットへ渡すための仕組み。
-// pixmap は画面 build 時に読み直されるので、 再登録 → 画面再オープンで更新。
+// 画像バイト (PNG/BMP 等) を、 `registerLayerImage(name, layer)` で名前→
+// 生の画素を登録する。 1 つの名前に入るのはどちらか一方 (登録し直すと
+// 種類ごと置き換わる)。 resource_loader は "mem://<name>" を受けたらファイル
+// VFS でなくこのストアから返す: 生の画素は read_raw()、 バイトは read()。
+// pixmap は read_raw() を先に問うので、 生の画素はデコードを通らない。
+// セーブサムネイル等、 実行時に変わる画像を Elements ウィジェットへ渡すための仕組み。
 //---------------------------------------------------------------------------
+struct ImageStoreEntry
+{
+	std::vector<std::uint8_t>                              bytes;  // エンコード済み
+	std::shared_ptr<const cycfi::elements::raw_image>      raw;    // 生の画素
+};
 std::mutex& ImageStoreMutex()
 {
 	static std::mutex m;
 	return m;
 }
-std::map<std::string, std::vector<std::uint8_t>>& ImageStore()
+std::map<std::string, ImageStoreEntry>& ImageStore()
 {
-	static std::map<std::string, std::vector<std::uint8_t>> s;
+	static std::map<std::string, ImageStoreEntry> s;
 	return s;
 }
 
@@ -103,7 +112,7 @@ public:
 		if (std::string key; ParseMemName(name, key)) {
 			std::lock_guard<std::mutex> lk(ImageStoreMutex());
 			auto it = ImageStore().find(key);
-			if (it != ImageStore().end()) return it->second;
+			if (it != ImageStore().end()) return it->second.bytes;  // 生の画素なら空
 			return {};
 		}
 		ttstr path = Utf8ToTtstr(name);
@@ -119,6 +128,16 @@ public:
 			// (呼出側 register_font は bytes.empty() を見て return する)。
 			return {};
 		}
+	}
+
+	// 生の画素で登録された mem:// を返す (共有するだけでコピーしない)。
+	std::shared_ptr<const cycfi::elements::raw_image> read_raw(std::string_view name) override
+	{
+		std::string key;
+		if (name.empty() || !ParseMemName(name, key)) return {};
+		std::lock_guard<std::mutex> lk(ImageStoreMutex());
+		auto it = ImageStore().find(key);
+		return it != ImageStore().end() ? it->second.raw : nullptr;
 	}
 
 	bool exists(std::string_view name) override
@@ -717,6 +736,23 @@ ttstr TVPGetElementsDefaultFontFamily()
 //---------------------------------------------------------------------------
 // 実行時画像ストア API (ホスト注入画像)
 //---------------------------------------------------------------------------
+// ストアへ入れて、 その mem:// を表示中の image widget を読み直させる。
+static void CommitImageStoreEntry(const std::string& key, ImageStoreEntry&& entry)
+{
+	{
+		std::lock_guard<std::mutex> lk(ImageStoreMutex());
+		ImageStore()[key] = std::move(entry);
+	}
+	// 差替後、 その mem:// を表示中の image widget を即時再ロード
+	// (セーブサムネイル等がその場で更新される)。 ⚠ ImageStoreMutex は必ず
+	// 解放してから呼ぶ (refresh 内の set_image が resource_loader 経由で
+	// ImageStore を読むため、 保持したままだと同一 mutex を再入してデッドロック)。
+	elements_modal::refresh_mem_image(key);
+	// set_image は widget を直接差し替えるだけでセッションのダーティにならない
+	// ため、 renderCache が効いていても反映されるよう明示的に再描画を要求する。
+	tTVPElementsDialogManager::Instance().InvalidateOverlays();
+}
+
 // name (logical) → storage path のファイルバイトを読んで登録。 jsonc からは
 // "mem://<name>" で参照する。 読めなければ登録せず false。
 bool TVPRegisterElementsImageFile(const ttstr& name, const ttstr& path)
@@ -737,18 +773,50 @@ bool TVPRegisterElementsImageFile(const ttstr& name, const ttstr& path)
 		TVPAddImportantLog(ttstr(TJS_W("ElementsResourceLoader: registerImage: read failed: ")) + path);
 		return false;
 	}
-	{
-		std::lock_guard<std::mutex> lk(ImageStoreMutex());
-		ImageStore()[key] = std::move(bytes);
+	CommitImageStoreEntry(key, ImageStoreEntry{ std::move(bytes), nullptr });
+	return true;
+}
+
+bool TVPRegisterElementsImagePixels(const ttstr& name, const void* top_row,
+                                    tjs_int pitch_bytes, tjs_int width, tjs_int height,
+                                    bool premultiplied, bool opaque)
+{
+	std::string key = TtstrToUtf8(name);
+	if (key.empty() || !top_row || width <= 0 || height <= 0) return false;
+
+	// 上の行から順に、 行の間隔 = 幅 で詰める (吉里吉里の画像は下から上の
+	// 並びで pitch が負のことがあるので、 行ごとに pitch でたどる)。 色の並びは
+	// 吉里吉里も ThorVG の ARGB8888 も 0xAARRGGBB なので変換しない。
+	// 乗算していない画素は同じループで乗算済みにする (ThorVG に画素を
+	// 書き換えさせず、 参照のまま描かせるため)。
+	auto img = std::make_shared<cycfi::elements::raw_image>();
+	img->width = width;
+	img->height = height;
+	img->premultiplied = true;
+	img->pixels.resize(static_cast<std::size_t>(width) * static_cast<std::size_t>(height));
+	const auto* src_base = static_cast<const std::uint8_t*>(top_row);
+	for (tjs_int y = 0; y < height; ++y) {
+		const auto* src = reinterpret_cast<const std::uint32_t*>(
+			src_base + static_cast<std::ptrdiff_t>(y) * pitch_bytes);
+		std::uint32_t* dst = img->pixels.data() + static_cast<std::size_t>(y) * width;
+		if (opaque) {
+			for (tjs_int x = 0; x < width; ++x) dst[x] = src[x] | 0xff000000u;
+		} else if (premultiplied) {
+			std::memcpy(dst, src, sizeof(std::uint32_t) * width);
+		} else {
+			for (tjs_int x = 0; x < width; ++x) {
+				const std::uint32_t c = src[x];
+				const std::uint32_t a = c >> 24;
+				if (a == 255) { dst[x] = c; continue; }
+				if (a == 0)   { dst[x] = 0; continue; }
+				const std::uint32_t r = (((c >> 16) & 0xff) * a + 127) / 255;
+				const std::uint32_t g = (((c >>  8) & 0xff) * a + 127) / 255;
+				const std::uint32_t b = (( c        & 0xff) * a + 127) / 255;
+				dst[x] = (a << 24) | (r << 16) | (g << 8) | b;
+			}
+		}
 	}
-	// バイト差替後、 その mem:// を表示中の image widget を即時再ロード
-	// (セーブサムネイル等がその場で更新される)。 ⚠ ImageStoreMutex は必ず
-	// 解放してから呼ぶ (refresh 内の set_image が resource_loader 経由で
-	// ImageStore を読むため、 保持したままだと同一 mutex を再入してデッドロック)。
-	elements_modal::refresh_mem_image(key);
-	// set_image は widget を直接差し替えるだけでセッションのダーティにならない
-	// ため、 renderCache が効いていても反映されるよう明示的に再描画を要求する。
-	tTVPElementsDialogManager::Instance().InvalidateOverlays();
+	CommitImageStoreEntry(key, ImageStoreEntry{ {}, std::move(img) });
 	return true;
 }
 

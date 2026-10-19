@@ -22,6 +22,20 @@
 //            "@upload ..." 行をログへ出して終了する。
 // ======================================================================
 
+I18n.add(%[
+    "upload_bench.title"      => %[ ja : "転送コスト計測", en : "Upload cost bench" ],
+    "upload_bench.info.auto"  => %[ ja : "自動計測モード (-uploadauto): 結果は @upload 行でログに出ます",
+                                    en : "Auto mode (-uploadauto): results go to the log as @upload lines" ],
+    "upload_bench.info"       => %[ ja : "1: dense (全画面)  2: sparse (小矩形多数)  P: 経路切替  C: リセット",
+                                    en : "1: dense (full screen)  2: sparse (many small rects)  P: path  C: reset" ],
+    "upload_bench.line.shape" => %[ ja : "形: %s   経路: %s",             en : "Shape: %s   Path: %s" ],
+    "upload_bench.line.fps"   => %[ ja : "fps: %s   転送/フレーム: %s 回", en : "fps: %s   Uploads/frame: %s" ],
+    "upload_bench.line.one"   => %[ ja : "転送 1 回: %s us",               en : "Per upload: %s us" ],
+    "upload_bench.line.frame" => %[ ja : "転送/フレーム合計: %s us",       en : "Upload total/frame: %s us" ],
+    "upload_bench.line.share" => %[ ja : "転送が実時間に占める割合: %s %%   (%s MB/s)",
+                                    en : "Share of wall time: %s %%   (%s MB/s)" ]
+]);
+
 class UploadBenchScene extends DemoScene
 {
     var parts;            // sparse 用の小レイヤ配列
@@ -37,7 +51,7 @@ class UploadBenchScene extends DemoScene
 
     var SPARSE_N = 40, SPARSE_SIZE = 48;
 
-    function UploadBenchScene() { super.DemoScene("転送コスト計測"); }
+    function UploadBenchScene() { super.DemoScene(I18n.entry("upload_bench.title")); }
 
     function create()
     {
@@ -89,8 +103,8 @@ class UploadBenchScene extends DemoScene
 
         switchShape(1);
         setInfo(autoMode
-            ? "自動計測モード (-uploadauto): 結果は @upload 行でログに出ます"
-            : "1: dense (全画面)  2: sparse (小矩形多数)  P: 経路切替  C: リセット");
+            ? I18n.t("upload_bench.info.auto")
+            : I18n.t("upload_bench.info"));
     }
 
     function onExit()
@@ -174,11 +188,11 @@ class UploadBenchScene extends DemoScene
         info.fillRect(0, 0, info.width, info.height, 0xc0101820);
         var y = 8;
         var lines = [
-            "形: " + d.shape + "   経路: " + d.mode,
-            "fps: " + d.fps + "   転送/フレーム: " + d.uploads_f + " 回",
-            "転送 1 回: " + d.us_upload + " us",
-            "転送/フレーム合計: " + d.us_frame + " us",
-            "転送が実時間に占める割合: " + d.share + " %   (" + d.MB_s + " MB/s)"
+            I18n.t("upload_bench.line.shape", d.shape, d.mode),
+            I18n.t("upload_bench.line.fps", "" + d.fps, "" + d.uploads_f),
+            I18n.t("upload_bench.line.one", "" + d.us_upload),
+            I18n.t("upload_bench.line.frame", "" + d.us_frame),
+            I18n.t("upload_bench.line.share", "" + d.share, "" + d.MB_s)
         ];
         for (var i = 0; i < lines.count; i++) {
             info.drawText(10, y, lines[i], 0xc8e0ff, 255, false, 0, 0, 0, 0, 0);

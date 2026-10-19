@@ -135,6 +135,15 @@ static HWND TVPGetHWNDFromVariant(tTJSVariant *v)
 #include "StorageCache.h"           // TVPGetStorageCacheCount
 #include "GraphicsLoaderIntf.h"     // TVPGetGraphicCacheCount
 
+#include "WindowFormUnit.h"   // TTVPWindowForm::ToScriptPx (-dpiscaling)
+// -dpiscaling=yes では画面の大きさ・位置もメインウィンドウの倍率で仮想ピクセルにする
+// (ウィンドウのサイズ・位置と同じ単位)。 既定は実ピクセル。
+static tjs_int TVPWinScreenToScript( tjs_int v )
+{
+	if( TVPMainWindow && TVPMainWindow->GetForm() ) return TVPMainWindow->GetForm()->ToScriptPx( v );
+	return v;
+}
+
 //---------------------------------------------------------------------------
 static ttstr TVPAppTitle;
 static bool TVPAppTitleInit = false;
@@ -1746,7 +1755,7 @@ TJS_BEGIN_NATIVE_PROP_DECL(screenWidth)
 {
 	TJS_BEGIN_NATIVE_PROP_GETTER
 	{
-		*result = tTVPScreen::GetWidth();
+		*result = TVPWinScreenToScript( tTVPScreen::GetWidth() );
 		return TJS_S_OK;
 	}
 	TJS_END_NATIVE_PROP_GETTER
@@ -1759,7 +1768,7 @@ TJS_BEGIN_NATIVE_PROP_DECL(screenHeight)
 {
 	TJS_BEGIN_NATIVE_PROP_GETTER
 	{
-		*result = tTVPScreen::GetHeight();
+		*result = TVPWinScreenToScript( tTVPScreen::GetHeight() );
 		return TJS_S_OK;
 	}
 	TJS_END_NATIVE_PROP_GETTER
@@ -1772,7 +1781,7 @@ TJS_BEGIN_NATIVE_PROP_DECL(desktopLeft)
 {
 	TJS_BEGIN_NATIVE_PROP_GETTER
 	{
-		*result = tTVPScreen::GetDesktopLeft();
+		*result = TVPWinScreenToScript( tTVPScreen::GetDesktopLeft() );
 		return TJS_S_OK;
 	}
 	TJS_END_NATIVE_PROP_GETTER
@@ -1785,7 +1794,7 @@ TJS_BEGIN_NATIVE_PROP_DECL(desktopTop)
 {
 	TJS_BEGIN_NATIVE_PROP_GETTER
 	{
-		*result = tTVPScreen::GetDesktopTop();
+		*result = TVPWinScreenToScript( tTVPScreen::GetDesktopTop() );
 		return TJS_S_OK;
 	}
 	TJS_END_NATIVE_PROP_GETTER
@@ -1798,7 +1807,7 @@ TJS_BEGIN_NATIVE_PROP_DECL(desktopWidth)
 {
 	TJS_BEGIN_NATIVE_PROP_GETTER
 	{
-		*result = tTVPScreen::GetDesktopWidth();
+		*result = TVPWinScreenToScript( tTVPScreen::GetDesktopWidth() );
 		return TJS_S_OK;
 	}
 	TJS_END_NATIVE_PROP_GETTER
@@ -1811,7 +1820,7 @@ TJS_BEGIN_NATIVE_PROP_DECL(desktopHeight)
 {
 	TJS_BEGIN_NATIVE_PROP_GETTER
 	{
-		*result = tTVPScreen::GetDesktopHeight();
+		*result = TVPWinScreenToScript( tTVPScreen::GetDesktopHeight() );
 		return TJS_S_OK;
 	}
 	TJS_END_NATIVE_PROP_GETTER
