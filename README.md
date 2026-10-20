@@ -1,4 +1,6 @@
-# 吉里吉里Z multi platform (krkrz)
+# krkrz — 吉里吉里Z エンジン本体 (マルチプラットフォーム版)
+
+日本語 | [English](README_en.md)
 
 TJS2 スクリプトエンジン + ノベルゲームランタイム「吉里吉里Z」を、Windows 専用から
 マルチプラットフォームへ展開した派生版のエンジン本体です。
@@ -10,14 +12,20 @@ TJS2 スクリプトエンジン + ノベルゲームランタイム「吉里吉
 - 外部ライブラリは極力そのまま参照する構成で、依存解決に **vcpkg** を使います
   (SDL3 は最新版を追うため `FetchContent` で取得します)
 
+使い方・クラスリファレンス・ガイドは [公開サイト](https://wamsoft.github.io/krkrz_dev/) にあります。
+
 ## リポジトリの位置づけ
 
 このリポジトリは**エンジン本体のみ**です。プラグイン・TJS2 スクリプトライブラリ
 (KAG3 等)・統合ビルドは、アンブレラリポジトリ **`krkrz_dev`** が submodule として
 束ねています。プラグイン込みで一式ビルドしたい場合はそちらを使ってください。
 
-ブラウザ (Emscripten/wasm) と Android のビルドは、このリポジトリを engine ソースと
-して参照する「外枠」リポジトリ (`krkrz_web` / `krkrz_android`) 側にあります。
+ブラウザ (Emscripten/wasm)・Android・iOS・Linux 配布パッケージのビルドは、このリポジトリを
+エンジンのソースとして参照する「外枠」リポジトリ
+([krkrz_web](https://github.com/wamsoft/krkrz_web) /
+[krkrz_android](https://github.com/wamsoft/krkrz_android) /
+[krkrz_ios](https://github.com/wamsoft/krkrz_ios) /
+[krkrz_linux](https://github.com/wamsoft/krkrz_linux)) 側にあります。
 
 ## ビルドバリアント
 
@@ -156,7 +164,7 @@ INSTALL_PREFIX=install make install
 | `KRKRZ_USE_SJIS` | OFF | 既定のテキスト読み込みを SJIS (MBCS) にする |
 | `KRKRZ_USE_OPENGL` | ON | OpenGL ES 描画機構 (Canvas/Texture/Shader 等) |
 | `KRKRZ_CANVAS_GPU` | OFF | SDL3: Canvas 系クラスを SDL_GPU で動かす (`KRKRZ_USE_OPENGL=OFF` と組み合わせる。[CanvasGPU.md](doc/CanvasGPU.md)) |
-| `KRKRZ_USE_ELEMENTS` | ON | Elements ダイアログ UI (SDL/WIN)。OFF で `Dialog` クラスごと消える |
+| `KRKRZ_USE_ELEMENTS` | ON | Elements ダイアログ UI (SDL/WIN)。OFF で `ElementsDialog` クラスごと消える |
 | `KRKRZ_USE_GLYPHWARE` | ON | 統一フォントエンジン glyphware |
 | `KRKRZ_USE_MOVIE` | ON | 動画再生 (external/movie-player) |
 | `KRKRZ_REPL` | デスクトップ ON | 対話型 TJS REPL (`-repl` / `-replfile`) |
@@ -165,14 +173,14 @@ INSTALL_PREFIX=install make install
 | `KRKRZ_ENABLE_DAP` | ON | VSCode デバッグアダプタ (DAP) サーバ |
 | `KRKRZ_BUILD_TESTS` | ON | パリティテスト (画像 / サウンド SIMD) のビルド |
 | `KRKRZ_DRAW_STATS` | OFF | DrawThreadPool 利用率の計測 ([DrawStats.md](doc/DrawStats.md)) |
-| `KRKRZ_RESOURCE_DIR` | `resource/` | 埋め込みリソースフォルダ (案件用に差し替え可) |
+| `KRKRZ_RESOURCE_DIR` | `resource/` | 埋め込みリソースフォルダ (タイトルごとに差し替え可) |
 | `KRKRZ_WIN_ICON` | 吉里吉里の既定アイコン | Windows (SDL 版): exe へ埋め込むアイコン (`.ico` の絶対パス) |
 | `KRKRZ_VERSION_BUILD` | `0` | バージョン 4 桁目 ([Versioning.md](doc/Versioning.md)) |
 | `MASTER` | OFF | ログレベルを WARNING 固定にする (INFO を出さない) |
 
 `MASTER` 未定義時の起動時ログレベルは Release=INFO / Debug=DEBUG で、起動オプション
 `-loglevel=ERROR,WARNING,INFO,DEBUG,VERBOSE` で変更できます。詳細は
-[Logging.md](doc/Logging.md)。
+[Logging.md](doc/Logging.md) を参照してください。
 
 `KRKRZ_WIN_ICON` に `.ico` の絶対パスを渡すと、生成される `.rc` へ
 `MAINICON ICON <パス>` が追加され、ビルド直後から exe にアイコンが付きます
@@ -379,7 +387,7 @@ TJS2 / KAG (.ks) のシンタックスハイライトも同拡張に同梱され
 
 ### REPL / エージェント駆動
 
-対話型 TJS シェルを内蔵しています。詳細は [REPL.md](doc/REPL.md)。
+対話型 TJS シェルを内蔵しています。詳細は [REPL.md](doc/REPL.md) を参照してください。
 
 ```bash
 krkrz64.exe data -repl              # コンソール REPL
@@ -398,7 +406,7 @@ krkrz64.exe data -replweb=8899      # ブラウザ REPL (HTTP + SSE)
 `krkrz_version.h` (C++ 側) と `krkrz_version.rc` (Windows の VERSIONINFO) が
 生成されます。番号を上げるときはこの 1 行だけを書き換えます。
 
-上げ方の基準・製品名の組み立て・確認方法は [Versioning.md](doc/Versioning.md)。
+上げ方の基準・製品名の組み立て・確認方法は [Versioning.md](doc/Versioning.md) を参照してください。
 
 ---
 
@@ -447,7 +455,7 @@ Compress::Zlib + Digest::MD5) は不要です。出力は旧版とバイト単�
 
 `common/msg/text/gen_messages.py` で生成します。源は CSV
 (`common/msg/text/messages.csv`) で、これを編集して `python gen_messages.py` を実行
-します。詳細は `common/msg/text/README.md`。
+します。詳細は `common/msg/text/README.md` を参照してください。
 
 生成物: `tjsErrorInc.h` / `MsgIntfInc.h` / `MsgImpl.h` /
 `resource/messages{,-en,-chs,-cht}.json` / `win32/vcproj/string_table_*.rc` +
@@ -521,3 +529,17 @@ CSV の言語列は ja / en / chs / cht。**cht (繁体字) 未記入の行は c
 | [LicenseSystem.md](doc/LicenseSystem.md) | ライセンス表記の収集機構 |
 | [Versioning.md](doc/Versioning.md) | バージョン番号の供給元と上げ方 |
 | [ModernizationRoadmap.md](doc/ModernizationRoadmap.md) | WINVER モダン化の計画と進捗 |
+
+---
+
+## ライセンス
+
+吉里吉里Z 本体のライセンスは [LICENSE](LICENSE) にあります (BSD-3-Clause 相当の条件。名称を宣伝・販売促進に使うことを
+禁じる条項を含みます)。同じファイルに、ソースツリーに含まれる第三者コード (MT19937 / glad / PL_MPEG) の
+ライセンスも収録しています。
+
+別途取得してリンクする外部ライブラリ (SDL3 / FreeType / HarfBuzz / zlib / libpng / ANGLE ほか) と
+同梱フォント等のデータ資材のライセンス文は、[licenses/](licenses/) に個別のファイルとして置いています
+(一覧は [licenses/manifest.json](licenses/manifest.json)、本文は `licenses/texts/` と各ライブラリの
+ソースツリー)。これらはエンジンに収録され、実行時に `System.getLicenseList` /
+`System.getLicenseText` で参照できます。仕組みは [LicenseSystem.md](doc/LicenseSystem.md) を参照してください。

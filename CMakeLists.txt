@@ -986,12 +986,12 @@ endif()
 # resource
 
 # リソースデータ一式
-# 既定はエンジン同梱の resource/ だが、案件では NX の setup/nxresource や
-# Android の asset に相当する「案件リソースフォルダ」を埋め込みたい。
-# -DKRKRZ_RESOURCE_DIR=<案件の nxresource> で差し替え可能にしておく
-# (config.cf/messages.json/SysInitScript.tjs/フォント一式が案件版に入れ替わる)。
+# 既定はエンジン同梱の resource/ だが、タイトルごとのリソースフォルダ
+# (Android の asset に相当するもの) を埋め込みたい場合がある。
+# -DKRKRZ_RESOURCE_DIR=<タイトルのリソースフォルダ> で差し替え可能にしておく
+# (config.cf/messages.json/SysInitScript.tjs/フォント一式がタイトル版に入れ替わる)。
 set(KRKRZ_RESOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/resource" CACHE PATH
-    "リソースフォルダ (既定=エンジン同梱。案件の nxresource で上書き可)")
+    "リソースフォルダ (既定=エンジン同梱。タイトルのリソースフォルダで上書き可)")
 set(RESOURCE_DIR ${KRKRZ_RESOURCE_DIR})
 file(GLOB RESOURCE_FILES "${RESOURCE_DIR}/*")
 krkrz_filter_resource_files(RESOURCE_FILES)
@@ -1494,7 +1494,7 @@ find_package(plog CONFIG)
 # が EnumResourceNamesW("BINARY") で列挙して register_font_buffer で登録できるようにする。
 # (RESOURCE_DIR / RESOURCE_FILES は SDL ブランチ内ローカルなのでここで再定義する。)
 set(KRKRZ_RESOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/resource" CACHE PATH
-    "リソースフォルダ (既定=エンジン同梱。案件の nxresource で上書き可)")
+    "リソースフォルダ (既定=エンジン同梱。タイトルのリソースフォルダで上書き可)")
 set(RESOURCE_DIR ${KRKRZ_RESOURCE_DIR})
 file(GLOB RESOURCE_FILES "${RESOURCE_DIR}/*")
 krkrz_filter_resource_files(RESOURCE_FILES)
